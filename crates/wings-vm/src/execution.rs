@@ -5,7 +5,7 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarOutput};
 
 use crate::stack_pool::PooledStack;
-use crate::{CancellationToken, ScalarProcess, StackPool};
+use crate::{CancellationToken, HandlerId, ScalarModule, ScalarProcess, StackPool};
 
 thread_local! {
     static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
@@ -37,6 +37,15 @@ enum ResumeCommand {
 
 pub struct ScalarExecution<'process> {
     process: &'process mut ScalarProcess,
+    invocation: Option<Invocation>,
+}
+
+pub struct ScalarTask {
+    invocation: Option<Invocation>,
+    process: ScalarProcess,
+}
+
+struct Invocation {
     handler: usize,
     coroutine: Option<ExecutionCoroutine>,
 }
@@ -71,10 +80,94 @@ impl ScalarProcess {
         pool: &StackPool,
     ) -> Result<ScalarExecution<'_>, String> {
         let handler = self.validate_invocation(name, arguments)?;
+        let invocation = Invocation::new(
+            self,
+            handler,
+            arguments,
+            max_steps,
+            cancellation,
+            preemption,
+            pool,
+        )?;
+        Ok(ScalarExecution {
+            process: self,
+            invocation: Some(invocation),
+        })
+    }
+}
+
+impl ScalarTask {
+    pub fn new(process: ScalarProcess) -> Self {
+        Self {
+            invocation: None,
+            process,
+        }
+    }
+
+    pub fn module(&self) -> &ScalarModule {
+        self.process.module()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.invocation.is_some()
+    }
+
+    pub fn start(
+        &mut self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+        preemption: &PreemptionToken,
+        pool: &StackPool,
+    ) -> Result<(), String> {
+        if self.is_active() {
+            return Err("scalar task already has an active invocation".into());
+        }
+        let handler = self.process.validate_handler(handler, arguments)?;
+        self.invocation = Some(Invocation::new(
+            &self.process,
+            handler,
+            arguments,
+            max_steps,
+            cancellation,
+            preemption,
+            pool,
+        )?);
+        Ok(())
+    }
+
+    pub fn resume(&mut self, max_slice_steps: u64) -> Result<ExecutionStatus, String> {
+        resume_invocation(&mut self.process, &mut self.invocation, max_slice_steps)
+    }
+
+    pub fn into_process(mut self) -> ScalarProcess {
+        if self.invocation.is_some() {
+            self.process.failed = true;
+            self.invocation.take();
+        }
+        self.process
+    }
+}
+
+impl Invocation {
+    fn new(
+        process: &ScalarProcess,
+        handler: usize,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+        preemption: &PreemptionToken,
+        pool: &StackPool,
+    ) -> Result<Self, String> {
         let stack = pool.acquire()?;
-        let arguments = arguments.to_vec();
-        let entry = self.module.inner.entries[handler];
-        let state = self.state;
+        let mut owned_arguments = Vec::new();
+        owned_arguments
+            .try_reserve_exact(arguments.len())
+            .map_err(|error| error.to_string())?;
+        owned_arguments.extend_from_slice(arguments);
+        let entry = process.module.inner.entries[handler];
+        let state = process.state;
         let cancellation = cancellation.clone();
         let preemption = preemption.clone();
         let coroutine = Coroutine::with_stack(stack, move |yielder, command| {
@@ -92,11 +185,11 @@ impl ScalarProcess {
                     .cast_mut()
                     .cast(),
             };
-            let status = unsafe { entry(state, arguments.as_ptr(), &mut output, &mut context) };
+            let status =
+                unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) };
             (status, output)
         });
-        Ok(ScalarExecution {
-            process: self,
+        Ok(Self {
             handler,
             coroutine: Some(coroutine),
         })
@@ -105,31 +198,48 @@ impl ScalarProcess {
 
 impl ScalarExecution<'_> {
     pub fn resume(&mut self, max_slice_steps: u64) -> Result<ExecutionStatus, String> {
-        let coroutine = self
-            .coroutine
-            .as_mut()
-            .ok_or("scalar execution has already completed")?;
-        if max_slice_steps == 0 {
-            return Err("execution time slice must contain at least one step".into());
-        }
-        match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
-            CoroutineResult::Yield(()) => Ok(ExecutionStatus::Suspended),
-            CoroutineResult::Return((status, output)) => {
-                self.coroutine.take();
-                self.process
-                    .finish_invocation(self.handler, status, output)
-                    .map(ExecutionStatus::Complete)
-            }
-        }
+        resume_invocation(self.process, &mut self.invocation, max_slice_steps)
     }
 }
 
 impl Drop for ScalarExecution<'_> {
     fn drop(&mut self) {
+        if self.invocation.is_some() {
+            self.process.failed = true;
+        }
+    }
+}
+
+fn resume_invocation(
+    process: &mut ScalarProcess,
+    invocation: &mut Option<Invocation>,
+    max_slice_steps: u64,
+) -> Result<ExecutionStatus, String> {
+    let active = invocation
+        .as_mut()
+        .ok_or("scalar execution has already completed or was not started")?;
+    if max_slice_steps == 0 {
+        return Err("execution time slice must contain at least one step".into());
+    }
+    let coroutine = active.coroutine.as_mut().expect("active coroutine");
+    match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
+        CoroutineResult::Yield(()) => Ok(ExecutionStatus::Suspended),
+        CoroutineResult::Return((status, output)) => {
+            let handler = active.handler;
+            active.coroutine.take();
+            invocation.take();
+            process
+                .finish_invocation(handler, status, output)
+                .map(ExecutionStatus::Complete)
+        }
+    }
+}
+
+impl Drop for Invocation {
+    fn drop(&mut self) {
         let Some(coroutine) = self.coroutine.as_mut() else {
             return;
         };
-        self.process.failed = true;
         if coroutine.started()
             && !matches!(
                 coroutine.resume(ResumeCommand::Cancel),

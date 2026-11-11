@@ -56,6 +56,8 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 标量 AOT 原型
 
+执行所有权有两种宿主接口：`ScalarExecution<'_>` 独占借用已有实例；`ScalarTask` 按值拥有实例与私有 invocation，无需把借用和被借用者放进自引用槽位。任务可在同线程容器内移动，挂起时不暴露可变实例；`start` 直接接收模块绑定的 `HandlerId`，忙时拒绝新调用，完成后才允许下一条。两条路径共用原栈恢复、候选提交和正常取消清理，均不能跨线程恢复。任务仍无身份、mailbox 或调度协议，细节见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。
+
 当前源码的 `wings-compile build` 将单个 process 的直线标量 handler 降为有类型、先定义后使用的寄存器 IR，校验后由 Cranelift 0.118 生成 PIC 对象，再用系统 `cc` 链接为共享库。不使用 JIT，也不执行源码完成编译或 LSP 查询。每入口最多 4096 条操作、每 process 最多 128 个 handler、每 handler 最多 64 个参数，超限拒绝构建。
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。

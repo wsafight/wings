@@ -65,9 +65,9 @@ M0 后沿用确定的基线，完整报告各分位结果。需求或硬件改�
 
 ## 工具链与 LSP 验收
 
-当前标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。此脚本不是 GC、抢占、三级资源账户或 BEAM 性能验收。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过同一检查。
+已发布标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。该版本尚不验证执行控制或资源账户。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过该版本检查；后续新增用例不沿用这次结果。
 
-未发布源码增加 ABI v3 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI、`execution_control` 与 `stackful_resume` 示例。活栈用例包含逐步让出、48 个跨检查点活跃标量、恰好足够的总预算、两个实例交错、未开始/挂起 Drop、挂起取消、算术失败与重复恢复错误；这些是正确性结果，不是性能测量。
+未发布源码增加 ABI v3 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI、`execution_control`、`stackful_resume` 与 `owned_tasks` 示例。活栈用例包含逐步让出、48 个跨检查点活跃标量、恰好足够的总预算、两个实例交错、未开始/挂起 Drop、挂起取消、算术失败与重复恢复错误；`owned_tasks` 另覆盖同线程槽位移动、忙时拒绝、跨模块 ID 拒绝、池耗尽不毒化实例、连续调用及未完成任务丢弃/取回时的清理，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。这些是正确性验证，不是调度或性能测量。
 
 debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后运行 `python3 scripts/verify_scalar_aot.py`。release：同一构建命令增加 `--release`，再执行 `WINGS_PROFILE=release python3 scripts/verify_scalar_aot.py`。两个平台均需实际执行；新增用例不能沿用旧 CI 作为证据。GC 根、浮点/SIMD、迁移、guard page 故障注入、运行中并发取消延迟仍未验证；当前仅固定栈和标量，不添加无约束压力测试。
 
@@ -76,6 +76,17 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 - 同一完整程序在编译器和 LSP 中的语法、符号、类型诊断一致；不完整输入覆盖缺失结束符、未知名称与跨文件修改，语言服务器能够恢复并继续查询。
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
+
+## 独立资源账户回归
+
+未发布源码的 `resource_accounts` 示例验证 [ADR-0014](adr/0014-resource-reservations.md) 单线程原语，不是所有运行时分配的接入验收或完整资源隔离证明：
+
+- 定点用例检查合法层级、三级分别拒绝、四维额度、零预留、父 handle 提前释放及 Drop 回收；每个维度分别在 VM、租户、进程层制造 `u64` 加法溢出，拒绝后逐级核对零变化。
+- 固定种子 `0x0014_5eed_cafe_beef` 驱动 4096 步预留、转移和 Drop，固定两个 VM、各两个租户及每租户两个进程，最多 24 张活跃票据；VM 与租户也可直接持有预留，零预留参与序列。
+- 独立模型按票据所有者求和，再从子账户向祖先汇总四维用量；每步比较全部账户、额度与票据金额，核对操作成功与否，失败比较全账本快照且不改变模型所有权，最后逐张释放并确认所有账户归零。
+- 转移定点用例覆盖同账户、共同祖先已满、祖先目标、跨租户与跨 VM 拒绝；固定序列另断言预留和转移的成功、失败及 Drop 均实际发生。未验证跨 worker 原子性、真实分配失败、退出清理接入或 OS OOM。
+
+专项构建：`cargo build --locked -p wings-vm --example resource_accounts`，产物为 `target/debug/examples/resource_accounts`；加 `--release` 后为 `target/release/examples/resource_accounts`。上面的验证脚本已在禁 core dump、20 秒 CPU 限制、30 秒墙钟超时的独立子进程运行此示例；两个平台的 debug/release 结果须分别记录。此序列分配有固定上限，不是内存耗尽压力测试。
 
 ## 原生栈分配实验
 

@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（M0 原型）；未发布源码已有实现，双平台结果以本分支 CI 为准
 - 后续：[ADR-0012](0012-bounded-stack-pool.md) 替代每调用默认栈分配策略，改为自主管理的有界栈池；切换实现和 ABI 不变。
+- 补充：[ADR-0015](0015-owned-scalar-tasks.md) 在保留借用接口的同时，增加无自引用的 owned task；原栈恢复与取消契约不变。
 - 替代：[ADR-0010](0010-scalar-execution-control.md) 的标量 ABI v2 及“不提供让出恢复”的阶段限制；总执行预算和失败提交语义保留
 - 相关决定：[受管根与抢占](0004-safepoints-and-gc.md)、[标量可信边界](0009-scalar-aot-prototype.md)
 

@@ -60,6 +60,8 @@ LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳
 
 `ScalarModule` 可装载一次并反复实例化，共享只读清单和入口数组，各实例独立执行初始化、保存状态与失败标记。宿主可预解析模块绑定的 `HandlerId`，直接调用时不再按字符串查找；外部 JSON 协议不变。此功能尚无语言内 spawn 或 mailbox，见 [ADR-0013](docs/adr/0013-shared-scalar-modules.md)。
 
+宿主可用 `ScalarTask` 按值保存实例和未完成调用，在同线程内移动而无需自引用；忙时拒绝新调用，正常结束才提交并释放栈。它为后续进程表提供所有权边界，尚无 mailbox 或调度器，见 [ADR-0015](docs/adr/0015-owned-scalar-tasks.md)。
+
 MVP 的待办和验收顺序见[路线图](docs/roadmap.md#mvp-范围与开发顺序)：先完成活栈、精确根和资源边界，再推进消息、调度、恢复与双平台 BEAM 对照，不以示例运行成功代替可试用验收。
 
 当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。全部十个已有实现的包均已发布，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。

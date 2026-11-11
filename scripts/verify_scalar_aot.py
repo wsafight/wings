@@ -200,6 +200,7 @@ def main():
         resume_artifact = parent / "resume"
         command([COMPILER, "build", resume_source, "-o", resume_artifact])
         example("stackful_resume", counter, resume_artifact)
+        example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
         source_path.write_text("""process Arithmetic {
   state count: Int = 0
