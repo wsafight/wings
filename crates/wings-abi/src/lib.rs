@@ -1,13 +1,15 @@
+use std::ffi::c_void;
 use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 2;
+pub const SCALAR_ABI_VERSION: u32 = 3;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
 pub const STATUS_CANCELLED: u32 = 3;
 pub const STATUS_BUDGET_EXHAUSTED: u32 = 4;
+pub const STATUS_INVALID_CONTROL: u32 = 5;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +40,13 @@ pub struct ScalarOutput {
 pub struct ScalarContext {
     pub cancellation: *const AtomicU32,
     pub remaining_steps: u64,
+    pub yield_request: *const AtomicU32,
+    pub slice_remaining: u64,
+    pub slow_path: Option<ScalarSlowPath>,
+    pub data: *mut c_void,
 }
+
+pub type ScalarSlowPath = unsafe extern "C" fn(*mut ScalarContext) -> u32;
 
 pub type ScalarEntry =
     unsafe extern "C" fn(i64, *const i64, *mut ScalarOutput, *mut ScalarContext) -> u32;

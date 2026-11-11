@@ -60,15 +60,17 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码的标量 ABI v2 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局保存指向稳定 `AtomicU32` 的取消标志指针与剩余 `u64` 步数，仅执行线程修改预算，其他线程可设置取消标志。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；错误通过状态码返回，整数溢出、除零、取消与预算耗尽都不使用 trap 或跨边界 unwind。
+未发布源码的标量 ABI v3 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；预算与数据只由执行线程访问。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；算术、取消、总预算耗尽通过状态码返回，不 trap 或跨边界 unwind。
 
-后端在每条 IR 指令前与输出提交前固定插入检查：顺序一致原子读取取消标志，优先返回取消；再检查预算是否为零，否则扣一步。每个入口默认 1,000,000 步，handler 可指定预算。预算不代表机器指令数或 CPU 时间；此阶段没有慢路径切换与恢复，状态码退出即终止实例。检查后的迟到取消不能撤回成功调用。此 ABI 只用于无业务堆引用的标量原型，不替代完整 shadow stack 与抢占恢复契约。已发布 `0.0.2` 使用无 context 的 v1，与源码 v2 相互拒绝装载，须使用同一版本的编译器和 VM。理由与验证要求见 [ADR-0010](adr/0010-scalar-execution-control.md)。
+后端在每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，前一源码切片使用 v2，二者均与当前 v3 相互拒绝装载，须使用匹配的编译器和 VM。
+
+`start_controlled` 分配 256 KiB 可用 guarded stack，分配失败返回错误；OS 页对齐和 guard page 另计。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交。使用 `corosensei 0.3.3`，仅启用 `default-stack`，禁止启用 unwind。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 不分配协程栈，使用无限大时间片和空慢路径，仅保留取消与总预算检查。完整契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
 
 `wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源与 ABI。共享库保留到 OS 进程结束，不做热卸载。
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 
-这条路径没有调度、活栈切换、GC、mailbox、资源账户或监督，不能运行不可信代码。macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)，并不表示完整受管执行模型已验证。理由与扩展前提见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+这条路径没有计时线程、调度、GC、mailbox、资源账户或监督，不能运行不可信代码。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；新增活栈切片须在本分支 CI 独立验收，不能沿用旧结果。浮点/SIMD、GC 根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 ## 低层实现范围
 

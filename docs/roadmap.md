@@ -23,9 +23,9 @@
 
 ## 里程碑
 
-当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。safepoint、精确根、活栈切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。完整 safepoint、精确根、跨线程切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码按 [ADR-0010](adr/0010-scalar-execution-control.md) 增加逐 IR 原子取消检查与执行预算，先验证无 unwind 的终止路径；它不是让出恢复，完整 safepoint、根链与活栈验证仍是下一步，不扩展语言语法或调度规模。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码先按 [ADR-0010](adr/0010-scalar-execution-control.md) 实现取消和总预算，再按 [ADR-0011](adr/0011-scalar-stackful-resume.md) 扩展为 ABI v3、同线程活栈让出恢复和无 unwind 清理。当前仍无根链、计时线程、worker 或消息；标量恢复不等于完整 safepoint/GC 验证，不扩展语言语法或调度规模。
 
 - **M0：双平台执行模型与 BEAM 基线。** 在 macOS AArch64 与 Linux x86-64 选定代表性负载，固定 BEAM 版本与配置、性能和内存验收协议。确定产物格式、入口、启动与退出约定、对外 I/O 范围及受管契约。完成两个平台的 Cranelift AOT + safepoint + shadow stack + 切换恢复原型，验证链接、程序装载和 `kqueue`/`epoll` 唤醒。
 - **M1：单 worker 的最小实现与内存账本。** 在两个首要平台交付 VM 与编译工具，包含最小语言、逻辑独立 arena、有限 inbox、非移动精确 GC、栈限额和三级计费。最小程序要能编译运行，消息和状态正确，局部超限返回受管错误，失败后不泄漏。按平台发布内存账本和同状态 BEAM 对照，优先试验紧凑 PCB、内联值与分配快路径，同时交付基础诊断。
@@ -42,7 +42,7 @@
 
 ## MVP 范围与开发顺序
 
-MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。当前仍在第一项之前，以下均是待办，不是已有功能。
+MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有未发布实现，仍须双平台 debug/release 验收，其余均为待办。
 
 | 顺序 | 技术切片 | 最小验收 |
 |---|---|---|

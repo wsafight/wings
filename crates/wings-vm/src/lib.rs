@@ -5,11 +5,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use libloading::Library;
 use wings_abi::{
     DEFAULT_MAX_STEPS, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
-    STATUS_OK, STATUS_OVERFLOW, ScalarContext, ScalarEntry, ScalarOutput, ValueType,
+    STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, ScalarContext, ScalarEntry, ScalarOutput,
+    ValueType,
 };
 use wings_artifact::{
     INITIALIZER_SYMBOL, MAX_LIBRARY_BYTES, Manifest, handler_symbol, library_name,
 };
+
+mod execution;
+
+pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution};
 
 pub struct ScalarProcess {
     manifest: Manifest,
@@ -33,6 +38,8 @@ impl ScalarProcess {
     /// # Safety
     /// The library must be trusted Wings scalar AOT code matching its manifest,
     /// with valid entry signatures, bounded pointer access and no unwinding.
+    /// Entries must honor execution controls, return normally from a failed
+    /// slow path without writing output, and fit the fixed execution stack.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         let directory = directory
             .canonicalize()
@@ -62,9 +69,14 @@ impl ScalarProcess {
         std::mem::forget(library);
         let mut output = ScalarOutput::default();
         let cancellation = AtomicU32::new(0);
+        let yield_request = AtomicU32::new(0);
         let mut context = ScalarContext {
             cancellation: &cancellation,
             remaining_steps: DEFAULT_MAX_STEPS,
+            yield_request: &yield_request,
+            slice_remaining: u64::MAX,
+            slow_path: None,
+            data: std::ptr::null_mut(),
         };
         let status = unsafe { initializer(0, [].as_ptr(), &mut output, &mut context) };
         check_status(status)?;
@@ -99,6 +111,24 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<Option<i64>, String> {
+        let index = self.validate_invocation(name, arguments)?;
+        let mut output = ScalarOutput::default();
+        let yield_request = AtomicU32::new(0);
+        let mut context = ScalarContext {
+            cancellation: Arc::as_ptr(&cancellation.flag),
+            remaining_steps: max_steps,
+            yield_request: &yield_request,
+            slice_remaining: u64::MAX,
+            slow_path: None,
+            data: std::ptr::null_mut(),
+        };
+        let status = unsafe {
+            (self.entries[index])(self.state, arguments.as_ptr(), &mut output, &mut context)
+        };
+        self.finish_invocation(index, status, output)
+    }
+
+    fn validate_invocation(&self, name: &str, arguments: &[i64]) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
         }
@@ -117,18 +147,20 @@ impl ScalarProcess {
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
-        let mut output = ScalarOutput::default();
-        let mut context = ScalarContext {
-            cancellation: Arc::as_ptr(&cancellation.flag),
-            remaining_steps: max_steps,
-        };
-        let status = unsafe {
-            (self.entries[index])(self.state, arguments.as_ptr(), &mut output, &mut context)
-        };
+        Ok(index)
+    }
+
+    fn finish_invocation(
+        &mut self,
+        index: usize,
+        status: u32,
+        output: ScalarOutput,
+    ) -> Result<Option<i64>, String> {
         if let Err(error) = check_status(status) {
             self.failed = true;
             return Err(error);
         }
+        let handler = &self.manifest.handlers[index];
         if !self.manifest.state.accepts(output.state)
             || !handler
                 .reply
@@ -150,6 +182,7 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_DIVISION_BY_ZERO => Err("managed division by zero".into()),
         STATUS_CANCELLED => Err("managed execution cancelled".into()),
         STATUS_BUDGET_EXHAUSTED => Err("managed execution step budget exhausted".into()),
+        STATUS_INVALID_CONTROL => Err("managed execution requires a valid yield callback".into()),
         _ => Err(format!("unknown scalar ABI status {status}")),
     }
 }
