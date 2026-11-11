@@ -16,7 +16,20 @@ use wings_abi::{
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
 use wings_ir::{Function, Operation, Operator, Program};
 
+pub const MAX_SCALAR_FRAME_BYTES: u32 = 64 * 1024;
+
 pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
+    build_with_frame_limit(program, directory, MAX_SCALAR_FRAME_BYTES)
+}
+
+pub fn build_with_frame_limit(
+    program: &Program,
+    directory: &Path,
+    max_frame_bytes: u32,
+) -> Result<(), String> {
+    if max_frame_bytes == 0 || max_frame_bytes > MAX_SCALAR_FRAME_BYTES {
+        return Err("scalar frame limit must be within 1..=65536 bytes".into());
+    }
     program.validate()?;
     let manifest = Manifest {
         format: FORMAT_VERSION,
@@ -49,9 +62,19 @@ pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
     let object = ObjectBuilder::new(isa, "wings_scalar", default_libcall_names())
         .map_err(|error| error.to_string())?;
     let mut module = ObjectModule::new(object);
-    compile_function(&mut module, INITIALIZER_SYMBOL, &program.initializer)?;
+    compile_function(
+        &mut module,
+        INITIALIZER_SYMBOL,
+        &program.initializer,
+        max_frame_bytes,
+    )?;
     for (index, handler) in program.handlers.iter().enumerate() {
-        compile_function(&mut module, &handler_symbol(index), &handler.function)?;
+        compile_function(
+            &mut module,
+            &handler_symbol(index),
+            &handler.function,
+            max_frame_bytes,
+        )?;
     }
     let bytes = module.finish().emit().map_err(|error| error.to_string())?;
     fs::create_dir(directory).map_err(|error| format!("create new artifact directory: {error}"))?;
@@ -88,6 +111,7 @@ fn compile_function(
     module: &mut ObjectModule,
     name: &str,
     function: &Function,
+    max_frame_bytes: u32,
 ) -> Result<(), String> {
     let mut context = module.make_context();
     let pointer_type = module.target_config().pointer_type();
@@ -171,6 +195,15 @@ fn compile_function(
     module
         .define_function(identifier, &mut context)
         .map_err(|error| error.to_string())?;
+    let frame_bytes = context
+        .compiled_code()
+        .ok_or("backend did not produce scalar machine code")?
+        .frame_size;
+    if frame_bytes > max_frame_bytes {
+        return Err(format!(
+            "scalar stack frame for {name} requires {frame_bytes} bytes, limit is {max_frame_bytes}"
+        ));
+    }
     module.clear_context(&mut context);
     Ok(())
 }

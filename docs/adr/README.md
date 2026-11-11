@@ -24,6 +24,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0014](0014-resource-reservations.md) | 单 worker 三级资源预留、回滚与净额度转移 | 已采纳（实现契约） |
 | [0015](0015-owned-scalar-tasks.md) | 按值持有实例与 invocation 的同线程执行槽，无自引用 | 已采纳（M0 实现契约） |
 | [0016](0016-worker-wakeup.md) | epoll/eventfd 与 kqueue 用户事件的单 waiter 通知 | 已采纳（M0 实现契约） |
+| [0017](0017-scalar-frame-admission.md) | 机器码生成后、写产物前的标量编译帧准入 | 已采纳（M0 有界标量切片） |
 
 ## 维护方式
 

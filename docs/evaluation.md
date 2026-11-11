@@ -77,7 +77,13 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
 
+## 标量编译帧准入回归
+
+行为脚本执行 `wings-compile` 的 `frame_limits` 示例，检查零值及超硬上限配置、1 字节限额拒绝，以及 128 个跨检查点活跃标量在 512 字节限额下拒绝；每次失败都确认输出目录不存在。默认 64 KiB 限额下构建并运行高寄存器压力入口，校验结果；既有 48 活跃值的原栈恢复继续运行。用例验证实际后端帧和写产物顺序，不证明 Rust 慢路径栈上界或动态栈安全，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
+
 ## OS 唤醒原语回归
+
+本分支活栈、owned task、资源守恒及 OS 唤醒已分别通过 macOS AArch64 与 Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101080186)，另通过 Rust 1.85 检查。该结果对应 `a446119`，不作为后续编译帧准入或 BEAM 工作负载的验收。
 
 同一行为脚本在受限子进程运行 `worker_wakeup`，验证零超时、无通知超时、提前通知、通知合并、跨线程通知、256 次发送/等待交错、四个生产者各 4096 次通知、等待端线程移交和 handle 释放顺序，另反复创建/释放 128 次。循环、线程数与等待时间有固定上限，不做无约束 FD 耗尽。debug/release、macOS kqueue 与 Linux epoll/eventfd 分别执行；信号打断及内核错误注入仍未验证，不把正常通知回归当作完整 reactor 或调度器证明。契约见 [ADR-0016](adr/0016-worker-wakeup.md)。
 

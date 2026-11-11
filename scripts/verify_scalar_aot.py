@@ -183,6 +183,7 @@ def main():
         example("shared_module", counter)
         example("resource_accounts")
         example("worker_wakeup")
+        command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
         total = " + ".join(f"value_{index}" for index in range(48))
@@ -200,6 +201,13 @@ def main():
 """)
         resume_artifact = parent / "resume"
         command([COMPILER, "build", resume_source, "-o", resume_artifact])
+        pressure_source = parent / "pressure.wings"
+        pressure_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
+        pressure_total = " + ".join(f"value_{index}" for index in range(128))
+        pressure_source.write_text(f"process Pressure {{ state count: Int = 0; on Work(seed: Int) -> Int {{ {pressure_bindings}; {pressure_total} }} }}")
+        pressure_artifact = parent / "pressure"
+        command([COMPILER, "build", pressure_source, "-o", pressure_artifact])
+        assert json.loads(invoke(pressure_artifact, [message("Work", 2)]).stdout) == {"reply": 8384}
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"

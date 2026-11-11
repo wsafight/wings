@@ -13,6 +13,14 @@ pub fn build(text: &str, directory: &Path) -> Result<(), String> {
     wings_codegen::build(&lower::lower(text)?, directory)
 }
 
+pub fn build_with_frame_limit(
+    text: &str,
+    directory: &Path,
+    max_frame_bytes: u32,
+) -> Result<(), String> {
+    wings_codegen::build_with_frame_limit(&lower::lower(text)?, directory, max_frame_bytes)
+}
+
 pub fn render_diagnostics(path: &str, text: &str, analysis: &Analysis) -> String {
     let source = SourceFile::new(SourceId(0), text);
     let mut output = String::new();
