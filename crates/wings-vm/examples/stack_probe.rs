@@ -6,7 +6,7 @@ use std::time::Instant;
 use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use serde_json::json;
-use wings_vm::{CancellationToken, ExecutionStatus, PreemptionToken, ScalarProcess};
+use wings_vm::{CancellationToken, ExecutionStatus, PreemptionToken, ScalarProcess, StackPool};
 
 fn phase(name: &str, elapsed_ns: u128, roundtrip_ns: f64) {
     println!(
@@ -47,7 +47,7 @@ fn main() {
     assert!(count <= 2048);
     assert!(matches!(stack_kib, 32 | 64 | 256));
     assert!(frames <= 16 && frames * 4 + 16 <= stack_kib);
-    if mode.starts_with("vm-") {
+    if mode.starts_with("vm-") || mode.starts_with("pool-") {
         probe_vm(mode, count, Path::new(&arguments[4]));
         return;
     }
@@ -123,7 +123,10 @@ fn probe_switch(stack_kib: usize) {
 }
 
 fn probe_vm(mode: &str, count: usize, directory: &Path) {
-    assert!(matches!(mode, "vm-idle" | "vm-suspended"));
+    assert!(matches!(
+        mode,
+        "vm-idle" | "vm-suspended" | "pool-uncached" | "pool-cached" | "pool-warm"
+    ));
     let cancellation = CancellationToken::default();
     let preemption = PreemptionToken::default();
     let mut warmup = unsafe { ScalarProcess::load_trusted(directory) }.expect("trusted probe");
@@ -131,14 +134,20 @@ fn probe_vm(mode: &str, count: usize, directory: &Path) {
     drop(warmup);
     phase("baseline", 0, 0.0);
     let started = Instant::now();
+    let max_cached = match mode {
+        "pool-uncached" => 0,
+        "pool-warm" => count,
+        _ => 2.min(count),
+    };
+    let pool = StackPool::new(count, max_cached).expect("bounded probe pool");
     let mut processes: Vec<_> = (0..count)
         .map(|_| unsafe { ScalarProcess::load_trusted(directory) }.expect("trusted probe"))
         .collect();
     let mut executions = Vec::new();
-    if mode == "vm-suspended" {
+    if mode != "vm-idle" {
         for process in &mut processes {
             let mut execution = process
-                .start_controlled("Work", &[7], 147, &cancellation, &preemption)
+                .start_in_pool("Work", &[7], 147, &cancellation, &preemption, &pool)
                 .expect("start probe");
             assert_eq!(execution.resume(98), Ok(ExecutionStatus::Suspended));
             executions.push(execution);
@@ -154,10 +163,18 @@ fn probe_vm(mode: &str, count: usize, directory: &Path) {
     }
     drop(executions);
     for process in &mut processes {
-        if mode == "vm-suspended" {
+        if mode != "vm-idle" {
             assert_eq!(process.invoke("Get", &[]), Ok(Some(1464)));
         }
     }
     drop(processes);
     phase("released", started.elapsed().as_nanos(), 0.0);
+    if mode.starts_with("pool-") {
+        assert_eq!(pool.stats().active, 0);
+        let started = Instant::now();
+        pool.trim().expect("trim probe pool");
+        assert_eq!(pool.stats().cached, 0);
+        assert_eq!(pool.stats().reset_failures, 0);
+        phase("trimmed", started.elapsed().as_nanos(), 0.0);
+    }
 }

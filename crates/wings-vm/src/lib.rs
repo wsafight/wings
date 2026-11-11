@@ -13,8 +13,10 @@ use wings_artifact::{
 };
 
 mod execution;
+mod stack_pool;
 
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution};
+pub use stack_pool::{StackPool, StackPoolStats};
 
 pub struct ScalarProcess {
     manifest: Manifest,

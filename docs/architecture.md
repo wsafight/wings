@@ -64,7 +64,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 后端在每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，前一源码切片使用 v2，二者均与当前 v3 相互拒绝装载，须使用匹配的编译器和 VM。
 
-`start_controlled` 分配 256 KiB 可用 guarded stack，分配失败返回错误；OS 页对齐和 guard page 另计。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交。使用 `corosensei 0.3.3`，仅启用 `default-stack`，禁止启用 unwind。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 不分配协程栈，使用无限大时间片和空慢路径，仅保留取消与总预算检查。完整契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
+`start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 不借出协程栈。池不代替编译器栈限额、GC 或三级账户，完整契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
 `wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源与 ABI。共享库保留到 OS 进程结束，不做热卸载。
 

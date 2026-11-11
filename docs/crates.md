@@ -16,7 +16,7 @@
 
 已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片；十个包均已发布 `0.0.2`。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
 
-未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v3 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌。仅 VM 新增 `corosensei 0.3.3` 的 `default-stack` 依赖，不启用 unwind，不引入编译器依赖，也不新增 crate。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
+未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v3 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，`stack_pool` 模块自主管理有界栈池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
 | Crate | 形态 | 负责内容 | 不负责 |
 |---|---|---|---|

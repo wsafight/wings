@@ -591,6 +591,7 @@ name = "wings-vm"
 version = "0.0.2"
 dependencies = [
  "corosensei",
+ "libc",
  "libloading",
  "serde_json",
  "wings-abi",

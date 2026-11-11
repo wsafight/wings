@@ -1,13 +1,17 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarOutput};
 
-use crate::{CancellationToken, ScalarProcess};
+use crate::stack_pool::PooledStack;
+use crate::{CancellationToken, ScalarProcess, StackPool};
 
-const EXECUTION_STACK_BYTES: usize = 256 * 1024;
+thread_local! {
+    static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
+}
+
+type ExecutionCoroutine = Coroutine<ResumeCommand, (), (u32, ScalarOutput), PooledStack>;
 
 #[derive(Clone, Default)]
 pub struct PreemptionToken {
@@ -34,7 +38,7 @@ enum ResumeCommand {
 pub struct ScalarExecution<'process> {
     process: &'process mut ScalarProcess,
     handler: usize,
-    coroutine: Coroutine<ResumeCommand, (), (u32, ScalarOutput)>,
+    coroutine: Option<ExecutionCoroutine>,
 }
 
 impl ScalarProcess {
@@ -46,9 +50,28 @@ impl ScalarProcess {
         cancellation: &CancellationToken,
         preemption: &PreemptionToken,
     ) -> Result<ScalarExecution<'_>, String> {
+        self.validate_invocation(name, arguments)?;
+        let pool = DEFAULT_STACK_POOL.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(StackPool::new(64, 2)?);
+            }
+            Ok::<_, String>(slot.as_ref().expect("initialized stack pool").clone())
+        })?;
+        self.start_in_pool(name, arguments, max_steps, cancellation, preemption, &pool)
+    }
+
+    pub fn start_in_pool(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+        preemption: &PreemptionToken,
+        pool: &StackPool,
+    ) -> Result<ScalarExecution<'_>, String> {
         let handler = self.validate_invocation(name, arguments)?;
-        let stack = DefaultStack::new(EXECUTION_STACK_BYTES)
-            .map_err(|error| format!("allocate execution stack: {error}"))?;
+        let stack = pool.acquire()?;
         let arguments = arguments.to_vec();
         let entry = self.entries[handler];
         let state = self.state;
@@ -75,38 +98,41 @@ impl ScalarProcess {
         Ok(ScalarExecution {
             process: self,
             handler,
-            coroutine,
+            coroutine: Some(coroutine),
         })
     }
 }
 
 impl ScalarExecution<'_> {
     pub fn resume(&mut self, max_slice_steps: u64) -> Result<ExecutionStatus, String> {
-        if self.coroutine.done() {
-            return Err("scalar execution has already completed".into());
-        }
+        let coroutine = self
+            .coroutine
+            .as_mut()
+            .ok_or("scalar execution has already completed")?;
         if max_slice_steps == 0 {
             return Err("execution time slice must contain at least one step".into());
         }
-        match self.coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
+        match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
             CoroutineResult::Yield(()) => Ok(ExecutionStatus::Suspended),
-            CoroutineResult::Return((status, output)) => self
-                .process
-                .finish_invocation(self.handler, status, output)
-                .map(ExecutionStatus::Complete),
+            CoroutineResult::Return((status, output)) => {
+                self.coroutine.take();
+                self.process
+                    .finish_invocation(self.handler, status, output)
+                    .map(ExecutionStatus::Complete)
+            }
         }
     }
 }
 
 impl Drop for ScalarExecution<'_> {
     fn drop(&mut self) {
-        if self.coroutine.done() {
+        let Some(coroutine) = self.coroutine.as_mut() else {
             return;
-        }
+        };
         self.process.failed = true;
-        if self.coroutine.started()
+        if coroutine.started()
             && !matches!(
-                self.coroutine.resume(ResumeCommand::Cancel),
+                coroutine.resume(ResumeCommand::Cancel),
                 CoroutineResult::Return(_)
             )
         {

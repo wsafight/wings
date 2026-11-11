@@ -96,6 +96,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 复现：`cargo build --release --locked -p wings-compile -p wings-vm --bins --examples`，再执行 `python3 scripts/measure_stacks.py --output target/stack-measurements-new --repetitions 3`。驱动限定每子进程 30 秒 CPU、60 秒测量墙钟、禁 core dump、最多 2048 个栈，最大栈映射 544 MiB，阶段检查 RSS 不超过 384 MiB。当前 macOS 拒绝 `RLIMIT_AS/DATA/RSS`，因此这不是 OS 硬内存配额或 OOM 实验；分配量由程序上限约束。原始 `vmmap`/`footprint` 和 JSON 保存在本地 `target/stack-measurements-run4`；精简结果随仓库记录，Linux 不复用本机数据。
 
+### 有界栈池复测
+
+同机、相同工具链及 48 活跃标量 AOT 负载，512/2048 调用、三次独立子进程重复。2048 个同时挂起时，零缓存/缓存 2 槽/缓存全部的物理增量中位数均约 33.95–33.99 MiB，峰值没有实质下降。完成后分别约 1.72 / 1.78 / 33.99 MiB；缓存全部经 `trim` 后降至约 1.70 MiB。零缓存完成后 VM region 增量约 3，缓存全部仍约 4101。池证明了缓存/回收策略影响完成后的内存，不能减少同时挂起的活页。
+
+复现同一构建命令后执行 `python3 scripts/measure_stacks.py --suite pool --output target/stack-pool-new --repetitions 3`，原始结果在本机 `target/stack-pool-measurements`。未测受限重映射失败注入，未与 BEAM 同负载比较，不把本结果作为 MVP 性能验收。正确性脚本增加 `stack_pool` 示例，覆盖容量拒绝、即时归还、独占、缓存、trim、取消和所有权生命周期。
+
 ## 优化实验规则
 
 - 各项[激进优化](optimizations.md)开启和关闭时分别与正确性基线比较，保留生成代码、目标特性、配置、原始结果和回归样本。先测单项，再测组合。

@@ -57,7 +57,10 @@ def measure(case, repetition, artifact, output):
     result = {"mode": mode, "count": count, "stack_kib": stack_kib, "frames": frames, "repetition": repetition}
     deadline = time.monotonic() + 60
     try:
-        for phase in ["baseline", "allocated", "released"]:
+        phases = ["baseline", "allocated", "released"]
+        if mode.startswith("pool-"):
+            phases.append("trimmed")
+        for phase in phases:
             while True:
                 timeout = max(0, deadline - time.monotonic())
                 if not select.select([child.stdout], [], [], timeout)[0]:
@@ -89,6 +92,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=ROOT / "target/stack-measurements")
     parser.add_argument("--repetitions", type=int, default=3, choices=range(1, 6))
+    parser.add_argument("--suite", choices=["baseline", "pool"], default="baseline")
     arguments = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise SystemExit("This measurement driver currently requires macOS AArch64")
@@ -124,6 +128,8 @@ def main():
                 cases.append(("suspended", count, stack_kib, frames))
             cases.extend([(mode, count, 256, 0) for mode in ["vm-idle", "vm-suspended"]])
         cases.extend(("switch", 1, stack_kib, 0) for stack_kib in [32, 64, 256])
+        if arguments.suite == "pool":
+            cases = [(mode, count, 256, 0) for count in [512, 2048] for mode in ["pool-uncached", "pool-cached", "pool-warm"]]
         for repetition in range(arguments.repetitions):
             for case in cases:
                 result = measure(case, repetition, artifact, output)
@@ -139,7 +145,7 @@ def main():
     for key, values in groups.items():
         entry = dict(zip(["mode", "count", "stack_kib", "frames"], key))
         for metric in ["rss_bytes", "virtual_bytes", "physical_bytes", "regions"]:
-            for phase in ["allocated", "released"]:
+            for phase in [phase for phase in values[0] if phase in ["allocated", "released", "trimmed"]]:
                 deltas = [value[phase][metric] - value["baseline"][metric] for value in values]
                 entry[f"{phase}_{metric}"] = {"median": statistics.median(deltas), "min": min(deltas), "max": max(deltas)}
         for phase in ["allocated", "released"]:
