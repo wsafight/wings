@@ -92,7 +92,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=ROOT / "target/stack-measurements")
     parser.add_argument("--repetitions", type=int, default=3, choices=range(1, 6))
-    parser.add_argument("--suite", choices=["baseline", "pool"], default="baseline")
+    parser.add_argument("--suite", choices=["baseline", "pool", "shared"], default="baseline")
     arguments = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise SystemExit("This measurement driver currently requires macOS AArch64")
@@ -130,6 +130,8 @@ def main():
         cases.extend(("switch", 1, stack_kib, 0) for stack_kib in [32, 64, 256])
         if arguments.suite == "pool":
             cases = [(mode, count, 256, 0) for count in [512, 2048] for mode in ["pool-uncached", "pool-cached", "pool-warm"]]
+        elif arguments.suite == "shared":
+            cases = [(mode, count, 256, 0) for count in [512, 2048] for mode in ["vm-idle", "shared-idle", "shared-suspended"]]
         for repetition in range(arguments.repetitions):
             for case in cases:
                 result = measure(case, repetition, artifact, output)

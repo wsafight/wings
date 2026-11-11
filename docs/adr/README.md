@@ -20,6 +20,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0010](0010-scalar-execution-control.md) | 标量 ABI v2、强制原子取消检查与执行步数预算 | 已采纳（M0 原型）；替代 0009 的 ABI v1 |
 | [0011](0011-scalar-stackful-resume.md) | 标量 ABI v3、同线程原栈让出恢复及无 unwind 取消清理 | 已采纳（M0 原型设计）；替代 0010 的 ABI 与阶段限制 |
 | [0012](0012-bounded-stack-pool.md) | 自主管理 mmap、guard page、准入、缓存与回收的有界栈池 | 已采纳（M0 原型设计）；替代 0011 的独立栈分配策略 |
+| [0013](0013-shared-scalar-modules.md) | 共享只读模块、独立实例状态与预解析 handler ID | 已采纳（M0 原型设计） |
 
 ## 维护方式
 

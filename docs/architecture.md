@@ -72,6 +72,8 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 这条路径没有计时线程、调度、GC、mailbox、资源账户或监督，不能运行不可信代码。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；新增活栈切片须在本分支 CI 独立验收，不能沿用旧结果。浮点/SIMD、GC 根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
+共享代码通过 `ScalarModule` 装载一次，再 `instantiate` 创建状态独立的实例；清单和入口表只保存一份，每个实例都执行 initializer。`HandlerId` 持有模块身份与序号，用前检查身份及参数 schema，不接受其他模块的 ID；ID 不是线协议。便利入口 `ScalarProcess::load_trusted` 仍会装载独立模块，不隐式按路径缓存。JSON 适配层只解析一次名称，参数暂存在有界数组，再直接按 ID 调用，避免原先重复查找和参数 Vec 分配。共享对象仅为只读代码元数据，不改变业务状态隔离。见 [ADR-0013](adr/0013-shared-scalar-modules.md)。
+
 ## 低层实现范围
 
 语言、IR、调度与资源契约共用，目标 ABI、对象格式、上下文切换和 OS I/O 由平台层处理。汇编行数少不代表实现正确或容易维护。

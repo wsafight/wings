@@ -73,7 +73,7 @@ impl ScalarProcess {
         let handler = self.validate_invocation(name, arguments)?;
         let stack = pool.acquire()?;
         let arguments = arguments.to_vec();
-        let entry = self.entries[handler];
+        let entry = self.module.inner.entries[handler];
         let state = self.state;
         let cancellation = cancellation.clone();
         let preemption = preemption.clone();

@@ -55,20 +55,15 @@ fn run(directory: &Path, max_steps: u64) -> Result<(), String> {
         }
         let name = input["message"].as_str().ok_or("expected a message name")?;
         let values = input["args"].as_array().ok_or("expected an args array")?;
-        let handler = process
-            .manifest()
-            .handlers
-            .iter()
-            .find(|handler| handler.name == name)
-            .ok_or_else(|| format!("unknown handler {name}"))?;
-        if values.len() != handler.parameters.len() {
+        let handler = process.module().handler(name)?;
+        let schema = handler.schema();
+        if values.len() != schema.parameters.len() {
             return Err("handler argument count mismatch".into());
         }
-        let reply_type = handler.reply;
-        let arguments = values
-            .iter()
-            .zip(&handler.parameters)
-            .map(|(value, (_, ty))| match ty {
+        let reply_type = schema.reply;
+        let mut arguments = [0i64; 64];
+        for ((slot, value), (_, ty)) in arguments.iter_mut().zip(values).zip(&schema.parameters) {
+            *slot = match ty {
                 ValueType::Int => value
                     .as_i64()
                     .ok_or_else(|| "expected an i64 argument".to_owned()),
@@ -78,9 +73,14 @@ fn run(directory: &Path, max_steps: u64) -> Result<(), String> {
                     .ok_or_else(|| "expected a Bool argument".to_owned()),
                 ValueType::Unit if value.is_null() => Ok(0),
                 ValueType::Unit => Err("expected null for Unit".into()),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let reply = process.invoke_controlled(name, &arguments, max_steps, &cancellation)?;
+            }?;
+        }
+        let reply = process.invoke_handler(
+            &handler,
+            &arguments[..values.len()],
+            max_steps,
+            &cancellation,
+        )?;
         let output = match reply {
             Some(value) => json!({ "reply": match reply_type {
                 Some(ValueType::Int) => json!(value),

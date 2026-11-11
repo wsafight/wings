@@ -102,6 +102,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 复现同一构建命令后执行 `python3 scripts/measure_stacks.py --suite pool --output target/stack-pool-new --repetitions 3`，原始结果在本机 `target/stack-pool-measurements`。未测受限重映射失败注入，未与 BEAM 同负载比较，不把本结果作为 MVP 性能验收。正确性脚本增加 `stack_pool` 示例，覆盖容量拒绝、即时归还、独占、缓存、trim、取消和所有权生命周期。
 
+### 共享模块复测
+
+同一台 macOS、release、相同 48 活跃标量产物，512/2048 实例、三次独立子进程重复。2048 个 Idle 实例若每次装载模块，物理增量中位数约 1.53 MiB；复用一个已预热模块约 128 KiB（最小 112 KiB、最大 128 KiB），实例固定头部为 24 字节，其余差异包括 Vec 容量、allocator 页与固定成本。共享模块创建的挂起调用约 32.63 MiB，仍由每栈触碰页主导。不把 24 字节称为完整微进程成本，也不把初始化耗时差异称为业务吞吐提升。
+
+复现：同一 release 构建后运行 `python3 scripts/measure_stacks.py --suite shared --output target/shared-module-new --repetitions 3`，原始结果在本机 `target/shared-module-measurements`。`shared_module` 行为示例验证状态、失败和 initializer 独立，以及 ID 身份、生命周期和兼容接口。尚无 BEAM 等价业务对照。
+
 ## 优化实验规则
 
 - 各项[激进优化](optimizations.md)开启和关闭时分别与正确性基线比较，保留生成代码、目标特性、配置、原始结果和回归样本。先测单项，再测组合。
