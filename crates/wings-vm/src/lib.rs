@@ -10,10 +10,12 @@ use wings_artifact::Manifest;
 
 mod execution;
 mod module;
+mod resources;
 mod stack_pool;
 
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution};
 pub use module::{HandlerId, ScalarModule};
+pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
 
 pub struct ScalarProcess {

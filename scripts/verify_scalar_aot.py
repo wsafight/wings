@@ -181,6 +181,7 @@ def main():
         example("execution_control", counter)
         example("stack_pool", counter)
         example("shared_module", counter)
+        example("resource_accounts")
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
         total = " + ".join(f"value_{index}" for index in range(48))
