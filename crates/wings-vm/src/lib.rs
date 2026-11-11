@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use libloading::Library;
 use wings_abi::{
-    STATUS_DIVISION_BY_ZERO, STATUS_OK, STATUS_OVERFLOW, ScalarEntry, ScalarOutput, ValueType,
+    DEFAULT_MAX_STEPS, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
+    STATUS_OK, STATUS_OVERFLOW, ScalarContext, ScalarEntry, ScalarOutput, ValueType,
 };
 use wings_artifact::{
     INITIALIZER_SYMBOL, MAX_LIBRARY_BYTES, Manifest, handler_symbol, library_name,
@@ -13,6 +16,17 @@ pub struct ScalarProcess {
     entries: Vec<ScalarEntry>,
     state: i64,
     failed: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct CancellationToken {
+    flag: Arc<AtomicU32>,
+}
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.flag.store(1, Ordering::SeqCst);
+    }
 }
 
 impl ScalarProcess {
@@ -47,7 +61,12 @@ impl ScalarProcess {
         }
         std::mem::forget(library);
         let mut output = ScalarOutput::default();
-        let status = unsafe { initializer(0, [].as_ptr(), &mut output) };
+        let cancellation = AtomicU32::new(0);
+        let mut context = ScalarContext {
+            cancellation: &cancellation,
+            remaining_steps: DEFAULT_MAX_STEPS,
+        };
+        let status = unsafe { initializer(0, [].as_ptr(), &mut output, &mut context) };
         check_status(status)?;
         if !manifest.state.accepts(output.state) {
             return Err("initializer returned an invalid scalar state".into());
@@ -65,6 +84,21 @@ impl ScalarProcess {
     }
 
     pub fn invoke(&mut self, name: &str, arguments: &[i64]) -> Result<Option<i64>, String> {
+        self.invoke_controlled(
+            name,
+            arguments,
+            DEFAULT_MAX_STEPS,
+            &CancellationToken::default(),
+        )
+    }
+
+    pub fn invoke_controlled(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<i64>, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
         }
@@ -84,7 +118,13 @@ impl ScalarProcess {
             return Err("handler argument count or scalar type mismatch".into());
         }
         let mut output = ScalarOutput::default();
-        let status = unsafe { (self.entries[index])(self.state, arguments.as_ptr(), &mut output) };
+        let mut context = ScalarContext {
+            cancellation: Arc::as_ptr(&cancellation.flag),
+            remaining_steps: max_steps,
+        };
+        let status = unsafe {
+            (self.entries[index])(self.state, arguments.as_ptr(), &mut output, &mut context)
+        };
         if let Err(error) = check_status(status) {
             self.failed = true;
             return Err(error);
@@ -108,6 +148,8 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_OK => Ok(()),
         STATUS_OVERFLOW => Err("managed integer overflow".into()),
         STATUS_DIVISION_BY_ZERO => Err("managed division by zero".into()),
+        STATUS_CANCELLED => Err("managed execution cancelled".into()),
+        STATUS_BUDGET_EXHAUSTED => Err("managed execution step budget exhausted".into()),
         _ => Err(format!("unknown scalar ABI status {status}")),
     }
 }

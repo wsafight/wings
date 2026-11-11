@@ -1,9 +1,14 @@
+use std::sync::atomic::AtomicU32;
+
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 1;
+pub const SCALAR_ABI_VERSION: u32 = 2;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
+pub const STATUS_CANCELLED: u32 = 3;
+pub const STATUS_BUDGET_EXHAUSTED: u32 = 4;
+pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValueType {
@@ -29,7 +34,14 @@ pub struct ScalarOutput {
     pub reply: i64,
 }
 
-pub type ScalarEntry = unsafe extern "C" fn(i64, *const i64, *mut ScalarOutput) -> u32;
+#[repr(C)]
+pub struct ScalarContext {
+    pub cancellation: *const AtomicU32,
+    pub remaining_steps: u64,
+}
+
+pub type ScalarEntry =
+    unsafe extern "C" fn(i64, *const i64, *mut ScalarOutput, *mut ScalarContext) -> u32;
 
 pub fn host_target() -> Result<&'static str, String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {

@@ -60,7 +60,9 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-标量 ABI v1 是 `(state: i64, args: *const i64, output: *mut ScalarOutput) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；错误通过状态码返回，整数溢出与除零不使用 trap 或跨边界 unwind。此 ABI 只用于无业务堆引用的标量原型，不替代后续带 context、shadow stack 与抢占恢复的受管 ABI。
+未发布源码的标量 ABI v2 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局保存指向稳定 `AtomicU32` 的取消标志指针与剩余 `u64` 步数，仅执行线程修改预算，其他线程可设置取消标志。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；错误通过状态码返回，整数溢出、除零、取消与预算耗尽都不使用 trap 或跨边界 unwind。
+
+后端在每条 IR 指令前与输出提交前固定插入检查：顺序一致原子读取取消标志，优先返回取消；再检查预算是否为零，否则扣一步。每个入口默认 1,000,000 步，handler 可指定预算。预算不代表机器指令数或 CPU 时间；此阶段没有慢路径切换与恢复，状态码退出即终止实例。检查后的迟到取消不能撤回成功调用。此 ABI 只用于无业务堆引用的标量原型，不替代完整 shadow stack 与抢占恢复契约。已发布 `0.0.2` 使用无 context 的 v1，与源码 v2 相互拒绝装载，须使用同一版本的编译器和 VM。理由与验证要求见 [ADR-0010](adr/0010-scalar-execution-control.md)。
 
 `wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源与 ABI。共享库保留到 OS 进程结束，不做热卸载。
 

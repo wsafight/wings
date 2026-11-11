@@ -54,6 +54,8 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
+未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制轮询原子取消标志并扣除一步预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的上限（默认 1,000,000），库接口支持跨线程共享取消令牌。耗尽或取消后不提交该次状态与回复，实例终止。这不是让出恢复、完整抢占或资源计费；源码 ABI v2 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 产物。契约见 [ADR-0010](docs/adr/0010-scalar-execution-control.md)。
+
 当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。全部十个已有实现的包均已发布，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
 
 crates.io 的 `0.0.1` 是原前端版本，仅有 `check` 和 LSP；不能覆盖该版本。`0.0.2` 增加 AOT 构建与可信执行入口，按 PR 合并、CI 验证、手动发布的顺序交付；PR 本身不触发包上传。
