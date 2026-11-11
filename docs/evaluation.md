@@ -77,6 +77,25 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
 
+## 原生栈分配实验
+
+2026-11-12 在 macOS 26.6.2 / Apple M3 Pro / 36 GiB / 16 KiB 页、Rust 1.99.1 release 上测试 `corosensei 0.3.3`。每种条件用独立 OS 子进程重复 3 次，数量为 512/2048；先测基线，再测分配/挂起，最后正常返回释放。`ps` RSS、`footprint` 的 `phys_footprint` 与 `vmmap` region 分开记录，以下为 2048 个实例扣除本进程基线后的中位数，不是单实例 allocator 字节数：
+
+| 条件 | 物理增量 | 虚拟增量 | 每实例物理增量 |
+|---|---|---|---|
+| 浅挂起栈，32 KiB 容量 | 32.19 MiB | 96 MiB | 16.09 KiB |
+| 浅挂起栈，64 KiB 容量 | 32.22 MiB | 160 MiB | 16.11 KiB |
+| 浅挂起栈，256 KiB 容量 | 32.41 MiB | 544 MiB | 16.20 KiB |
+| 256 KiB 容量，16 个各 4 KiB 的活跃递归帧 | 160.41 MiB | 544 MiB | 80.20 KiB |
+| AOT 实例 Idle，无独立栈 | 1.44 MiB | 本次增量 0 | 0.72 KiB |
+| AOT 调用挂起，48 个跨检查点活跃标量 | 33.98 MiB | 544 MiB | 16.99 KiB |
+
+浅栈三种容量的 RSS 增量均为 32.125 MiB；独立栈使 VM region 增加约 4096 个，另有少量 allocator 差异。浅栈正常释放后物理增量回到约 128 KiB；AOT 实例释放后仍有约 1.72 MiB allocator/装载等残留，不能把它全算为泄漏或全算为已归还。未启动协程也已触碰栈顶一页。此实验没有 BEAM 同业务对照、GC、mailbox 或三级账户，不证明完整 VM 更省内存。
+
+结论：暂保留已验证的切换实现，按 [ADR-0012](adr/0012-bounded-stack-pool.md) 自研分配/准入/复用/回收。单纯缩小预留不能显著降低浅栈 RSS，也不能用栈池消除挂起栈。低纳秒热栈微基准不代表调度延迟或吞吐，不作为选型门槛。
+
+复现：`cargo build --release --locked -p wings-compile -p wings-vm --bins --examples`，再执行 `python3 scripts/measure_stacks.py --output target/stack-measurements-new --repetitions 3`。驱动限定每子进程 30 秒 CPU、60 秒测量墙钟、禁 core dump、最多 2048 个栈，最大栈映射 544 MiB，阶段检查 RSS 不超过 384 MiB。当前 macOS 拒绝 `RLIMIT_AS/DATA/RSS`，因此这不是 OS 硬内存配额或 OOM 实验；分配量由程序上限约束。原始 `vmmap`/`footprint` 和 JSON 保存在本地 `target/stack-measurements-run4`；精简结果随仓库记录，Linux 不复用本机数据。
+
 ## 优化实验规则
 
 - 各项[激进优化](optimizations.md)开启和关闭时分别与正确性基线比较，保留生成代码、目标特性、配置、原始结果和回归样本。先测单项，再测组合。
