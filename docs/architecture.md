@@ -66,7 +66,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 
-这条路径没有调度、活栈切换、GC、mailbox、资源账户或监督，不能运行不可信代码。当前只有 macOS AArch64 实测通过；Linux x86-64（glibc）配置了执行 CI，仍需实际结果。理由与扩展前提见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+这条路径没有调度、活栈切换、GC、mailbox、资源账户或监督，不能运行不可信代码。macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)，并不表示完整受管执行模型已验证。理由与扩展前提见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 ## 低层实现范围
 

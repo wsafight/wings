@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。当前源码另有 Cranelift 标量 AOT 原型，可链接、装载可信本机产物并连续调用 Counter；本机 macOS AArch64 已验证，Linux x86-64 的 CI 已配置但尚未运行。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
 
 ## 开发
 
@@ -52,22 +52,24 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 
 此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、资源账户或监督。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
-LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；仅在本机 macOS AArch64 验证，Linux 运行验证尚待完成。语言支持范围见[语言设计](docs/language.md)。
+LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-当前 workspace 版本为 `0.0.1`，采用 [Apache-2.0](LICENSE) 许可证。五个前端和 LSP 包已发布到 crates.io，不包含当前源码的标量执行原型或尚未实现的完整 VM。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
+当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。本次发布范围是全部十个已有实现的包，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
 
-crates.io 的 `0.0.1` 仍是已发布的前端版本，仅有 `check` 和 LSP。新增 AOT 路径尚未发布；新建的五个后端与执行包均为 `publish = false`，本轮不发布或覆盖现有版本。
+crates.io 的 `0.0.1` 是原前端版本，仅有 `check` 和 LSP；不能覆盖该版本。`0.0.2` 增加 AOT 构建与可信执行入口，按 PR 合并、CI 验证、手动发布的顺序交付；PR 本身不触发包上传。
 
-`wings` 已由其他项目使用，本项目不发布同名聚合包。`wings-lang` 仅作语言名，不是待发布的 crate；`wings-vm` 和 `wings-lang` 在 2026-11-12 查询时尚未注册，不代表名称已保留。项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
+`wings` 已由其他项目使用，本项目不发布同名聚合包。`wings-lang` 仅作语言名，不是待发布的 crate；项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
 
 ## 安装
 
-从 crates.io 安装已发布的检查命令和语言服务器：
+`0.0.2` 发布完成后，可从 crates.io 安装编译命令、标量执行原型和语言服务器（构建 AOT 还需系统 C 工具链）：
 
 ```sh
-CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-lsp --version 0.0.1 --locked --registry crates-io
+CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-vm wings-lsp --version 0.0.2 --locked --registry crates-io
 wings-compile check examples/counter.wings
+wings-compile build examples/counter.wings -o target/installed-counter-aot
+wings-vm run --trusted target/installed-counter-aot < examples/counter.messages.jsonl
 wings-lsp --help
 ```
 
-示例路径相对于本仓库；检查命令只做静态检查，LSP 通过 stdio 启动，不执行用户程序。
+示例路径相对于本仓库，输出目录必须不存在；检查命令只做静态检查，LSP 通过 stdio 启动，不执行用户程序。`wings-vm` 仅装载可信本机产物，不是安全沙箱。

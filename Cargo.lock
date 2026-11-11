@@ -412,14 +412,14 @@ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
 name = "wings-abi"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "wings-artifact"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "wings-codegen"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "wings-compile"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "wings-abi",
  "wings-codegen",
@@ -454,14 +454,14 @@ dependencies = [
 
 [[package]]
 name = "wings-ir"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "wings-abi",
 ]
 
 [[package]]
 name = "wings-lsp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde_json",
  "wings-sema",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "wings-sema"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "wings-source",
  "wings-syntax",
@@ -479,18 +479,18 @@ dependencies = [
 
 [[package]]
 name = "wings-source"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "wings-syntax"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "wings-source",
 ]
 
 [[package]]
 name = "wings-vm"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libloading",
  "serde_json",

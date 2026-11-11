@@ -10,11 +10,11 @@
 
 **`wings-vm`** 是虚拟机 crate 和运行命令的拟用名称，负责装载、微进程、内存、调度、消息和监督。包内包含库与薄的命令行入口，库便于测试和组织实现，首版不承诺稳定的嵌入式 SDK。
 
-编译命令为 `wings-compile`，语言服务器为 `wings-lsp`。`wings-lang` 是语言名，不再设一个职责模糊的同名聚合 crate。完整理由见 [ADR-0001](adr/0001-vm-boundary-and-naming.md)。当前名称查询与 `0.0.1` 发布安排见[包发布](publishing.md)，商标核查仍未完成。
+编译命令为 `wings-compile`，语言服务器为 `wings-lsp`。`wings-lang` 是语言名，不再设一个职责模糊的同名聚合 crate。完整理由见 [ADR-0001](adr/0001-vm-boundary-and-naming.md)。当前名称查询与发布安排见[包发布](publishing.md)，商标核查仍未完成。
 
 ## 计划中的包
 
-已有源码、语法、语义、编译命令和 LSP 五个前端包。当前源码新增 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片，新包保持不可发布。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
+已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片；十个包统一按 `0.0.2` 准备发布。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
 
 | Crate | 形态 | 负责内容 | 不负责 |
 |---|---|---|---|
