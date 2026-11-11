@@ -81,6 +81,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 行为脚本执行 `wings-compile` 的 `frame_limits` 示例，检查零值及超硬上限配置、1 字节限额拒绝，以及 128 个跨检查点活跃标量在 512 字节限额下拒绝；每次失败都确认输出目录不存在。默认 64 KiB 限额下构建并运行高寄存器压力入口，校验结果；既有 48 活跃值的原栈恢复继续运行。用例验证实际后端帧和写产物顺序，不证明 Rust 慢路径栈上界或动态栈安全，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
 
+该切片已在 `a12461e` 通过 macOS AArch64、Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101893550)。后续变更仍需独立验证；CI 的 MSRV 检查同时覆盖所有 targets，避免行为示例脱离 Rust 1.85 基线。
+
 ## OS 唤醒原语回归
 
 本分支活栈、owned task、资源守恒及 OS 唤醒已分别通过 macOS AArch64 与 Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101080186)，另通过 Rust 1.85 检查。该结果对应 `a446119`，不作为后续编译帧准入或 BEAM 工作负载的验收。
