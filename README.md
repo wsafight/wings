@@ -43,6 +43,18 @@ cargo run -p wings-lsp
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；仅在本机 macOS AArch64 验证，Linux 运行验证尚待完成。语言支持范围见[语言设计](docs/language.md)。
 
-当前 workspace 版本为 `0.0.1`，采用 [Apache-2.0](LICENSE) 许可证。首批发布范围仅包含五个前端和 LSP 包，不包含尚未实现的 VM。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
+当前 workspace 版本为 `0.0.1`，采用 [Apache-2.0](LICENSE) 许可证。五个前端和 LSP 包已发布到 crates.io，不包含尚未实现的 VM。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
 
-2026-11-12 发布前查询 crates.io 时，现有五个包名、`wings-vm` 与 `wings-lang` 尚未注册，`wings` 已由其他项目使用。`wings-lang` 在本项目中仅作语言名，不是待发布的 crate；不能把名称当前可用视为已经保留。项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
+`wings` 已由其他项目使用，本项目不发布同名聚合包。`wings-lang` 仅作语言名，不是待发布的 crate；`wings-vm` 和 `wings-lang` 在 2026-11-12 查询时尚未注册，不代表名称已保留。项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
+
+## 安装
+
+从 crates.io 安装已发布的检查命令和语言服务器：
+
+```sh
+CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-lsp --version 0.0.1 --locked --registry crates-io
+wings-compile check examples/counter.wings
+wings-lsp --help
+```
+
+示例路径相对于本仓库；检查命令只做静态检查，LSP 通过 stdio 启动，不执行用户程序。
