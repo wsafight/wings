@@ -65,6 +65,8 @@
 
 ## 包内先保留的模块
 
+未发布 `wings-vm::wakeup` 内部模块通过既有 libc 提供 `WorkerParker`/`WorkerNotifier`，平台后端分别封装 epoll/eventfd 与 kqueue 用户事件，无新增 crate，不进入前端链。只提供独占等待和共享通知，不把它当作 I/O 或调度实现，见 [ADR-0016](adr/0016-worker-wakeup.md)。
+
 `wings-vm` 内先按 `process`、`heap`、`gc`、`scheduler`、`mailbox`、`resources`、`supervision`、`loader`、`io` 和 `platform` 组织，其中 `resources` 已有上述独立原语，其余按切片落地。macOS 与 Linux 的 I/O、映射和切换实现放在平台模块，不预先拆出平台 crate。
 
 `wings-compile` 内分开编译驱动、lowering、链接与命令行适配。`wings-codegen` 隔离重型后端依赖，以便前端和 LSP 单独开发。测试夹具先跟随各自 crate，不提前建立只有转发接口的公共测试包。

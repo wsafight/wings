@@ -48,9 +48,9 @@ cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
 cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
 ```
 
-可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
+可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
 
-此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、资源账户或监督。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、完整资源准入或监督。资源账户目前仅有单线程独立原语，未接入全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 

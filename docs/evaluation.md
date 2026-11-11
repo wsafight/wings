@@ -77,6 +77,10 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
 
+## OS 唤醒原语回归
+
+同一行为脚本在受限子进程运行 `worker_wakeup`，验证零超时、无通知超时、提前通知、通知合并、跨线程通知、256 次发送/等待交错、四个生产者各 4096 次通知、等待端线程移交和 handle 释放顺序，另反复创建/释放 128 次。循环、线程数与等待时间有固定上限，不做无约束 FD 耗尽。debug/release、macOS kqueue 与 Linux epoll/eventfd 分别执行；信号打断及内核错误注入仍未验证，不把正常通知回归当作完整 reactor 或调度器证明。契约见 [ADR-0016](adr/0016-worker-wakeup.md)。
+
 ## 独立资源账户回归
 
 未发布源码的 `resource_accounts` 示例验证 [ADR-0014](adr/0014-resource-reservations.md) 单线程原语，不是所有运行时分配的接入验收或完整资源隔离证明：

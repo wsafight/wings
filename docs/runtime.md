@@ -128,6 +128,12 @@ Linux 通过 `epoll` + `eventfd` 管理 I/O 等待与 worker 唤醒，macOS 使�
 
 延迟测试限定在受支持的受管代码、有限输入、native 内建预算和既定机器配置下，测量请求发出到进程让出的 p50/p99/p999 与观测最大值。结果包含计时线程和 OS 调度抖动，普通 Linux 与 macOS 都没有无条件的墙钟时间硬上界。同时报告超额执行的受管工作量，区分 runtime 公平性与 OS 调度延迟。
 
+### 空闲 worker 的 OS 等待原语
+
+未发布源码的 `WorkerParker::new` 建立独占等待端，`notifier` 返回可克隆、Send/Sync 的 `WorkerNotifier`。`wait(Duration)` 返回通知提示或超时，零超时轮询；等待端可移交线程但不能共享并发等待。Linux eventfd 计数与 macOS 用户事件都可合并，`true` 不对应某个消息或消息数。
+
+集成时先发布队列内容，再 `notify`；等待端先检查队列，无工作才等待，每次返回都重查队列和终止标志。提前通知保留提示，不用通知次数维护业务计数。描述符由共享所有权维持，任一 handle 先释放不会使另一个使用已关闭或复用的 FD。EINTR 后只等待原截止时间的剩余部分，无法表示的超时明确拒绝。仍未接入 worker、三级 FD 计费、计时线程或真实 I/O，见 [ADR-0016](adr/0016-worker-wakeup.md)。
+
 ### 对比
 
 | 项目 | BEAM reduction | Tokio 协作式 | Wings safepoint 轮询 |

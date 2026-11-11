@@ -72,7 +72,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 
-这条路径没有计时线程、调度、GC、mailbox、资源账户或监督，不能运行不可信代码。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；新增活栈切片须在本分支 CI 独立验收，不能沿用旧结果。浮点/SIMD、GC 根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+这条路径没有计时线程、调度、GC、mailbox、完整资源准入或监督，不能运行不可信代码。独立资源账户原语尚未覆盖运行时分配。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；活栈、有界池、资源守恒与 owned task 切片已另通过本分支的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43099984279)，该结果不覆盖后续 OS 唤醒变更。浮点/SIMD、GC 根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 共享代码通过 `ScalarModule` 装载一次，再 `instantiate` 创建状态独立的实例；清单和入口表只保存一份，每个实例都执行 initializer。`HandlerId` 持有模块身份与序号，用前检查身份及参数 schema，不接受其他模块的 ID；ID 不是线协议。便利入口 `ScalarProcess::load_trusted` 仍会装载独立模块，不隐式按路径缓存。JSON 适配层只解析一次名称，参数暂存在有界数组，再直接按 ID 调用，避免原先重复查找和参数 Vec 分配。共享对象仅为只读代码元数据，不改变业务状态隔离。见 [ADR-0013](adr/0013-shared-scalar-modules.md)。
 
@@ -88,6 +88,8 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 | 信号与原生栈增长 | 首版不实现 | 不依赖捕获未知 `SIGSEGV` 后继续运行 |
 
 ## 首要运行平台
+
+未发布源码提供独立的 `WorkerParker`/`WorkerNotifier`：Linux 使用 epoll/eventfd，macOS 使用 kqueue 用户事件。等待端独占、通知端可克隆，通知可合并且先通知后等待不会丢失提示；这只是后续 worker 的 OS 等待构件，不是计算抢占或完整 I/O reactor。超时、生命周期与集成边界见 [ADR-0016](adr/0016-worker-wakeup.md)，各后端须分别执行本分支 CI。
 
 macOS AArch64（Apple Silicon）与 Linux x86-64 同为首版目标，M0 原型和后续运行时验收均须覆盖两者。Linux AArch64、macOS x86-64 留待 M7 扩展；最低 OS 版本和工具链版本在 M0 冻结。
 

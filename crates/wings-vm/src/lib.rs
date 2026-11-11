@@ -12,11 +12,13 @@ mod execution;
 mod module;
 mod resources;
 mod stack_pool;
+mod wakeup;
 
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution, ScalarTask};
 pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
+pub use wakeup::{WorkerNotifier, WorkerParker};
 
 pub struct ScalarProcess {
     module: ScalarModule,
