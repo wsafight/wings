@@ -30,8 +30,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
-      - run: cargo build --locked -p wings-compile -p wings-vm
+      - run: cargo build --locked -p wings-compile -p wings-vm --bins --examples
       - run: python3 scripts/verify_scalar_aot.py
+      - name: Verify optimized stackful execution
+        run: |
+          cargo build --release --locked -p wings-compile -p wings-vm --bins --examples
+          WINGS_PROFILE=release python3 scripts/verify_scalar_aot.py
       - name: Check source and execute native AOT Counter
         shell: bash
         run: |
@@ -45,6 +49,7 @@ jobs:
         run: |
           if cargo tree -p wings-lsp --locked --prefix none | grep -E '^(cranelift-|wings-(codegen|ir|vm|compile|abi|artifact) )'; then exit 1; fi
           if cargo tree -p wings-vm --locked --prefix none | grep -E '^(cranelift-|wings-(codegen|ir|compile|source|syntax|sema|lsp) )'; then exit 1; fi
+          if cargo tree -p wings-vm --locked -e features | grep -E 'corosensei feature "(default|unwind|asm-unwind)"'; then exit 1; fi
   msrv:
     runs-on: ubuntu-24.04
     steps:

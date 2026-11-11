@@ -67,7 +67,9 @@ M0 后沿用确定的基线，完整报告各分位结果。需求或硬件改�
 
 当前标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。此脚本不是 GC、抢占、三级资源账户或 BEAM 性能验收。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过同一检查。
 
-未发布源码增加 ABI v2 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI 和 `execution_control` 示例；并发运行中的取消延迟、活栈恢复与 GC 根仍未验证。这些新增用例不能沿用旧版 CI 作为已验证证据，须在相应 PR 的两个平台重新执行。
+未发布源码增加 ABI v3 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI、`execution_control` 与 `stackful_resume` 示例。活栈用例包含逐步让出、48 个跨检查点活跃标量、恰好足够的总预算、两个实例交错、未开始/挂起 Drop、挂起取消、算术失败与重复恢复错误；这些是正确性结果，不是性能测量。
+
+debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后运行 `python3 scripts/verify_scalar_aot.py`。release：同一构建命令增加 `--release`，再执行 `WINGS_PROFILE=release python3 scripts/verify_scalar_aot.py`。两个平台均需实际执行；新增用例不能沿用旧 CI 作为证据。GC 根、浮点/SIMD、迁移、guard page 故障注入、运行中并发取消延迟仍未验证；当前仅固定栈和标量，不添加无约束压力测试。
 
 - 从编译命令产出目标平台程序，再由 `wings-vm` 装载运行。核对产物版本、目标、ABI、诊断、结果和退出状态；编译器与 VM 的共享格式要有一致性及错误输入测试。
 - workspace 依赖符合 [Crate 设计](crates.md)且无环。检查 `wings-lsp` 的传递依赖不包含 Cranelift、`wings-codegen`、`wings-compile` 或 `wings-vm`，VM 构建也不引入解析器或 LSP 协议。
