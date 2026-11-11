@@ -7,7 +7,10 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use wings_abi::{SCALAR_ABI_VERSION, STATUS_DIVISION_BY_ZERO, STATUS_OVERFLOW, host_target};
+use wings_abi::{
+    SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
+    STATUS_OVERFLOW, ScalarContext, host_target,
+};
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
 use wings_ir::{Function, Operation, Operator, Program};
 
@@ -90,6 +93,7 @@ fn compile_function(
         AbiParam::new(types::I64),
         AbiParam::new(pointer_type),
         AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
     ];
     context.func.signature.returns = vec![AbiParam::new(types::I32)];
     let identifier = module
@@ -103,6 +107,7 @@ fn compile_function(
     let parameters = builder.block_params(entry).to_vec();
     let mut registers = Vec::new();
     for instruction in &function.instructions {
+        poll_control(&mut builder, pointer_type, parameters[3]);
         let value = match instruction.operation {
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
             Operation::State => parameters[0],
@@ -146,6 +151,7 @@ fn compile_function(
         };
         registers.push(value);
     }
+    poll_control(&mut builder, pointer_type, parameters[3]);
     builder
         .ins()
         .store(MemFlags::new(), registers[function.state], parameters[2], 0);
@@ -161,6 +167,35 @@ fn compile_function(
         .map_err(|error| error.to_string())?;
     module.clear_context(&mut context);
     Ok(())
+}
+
+fn poll_control(builder: &mut FunctionBuilder<'_>, pointer_type: types::Type, context: Value) {
+    let cancellation = builder.ins().load(
+        pointer_type,
+        MemFlags::new(),
+        context,
+        std::mem::offset_of!(ScalarContext, cancellation) as i32,
+    );
+    let requested = builder
+        .ins()
+        .atomic_load(types::I32, MemFlags::new(), cancellation);
+    let cancelled = builder.ins().icmp_imm(IntCC::NotEqual, requested, 0);
+    fail_if(builder, cancelled, STATUS_CANCELLED);
+    let remaining = builder.ins().load(
+        types::I64,
+        MemFlags::new(),
+        context,
+        std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+    );
+    let exhausted = builder.ins().icmp_imm(IntCC::Equal, remaining, 0);
+    fail_if(builder, exhausted, STATUS_BUDGET_EXHAUSTED);
+    let remaining = builder.ins().iadd_imm(remaining, -1);
+    builder.ins().store(
+        MemFlags::new(),
+        remaining,
+        context,
+        std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+    );
 }
 
 fn fail_if(builder: &mut FunctionBuilder<'_>, condition: Value, status: u32) {

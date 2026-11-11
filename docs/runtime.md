@@ -96,6 +96,8 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 ### 抢占协议
 
+未发布标量源码已先实现终止路径：每条 IR 指令及提交前检查共享原子取消标志与每次调用预算。`CancellationToken` 可跨线程克隆和取消，但不能重置；`invoke_controlled` 接受 handler 的步数上限，CLI 的 `--max-steps` 使用同一上限且每次调用重置。初始化独立使用默认 1,000,000 步。取消优先于预算耗尽，两者均不写输出、终止实例；输入校验失败尚未进入 handler，不消耗预算也不终止库实例。此路径没有暂停或恢复，不等于下面的调度抢占。ABI 与提交边界见[架构说明](architecture.md#标量-aot-原型)。
+
 首版使用**计时线程设置原子标志 + 受管代码轮询**，不依赖信号。下面是可编译的检查逻辑，实际检查点由后端生成：
 
 ```rust

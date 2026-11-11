@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import resource
 import subprocess
+import sys
 import tempfile
 
 
@@ -43,6 +44,50 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_control_abi(directory):
+    import ctypes
+
+    class Output(ctypes.Structure):
+        _fields_ = [("state", ctypes.c_int64), ("reply", ctypes.c_int64)]
+
+    class Context(ctypes.Structure):
+        _fields_ = [("cancellation", ctypes.POINTER(ctypes.c_uint32)), ("remaining_steps", ctypes.c_uint64)]
+
+    library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    library = ctypes.CDLL(str(directory / library_name))
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["abi"] == 2
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
+    entry = getattr(library, f"wings_scalar_handler_{index}")
+    initializer = library.wings_scalar_init
+    for function in [entry, initializer]:
+        function.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+        function.restype = ctypes.c_uint32
+    flag = ctypes.c_uint32(0)
+    arguments = (ctypes.c_int64 * 1)(3)
+    for budget in range(4):
+        output = Output(71, 91)
+        context = Context(ctypes.pointer(flag), budget)
+        assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
+        assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
+    for budget in [0, 4]:
+        flag.value = 1
+        output = Output(71, 91)
+        context = Context(ctypes.pointer(flag), budget)
+        assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+        assert (output.state, output.reply, context.remaining_steps) == (71, 91, budget)
+    output = Output(71, 91)
+    context = Context(ctypes.pointer(flag), 3)
+    assert initializer(0, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
+    flag.value = 0
+    for budget in [4, 2**64 - 1]:
+        context = Context(ctypes.pointer(flag), budget)
+        assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 0
+        assert (output.state, output.reply, context.remaining_steps) == (7, 7, budget - 4)
+    print("Scalar ABI v2 control verified: each poll, cancellation, priority, output commit")
+
+
 def main():
     if not COMPILER.is_file() or not VM.is_file():
         raise SystemExit("Run cargo build --locked -p wings-compile -p wings-vm first")
@@ -53,6 +98,18 @@ def main():
         messages = [message("Get"), message("Inc", 3), message("Inc", 4), message("Reset"), message("Set", 12), message("Get"), message("Confirm")]
         actual = [json.loads(line) for line in invoke(counter, messages).stdout.splitlines()]
         assert actual == [{"reply": 0}, {"reply": 3}, {"reply": 7}, {"accepted": True}, {"accepted": True}, {"reply": 12}, {"reply": None}]
+        controlled = [VM, "run", "--trusted", counter, "--max-steps"]
+        for budget in range(4):
+            result = command(controlled + [budget], json.dumps(message("Inc", 3)) + "\n", expected=1)
+            assert not result.stdout and "step budget exhausted" in result.stderr
+        result = command(controlled + [4], "".join(json.dumps(item) + "\n" for item in messages[:3]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 3, 7]
+        result = command(controlled + [2], json.dumps(message("Get")) + "\n" + json.dumps(message("Inc", 3)) + "\n" + json.dumps(message("Get")) + "\n", expected=1)
+        assert result.stdout == '{"reply":0}\n' and "step budget exhausted" in result.stderr
+        for invalid in ["-1", "1.5", "18446744073709551616", "not-a-number"]:
+            assert "unsigned 64-bit" in command(controlled + [invalid], expected=2).stderr
+        command([sys.executable, Path(__file__), "--check-control", counter])
+        command(["cargo", "run", "--locked", "-p", "wings-vm", "--example", "execution_control", "--", "--trusted", counter])
         source_path = parent / "arithmetic.wings"
         source_path.write_text("""process Arithmetic {
   state count: Int = 0
@@ -112,7 +169,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -141,8 +198,11 @@ def main():
         assert not invalid_artifact.exists()
         invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
         assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: state, replies, Bool/Unit, arithmetic boundaries, input and artifact rejection")
+        print("Scalar AOT verification passed: state, replies, Bool/Unit, arithmetic boundaries, execution control, input and artifact rejection")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-control":
+        verify_control_abi(Path(sys.argv[2]))
+    else:
+        main()

@@ -3,22 +3,37 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
-use wings_abi::ValueType;
-use wings_vm::ScalarProcess;
+use wings_abi::{DEFAULT_MAX_STEPS, ValueType};
+use wings_vm::{CancellationToken, ScalarProcess};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments == ["--help"] || arguments == ["-h"] {
         println!(
-            "Usage: wings-vm run --trusted <artifact-directory>\n\nRuns only trusted host-native scalar AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM."
+            "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>]\n\nRuns only trusted host-native scalar AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM. Each handler defaults to 1000000 execution steps."
         );
         return ExitCode::SUCCESS;
     }
-    if arguments.len() != 3 || arguments[0] != "run" || arguments[1] != "--trusted" {
-        eprintln!("Usage: wings-vm run --trusted <artifact-directory>");
+    if !matches!(arguments.len(), 3 | 5)
+        || arguments[0] != "run"
+        || arguments[1] != "--trusted"
+        || (arguments.len() == 5 && arguments[3] != "--max-steps")
+    {
+        eprintln!("Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>]");
         return ExitCode::from(2);
     }
-    match run(Path::new(&arguments[2])) {
+    let max_steps = if arguments.len() == 5 {
+        match arguments[4].parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("--max-steps must be an unsigned 64-bit integer");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        DEFAULT_MAX_STEPS
+    };
+    match run(Path::new(&arguments[2]), max_steps) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("wings-vm: {error}");
@@ -27,8 +42,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(directory: &Path) -> Result<(), String> {
+fn run(directory: &Path, max_steps: u64) -> Result<(), String> {
     let mut process = unsafe { ScalarProcess::load_trusted(directory) }?;
+    let cancellation = CancellationToken::default();
     let mut reader = io::stdin().lock();
     let mut writer = io::stdout().lock();
     while let Some(line) = read_line(&mut reader)? {
@@ -64,7 +80,7 @@ fn run(directory: &Path) -> Result<(), String> {
                 ValueType::Unit => Err("expected null for Unit".into()),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let reply = process.invoke(name, &arguments)?;
+        let reply = process.invoke_controlled(name, &arguments, max_steps, &cancellation)?;
         let output = match reply {
             Some(value) => json!({ "reply": match reply_type {
                 Some(ValueType::Int) => json!(value),
