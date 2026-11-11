@@ -1,6 +1,6 @@
 [package]
 name = "wings-compile"
-description = "Static checking tools for the Wings VM language prototype"
+description = "Compiler and static checking tools for the Wings VM language prototype"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,7 @@ publish.workspace = true
 [dependencies]
 wings-source.workspace = true
 wings-sema.workspace = true
+wings-syntax.workspace = true
+wings-abi.workspace = true
+wings-ir.workspace = true
+wings-codegen.workspace = true

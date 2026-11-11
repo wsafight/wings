@@ -26,11 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-已开始 M0 前端实现：支持 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式回复检查；包含源码位置与 UTF-16 转换、保留原文的 token 流、容错解析和共用前端的 stdio LSP。还没有 AOT 代码生成、产物装载或 VM 执行，性能和内存目标尚未测量。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。当前源码另有 Cranelift 标量 AOT 原型，可链接、装载可信本机产物并连续调用 Counter；本机 macOS AArch64 已验证，Linux x86-64 的 CI 已配置但尚未运行。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
 
 ## 开发
 
-需要 Rust 1.85 或更新版本。检查命令只验证当前语法子集，不生成机器码：
+需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
 
 ```sh
 cargo check --workspace
@@ -41,9 +41,22 @@ cargo run -p wings-compile -- check examples/counter.wings
 cargo run -p wings-lsp
 ```
 
+当前源码可额外构建并运行标量 AOT 示例。输出目录必须不存在；`--trusted` 表示只装载自己构建、可信且与清单匹配的本机原生代码，不是安全沙箱：
+
+```sh
+cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
+cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
+```
+
+可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
+
+此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、资源账户或监督。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；仅在本机 macOS AArch64 验证，Linux 运行验证尚待完成。语言支持范围见[语言设计](docs/language.md)。
 
-当前 workspace 版本为 `0.0.1`，采用 [Apache-2.0](LICENSE) 许可证。五个前端和 LSP 包已发布到 crates.io，不包含尚未实现的 VM。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
+当前 workspace 版本为 `0.0.1`，采用 [Apache-2.0](LICENSE) 许可证。五个前端和 LSP 包已发布到 crates.io，不包含当前源码的标量执行原型或尚未实现的完整 VM。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
+
+crates.io 的 `0.0.1` 仍是已发布的前端版本，仅有 `check` 和 LSP。新增 AOT 路径尚未发布；新建的五个后端与执行包均为 `publish = false`，本轮不发布或覆盖现有版本。
 
 `wings` 已由其他项目使用，本项目不发布同名聚合包。`wings-lang` 仅作语言名，不是待发布的 crate；`wings-vm` 和 `wings-lang` 在 2026-11-12 查询时尚未注册，不代表名称已保留。项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
 

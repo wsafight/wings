@@ -1,0 +1,20 @@
+[package]
+name = "wings-codegen"
+description = "Cranelift scalar AOT backend for Wings VM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wings-abi.workspace = true
+wings-ir.workspace = true
+wings-artifact.workspace = true
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
+cranelift-native.workspace = true

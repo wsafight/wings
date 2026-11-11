@@ -1,8 +1,16 @@
+mod lower;
+
+use std::path::Path;
+
 use wings_sema::{Analysis, analyze};
 use wings_source::{SourceFile, SourceId};
 
 pub fn check(text: &str) -> Analysis {
     analyze(text)
+}
+
+pub fn build(text: &str, directory: &Path) -> Result<(), String> {
+    wings_codegen::build(&lower::lower(text)?, directory)
 }
 
 pub fn render_diagnostics(path: &str, text: &str, analysis: &Analysis) -> String {

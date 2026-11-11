@@ -16,6 +16,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0006](0006-workspace-and-lsp.md) | workspace 按编译、执行与分析拆分，LSP 共用语言分析库 | 已采纳（设计） |
 | [0007](0007-message-handlers-and-state.md) | 统一 `on`、类型化消息、具名状态与尾表达式回复 | 已采纳；前端子集已实现 |
 | [0008](0008-wings-naming.md) | Wings VM 的项目、包、工具与源码命名约定 | 已采纳；前端已采用 |
+| [0009](0009-scalar-aot-prototype.md) | 有界标量 IR、Cranelift AOT、可信本机装载与状态提交原型 | 已采纳（M0 原型）；完整受管模型待验证 |
 
 ## 维护方式
 

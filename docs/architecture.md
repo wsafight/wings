@@ -43,7 +43,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
-首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。后端接入尚待这一步验证。
+首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 
 - **不提供 `#[process]` Rust 子集前端**：proc-macro 无法自动控制依赖库内部的循环、最终寄存器分配和全部栈布局。普通 Rust 只能作为可信内建，通过受管桥接调用，且不能把普通 Rust 栈帧当作可扫描、可任意抢占的业务帧。
 - **最小 ABI 先冻结**：规定 context 参数、值与错误表示、栈对齐、寄存器 clobber、根链发布顺序、返回路径和代码版本引用。GC 与切换只能发生在满足 ABI 的位置，禁止 Rust panic/unwind 跨越受管边界。
@@ -53,6 +53,20 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 - **升级到 stack map 是可选优化**：只有在 shadow stack 开销成为瓶颈时，才接入后端精确元数据与全部相关寄存器位置。GC 遍历本身优先用 Rust，不为了栈扫描额外手写汇编。
 
 是否需要为每条堆写加屏障，取决于最终 GC 算法。评测分别列出分配、根维护、扫描和屏障成本。GC 的 `<10µs` 只是在限定活数据与根数量下的候选目标，不适用于任意进程。
+
+## 标量 AOT 原型
+
+当前源码的 `wings-compile build` 将单个 process 的直线标量 handler 降为有类型、先定义后使用的寄存器 IR，校验后由 Cranelift 0.118 生成 PIC 对象，再用系统 `cc` 链接为共享库。不使用 JIT，也不执行源码完成编译或 LSP 查询。每入口最多 4096 条操作、每 process 最多 128 个 handler、每 handler 最多 64 个参数，超限拒绝构建。
+
+输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
+
+标量 ABI v1 是 `(state: i64, args: *const i64, output: *mut ScalarOutput) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；错误通过状态码返回，整数溢出与除零不使用 trap 或跨边界 unwind。此 ABI 只用于无业务堆引用的标量原型，不替代后续带 context、shadow stack 与抢占恢复的受管 ABI。
+
+`wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源与 ABI。共享库保留到 OS 进程结束，不做热卸载。
+
+驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
+
+这条路径没有调度、活栈切换、GC、mailbox、资源账户或监督，不能运行不可信代码。当前只有 macOS AArch64 实测通过；Linux x86-64（glibc）配置了执行 CI，仍需实际结果。理由与扩展前提见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 ## 低层实现范围
 

@@ -1,0 +1,16 @@
+[package]
+name = "wings-vm"
+description = "Trusted scalar AOT execution prototype for Wings VM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wings-abi.workspace = true
+wings-artifact.workspace = true
+serde_json.workspace = true
+libloading.workspace = true

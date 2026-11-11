@@ -1,0 +1,176 @@
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value, condcodes::IntCC, types};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_object::{ObjectBuilder, ObjectModule};
+use wings_abi::{SCALAR_ABI_VERSION, STATUS_DIVISION_BY_ZERO, STATUS_OVERFLOW, host_target};
+use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
+use wings_ir::{Function, Operation, Operator, Program};
+
+pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
+    program.validate()?;
+    let manifest = Manifest {
+        format: FORMAT_VERSION,
+        abi: SCALAR_ABI_VERSION,
+        target: host_target()?.into(),
+        process: program.name.clone(),
+        state: program.state,
+        handlers: program
+            .handlers
+            .iter()
+            .map(|handler| wings_artifact::Handler {
+                name: handler.name.clone(),
+                parameters: handler.parameters.clone(),
+                reply: handler.reply,
+            })
+            .collect(),
+    }
+    .encode()?;
+    let mut flags = settings::builder();
+    flags
+        .set("is_pic", "true")
+        .map_err(|error| error.to_string())?;
+    flags
+        .set("opt_level", "speed")
+        .map_err(|error| error.to_string())?;
+    let isa = cranelift_native::builder_with_options(false)
+        .map_err(|error| error.to_string())?
+        .finish(settings::Flags::new(flags))
+        .map_err(|error| error.to_string())?;
+    let object = ObjectBuilder::new(isa, "wings_scalar", default_libcall_names())
+        .map_err(|error| error.to_string())?;
+    let mut module = ObjectModule::new(object);
+    compile_function(&mut module, INITIALIZER_SYMBOL, &program.initializer)?;
+    for (index, handler) in program.handlers.iter().enumerate() {
+        compile_function(&mut module, &handler_symbol(index), &handler.function)?;
+    }
+    let bytes = module.finish().emit().map_err(|error| error.to_string())?;
+    fs::create_dir(directory).map_err(|error| format!("create new artifact directory: {error}"))?;
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let object_path = directory.join("program.o");
+    fs::write(&object_path, bytes).map_err(|error| error.to_string())?;
+    let linker = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let mut command = Command::new(linker);
+    if cfg!(target_os = "macos") {
+        command.arg("-dynamiclib");
+    } else {
+        command.args(["-shared", "-Wl,-z,defs", "-Wl,-z,noexecstack"]);
+    }
+    let output = command
+        .arg(&object_path)
+        .arg("-o")
+        .arg(directory.join(library_name()))
+        .output()
+        .map_err(|error| format!("start system linker (cc or CC): {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "system linker failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    fs::write(directory.join("manifest.json"), manifest).map_err(|error| error.to_string())?;
+    fs::remove_file(object_path).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn compile_function(
+    module: &mut ObjectModule,
+    name: &str,
+    function: &Function,
+) -> Result<(), String> {
+    let mut context = module.make_context();
+    let pointer_type = module.target_config().pointer_type();
+    context.func.signature.params = vec![
+        AbiParam::new(types::I64),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+    ];
+    context.func.signature.returns = vec![AbiParam::new(types::I32)];
+    let identifier = module
+        .declare_function(name, Linkage::Export, &context.func.signature)
+        .map_err(|error| error.to_string())?;
+    let mut builder_context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+    let parameters = builder.block_params(entry).to_vec();
+    let mut registers = Vec::new();
+    for instruction in &function.instructions {
+        let value = match instruction.operation {
+            Operation::Constant(value) => builder.ins().iconst(types::I64, value),
+            Operation::State => parameters[0],
+            Operation::Argument(index) => builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                parameters[1],
+                (index * 8) as i32,
+            ),
+            Operation::Negate(value) => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                let (result, overflow) = builder.ins().ssub_overflow(zero, registers[value]);
+                fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                result
+            }
+            Operation::Binary(operator, left, right) => {
+                let left = registers[left];
+                let right = registers[right];
+                match operator {
+                    Operator::Divide => {
+                        let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
+                        fail_if(&mut builder, zero, STATUS_DIVISION_BY_ZERO);
+                        let minimum = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
+                        let negative_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
+                        let overflow = builder.ins().band(minimum, negative_one);
+                        fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                        builder.ins().sdiv(left, right)
+                    }
+                    _ => {
+                        let (result, overflow) = match operator {
+                            Operator::Add => builder.ins().sadd_overflow(left, right),
+                            Operator::Subtract => builder.ins().ssub_overflow(left, right),
+                            Operator::Multiply => builder.ins().smul_overflow(left, right),
+                            Operator::Divide => unreachable!(),
+                        };
+                        fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                        result
+                    }
+                }
+            }
+        };
+        registers.push(value);
+    }
+    builder
+        .ins()
+        .store(MemFlags::new(), registers[function.state], parameters[2], 0);
+    builder
+        .ins()
+        .store(MemFlags::new(), registers[function.reply], parameters[2], 8);
+    let status = builder.ins().iconst(types::I32, 0);
+    builder.ins().return_(&[status]);
+    builder.seal_all_blocks();
+    builder.finalize();
+    module
+        .define_function(identifier, &mut context)
+        .map_err(|error| error.to_string())?;
+    module.clear_context(&mut context);
+    Ok(())
+}
+
+fn fail_if(builder: &mut FunctionBuilder<'_>, condition: Value, status: u32) {
+    let failure = builder.create_block();
+    let continuation = builder.create_block();
+    builder
+        .ins()
+        .brif(condition, failure, &[], continuation, &[]);
+    builder.switch_to_block(failure);
+    let status = builder.ins().iconst(types::I32, i64::from(status));
+    builder.ins().return_(&[status]);
+    builder.switch_to_block(continuation);
+}

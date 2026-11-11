@@ -65,6 +65,8 @@ M0 后沿用确定的基线，完整报告各分位结果。需求或硬件改�
 
 ## 工具链与 LSP 验收
 
+当前标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。此脚本不是 GC、抢占、三级资源账户或 BEAM 性能验收。双平台 CI 执行同一检查，Linux 结果在实际运行前标为待验证。
+
 - 从编译命令产出目标平台程序，再由 `wings-vm` 装载运行。核对产物版本、目标、ABI、诊断、结果和退出状态；编译器与 VM 的共享格式要有一致性及错误输入测试。
 - workspace 依赖符合 [Crate 设计](crates.md)且无环。检查 `wings-lsp` 的传递依赖不包含 Cranelift、`wings-codegen`、`wings-compile` 或 `wings-vm`，VM 构建也不引入解析器或 LSP 协议。
 - 同一完整程序在编译器和 LSP 中的语法、符号、类型诊断一致；不完整输入覆盖缺失结束符、未知名称与跨文件修改，语言服务器能够恢复并继续查询。

@@ -5,6 +5,11 @@ members = [
     "crates/wings-sema",
     "crates/wings-compile",
     "crates/wings-lsp",
+    "crates/wings-abi",
+    "crates/wings-ir",
+    "crates/wings-artifact",
+    "crates/wings-codegen",
+    "crates/wings-vm",
 ]
 resolver = "3"
 
@@ -21,4 +26,15 @@ publish = ["crates-io"]
 wings-source = { version = "0.0.1", path = "crates/wings-source" }
 wings-syntax = { version = "0.0.1", path = "crates/wings-syntax" }
 wings-sema = { version = "0.0.1", path = "crates/wings-sema" }
+wings-abi = { version = "0.0.1", path = "crates/wings-abi" }
+wings-ir = { version = "0.0.1", path = "crates/wings-ir" }
+wings-artifact = { version = "0.0.1", path = "crates/wings-artifact" }
+wings-codegen = { version = "0.0.1", path = "crates/wings-codegen" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+cranelift-codegen = "=0.118.0"
+cranelift-frontend = "=0.118.0"
+cranelift-module = "=0.118.0"
+cranelift-object = "=0.118.0"
+cranelift-native = "=0.118.0"
+libloading = "0.8.9"
