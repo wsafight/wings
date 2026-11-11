@@ -67,6 +67,7 @@
 ## 实现与验证
 
 - workspace 初始版本为 `0.0.1`，采用维护者确认的 `Apache-2.0` 许可证，仅向 crates.io 发布。未经维护者确认不更换许可证，不发布空包占名；包发布细节见 `docs/publishing.md`。
+- `main` 受保护，代码和文档变更必须从分支提交 PR，通过 macOS AArch64、Linux x86-64 与 MSRV 检查后合并；不直接推送 main、不绕过管理员保护。包发布独立手动执行，不由 PR 事件触发；发布已合并、通过验证的源码，未经用户要求不自动发布。
 - 收到实现任务时，先对照 `docs/roadmap.md` 确定阶段；优先解决 M0 的执行模型与后端验证，不一次铺开所有可选功能。
 - 文档任务检查相对链接、章节完整性、名称一致性和代码围栏。代码改动运行 `cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`，格式检查使用 `cargo fmt --all -- --check`。
 - 后续新增可运行代码时，同时记录实际可用的构建与验证命令，再按改动范围执行检查。

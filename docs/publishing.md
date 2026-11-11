@@ -4,24 +4,34 @@
 
 ## 当前状态
 
-源码仓库为 <https://github.com/wsafight/wings>。workspace 的初始版本统一为 `0.0.1`。已发布版本只有前端和 LSP，没有可运行的 VM，也不生成机器码；当前源码新增的标量 AOT 原型尚未发布，新建后端与执行包保持 `publish = false`。不承诺稳定 API，本轮不重复发布或覆盖已发布的 `0.0.1`。
+源码仓库为 <https://github.com/wsafight/wings>。workspace 当前统一为 `0.0.2`，本次准备发布全部十个已有实现的包：前端、LSP、标量 ABI、IR、产物、Cranelift 后端与可信本机执行原型。原前端 `0.0.1` 保持不变，不覆盖已发布版本。不承诺稳定 API，也不宣称完整微进程 VM、抢占、GC 或性能目标已实现。
 
 维护者已确认使用 `Apache-2.0` 许可证，全文见仓库根目录 [LICENSE](../LICENSE)，各包继承 workspace 的许可证元数据，仅允许向 crates.io 发布。crates.io 发布成功后不能覆盖同一版本，因此先做打包检查。
 
-crates.io 没有独立的项目创建或名称预留步骤，首次成功发布才会注册包名。不发布空壳 VM 或同名聚合包占位；五个已有功能的包已完成首个版本发布。
+crates.io 没有独立的项目创建或名称预留步骤，首次成功发布才会注册包名。不发布空包占位，也不建立 `wings` 或 `wings-lang` 聚合包。
+
+## 合并与发布流程
+
+`main` 已启用分支保护：代码与文档变更必须经 PR 合并，要求分支与 main 保持同步，并通过 `native (macos-15, arm64)`、`native (ubuntu-24.04, x86_64)` 和 `msrv` 三项检查。管理员同样受限，禁止强推和删除 main，合并前解决讨论。当前不要求额外审批人数，PR 门禁与独立人工审批是两回事。
+
+包发布是用户明确要求后独立手动执行的操作，不是 PR 事件触发的自动发布。先合并通过 CI 的发布元数据，再从已合并的干净源码执行 dry-run、归档核对与上传；发布凭证不写入工作流、仓库或日志。任何包失败都先核对注册表版本和失败原因，保留部分发布记录，不重复上传已有版本或跳过验证。
 
 ## 名称检查
 
-2026-11-12 通过 crates.io API 查询并在发布后复核：
+2026-11-12 准备 `0.0.2` 前通过 crates.io API 查询；下表是上传前的状态，不代表 `0.0.2` 已完成发布：
 
 | 名称 | 查询结果 | 本项目安排 |
 |---|---|---|
-| `wings-source` | 已发布 `0.0.1` | 已有源码位置与诊断实现 |
-| `wings-syntax` | 已发布 `0.0.1` | 已有词法与容错解析实现 |
-| `wings-sema` | 已发布 `0.0.1` | 已有名称与局部类型检查实现 |
-| `wings-compile` | 已发布 `0.0.1` | 已有静态检查命令，不生成机器码 |
-| `wings-lsp` | 已发布 `0.0.1` | 已有 stdio 语言服务器 |
-| `wings-vm` | 未注册 | 已有未发布的标量原型；完成相应验收后再决定发布 |
+| `wings-source` | 已发布 `0.0.1` | `0.0.2` 源码位置与诊断实现 |
+| `wings-syntax` | 已发布 `0.0.1` | `0.0.2` 词法与容错解析实现 |
+| `wings-sema` | 已发布 `0.0.1` | `0.0.2` 名称与局部类型检查实现 |
+| `wings-abi` | 未注册 | `0.0.2` 标量原型 ABI，不是完整受管 ABI |
+| `wings-ir` | 未注册 | `0.0.2` 有界直线标量 IR 与校验 |
+| `wings-artifact` | 未注册 | `0.0.2` 有界产物清单与目标校验 |
+| `wings-codegen` | 未注册 | `0.0.2` Cranelift AOT 与系统链接 |
+| `wings-compile` | 已发布 `0.0.1` | `0.0.2` 增加可信本机标量 AOT 构建 |
+| `wings-lsp` | 已发布 `0.0.1` | `0.0.2` stdio 语言服务器 |
+| `wings-vm` | 未注册 | `0.0.2` 可信本机标量执行原型，不是安全沙箱 |
 | `wings` | 其他项目已注册 | 不发布这个名称 |
 | `wings-lang` | 未注册 | 仅作为当前语言名，不发布同名 crate |
 
@@ -29,15 +39,20 @@ crates.io 没有独立的项目创建或名称预留步骤，首次成功发布�
 
 ## 发布顺序
 
-已发布的前端 `0.0.1` 按以下顺序交付；后续版本须先确定新增内部依赖的验收与发布安排，不能直接重复此清单：
+`0.0.2` 统一按依赖顺序发布，全部包均有实现，不发布聚合包：
 
 1. `wings-source`
 2. `wings-syntax`
 3. `wings-sema`
-4. `wings-compile`
-5. `wings-lsp`
+4. `wings-abi`
+5. `wings-ir`
+6. `wings-artifact`
+7. `wings-codegen`
+8. `wings-compile`
+9. `wings-lsp`
+10. `wings-vm`
 
-内部依赖同时指定本地路径和 `0.0.1` 版本。打包发布时使用 crates.io 上的版本，不能只有 `path`；每次发布后等待索引可见，再检查并发布依赖它的包。
+内部依赖同时指定本地路径和 `0.0.2` 版本。打包发布时使用 crates.io 上的版本，不能只有 `path`；每次发布后等待索引可见，再检查并发布依赖它的包。
 
 先运行 workspace 检查、测试、Clippy、格式检查和示例检查。每个包先执行 `cargo publish -p <包名> --dry-run --locked --registry crates-io`，检查归档内容、许可证、元数据和独立构建，再去掉 `--dry-run`。依赖尚未发布时，上层包的完整打包构建可能失败，不能用跳过验证当作发布验收。
 
@@ -46,6 +61,22 @@ crates.io 没有独立的项目创建或名称预留步骤，首次成功发布�
 ## 发布后核对
 
 核对 crates.io 的名称、版本、所有者、许可证和源码地址，以及依赖是否都来自预期注册表。确认安装命令和已实现功能一致；未经验证的 VM、性能与平台能力不写入发布说明。
+
+## 0.0.2 发布范围与验证
+
+标量 AOT 源码提交 `2354189603f11c85b93524e0bedf1e5dea5b3398` 已通过 [双平台 CI 与 Rust 1.85 检查](https://github.com/wsafight/wings/actions/runs/43089909858)。发布版本还需在对应 PR 上重新通过同样检查。端到端脚本覆盖 Counter 连续状态、Bool/Unit、整数溢出、除零、输入和产物拒绝；不包含抢占、GC、mailbox 或 BEAM 对照。
+
+发布完成后使用以下命令安装三个工具，再检查可信本机 AOT；示例路径相对于本仓库，输出目录须不存在：
+
+```sh
+CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-vm wings-lsp --version 0.0.2 --locked --registry crates-io
+wings-compile check examples/counter.wings
+wings-compile build examples/counter.wings -o target/installed-counter-aot
+wings-vm run --trusted target/installed-counter-aot < examples/counter.messages.jsonl
+wings-lsp --help
+```
+
+`--trusted` 仅用于自己构建且与清单匹配的原生代码，清单校验不是安全认证。需要 Rust 1.85 或更新版本，AOT 构建还需系统 C 链接工具链。不提供预构建二进制，不将原型成功执行视为 M0 完成。实际上传与安装验证结果在完成后记录。
 
 ## 0.0.1 发布记录
 
