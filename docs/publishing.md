@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-源码仓库为 <https://github.com/wsafight/wings>。workspace 当前统一为 `0.0.2`，本次准备发布全部十个已有实现的包：前端、LSP、标量 ABI、IR、产物、Cranelift 后端与可信本机执行原型。原前端 `0.0.1` 保持不变，不覆盖已发布版本。不承诺稳定 API，也不宣称完整微进程 VM、抢占、GC 或性能目标已实现。
+源码仓库为 <https://github.com/wsafight/wings>。workspace 当前统一为 `0.0.2`，全部十个已有实现的包已发布：前端、LSP、标量 ABI、IR、产物、Cranelift 后端与可信本机执行原型。原前端 `0.0.1` 保持不变，不覆盖已发布版本。不承诺稳定 API，也不宣称完整微进程 VM、抢占、GC 或性能目标已实现。
+
+`0.0.2` 发布收尾后专注 M0 功能开发，暂不安排新版本。后续代码与文档仍经 PR 合并，不因合并自动上传包，也不为同步发布记录再次发版。
 
 维护者已确认使用 `Apache-2.0` 许可证，全文见仓库根目录 [LICENSE](../LICENSE)，各包继承 workspace 的许可证元数据，仅允许向 crates.io 发布。crates.io 发布成功后不能覆盖同一版本，因此先做打包检查。
 
@@ -18,20 +20,20 @@ crates.io 没有独立的项目创建或名称预留步骤，首次成功发布�
 
 ## 名称检查
 
-2026-11-12 准备 `0.0.2` 前通过 crates.io API 查询；下表是上传前的状态，不代表 `0.0.2` 已完成发布：
+2026-11-12 发布后通过 crates.io API 核对；十个包的 `0.0.2` 均可查询，所有者为 `wsafight`，且未撤回：
 
 | 名称 | 查询结果 | 本项目安排 |
 |---|---|---|
-| `wings-source` | 已发布 `0.0.1` | `0.0.2` 源码位置与诊断实现 |
-| `wings-syntax` | 已发布 `0.0.1` | `0.0.2` 词法与容错解析实现 |
-| `wings-sema` | 已发布 `0.0.1` | `0.0.2` 名称与局部类型检查实现 |
-| `wings-abi` | 未注册 | `0.0.2` 标量原型 ABI，不是完整受管 ABI |
-| `wings-ir` | 未注册 | `0.0.2` 有界直线标量 IR 与校验 |
-| `wings-artifact` | 未注册 | `0.0.2` 有界产物清单与目标校验 |
-| `wings-codegen` | 未注册 | `0.0.2` Cranelift AOT 与系统链接 |
-| `wings-compile` | 已发布 `0.0.1` | `0.0.2` 增加可信本机标量 AOT 构建 |
-| `wings-lsp` | 已发布 `0.0.1` | `0.0.2` stdio 语言服务器 |
-| `wings-vm` | 未注册 | `0.0.2` 可信本机标量执行原型，不是安全沙箱 |
+| `wings-source` | 已发布 `0.0.2` | 源码位置与诊断实现 |
+| `wings-syntax` | 已发布 `0.0.2` | 词法与容错解析实现 |
+| `wings-sema` | 已发布 `0.0.2` | 名称与局部类型检查实现 |
+| `wings-abi` | 已发布 `0.0.2` | 标量原型 ABI，不是完整受管 ABI |
+| `wings-ir` | 已发布 `0.0.2` | 有界直线标量 IR 与校验 |
+| `wings-artifact` | 已发布 `0.0.2` | 有界产物清单与目标校验 |
+| `wings-codegen` | 已发布 `0.0.2` | Cranelift AOT 与系统链接 |
+| `wings-compile` | 已发布 `0.0.2` | 增加可信本机标量 AOT 构建 |
+| `wings-lsp` | 已发布 `0.0.2` | stdio 语言服务器 |
+| `wings-vm` | 已发布 `0.0.2` | 可信本机标量执行原型，不是安全沙箱 |
 | `wings` | 其他项目已注册 | 不发布这个名称 |
 | `wings-lang` | 未注册 | 仅作为当前语言名，不发布同名 crate |
 
@@ -62,11 +64,15 @@ crates.io 没有独立的项目创建或名称预留步骤，首次成功发布�
 
 核对 crates.io 的名称、版本、所有者、许可证和源码地址，以及依赖是否都来自预期注册表。确认安装命令和已实现功能一致；未经验证的 VM、性能与平台能力不写入发布说明。
 
-## 0.0.2 发布范围与验证
+## 0.0.2 发布记录
 
-标量 AOT 源码提交 `2354189603f11c85b93524e0bedf1e5dea5b3398` 已通过 [双平台 CI 与 Rust 1.85 检查](https://github.com/wsafight/wings/actions/runs/43089909858)。发布版本还需在对应 PR 上重新通过同样检查。端到端脚本覆盖 Counter 连续状态、Bool/Unit、整数溢出、除零、输入和产物拒绝；不包含抢占、GC、mailbox 或 BEAM 对照。
+2026-11-12，全部十个包依照上述顺序完成 dry-run、归档检查、独立构建与实际上传。归档对应 [PR #1](https://github.com/wsafight/wings/pull/1) 合并后的干净源码提交 `58dc9073ae17162375de0b666764170a19938750`。已检查各包许可证、仓库地址、源码提交和内部依赖版本；crates.io API 复核十个版本均为 `0.0.2`、所有者为 `wsafight`、许可证为 `Apache-2.0`，且未撤回，内部依赖均为注册表上的 `^0.0.2`。
 
-发布完成后使用以下命令安装三个工具，再检查可信本机 AOT；示例路径相对于本仓库，输出目录须不存在：
+[发布 PR 检查](https://github.com/wsafight/wings/actions/runs/43091081968)和[合并后 main 检查](https://github.com/wsafight/wings/actions/runs/43092139855)均通过 macOS AArch64、Linux x86-64 原生执行与 Rust 1.85 构建。端到端脚本覆盖 Counter 连续状态、Bool/Unit、整数溢出、除零、输入和产物拒绝；不包含抢占、GC、mailbox 或 BEAM 对照。`cargo test` 当前没有 Rust 测试用例，不能把零用例通过写成行为覆盖。
+
+另从 crates.io 将三个命令安装到 macOS AArch64 临时目录，已验证示例检查、命令帮助、Counter 编译及七条消息的执行结果，以及 LSP 初始化、版本 `0.0.2` 和正常关闭。GitHub 发布入口为 [v0.0.2](https://github.com/wsafight/wings/releases/tag/v0.0.2)。
+
+从 crates.io 安装三个工具后可检查可信本机 AOT；示例路径相对于本仓库，输出目录须不存在：
 
 ```sh
 CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-vm wings-lsp --version 0.0.2 --locked --registry crates-io
@@ -76,7 +82,7 @@ wings-vm run --trusted target/installed-counter-aot < examples/counter.messages.
 wings-lsp --help
 ```
 
-`--trusted` 仅用于自己构建且与清单匹配的原生代码，清单校验不是安全认证。需要 Rust 1.85 或更新版本，AOT 构建还需系统 C 链接工具链。不提供预构建二进制，不将原型成功执行视为 M0 完成。实际上传与安装验证结果在完成后记录。
+`--trusted` 仅用于自己构建且与清单匹配的原生代码，清单校验不是安全认证。需要 Rust 1.85 或更新版本，AOT 构建还需系统 C 链接工具链。不提供预构建二进制，不将原型成功执行视为 M0 完成。
 
 ## 0.0.1 发布记录
 

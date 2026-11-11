@@ -54,7 +54,7 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。本次发布范围是全部十个已有实现的包，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
+当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。全部十个已有实现的包均已发布，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
 
 crates.io 的 `0.0.1` 是原前端版本，仅有 `check` 和 LSP；不能覆盖该版本。`0.0.2` 增加 AOT 构建与可信执行入口，按 PR 合并、CI 验证、手动发布的顺序交付；PR 本身不触发包上传。
 
@@ -62,7 +62,7 @@ crates.io 的 `0.0.1` 是原前端版本，仅有 `check` 和 LSP；不能覆盖
 
 ## 安装
 
-`0.0.2` 发布完成后，可从 crates.io 安装编译命令、标量执行原型和语言服务器（构建 AOT 还需系统 C 工具链）：
+可从 crates.io 安装 `0.0.2` 的编译命令、标量执行原型和语言服务器（构建 AOT 还需系统 C 工具链）：
 
 ```sh
 CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-vm wings-lsp --version 0.0.2 --locked --registry crates-io

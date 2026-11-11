@@ -111,7 +111,7 @@ let id = request(counter, Inc(by: 2))
 
 ## 当前原型支持范围
 
-`examples/counter.wings` 可通过 `wings-compile check` 检查，也可用当前源码的 `build` 生成可信本机标量产物。已发布的 crates.io `0.0.1` 仍只提供检查器。当前子集包含：
+`examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。当前子集包含：
 
 - `process`、一个具名 state、统一的 `on`、具名类型化参数和可选回复类型。
 - `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
