@@ -1,0 +1,23 @@
+process Counter {
+  state count: Int = 0
+
+  on Inc(by: Int) -> Int {
+    let next = count + by
+    count = next
+    next
+  }
+
+  on Reset {
+    count = 0
+  }
+
+  on Set(value: Int) {
+    count = value
+  }
+
+  on Get -> Int {
+    count
+  }
+
+  on Confirm -> Unit {}
+}

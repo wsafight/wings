@@ -1,0 +1,10 @@
+[package]
+name = "wings-source"
+description = "Source positions and diagnostics for the Wings VM language tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+publish.workspace = true
