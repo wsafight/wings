@@ -64,11 +64,11 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码的标量 ABI v3 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；预算与数据只由执行线程访问。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；算术、取消、总预算耗尽通过状态码返回，不 trap 或跨边界 unwind。
+未发布源码的标量 ABI v4 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针及 `usize` 剩余栈下界。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；预算与数据只由执行线程访问。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；算术、取消、总预算或栈空间耗尽通过状态码返回，不 trap 或跨边界 unwind。
 
-后端在每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，前一源码切片使用 v2，二者均与当前 v3 相互拒绝装载，须使用匹配的编译器和 VM。
+薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码切片使用 v2/v3，均与当前 v4 相互拒绝装载，须使用匹配的编译器和 VM。
 
-`start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 不借出协程栈。池不代替编译器栈限额、GC 或三级账户，完整契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
+`start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 与 initializer 也借用池内栈，正常返回立即归还；worker 通过 `instantiate_in_pool` 将初始化栈计入进程额度，额度不足在 spawn 时回滚。池不代替 compiler 根、GC 或完整资源账本，当前栈检查见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，原栈恢复与池契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 和 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
 `wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源与 ABI。共享库保留到 OS 进程结束，不做热卸载。
 
@@ -80,13 +80,15 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 低层实现范围
 
-宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。ABI v3 和标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
+未发布源码的当前 ABI 为 v4：导出薄入口先检查剩余栈，再调用本地业务函数；同步调用、initializer 和活栈调用统一使用有界池。栈不足正常返回受管错误，不写输出或扣步。旧 v3 产物拒绝装载；静态帧准入继续保留，尚不开放递归或业务调用。余量、慢路径限制与验证契约见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
 
-可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不改变 ABI v3，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。复用当前 ABI v4，标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
+
+可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不额外改变当前 ABI，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
 `ScalarSupervisor` 独占宿主 worker，固定子项及重启历史，按策略有界重建失败实例；每次重启重新执行 initializer、生成新 Pid，不保存失败状态、不重放消息，也不改变 ABI 或语言范围。当前仅 one-for-one 宿主接口，边界见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
 
-当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer 与每个 handler 的实际编译帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链，只适用于当前无递归、无业务函数调用的子集；不是完整 256 KiB 栈成本或动态剩余栈检查，不据此开放函数或业务堆。
+当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer 与每个 handler 的实际业务帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链；[ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口另检查实际可用空间。两者只适用于当前无递归、无业务函数调用的子集，不据此开放函数或业务堆。
 
 语言、IR、调度与资源契约共用，目标 ABI、对象格式、上下文切换和 OS I/O 由平台层处理。汇编行数少不代表实现正确或容易维护。
 

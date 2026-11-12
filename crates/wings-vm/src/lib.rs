@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use wings_abi::{
     DEFAULT_MAX_STEPS, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
-    STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, ScalarContext, ScalarOutput, ValueType,
+    STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, STATUS_STACK_EXHAUSTED, ScalarOutput,
+    ValueType,
 };
 use wings_artifact::Manifest;
 
@@ -106,18 +107,19 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<Option<i64>, String> {
-        let mut output = ScalarOutput::default();
-        let yield_request = AtomicU32::new(0);
-        let mut context = direct_context(&cancellation.flag, &yield_request, max_steps);
-        let status = unsafe {
-            (self.module.inner.entries[index])(
-                self.state,
-                arguments.as_ptr(),
-                &mut output,
-                &mut context,
-            )
-        };
-        self.finish_invocation(index, status, output)
+        let mut execution = self.start_index(
+            index,
+            arguments,
+            max_steps,
+            cancellation,
+            &PreemptionToken::default(),
+        )?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::Complete(reply) => return Ok(reply),
+                ExecutionStatus::Suspended => {}
+            }
+        }
     }
 
     fn validate_invocation(&self, name: &str, arguments: &[i64]) -> Result<usize, String> {
@@ -172,21 +174,6 @@ impl ScalarProcess {
     }
 }
 
-fn direct_context(
-    cancellation: &AtomicU32,
-    yield_request: &AtomicU32,
-    remaining_steps: u64,
-) -> ScalarContext {
-    ScalarContext {
-        cancellation,
-        remaining_steps,
-        yield_request,
-        slice_remaining: u64::MAX,
-        slow_path: None,
-        data: std::ptr::null_mut(),
-    }
-}
-
 fn check_status(status: u32) -> Result<(), String> {
     match status {
         STATUS_OK => Ok(()),
@@ -195,6 +182,7 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_CANCELLED => Err("managed execution cancelled".into()),
         STATUS_BUDGET_EXHAUSTED => Err("managed execution step budget exhausted".into()),
         STATUS_INVALID_CONTROL => Err("managed execution requires a valid yield callback".into()),
+        STATUS_STACK_EXHAUSTED => Err("managed execution stack exhausted".into()),
         _ => Err(format!("unknown scalar ABI status {status}")),
     }
 }

@@ -18,7 +18,7 @@
 
 已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片；十个包均已发布 `0.0.2`。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
 
-未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v3 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，作为可移动的进程表槽位前置而非调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 模块自主管理有界栈池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
+未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v4 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，并以薄入口先检查剩余栈；`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，作为可移动的进程表槽位前置而非调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 模块自主管理有界栈池，同步与 initializer 也在池内执行，worker 初始化使用进程计费池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测和受限 ABI 回归。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md)、[ADR-0012](adr/0012-bounded-stack-pool.md) 与 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
 
 `wings-vm` 的 `resources` 内部模块已按 [ADR-0014](adr/0014-resource-reservations.md) 提供单线程账户原语：`ResourceAccount`、`Resources` 与不可克隆的 `Reservation` 支持三级四维预留、同 VM 净转移和 Drop 回收。独立记录堆/根表和宿主 worker 的栈池、mailbox、pending 表已接入；语言业务堆、模块及 allocator 内部开销尚未完整覆盖，不能宣称已有完整资源隔离；跨 worker 同步也未实现。契约集中在[资源准入](runtime.md#资源准入)，有界确定性示例见[独立资源账户回归](evaluation.md#独立资源账户回归)。
 

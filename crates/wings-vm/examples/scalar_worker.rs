@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use wings_vm::{
-    HandlerId, Pid, ResourceAccount, Resources, ScalarModule, ScalarWorker, WorkerEvent,
+    HandlerId, Pid, ResourceAccount, Resources, ScalarModule, ScalarWorker, StackPool, WorkerEvent,
 };
 
 const MAX_STEPS: u64 = 128;
@@ -373,6 +373,7 @@ fn verify_limits(module: &ScalarModule) {
         )
         .expect("actor with no message allowance");
     let before = snapshot(&worker, &[no_messages], &vm, &tenant);
+    let actor_bytes = worker.resources(no_messages).expect("actor charge").bytes;
     assert!(worker.send(no_messages, &add, &[1], MAX_STEPS).is_err());
     assert_eq!(snapshot(&worker, &[no_messages], &vm, &tenant), before);
     worker
@@ -380,16 +381,33 @@ fn verify_limits(module: &ScalarModule) {
         .expect("stop message-limited actor");
     assert_eq!(tenant.used(), empty);
 
+    assert!(
+        worker
+            .spawn(
+                module,
+                Resources {
+                    bytes: 64 * 1024,
+                    ..limits()
+                },
+                1
+            )
+            .is_err()
+    );
+    assert_eq!(tenant.used(), empty);
+    let stack_bytes = StackPool::new(1, 0)
+        .expect("stack geometry")
+        .stats()
+        .reserved_bytes as u64;
     let small_stack = worker
         .spawn(
             module,
             Resources {
-                bytes: 64 * 1024,
+                bytes: actor_bytes + stack_bytes,
                 ..limits()
             },
             1,
         )
-        .expect("64 KiB can hold actor and mailbox");
+        .expect("initializer fits without queued message charge");
     let healthy = worker.spawn(module, limits(), 1).expect("healthy actor");
     worker
         .send(small_stack, &add, &[3], MAX_STEPS)
@@ -398,7 +416,10 @@ fn verify_limits(module: &ScalarModule) {
         .send(healthy, &add, &[7], MAX_STEPS)
         .expect("queue healthy actor");
     let before = snapshot(&worker, &[small_stack, healthy], &vm, &tenant);
-    assert!(worker.tick(1).is_err(), "stack transfer must exceed 64 KiB");
+    assert!(
+        worker.tick(1).is_err(),
+        "queued message leaves insufficient stack allowance"
+    );
     assert_eq!(
         snapshot(&worker, &[small_stack, healthy], &vm, &tenant),
         before

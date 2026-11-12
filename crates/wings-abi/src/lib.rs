@@ -3,13 +3,14 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 3;
+pub const SCALAR_ABI_VERSION: u32 = 4;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
 pub const STATUS_CANCELLED: u32 = 3;
 pub const STATUS_BUDGET_EXHAUSTED: u32 = 4;
 pub const STATUS_INVALID_CONTROL: u32 = 5;
+pub const STATUS_STACK_EXHAUSTED: u32 = 6;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,7 @@ pub struct ScalarContext {
     pub slice_remaining: u64,
     pub slow_path: Option<ScalarSlowPath>,
     pub data: *mut c_void,
+    pub stack_limit: usize,
 }
 
 pub type ScalarSlowPath = unsafe extern "C" fn(*mut ScalarContext) -> u32;

@@ -88,7 +88,7 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 子进程池还需要独立的内存/CPU 限额、凭证、文件系统和网络权限策略。OS 进程隔离了地址空间与崩溃范围，但完整的安全沙箱还需要这些限制。需要防范不可信代码时，优先选择成熟的 WASM 沙箱或经过加固的 OS 隔离。
 
-当前静态标量编译帧准入见 [ADR-0017](adr/0017-scalar-frame-admission.md)：后端实际帧超过 64 KiB 在构建期拒绝，宿主可降低该值。它不包含运行时调用链，也不提供动态 `stack_overflow`；编译器显式剩余栈限额仍是待办，不能用静态帧上限替代。宿主 worker 的固定栈池容量与活栈转移已接入三级准入，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
+当前静态标量编译帧准入见 [ADR-0017](adr/0017-scalar-frame-admission.md)：业务帧超过 64 KiB 在构建期拒绝，宿主可降低该值。[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加 ABI v4 薄入口，在分配业务帧前检查实际剩余栈，并保留 64 KiB 慢路径空间；不足正常返回受管错误，不扣步或写输出。同步调用、initializer 与挂起调用均使用池内栈，worker 的初始化也先做进程额度准入，失败回滚 spawn。薄入口自身 prologue 与固定慢路径仍依赖可信代码的有界前提，尚不支持递归或完整动态调用深度。固定栈池容量与活栈转移的三级准入见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
 ### 冬眠：只收缩已返回 handler 的状态
 
@@ -130,7 +130,7 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 `ScalarTask` 提供 owned 执行槽：按值拥有实例及至多一个未完成调用，`start` 使用模块绑定的 `HandlerId`、显式栈池和控制令牌，忙时拒绝；槽位可在同线程内移动但不能 Send/Sync，只是后续进程表的所有权接口，不是调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。
 
-同步 `invoke_controlled` 与 CLI 仍直接调用，CLI 的 `--max-steps` 设置每次 handler 的总上限；初始化独立使用默认 1,000,000 步。当前没有计时线程或 worker 队列，手动交错两个实例只是恢复验证，不等于下面的 M:N 调度。ABI、固定栈成本与提交边界见[架构说明](architecture.md#标量-aot-原型)。
+同步 `invoke_controlled` 与 CLI 使用同一池内执行路径，以最大步数时间片运行至正常返回；CLI 的 `--max-steps` 设置每次 handler 的总上限，初始化独立使用默认 1,000,000 步。宿主 worker 与可选原子计时让出另有有限切片，尚不等于下面的 M:N 调度。ABI、固定栈成本与提交边界见[架构说明](architecture.md#标量-aot-原型)。
 
 首版使用**计时线程设置原子标志 + 受管代码轮询**，不依赖信号。下面是可编译的检查逻辑，实际检查点由后端生成：
 

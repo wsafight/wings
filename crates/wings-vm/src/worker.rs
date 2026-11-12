@@ -219,7 +219,7 @@ impl ScalarWorker {
             count: 0,
         };
         let pool = self.pool.for_process(&account)?;
-        let task = ScalarTask::new(module.instantiate()?);
+        let task = ScalarTask::new(module.instantiate_in_pool(&pool)?);
         self.slots[index].actor = Some(Actor {
             task,
             active: None,

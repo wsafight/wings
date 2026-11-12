@@ -7,6 +7,7 @@ use corosensei::stack::{STACK_ALIGNMENT, Stack, StackPointer};
 use crate::{Reservation, ResourceAccount, ResourceLevel, Resources};
 
 pub const EXECUTION_STACK_BYTES: usize = 256 * 1024;
+pub(crate) const SLOW_PATH_STACK_BYTES: usize = 64 * 1024;
 const MAX_POOL_SLOTS: usize = 2048;
 
 #[derive(Clone)]
@@ -57,6 +58,12 @@ pub(crate) struct PooledStack {
     pool: Rc<PoolInner>,
     index: usize,
     charge: Option<Reservation>,
+}
+
+impl PooledStack {
+    pub(crate) fn managed_limit(&self) -> usize {
+        self.limit().get() + self.pool.page_bytes + SLOW_PATH_STACK_BYTES
+    }
 }
 
 impl StackPool {

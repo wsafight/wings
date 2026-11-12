@@ -6,6 +6,7 @@
 - 补充：[ADR-0015](0015-owned-scalar-tasks.md) 在保留借用接口的同时，增加无自引用的 owned task；原栈恢复与取消契约不变。
 - 替代：[ADR-0010](0010-scalar-execution-control.md) 的标量 ABI v2 及“不提供让出恢复”的阶段限制；总执行预算和失败提交语义保留
 - 相关决定：[受管根与抢占](0004-safepoints-and-gc.md)、[标量可信边界](0009-scalar-aot-prototype.md)
+- 后续：[ADR-0024](0024-scalar-stack-boundary.md) 替代本文的 v3 context 布局与同步使用宿主栈安排，升级 v4 并统一池内执行；保留原栈恢复及正常取消返回契约。
 
 ## 背景
 

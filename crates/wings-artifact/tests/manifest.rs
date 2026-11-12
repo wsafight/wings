@@ -118,7 +118,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
         rejects(&manifest, "unsupported artifact format");
         assert!(manifest.encode().is_err());
     }
-    for version in [0, 1, 2, SCALAR_ABI_VERSION + 1, u32::MAX] {
+    for version in [0, 1, 2, 3, SCALAR_ABI_VERSION + 1, u32::MAX] {
         let mut manifest = manifest();
         manifest.abi = version;
         rejects(&manifest, "scalar ABI version");

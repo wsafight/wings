@@ -7,16 +7,17 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{Linkage, Module, default_libcall_names};
+use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
     SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
-    STATUS_INVALID_CONTROL, STATUS_OVERFLOW, ScalarContext, host_target,
+    STATUS_INVALID_CONTROL, STATUS_OVERFLOW, STATUS_STACK_EXHAUSTED, ScalarContext, host_target,
 };
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
 use wings_ir::{Function, Operation, Operator, Program};
 
 pub const MAX_SCALAR_FRAME_BYTES: u32 = 64 * 1024;
+const ENTRY_STACK_MARGIN: u32 = 4 * 1024;
 
 pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
     build_with_frame_limit(program, directory, MAX_SCALAR_FRAME_BYTES)
@@ -113,6 +114,7 @@ fn compile_function(
     function: &Function,
     max_frame_bytes: u32,
 ) -> Result<(), String> {
+    let (body, frame_bytes) = compile_body(module, name, function, max_frame_bytes)?;
     let mut context = module.make_context();
     let pointer_type = module.target_config().pointer_type();
     context.func.signature.params = vec![
@@ -124,6 +126,76 @@ fn compile_function(
     context.func.signature.returns = vec![AbiParam::new(types::I32)];
     let identifier = module
         .declare_function(name, Linkage::Export, &context.func.signature)
+        .map_err(|error| error.to_string())?;
+    let body = module.declare_func_in_func(body, &mut context.func);
+    let mut builder_context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+    let parameters = builder.block_params(entry).to_vec();
+    let limit = builder.ins().load(
+        pointer_type,
+        MemFlags::new(),
+        parameters[3],
+        std::mem::offset_of!(ScalarContext, stack_limit) as i32,
+    );
+    let missing = builder.ins().icmp_imm(IntCC::Equal, limit, 0);
+    fail_if(&mut builder, missing, STATUS_STACK_EXHAUSTED);
+    let stack_pointer = builder.ins().get_stack_pointer(pointer_type);
+    let below_limit = builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThan, stack_pointer, limit);
+    fail_if(&mut builder, below_limit, STATUS_STACK_EXHAUSTED);
+    let available = builder.ins().isub(stack_pointer, limit);
+    let insufficient = builder.ins().icmp_imm(
+        IntCC::UnsignedLessThan,
+        available,
+        i64::from(frame_bytes + ENTRY_STACK_MARGIN),
+    );
+    fail_if(&mut builder, insufficient, STATUS_STACK_EXHAUSTED);
+    let call = builder.ins().call(body, &parameters);
+    let status = builder.inst_results(call)[0];
+    builder.ins().return_(&[status]);
+    builder.seal_all_blocks();
+    builder.finalize();
+    module
+        .define_function(identifier, &mut context)
+        .map_err(|error| error.to_string())?;
+    let entry_bytes = context
+        .compiled_code()
+        .ok_or("backend did not produce scalar entry machine code")?
+        .frame_size;
+    if entry_bytes > ENTRY_STACK_MARGIN {
+        return Err(format!(
+            "scalar entry frame for {name} requires {entry_bytes} bytes, limit is {ENTRY_STACK_MARGIN}"
+        ));
+    }
+    module.clear_context(&mut context);
+    Ok(())
+}
+
+fn compile_body(
+    module: &mut ObjectModule,
+    name: &str,
+    function: &Function,
+    max_frame_bytes: u32,
+) -> Result<(FuncId, u32), String> {
+    let mut context = module.make_context();
+    let pointer_type = module.target_config().pointer_type();
+    context.func.signature.params = vec![
+        AbiParam::new(types::I64),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+    ];
+    context.func.signature.returns = vec![AbiParam::new(types::I32)];
+    let identifier = module
+        .declare_function(
+            &format!("{name}_body"),
+            Linkage::Local,
+            &context.func.signature,
+        )
         .map_err(|error| error.to_string())?;
     let mut builder_context = FunctionBuilderContext::new();
     let mut slow_signature = module.make_signature();
@@ -205,7 +277,7 @@ fn compile_function(
         ));
     }
     module.clear_context(&mut context);
-    Ok(())
+    Ok((identifier, frame_bytes))
 }
 
 fn poll_control(

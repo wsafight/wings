@@ -59,15 +59,16 @@ def verify_control_abi(directory):
             ("slice_remaining", ctypes.c_uint64),
             ("slow_path", ctypes.c_void_p),
             ("data", ctypes.c_void_p),
+            ("stack_limit", ctypes.c_size_t),
         ]
 
     def control(budget, slice_steps=2**64 - 1, callback=None):
-        return Context(ctypes.pointer(flag), budget, ctypes.pointer(request), slice_steps, callback, None)
+        return Context(ctypes.pointer(flag), budget, ctypes.pointer(request), slice_steps, callback, None, 1)
 
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 3
+    assert manifest["abi"] == 4
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -149,7 +150,16 @@ def verify_control_abi(directory):
     context = control(4, 1, ctypes.cast(exhaust_on_resume, ctypes.c_void_p).value)
     assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
     assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
-    print("Scalar ABI v3 verified: polls, budgets, callback, cancellation, output commit")
+    for function in [initializer, entry]:
+        for stack_limit in [0, 2**63, 2**64 - 1]:
+            output = Output(71, 91)
+            context = control(4, 0, ctypes.cast(replenish, ctypes.c_void_p).value)
+            context.stack_limit = stack_limit
+            before = list(observations)
+            assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
+            assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
+            assert observations == before
+    print("Scalar ABI v4 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def example(name, *arguments):
@@ -250,6 +260,7 @@ def main():
         pressure_artifact = parent / "pressure"
         command([COMPILER, "build", pressure_source, "-o", pressure_artifact])
         assert json.loads(invoke(pressure_artifact, [message("Work", 2)]).stdout) == {"reply": 8384}
+        example("stack_boundary", counter, pressure_artifact)
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
@@ -311,7 +322,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 2), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -340,7 +351,7 @@ def main():
         assert not invalid_artifact.exists()
         invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
         assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes/requests/deadlines, bounded supervision, OS wakeup and artifact rejection")
+    print("Scalar AOT verification passed: scalar execution/stack boundaries, live stacks, quota accounting, precise heap roots, worker mailboxes/requests/deadlines, bounded supervision, OS wakeup and artifact rejection")
 
 
 if __name__ == "__main__":

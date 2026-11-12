@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（M0 有界标量切片）
 - 补充：[标量 AOT](0009-scalar-aot-prototype.md)、[有界栈池](0012-bounded-stack-pool.md)
+- 后续：[ADR-0024](0024-scalar-stack-boundary.md) 保留业务帧静态准入，增加独立薄入口的剩余栈检查及 ABI v4；本文描述原切片时的 ABI 与入口形式。
 
 ## 背景与决定
 

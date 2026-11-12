@@ -54,7 +54,7 @@ Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LS
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消或总预算耗尽才终止，不提交该次状态与回复。暂挂调用持有固定 256 KiB 可用栈，Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是调度器、GC 或三级资源账本；源码 ABI v3 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 产物。契约与验证边界见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)。
+未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v4 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2/v3 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查的余量与限制见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)。
 
 原栈分配现由自研 `StackPool` 管理：默认每线程最多 64 个活跃槽位、缓存 2 个已完成栈，耗尽明确失败；可显式传入池并读取容量统计、调用 `trim` 回收缓存页。完成调用立即归还槽位，挂起栈不能复用。此优化主要约束容量和缓存，不消除同时挂起栈的物理成本。实验与限制见[栈分配实验](docs/evaluation.md#原生栈分配实验)。
 

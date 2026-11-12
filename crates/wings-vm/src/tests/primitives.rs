@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::{accounts, limits};
 use crate::execution::PreemptionToken;
-use crate::stack_pool::{EXECUTION_STACK_BYTES, StackPool};
+use crate::stack_pool::{EXECUTION_STACK_BYTES, SLOW_PATH_STACK_BYTES, StackPool};
 use crate::timer::DeadlineTimer;
 use crate::{ResourceAccount, Resources, WorkerParker};
 use corosensei::stack::Stack;
@@ -34,6 +34,11 @@ fn stack_slots_are_aligned_disjoint_and_bounded_by_guard_pages() {
             stack.base().get() - stack.limit().get(),
             stats.reserved_bytes / 2
         );
+        assert_eq!(
+            stack.managed_limit() - stack.limit().get(),
+            stats.guard_bytes_per_stack + SLOW_PATH_STACK_BYTES
+        );
+        assert!(stack.base().get() - stack.managed_limit() >= 128 * 1024);
     }
     assert_ne!(first.base(), second.base());
     assert!(pool.acquire().is_err());

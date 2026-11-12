@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use wings_abi::ValueType;
 use wings_vm::{
     Pid, RequestId, RequestOutcome, ResourceAccount, ResourceLevel, Resources, ScalarModule,
-    ScalarWorker, WorkerEvent,
+    ScalarWorker, StackPool, WorkerEvent,
 };
 
 const WORK_STEPS: u64 = 387;
@@ -321,11 +321,18 @@ fn verify_start_failure(module: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::new(&tenant, 1).expect("start-failure worker");
     worker.enable_timer().expect("enable timer");
+    let probe = worker.spawn(module, limits(), 1).expect("probe actor");
+    let actor_bytes = worker.resources(probe).expect("actor charge").bytes;
+    worker.stop(probe).expect("stop probe");
+    let stack_bytes = StackPool::new(1, 0)
+        .expect("stack geometry")
+        .stats()
+        .reserved_bytes as u64;
     let pid = worker
         .spawn(
             module,
             Resources {
-                bytes: 64 * 1024,
+                bytes: actor_bytes + stack_bytes,
                 ..limits()
             },
             1,

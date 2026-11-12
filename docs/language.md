@@ -113,7 +113,7 @@ let id = request(counter, Inc(by: 2))
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码额外插入取消、让出和预算检查，不增加业务语法。总预算耗尽或取消属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。源码与 `0.0.2` 的产物 ABI 不兼容，见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
+未发布源码额外插入取消、让出和预算检查，不增加业务语法。总预算耗尽、取消或入口剩余栈不足属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v4 不兼容已发布 `0.0.2` 及旧源码 v2/v3 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，剩余栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
 
 当前子集包含：
 

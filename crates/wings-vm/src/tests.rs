@@ -15,6 +15,7 @@ use crate::module::ModuleData;
 use crate::*;
 
 mod primitives;
+mod stack_boundary;
 mod supervision;
 
 fn limits(bytes: u64) -> Resources {
@@ -351,6 +352,7 @@ fn status_mapping_and_unknown_status_fail_closed() {
         (STATUS_CANCELLED, "cancelled"),
         (STATUS_BUDGET_EXHAUSTED, "budget"),
         (STATUS_INVALID_CONTROL, "callback"),
+        (STATUS_STACK_EXHAUSTED, "stack exhausted"),
         (u32::MAX, "unknown"),
     ] {
         assert!(check_status(status).unwrap_err().contains(expected));
@@ -1015,7 +1017,16 @@ fn tick_start_quota_failure_preserves_mailbox_and_committed_state() {
     let [vm, tenant, _] = accounts();
     let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
     let module = module();
-    let pid = worker.spawn(&module, limits(16 * 1024), 1).unwrap();
+    let baseline = vm.used();
+    assert!(worker.spawn(&module, limits(16 * 1024), 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let probe = worker.spawn(&module, limits(1 << 20), 1).unwrap();
+    let actor_bytes = worker.resources(probe).unwrap().bytes;
+    worker.stop(probe).unwrap();
+    let stack_bytes = StackPool::new(1, 0).unwrap().stats().reserved_bytes as u64;
+    let pid = worker
+        .spawn(&module, limits(actor_bytes + stack_bytes), 1)
+        .unwrap();
     worker
         .send(pid, &module.handler("Add").unwrap(), &[1], 4)
         .unwrap();

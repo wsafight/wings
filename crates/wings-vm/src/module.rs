@@ -2,12 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libloading::Library;
-use wings_abi::{DEFAULT_MAX_STEPS, ScalarEntry, ScalarOutput};
+use wings_abi::ScalarEntry;
 use wings_artifact::{
     Handler, INITIALIZER_SYMBOL, MAX_LIBRARY_BYTES, Manifest, handler_symbol, library_name,
 };
 
-use crate::{ScalarProcess, check_status, direct_context};
+use crate::{ScalarProcess, check_status};
 
 #[derive(Clone)]
 pub struct ScalarModule {
@@ -87,11 +87,11 @@ impl ScalarModule {
     }
 
     pub fn instantiate(&self) -> Result<ScalarProcess, String> {
-        let cancellation = std::sync::atomic::AtomicU32::new(0);
-        let yield_request = std::sync::atomic::AtomicU32::new(0);
-        let mut context = direct_context(&cancellation, &yield_request, DEFAULT_MAX_STEPS);
-        let mut output = ScalarOutput::default();
-        let status = unsafe { (self.inner.initializer)(0, [].as_ptr(), &mut output, &mut context) };
+        self.instantiate_in_pool(&crate::execution::default_stack_pool()?)
+    }
+
+    pub fn instantiate_in_pool(&self, pool: &crate::StackPool) -> Result<ScalarProcess, String> {
+        let (status, output) = crate::execution::initialize(self.inner.initializer, pool)?;
         check_status(status)?;
         if !self.inner.manifest.state.accepts(output.state) {
             return Err("initializer returned an invalid scalar state".into());

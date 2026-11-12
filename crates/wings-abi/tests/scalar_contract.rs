@@ -3,8 +3,9 @@ use std::sync::atomic::AtomicU32;
 
 use wings_abi::{
     DEFAULT_MAX_STEPS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED,
-    STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, ScalarContext,
-    ScalarEntry, ScalarOutput, ScalarSlowPath, ValueType, host_target,
+    STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW,
+    STATUS_STACK_EXHAUSTED, ScalarContext, ScalarEntry, ScalarOutput, ScalarSlowPath, ValueType,
+    host_target,
 };
 
 #[test]
@@ -51,7 +52,8 @@ fn control_context_layout_matches_the_native_codegen_contract() {
     assert_eq!(offset_of!(ScalarContext, slice_remaining), 24);
     assert_eq!(offset_of!(ScalarContext, slow_path), 32);
     assert_eq!(offset_of!(ScalarContext, data), 40);
-    assert_eq!(size_of::<ScalarContext>(), 48);
+    assert_eq!(offset_of!(ScalarContext, stack_limit), 48);
+    assert_eq!(size_of::<ScalarContext>(), 56);
     assert_eq!(align_of::<ScalarContext>(), 8);
     assert_eq!(size_of::<AtomicU32>(), 4);
 }
@@ -64,13 +66,14 @@ fn optional_slow_path_has_the_nullable_function_pointer_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 3);
+    assert_eq!(SCALAR_ABI_VERSION, 4);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
     assert_eq!(STATUS_CANCELLED, 3);
     assert_eq!(STATUS_BUDGET_EXHAUSTED, 4);
     assert_eq!(STATUS_INVALID_CONTROL, 5);
+    assert_eq!(STATUS_STACK_EXHAUSTED, 6);
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
 }
 

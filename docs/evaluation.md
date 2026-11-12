@@ -103,6 +103,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 ## 标量编译帧准入回归
 
+ABI v4 新增业务帧前的剩余栈边界回归：`stack_boundary` 在受限子进程对真实 initializer/handler（含高寄存器压力）设置零、过高、距当前 SP 仅 1 KiB 和可用限额，检查错误码 6、零扣步、输出不变及慢路径未调用；原有高压力帧、原栈恢复、取消和 worker 回归继续执行。Rust 回归检查布局、旧 v3 拒绝、guard/慢路径预留关系、同步池满拒绝及初始化计费。2026-11-12 本机 macOS AArch64 已通过 workspace 测试、check/clippy/fmt、Rust 1.85 全 targets 检查及 debug/release 行为脚本；Linux x86-64 仍待本分支 CI 独立验证，不能沿用下述历史结果。它不证明任意 Rust 慢路径或递归栈安全，也不是性能结果，见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
+
 行为脚本执行 `wings-compile` 的 `frame_limits` 示例，检查零值及超硬上限配置、1 字节限额拒绝，以及 128 个跨检查点活跃标量在 512 字节限额下拒绝；每次失败都确认输出目录不存在。默认 64 KiB 限额下构建并运行高寄存器压力入口，校验结果；既有 48 活跃值的原栈恢复继续运行。用例验证实际后端帧和写产物顺序，不证明 Rust 慢路径栈上界或动态栈安全，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
 
 该切片已在 `a12461e` 通过 macOS AArch64、Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101893550)。后续变更仍需独立验证；CI 的 MSRV 检查同时覆盖所有 targets，避免行为示例脱离 Rust 1.85 基线。
@@ -125,6 +127,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 专项构建：`cargo build --locked -p wings-vm --example resource_accounts`，产物为 `target/debug/examples/resource_accounts`；加 `--release` 后为 `target/release/examples/resource_accounts`。上面的验证脚本已在禁 core dump、20 秒 CPU 限制、30 秒墙钟超时的独立子进程运行此示例；两个平台的 debug/release 结果须分别记录。此序列分配有固定上限，不是内存耗尽压力测试。
 
 ## 原生栈分配实验
+
+本节与后续栈池/共享模块数字来自 ABI v4 之前的切片；当时同步调用及初始化使用宿主栈。当前已统一池内执行，新增切换、预热和缓存成本尚未重测，不能将这些历史数据直接作为当前 ABI v4 的内存或性能结果。
 
 2026-11-12 在 macOS 26.6.2 / Apple M3 Pro / 36 GiB / 16 KiB 页、Rust 1.99.1 release 上测试 `corosensei 0.3.3`。每种条件用独立 OS 子进程重复 3 次，数量为 512/2048；先测基线，再测分配/挂起，最后正常返回释放。`ps` RSS、`footprint` 的 `phys_footprint` 与 `vmmap` region 分开记录，以下为 2048 个实例扣除本进程基线后的中位数，不是单实例 allocator 字节数：
 
