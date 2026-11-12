@@ -9,12 +9,17 @@ use wings_abi::{
 use wings_artifact::Manifest;
 
 mod execution;
+mod heap;
 mod module;
 mod resources;
 mod stack_pool;
 mod wakeup;
 
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution, ScalarTask};
+pub use heap::{
+    CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,
+    RootFrame, ShadowRoots,
+};
 pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};

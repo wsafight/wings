@@ -43,6 +43,8 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
+未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的独立 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。它尚未接入生成代码或 ABI，不能把 Rust 侧根表验证称为 compiler shadow stack 已完成；下面的完整受管契约仍待实现。
+
 首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 
 - **不提供 `#[process]` Rust 子集前端**：proc-macro 无法自动控制依赖库内部的循环、最终寄存器分配和全部栈布局。普通 Rust 只能作为可信内建，通过受管桥接调用，且不能把普通 Rust 栈帧当作可扫描、可任意抢占的业务帧。
