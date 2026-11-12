@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOperator, Block, Expr, ExprKind, Handler, Name, Parameter, Process, Program, State,
-    Statement,
+    BinaryOperator, Block, Expr, ExprKind, Function, Handler, Name, Parameter, Process, Program,
+    State, Statement,
 };
 use crate::{Token, TokenKind};
 use wings_source::{Diagnostic, MAX_DIAGNOSTICS, Span};
@@ -108,6 +108,7 @@ impl Parser<'_> {
         matches!(
             self.current().kind,
             TokenKind::On
+                | TokenKind::Fn
                 | TokenKind::State
                 | TokenKind::Process
                 | TokenKind::RightBrace
@@ -139,6 +140,7 @@ impl Parser<'_> {
         self.expect(TokenKind::LeftBrace, "expected '{' after process name");
         let mut states = Vec::new();
         let mut handlers = Vec::new();
+        let mut functions = Vec::new();
         while !matches!(
             self.current().kind,
             TokenKind::RightBrace | TokenKind::Process | TokenKind::Eof
@@ -146,8 +148,16 @@ impl Parser<'_> {
             match self.current().kind {
                 TokenKind::State => states.push(self.state()),
                 TokenKind::On => handlers.push(self.handler()),
+                TokenKind::Fn => {
+                    let function = self.function();
+                    if functions.len() == 64 {
+                        self.error("process function count exceeds 64");
+                    } else {
+                        functions.push(function);
+                    }
+                }
                 _ => {
-                    self.error("expected state declaration or 'on' handler");
+                    self.error("expected state, 'fn' function or 'on' handler");
                     self.bump();
                 }
             }
@@ -159,6 +169,7 @@ impl Parser<'_> {
             name,
             states,
             handlers,
+            functions,
             span: Span::new(start, end),
         }
     }
@@ -212,6 +223,35 @@ impl Parser<'_> {
             reply_type,
             body,
             span,
+        }
+    }
+
+    fn function(&mut self) -> Function {
+        let start = self.current().span.start;
+        let has_parameters = self
+            .tokens
+            .get(self.cursor + 2)
+            .is_some_and(|token| token.kind == TokenKind::LeftParen);
+        let signature = self.handler();
+        if !has_parameters {
+            self.error("function parameters require parentheses");
+        }
+        let result = signature.reply_type.unwrap_or_else(|| {
+            self.error("function return type requires '-> Type'");
+            Name {
+                text: String::new(),
+                span: signature.name.span,
+            }
+        });
+        if signature.parameters.len() > 64 {
+            self.error("function parameter count exceeds 64");
+        }
+        Function {
+            name: signature.name,
+            parameters: signature.parameters,
+            result,
+            body: signature.body,
+            span: Span::new(start, signature.span.end),
         }
     }
 

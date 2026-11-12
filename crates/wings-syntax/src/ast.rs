@@ -16,6 +16,7 @@ pub struct Process {
     pub name: Name,
     pub states: Vec<State>,
     pub handlers: Vec<Handler>,
+    pub functions: Vec<Function>,
     pub span: Span,
 }
 
@@ -37,6 +38,15 @@ pub struct Handler {
     pub name: Name,
     pub parameters: Vec<Parameter>,
     pub reply_type: Option<Name>,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Function {
+    pub name: Name,
+    pub parameters: Vec<Parameter>,
+    pub result: Name,
     pub body: Block,
     pub span: Span,
 }

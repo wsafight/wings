@@ -1,8 +1,10 @@
 # 风险与里程碑
 
+[ADR-0036](adr/0036-bounded-inline-functions.md) 先开放有界内联 fn，动态调用栈、跨帧根和完整 M0 仍未完成；不跳过语言消息、业务值、外部事件与双平台 BEAM 门槛。
+
 失败定位按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 增加 ABI 故障分类及单槽最近退出快照；仍无跨线程聚合、历史或语言级监督，不把宿主诊断视为完整 MVP。
 
-[ADR-0034](adr/0034-record-state-loops.md) 补充唯一 RecordInt state 的循环根证明，不开放任意引用 phi 或业务函数，也不跳过双平台及完整 M0 门槛。
+[ADR-0034](adr/0034-record-state-loops.md) 补充唯一 RecordInt state 的循环根证明，不开放任意引用 phi，也不跳过双平台及完整 M0 门槛；有界源码函数另见 ADR-0036。
 
 宿主诊断先按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 暴露单 worker 最近安全点的预算/堆统计；跨线程、故障历史与完整可试用诊断仍在 MVP 门槛内。
 
@@ -10,11 +12,11 @@ M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 
 
 宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
 
-M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 验证标量/RecordInt 惰性合流与路径根；任意引用 phi 和业务函数仍需独立设计与根/栈证明。
+M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 验证标量/RecordInt 惰性合流与路径根；任意引用 phi 和动态函数调用仍需独立设计与根/栈证明。
 
 条件输入补充 [ADR-0030](adr/0030-scalar-comparisons.md) 的标量比较，不改变后续循环、完整受管执行和双平台性能门槛。
 
-回边执行按 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 验证唯一标量/RecordInt state 的 while，不因此开放任意引用 phi、业务函数或宣称 M0 完成。
+回边执行按 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 验证唯一标量/RecordInt state 的 while，不因此开放任意引用 phi、动态调用或宣称 M0 完成。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -41,7 +43,7 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录、条件表达式、比较和标量/RecordInt state while。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边。尚无引用消息根、任意引用 phi 或业务函数调用，不等于完整 safepoint/GC 或 M0 验证。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0036](adr/0036-bounded-inline-functions.md) 增加有界源码函数。尚无引用消息根、任意引用 phi 或动态业务调用栈，不等于完整 safepoint/GC 或 M0 验证。
 
 资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 

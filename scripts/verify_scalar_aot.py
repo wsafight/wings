@@ -170,7 +170,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -249,7 +249,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
     assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches or loops else "Ref")
-    if record_loops:
+    if record_loops or functions:
         name = "Count"
     elif record_branches:
         name = "Nested"
@@ -263,7 +263,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
-    if record_branches or record_loops:
+    if record_branches or record_loops or functions:
         def execute(entry, values):
             arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
             entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
@@ -278,8 +278,19 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return output
 
         output = execute(library.wings_scalar_init, [])
-        assert records[output.state] == (0 if record_loops else 7)
+        assert records[output.state] == (0 if record_loops or functions else 7)
         committed = output.state
+        if functions:
+            for name, values, expected_state, expected_reply in [
+                ("Count", [7], 7, 7), ("Choose", [0], 7, 7),
+                ("Choose", [1], 8, 8), ("Order", [], 8, 12), ("Once", [], 8, 38),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert records[output.state] == expected_state and output.reply == expected_reply, (name, records, output.reply)
+                committed = output.state
+            print("Compiler roots verified: inline function arguments, returns, call collections and loop calls")
+            return
         if record_loops:
             for name, values, expected_state, expected_reply in [
                 ("Count", [0], 0, 0), ("Count", [5], 5, 5), ("Count", [3], 5, 5),
@@ -540,6 +551,10 @@ def main():
         command([COMPILER, "build", ROOT / "examples/record-loops.wings", "-o", record_loops])
         example("record_loops", record_loops)
         command([sys.executable, Path(__file__), "--check-record-loop-roots", record_loops])
+        functions = parent / "functions"
+        command([COMPILER, "build", ROOT / "examples/functions.wings", "-o", functions])
+        example("inline_functions", functions)
+        command([sys.executable, Path(__file__), "--check-function-roots", functions])
         command([sys.executable, Path(__file__), "--check-loop-roots", loops])
         command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
         for limit, budget in [(0, 6), (1, 12), (10, 66)]:
@@ -677,5 +692,7 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), loops="branch")
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-loop-roots":
         verify_persistent_roots(Path(sys.argv[2]), record_loops=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-function-roots":
+        verify_persistent_roots(Path(sys.argv[2]), functions=True)
     else:
         main()

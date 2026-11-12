@@ -10,6 +10,10 @@ pub enum Type {
     Bool,
     Unit,
     RecordInt,
+    Function {
+        parameters: Vec<(String, Type)>,
+        result: Box<Type>,
+    },
     Message {
         parameters: Vec<(String, Type)>,
         reply: Option<Box<Type>>,
@@ -24,6 +28,16 @@ impl std::fmt::Display for Type {
             Self::Bool => formatter.write_str("Bool"),
             Self::Unit => formatter.write_str("Unit"),
             Self::RecordInt => formatter.write_str("RecordInt"),
+            Self::Function { parameters, result } => {
+                formatter.write_str("(")?;
+                for (index, (name, ty)) in parameters.iter().enumerate() {
+                    if index != 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{name}: {ty}")?;
+                }
+                write!(formatter, ") -> {result}")
+            }
             Self::Message { parameters, reply } => {
                 formatter.write_str("(")?;
                 for (index, (name, ty)) in parameters.iter().enumerate() {
@@ -48,6 +62,7 @@ impl std::fmt::Display for Type {
 pub enum SymbolKind {
     Process,
     Handler,
+    Function,
     Parameter,
     State,
     Local,
@@ -103,6 +118,9 @@ pub fn analyze(text: &str) -> Analysis {
         diagnostics: parsed.diagnostics.clone(),
         symbols: Vec::new(),
         references: Vec::new(),
+        functions: HashMap::new(),
+        in_function: false,
+        function_depth: 1,
     };
     let mut process_names = HashMap::new();
     for process in &parsed.program.processes {
@@ -119,6 +137,73 @@ pub fn analyze(text: &str) -> Analysis {
                 "a process must declare exactly one state",
                 process.name.span,
             );
+        }
+        checker.functions.clear();
+        for function in &process.functions {
+            let parameters: Vec<_> = function
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    (
+                        parameter.name.text.clone(),
+                        checker.declared_type(&parameter.ty),
+                    )
+                })
+                .collect();
+            let result = checker.declared_type(&function.result);
+            if matches!(
+                function.name.text.as_str(),
+                "record_int" | "read_int" | "collect"
+            ) || checker.functions.contains_key(&function.name.text)
+            {
+                checker.error(
+                    "T004",
+                    "duplicate or reserved function name",
+                    function.name.span,
+                );
+                continue;
+            }
+            let mut scope = HashMap::new();
+            for (parameter, (_, ty)) in function.parameters.iter().zip(&parameters) {
+                checker.bind(
+                    &parameter.name,
+                    SymbolKind::Parameter,
+                    ty.clone(),
+                    function.body.span,
+                    &mut scope,
+                );
+            }
+            checker.in_function = true;
+            checker.function_depth = 1;
+            let actual = checker.block(&function.body, &mut scope);
+            checker.in_function = false;
+            checker.require(
+                &actual,
+                &result,
+                function
+                    .body
+                    .tail
+                    .as_ref()
+                    .map_or(function.body.span, |tail| tail.span),
+            );
+            let depth = checker.function_depth;
+            if depth > 32 {
+                checker.error("T017", "function call chain exceeds 32", function.name.span);
+            }
+            let symbol = checker.symbols.len();
+            checker.symbols.push(Symbol {
+                name: function.name.text.clone(),
+                kind: SymbolKind::Function,
+                ty: Type::Function {
+                    parameters,
+                    result: Box::new(result),
+                },
+                span: function.name.span,
+                scope: process.span,
+            });
+            checker
+                .functions
+                .insert(function.name.text.clone(), (symbol, depth));
         }
         let mut state_scope = HashMap::new();
         for state in &process.states {
@@ -206,6 +291,9 @@ struct Checker {
     diagnostics: Vec<Diagnostic>,
     symbols: Vec<Symbol>,
     references: Vec<Reference>,
+    functions: HashMap<String, (usize, usize)>,
+    in_function: bool,
+    function_depth: usize,
 }
 
 impl Checker {
@@ -297,6 +385,13 @@ impl Checker {
         for statement in &block.statements {
             match statement {
                 Statement::While { condition, body } => {
+                    if self.in_function {
+                        self.error(
+                            "T017",
+                            "while is not supported in functions",
+                            condition.span,
+                        );
+                    }
                     let condition_type = self.expression(condition, scope);
                     self.require(&condition_type, &Type::Bool, condition.span);
                     let result = self.block(body, &mut scope.clone());
@@ -358,6 +453,35 @@ impl Checker {
                         callee.span,
                     );
                     return Type::Unknown;
+                }
+                if let Some(&(symbol, depth)) = self.functions.get(&callee.text) {
+                    self.references.push(Reference {
+                        span: callee.span,
+                        symbol,
+                    });
+                    self.function_depth = self.function_depth.max(depth + 1);
+                    let Type::Function { parameters, result } = self.symbols[symbol].ty.clone()
+                    else {
+                        unreachable!()
+                    };
+                    if types.len() != parameters.len() {
+                        self.error(
+                            "T013",
+                            format!(
+                                "{} expects {} argument(s), found {}",
+                                callee.text,
+                                parameters.len(),
+                                types.len()
+                            ),
+                            expression.span,
+                        );
+                    }
+                    for ((actual, (_, expected)), argument) in
+                        types.iter().zip(&parameters).zip(arguments)
+                    {
+                        self.require(actual, expected, argument.span);
+                    }
+                    return *result;
                 }
                 let (expected, result) = match callee.text.as_str() {
                     "record_int" => (Some(Type::Int), Type::RecordInt),

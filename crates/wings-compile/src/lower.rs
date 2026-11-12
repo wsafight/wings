@@ -19,7 +19,15 @@ pub fn lower(text: &str) -> Result<Program, String> {
     };
     let state = &process.states[0];
     let state_type = value_type(&state.ty.text)?;
-    let mut initializer = Lowerer::default();
+    let functions: HashMap<_, _> = process
+        .functions
+        .iter()
+        .map(|function| (function.name.text.as_str(), function))
+        .collect();
+    let mut initializer = Lowerer {
+        functions: functions.clone(),
+        ..Lowerer::default()
+    };
     let initial_state = initializer.expression(&state.default)?;
     let initial_reply = initializer.push(ValueType::Unit, Operation::Constant(0))?;
     let initializer = Function {
@@ -29,7 +37,10 @@ pub fn lower(text: &str) -> Result<Program, String> {
     };
     let mut handlers = Vec::new();
     for handler in &process.handlers {
-        let mut lowerer = Lowerer::default();
+        let mut lowerer = Lowerer {
+            functions: functions.clone(),
+            ..Lowerer::default()
+        };
         let mut candidate = lowerer.push(state_type, Operation::State)?;
         lowerer.bindings.insert(state.name.text.clone(), candidate);
         let parameters = handler
@@ -72,12 +83,15 @@ pub fn lower(text: &str) -> Result<Program, String> {
 }
 
 #[derive(Default)]
-struct Lowerer {
+struct Lowerer<'program> {
     bindings: HashMap<String, Register>,
     instructions: Vec<Instruction>,
+    functions: HashMap<&'program str, &'program wings_syntax::ast::Function>,
+    call_depth: usize,
+    expression_depth: usize,
 }
 
-impl Lowerer {
+impl Lowerer<'_> {
     fn statements(
         &mut self,
         statements: &[Statement],
@@ -127,6 +141,16 @@ impl Lowerer {
     }
 
     fn expression(&mut self, expression: &Expr) -> Result<Register, String> {
+        if self.expression_depth == 256 {
+            return Err("expanded expression depth exceeds 256".into());
+        }
+        self.expression_depth += 1;
+        let result = self.expression_inner(expression);
+        self.expression_depth -= 1;
+        result
+    }
+
+    fn expression_inner(&mut self, expression: &Expr) -> Result<Register, String> {
         match &expression.kind {
             ExprKind::Integer(value) => self.push(ValueType::Int, Operation::Constant(*value)),
             ExprKind::Boolean(value) => {
@@ -138,18 +162,54 @@ impl Lowerer {
                 .get(&name.text)
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
-            ExprKind::Call { callee, arguments } => match callee.text.as_str() {
-                "record_int" => {
-                    let value = self.expression(&arguments[0])?;
-                    self.push(ValueType::Ref, Operation::RecordInt(value))
+            ExprKind::Call { callee, arguments } => {
+                if let Some(function) = self.functions.get(callee.text.as_str()).copied() {
+                    if self.call_depth == 32 {
+                        return Err("function call chain exceeds 32".into());
+                    }
+                    let values = arguments
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.call_depth += 1;
+                    self.push(ValueType::Unit, Operation::Constant(0))?;
+                    let outer = std::mem::take(&mut self.bindings);
+                    for (parameter, register) in function.parameters.iter().zip(values) {
+                        self.bindings.insert(parameter.name.text.clone(), register);
+                    }
+                    for statement in &function.body.statements {
+                        match statement {
+                            Statement::Let { name, value, .. } => {
+                                let register = self.expression(value)?;
+                                self.bindings.insert(name.text.clone(), register);
+                            }
+                            Statement::Expr(value) => {
+                                self.expression(value)?;
+                            }
+                            _ => return Err("functions cannot assign state or loop".into()),
+                        }
+                    }
+                    let result = match &function.body.tail {
+                        Some(tail) => self.expression(tail),
+                        None => self.push(ValueType::Unit, Operation::Constant(0)),
+                    };
+                    self.bindings = outer;
+                    self.call_depth -= 1;
+                    return result;
                 }
-                "read_int" => {
-                    let value = self.expression(&arguments[0])?;
-                    self.push(ValueType::Int, Operation::ReadInt(value))
+                match callee.text.as_str() {
+                    "record_int" => {
+                        let value = self.expression(&arguments[0])?;
+                        self.push(ValueType::Ref, Operation::RecordInt(value))
+                    }
+                    "read_int" => {
+                        let value = self.expression(&arguments[0])?;
+                        self.push(ValueType::Int, Operation::ReadInt(value))
+                    }
+                    "collect" => self.push(ValueType::Unit, Operation::Collect),
+                    _ => Err("unsupported builtin call".into()),
                 }
-                "collect" => self.push(ValueType::Unit, Operation::Collect),
-                _ => Err("unsupported builtin call".into()),
-            },
+            }
             ExprKind::Negate(value) => {
                 let register = self.expression(value)?;
                 self.push(ValueType::Int, Operation::Negate(register))
@@ -221,6 +281,59 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_functions_evaluate_arguments_once_restore_bindings_and_bound_empty_expansion() {
+        let program = lower("process P { state n: Int = 0; fn twice(value: RecordInt) -> Int { read_int(value) + read_int(value) } on Get -> Int { let value = 7; twice(record_int(value)) + value } }").unwrap();
+        assert_eq!(
+            program.handlers[0]
+                .function
+                .instructions
+                .iter()
+                .filter(|instruction| matches!(instruction.operation, Operation::RecordInt(_)))
+                .count(),
+            1
+        );
+        let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
+        for index in 1..14 {
+            definitions.push_str(&format!(
+                " fn f{index}(x: Int) -> Int {{ f{}(x); f{}(x) }}",
+                index - 1,
+                index - 1
+            ));
+        }
+        let text =
+            format!("process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f13(n) }} }}");
+        let error = lower(&text).unwrap_err();
+        assert!(error.contains("4096"), "{error}");
+        let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
+        for index in 1..32 {
+            definitions.push_str(&format!(
+                " fn f{index}(x: Int) -> Int {{ f{}(x) }}",
+                index - 1
+            ));
+        }
+        let text = format!(
+            "process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f31(f31(n)) }} }}"
+        );
+        let program = lower(&text).unwrap();
+        assert_eq!(program.handlers[0].function.instructions.len(), 65);
+        let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
+        for index in 1..32 {
+            definitions.push_str(&format!(
+                " fn f{index}(x: Int) -> Int {{ {}f{}(x) }}",
+                "-".repeat(16),
+                index - 1
+            ));
+        }
+        let text =
+            format!("process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f31(n) }} }}");
+        assert!(
+            lower(&text)
+                .unwrap_err()
+                .contains("expression depth exceeds 256")
+        );
+    }
 
     #[test]
     fn record_state_while_lowers_to_rooted_header_and_exit() {

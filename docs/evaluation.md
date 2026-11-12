@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0036](adr/0036-bounded-inline-functions.md) 验证函数状态隔离、顺序/递归/链深与展开上限，真实 AOT 在函数参数/返回/collect 及循环调用处强制 GC；再核对逐片恢复、预算/取消和失败清理。内联不替代动态帧或双平台验证。
+
 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 核对故障分类、清理前/后账目区别、重启后旧失败可查及后续覆盖；真实 AOT 预算、除零、堆满失败均需定位 handler 并终结请求，不能因缓存诊断保留旧资源。
 
 [ADR-0034](adr/0034-record-state-loops.md) 的 RecordInt state while 验证 header、回边和零次出口的根，包含不读取状态的条件、嵌套和初始候选不被错误重复发布；每个慢路径/内建前强制收集，再核对 runtime 小堆/逐片恢复/失败不提交和清理。Linux x86-64 仍待独立执行。

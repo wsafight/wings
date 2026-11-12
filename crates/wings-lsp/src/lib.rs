@@ -116,7 +116,7 @@ impl Server {
                     })),
                     _ => {
                         let mut labels = HashMap::new();
-                        for keyword in ["process", "state", "on", "let", "if", "else", "while", "true", "false"] {
+                        for keyword in ["process", "state", "on", "fn", "let", "if", "else", "while", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
                         for ty in ["Int", "Bool", "Unit", "RecordInt"] {
@@ -126,7 +126,7 @@ impl Server {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
                         for symbol in document.analysis.visible_symbols(offset) {
-                            let kind = match symbol.kind { SymbolKind::Process => 7, SymbolKind::Handler => 3, _ => 6 };
+                            let kind = match symbol.kind { SymbolKind::Process => 7, SymbolKind::Handler | SymbolKind::Function => 3, _ => 6 };
                             labels.insert(symbol.name.clone(), json!({ "label": symbol.name, "kind": kind, "detail": symbol.ty.to_string() }));
                         }
                         let mut items: Vec<Value> = labels.into_values().collect();

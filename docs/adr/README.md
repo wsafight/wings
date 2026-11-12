@@ -43,6 +43,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0033](0033-record-conditional-roots.md) | RecordInt 惰性条件合流、路径根恢复与合流前发布 | 已采纳；替代 0029 的标量结果限制 |
 | [0034](0034-record-state-loops.md) | RecordInt state header/回边/出口根及零次路径 | 已采纳；替代 0031 的标量 state 限制 |
 | [0035](0035-bounded-exit-diagnostics.md) | ABI 故障分类与无业务所有权的单槽退出快照 | 已采纳（M0 宿主失败定位切片） |
+| [0036](0036-bounded-inline-functions.md) | 有界非递归 process 函数、单次实参求值与内联根 | 已采纳（M0 源码函数切片） |
 
 ## 维护方式
 

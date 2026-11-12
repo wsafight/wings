@@ -14,6 +14,51 @@ fn expression(text: &str) -> Expr {
         .unwrap()
 }
 
+#[test]
+fn functions_parse_signatures_and_recover_before_following_handlers() {
+    let parsed = parse(
+        "process P { state n: Int = twice(1); fn twice(value: Int) -> Int { value + value } on Get -> Int { twice(n) } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let function = &parsed.program.processes[0].functions[0];
+    assert_eq!(function.name.text, "twice");
+    assert_eq!(function.parameters[0].name.text, "value");
+    assert_eq!(function.result.text, "Int");
+    for declaration in [
+        "fn missing -> Int { 1 }",
+        "fn missing() { 1 }",
+        "fn broken(value: ) -> Int { value }",
+        "fn broken() -> Int { let value = on Get -> Int { 7 }",
+    ] {
+        let parsed = parse(&format!(
+            "process P {{ state n: Int = 0; {declaration} on Final -> Int {{ n }} }}"
+        ));
+        assert!(!parsed.diagnostics.is_empty(), "{declaration}");
+        assert!(
+            parsed.program.processes[0]
+                .handlers
+                .iter()
+                .any(|handler| handler.name.text == "Final")
+        );
+    }
+    for count in [64, 65] {
+        let functions: String = (0..count)
+            .map(|index| format!("fn f{index}() -> Int {{ 0 }} "))
+            .collect();
+        let parsed = parse(&format!("process P {{ state n: Int = 0; {functions} }}"));
+        assert_eq!(parsed.program.processes[0].functions.len(), count.min(64));
+        assert_eq!(parsed.diagnostics.is_empty(), count == 64);
+        let parameters = (0..count)
+            .map(|index| format!("p{index}: Int"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parsed = parse(&format!(
+            "process P {{ state n: Int = 0; fn many({parameters}) -> Int {{ 0 }} }}"
+        ));
+        assert_eq!(parsed.diagnostics.is_empty(), count == 64);
+    }
+}
+
 fn shape(expression: &Expr) -> String {
     match &expression.kind {
         ExprKind::Integer(value) => value.to_string(),

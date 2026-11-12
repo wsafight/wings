@@ -69,6 +69,91 @@ fn while_requires_bool_condition_unit_body_and_local_scope() {
 }
 
 #[test]
+fn functions_share_types_and_references_without_process_state_or_recursion() {
+    let text = "process P { state n: RecordInt = make(0); fn make(value: Int) -> RecordInt { record_int(value) } fn next(value: RecordInt) -> RecordInt { collect(); make(read_int(value) + 1) } on Count -> Int { n = next(n); read_int(n) } }";
+    let analysis = checked(text);
+    assert_eq!(
+        analysis
+            .symbol_at(text.rfind("next(n)").unwrap())
+            .unwrap()
+            .kind,
+        SymbolKind::Function
+    );
+    for (definition, code, fragment) in [
+        ("fn f(x: Int) -> Int { f(x) }", "T012", "unsupported"),
+        (
+            "fn f() -> Int { g() } fn g() -> Int { 1 }",
+            "T012",
+            "unsupported",
+        ),
+        ("fn f() -> Int { n }", "T006", "unknown name"),
+        ("fn f(x: Int) -> Int { x = 2; x }", "T008", "only state"),
+        ("fn f() -> Unit { while false {} }", "T017", "while"),
+        ("fn f() -> Int { true }", "T005", "expected Int"),
+        ("fn collect() -> Int { 1 }", "T004", "reserved"),
+        (
+            "fn f() -> Int { 1 } fn f() -> Int { 2 }",
+            "T004",
+            "duplicate",
+        ),
+        (
+            "fn f(x: Int) -> Int { x } fn g() -> Int { f(true) }",
+            "T005",
+            "expected Int",
+        ),
+        (
+            "fn f(x: Int) -> Int { x } fn g() -> Int { f() }",
+            "T013",
+            "expects 1",
+        ),
+        (
+            "fn f(x: Int) -> Int { x } fn g(f: Int) -> Int { f(1) }",
+            "T012",
+            "not callable",
+        ),
+    ] {
+        assert_error(
+            &format!("process P {{ state n: Int = 0; {definition} }}"),
+            code,
+            fragment,
+        );
+    }
+    for count in [32, 33] {
+        let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
+        for index in 1..count {
+            definitions.push_str(&format!(
+                " fn f{index}(x: Int) -> Int {{ f{}(x) }}",
+                index - 1
+            ));
+        }
+        let text = format!("process P {{ state n: Int = 0; {definitions} }}");
+        if count == 32 {
+            checked(&text);
+        } else {
+            assert_error(&text, "T017", "exceeds 32");
+        }
+    }
+    checked(
+        "process P { state n: Int = f(1); fn f(value: Int) -> Int { value } fn g(value: Int) -> Bool { value == 1 } on Get -> Int { let f = 2; f } }",
+    );
+    assert_error(
+        "process P { state n: Int = 0; fn f() -> Int { 1 } on Get(f: Int) -> Int { f() } }",
+        "T012",
+        "not callable",
+    );
+    assert_error(
+        "process P { state n: Int = 0; fn f(x: Int, x: Int) -> Int { x } }",
+        "T004",
+        "duplicate",
+    );
+    assert_error(
+        "process P { state n: Int = 0; fn f(x: Int) -> Int { x } on Get -> Int { f(1, 2) } }",
+        "T013",
+        "expects 1",
+    );
+}
+
+#[test]
 fn comparisons_require_same_scalar_equality_or_signed_integer_ordering() {
     checked(
         "process P { state n: Int = 0; on Get(left: Int, right: Int) -> Bool { let less: Bool = left < right; if less { left != right } else { left >= right } } on Eq(left: Bool) -> Bool { left == true } on Unit -> Bool { () != () } }",

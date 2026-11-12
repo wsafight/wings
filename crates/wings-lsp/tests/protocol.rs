@@ -71,6 +71,40 @@ fn conditional_queries_share_scope_and_keyword_completion() {
 }
 
 #[test]
+fn function_calls_share_signature_definition_and_keyword_completion() {
+    let mut server = server();
+    let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";
+    let diagnostics = open(&mut server, URI, 1, text);
+    assert!(
+        diagnostics[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let offset = text.rfind("twice(n)").unwrap() as u32;
+    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
+    assert_eq!(
+        hover["result"]["contents"]["value"],
+        "twice: (value: Int) -> Int"
+    );
+    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
+    assert_eq!(
+        definition["result"]["range"]["start"]["character"],
+        text.find("twice").unwrap()
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    for label in ["fn", "twice"] {
+        assert!(
+            completion["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+}
+
+#[test]
 fn record_state_shares_types_definitions_and_diagnostics() {
     let mut server = server();
     let text = "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get -> Int { while read_int(saved) < 11 { saved = if true { record_int(11) } else { saved } }; collect(); read_int(saved) } }";

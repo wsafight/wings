@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量分支、比较、state while 和有界 RecordInt 临时/持久状态。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；尚无语言消息副作用、引用消息、业务函数或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt 分支、比较、state while、有界内联 fn 与临时/持久记录。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；尚无语言消息副作用、引用消息、动态调用栈或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
+
+process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；编译器有界内联，每次入口保留预算检查。示例 `examples/functions.wings`、限制和根验证见 [ADR-0036](docs/adr/0036-bounded-inline-functions.md)。
 
 宿主 `ScalarWorker::snapshot` / `ScalarSupervisor::snapshot` 可查询排队、当前入口、已提交标量状态、进程用量及最近安全点预算/GC 统计；不推进执行或暴露记录 handle。`ScalarTask` / `ScalarExecution` 保留最近入口的只读执行快照。挂起统计不是后台实时采样，边界见 [ADR-0032](docs/adr/0032-safe-point-diagnostics.md)；验证命令仍为 workspace 测试及 debug/release AOT 脚本。
 

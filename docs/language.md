@@ -1,5 +1,7 @@
 # wings-lang
 
+process 内可按 [ADR-0036](adr/0036-bounded-inline-functions.md) 声明有显式参数/返回类型的 `fn`：只访问参数/局部和更早函数，不访问 state，禁止递归/while。编译器有界内联，支持 RecordInt 参数/返回及 collect；不是新的跨帧调用 ABI，展开后仍受操作、根与实际帧限额约束。
+
 持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；消息字段和回复仍禁止 RecordInt。执行必须显式配置计费堆，不接受外部 handle。
 
 条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量及 RecordInt，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
@@ -133,7 +135,7 @@ let id = request(counter, Inc(by: 2))
 | Rust | 参数与回复签名、联合类型和穷尽匹配方向 | 业务层所有权、生命周期和借用标注 |
 | Go | 少量规则、明确控制流 | 每个进程手写接收循环和阻塞 `select` |
 
-后续普通代码按 `fn`、`match`、通用记录和联合类型推进；目前已实现 `let`、标量/RecordInt `if` 与 state while 和记录内建，不支持任意函数调用。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
+后续普通代码按动态函数调用、`match`、通用记录和联合类型推进；目前已有有界内联 fn、`let`、标量/RecordInt `if` 与 state while 和记录内建，不支持递归或函数值。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
 
 ## 当前原型支持范围
 
@@ -150,8 +152,9 @@ let id = request(counter, Inc(by: 2))
 - `RecordInt` 局部/state、受限记录内建、同类型标量/RecordInt `if` 与唯一 state 的 while；无任意引用 phi。
 - handler 内携带唯一标量/RecordInt state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
+- process 内最多 64 个 fn、64 个显式类型参数、32 层声明顺序调用；非递归内联，无 state 访问/赋值或函数内 while，展开后仍受入口操作/根/帧上限约束。
 
-尚未实现模块、函数、任意引用 phi、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现模块、动态函数调用/递归、任意引用 phi、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 

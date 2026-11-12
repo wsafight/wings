@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0036](adr/0036-bounded-inline-functions.md) 的源码 fn 内联到当前 handler/initializer，参数按序求值一次，记录引用仍归当前堆；调用内失败直接终止入口，候选不提交，不新增原生调用入口。
+
 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 在清理前复制单槽最近退出诊断，保留失败 handler、结构化 ABI 故障、预算/GC 与旧标量提交；不保留旧堆/栈/账户，supervisor 重启不会覆盖。仅报告最近一次受管失败，不提供无界历史或语言 monitor。
 
 RecordInt 条件合流按 [ADR-0033](adr/0033-record-conditional-roots.md) 在检查前发布选中引用；唯一 state 的引用回边按 [ADR-0034](adr/0034-record-state-loops.md) 分别保活 header/候选/出口，不发布未执行体局部。旧提交根独立保留至正常返回，无引用消息或任意引用 phi。

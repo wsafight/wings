@@ -1,0 +1,44 @@
+process Functions {
+  fn twice(value: Int) -> Int { value + value }
+  fn fresh(value: Int) -> RecordInt { record_int(value) }
+  fn next(value: RecordInt) -> RecordInt {
+    collect()
+    fresh(read_int(value) + 1)
+  }
+  fn choose(flag: Bool, value: RecordInt) -> RecordInt {
+    if flag { next(value) } else { value }
+  }
+  fn count_value(first: RecordInt, second: RecordInt) -> Int {
+    collect()
+    read_int(first) * 10 + read_int(second)
+  }
+  fn unchanged(value: RecordInt) -> RecordInt { value }
+  fn fail(value: RecordInt) -> Int {
+    collect()
+    read_int(value) / 0
+  }
+  state value: RecordInt = fresh(twice(0))
+  on Get -> Int { read_int(value) }
+  on Count(limit: Int) -> Int {
+    while read_int(value) < limit {
+      value = next(value)
+    }
+    read_int(value)
+  }
+  on Choose(flag: Bool) -> Int {
+    value = choose(flag, value)
+    read_int(value)
+  }
+  on Order -> Int { count_value(fresh(1), fresh(2)) }
+  on Once -> Int { count_value(unchanged(fresh(3)), unchanged(value)) }
+  on FirstFailure -> Int {
+    count_value(fresh(1 / 0), fresh(9223372036854775807 + 1))
+  }
+  on SecondFailure -> Int {
+    count_value(fresh(9223372036854775807 + 1), fresh(1 / 0))
+  }
+  on Fail -> Int {
+    value = next(value)
+    fail(value)
+  }
+}
