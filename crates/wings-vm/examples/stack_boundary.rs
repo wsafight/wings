@@ -52,6 +52,7 @@ fn verify(directory: &Path, name: &str, argument: i64, expected: i64) {
                     let request = AtomicU32::new(0);
                     let mut called = false;
                     let mut context = ScalarContext {
+                        effect_call: None,
                         cancellation: &cancellation,
                         remaining_steps: 100_000,
                         yield_request: &request,

@@ -63,6 +63,7 @@ def verify_control_abi(directory):
             ("roots", ctypes.c_void_p),
             ("heap_call", ctypes.c_void_p),
             ("heap_data", ctypes.c_void_p),
+            ("effect_call", ctypes.c_void_p),
         ]
 
     def control(budget, slice_steps=2**64 - 1, callback=None):
@@ -71,7 +72,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 7
+    assert manifest["abi"] == 8
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -162,7 +163,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v7 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v8 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def example(name, *arguments):
@@ -170,7 +171,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -187,6 +188,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             ("yield_request", ctypes.POINTER(ctypes.c_uint32)), ("slice_remaining", ctypes.c_uint64),
             ("slow_path", ctypes.c_void_p), ("data", ctypes.c_void_p), ("stack_limit", ctypes.c_size_t),
             ("roots", ctypes.POINTER(Frame)), ("heap_call", ctypes.c_void_p), ("heap_data", ctypes.c_void_p),
+            ("effect_call", ctypes.c_void_p),
         ]
 
     records = {}
@@ -273,11 +275,29 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             errors.append(repr(error))
             return 8
 
+    effects = []
+    effect_status = 0
+    effect_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.c_uint32, ctypes.POINTER(ctypes.c_int64), ctypes.c_size_t)
+
+    @effect_type
+    def effect_call(pointer, target, arguments, count):
+        try:
+            roots = collect(pointer.contents)
+            assert len(roots) == 2
+            effects.append((target, list(arguments[:count])))
+            pointer.contents.slice_remaining = 1
+            return effect_status
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 7 and manifest["state"] == ("ListRef" if lists else ("Int" if branches or loops else "Ref"))
-    if lists:
+    assert manifest["abi"] == 8 and manifest["state"] == ("ListRef" if lists else ("Int" if branches or loops else "Ref"))
+    if self_send:
+        name = "Start"
+    elif lists:
         name = "Build"
     elif record_loops or functions:
         name = "Count"
@@ -293,12 +313,14 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
-    if record_branches or record_loops or functions or lists:
+    if record_branches or record_loops or functions or lists or self_send:
         def execute(entry, values):
             arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
             entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
             entry.restype = ctypes.c_uint32
             context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+            if self_send:
+                context.effect_call = ctypes.cast(effect_call, ctypes.c_void_p).value
             output = Output(71, 91)
             observations.clear()
             state = committed or 0
@@ -308,6 +330,21 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return output
 
         output = execute(library.wings_scalar_init, [])
+        if self_send:
+            committed = output.state
+            output = execute(handler, [])
+            assert records[output.state] == 9 and output.reply == 9
+            add = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Add")
+            assert effects == [(add, [3])], effects
+            for effect_status in [3, 10]:
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None, ctypes.cast(effect_call, ctypes.c_void_p).value)
+                rejected = Output(71, 91)
+                assert handler(committed, arguments, ctypes.byref(rejected), ctypes.byref(context)) == effect_status, errors
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert not errors and not context.roots
+            assert effects == [(add, [3])] * 3
+            print("Compiler roots verified: self-send callback, candidate and outer live record")
+            return
         if lists:
             assert records[output.state] is None
             committed = output.state
@@ -603,6 +640,12 @@ def main():
         command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
         example("int_lists", lists)
         command([sys.executable, Path(__file__), "--check-list-roots", lists])
+        self_send = parent / "self-send"
+        self_send_roots = parent / "self-send-roots"
+        command([COMPILER, "build", ROOT / "examples/self-send.wings", "-o", self_send])
+        command([COMPILER, "build", ROOT / "examples/self-send-roots.wings", "-o", self_send_roots])
+        example("self_send", self_send, self_send_roots)
+        command([sys.executable, Path(__file__), "--check-self-send-roots", self_send_roots])
         command([sys.executable, Path(__file__), "--check-loop-roots", loops])
         command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
         for limit, budget in [(0, 6), (1, 12), (10, 66)]:
@@ -691,7 +734,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 6), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 6), ("abi", 7), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -744,5 +787,7 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), functions=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-roots":
         verify_persistent_roots(Path(sys.argv[2]), lists=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-self-send-roots":
+        verify_persistent_roots(Path(sys.argv[2]), self_send=True)
     else:
         main()

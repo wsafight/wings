@@ -56,7 +56,8 @@ fn control_context_layout_matches_the_native_codegen_contract() {
     assert_eq!(offset_of!(ScalarContext, roots), 56);
     assert_eq!(offset_of!(ScalarContext, heap_call), 64);
     assert_eq!(offset_of!(ScalarContext, heap_data), 72);
-    assert_eq!(size_of::<ScalarContext>(), 80);
+    assert_eq!(offset_of!(ScalarContext, effect_call), 80);
+    assert_eq!(size_of::<ScalarContext>(), 88);
     assert_eq!(align_of::<ScalarContext>(), 8);
     assert_eq!(size_of::<AtomicU32>(), 4);
 }
@@ -66,11 +67,15 @@ fn optional_slow_path_has_the_nullable_function_pointer_layout() {
     assert_eq!(size_of::<Option<ScalarSlowPath>>(), size_of::<usize>());
     assert_eq!(size_of::<ScalarEntry>(), size_of::<usize>());
     assert_eq!(size_of::<Option<HeapCall>>(), size_of::<usize>());
+    assert_eq!(
+        size_of::<Option<wings_abi::EffectCall>>(),
+        size_of::<usize>()
+    );
 }
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 7);
+    assert_eq!(SCALAR_ABI_VERSION, 8);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
@@ -81,6 +86,7 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(STATUS_HEAP_EXHAUSTED, 7);
     assert_eq!(STATUS_INVALID_ROOT, 8);
     assert_eq!(wings_abi::STATUS_EMPTY_LIST, 9);
+    assert_eq!(wings_abi::STATUS_SEND_REJECTED, 10);
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
 }
 

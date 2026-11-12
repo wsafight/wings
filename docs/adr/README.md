@@ -45,6 +45,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0035](0035-bounded-exit-diagnostics.md) | ABI 故障分类与无业务所有权的单槽退出快照 | 已采纳（M0 宿主失败定位切片） |
 | [0036](0036-bounded-inline-functions.md) | 有界非递归 process 函数、单次实参求值与内联根 | 已采纳（M0 源码函数切片） |
 | [0037](0037-immutable-int-lists.md) | ABI v7、不可变 IntList 节点、类型边界及传递根 | 已采纳（M0/M1 业务值切片） |
+| [0038](0038-self-send-effects.md) | ABI v8、静态自发送、按值 effect 交接与调用点准入 | 已采纳（消息副作用前置切片） |
 
 ## 维护方式
 

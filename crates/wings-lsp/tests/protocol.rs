@@ -71,6 +71,35 @@ fn conditional_queries_share_scope_and_keyword_completion() {
 }
 
 #[test]
+fn self_send_targets_resolve_to_forward_handler_definitions() {
+    let mut server = server();
+    let text = "process P { state n: Int = 0; on Start { send_self(Add, 1) } on Add(value: Int) { n = value } }";
+    assert_eq!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = text.find("Add, 1").unwrap() as u32;
+    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
+    assert_eq!(
+        hover["result"]["contents"]["value"],
+        "Add: (value: Int) (one-way)"
+    );
+    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
+    assert_eq!(
+        definition["result"]["range"]["start"]["character"],
+        text.rfind("Add").unwrap()
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    assert!(
+        completion["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "send_self")
+    );
+}
+
+#[test]
 fn function_calls_share_signature_definition_and_keyword_completion() {
     let mut server = server();
     let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";

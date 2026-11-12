@@ -43,6 +43,54 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn self_send_validates_target_kind_arguments_and_initializer_boundary() {
+    let mut program = valid_program();
+    program.handlers.push(Handler {
+        name: "Notify".into(),
+        parameters: vec![("value".into(), ValueType::Int)],
+        reply: None,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Int, Operation::State),
+                instruction(ValueType::Unit, Operation::Constant(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    });
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![2],
+        },
+    ));
+    program.validate().unwrap();
+    for (target, arguments, error) in [
+        (usize::MAX, vec![2], "invalid self-send handler"),
+        (0, vec![2], "one-way handler"),
+        (1, vec![], "one-way handler"),
+        (1, vec![usize::MAX], "operand"),
+        (1, vec![2; 65], "invalid scalar IR"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[3].operation = Operation::SendSelf {
+            handler: target,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+    program.initializer.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![0],
+        },
+    ));
+    rejects(&program, "initializer");
+}
+
+#[test]
 fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
     let mut program = valid_program();
     let function = &mut program.handlers[0].function;

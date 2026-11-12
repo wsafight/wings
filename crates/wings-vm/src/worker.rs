@@ -283,7 +283,8 @@ impl ScalarWorker {
             Some(capacity) => module.instantiate_with_heap(&pool, &account, capacity)?,
             None => module.instantiate_in_pool(&pool)?,
         };
-        let task = ScalarTask::new(process);
+        let mut task = ScalarTask::new(process);
+        task.enable_effects();
         self.slots[index].actor = Some(Actor {
             task,
             active: None,
@@ -452,7 +453,44 @@ impl ScalarWorker {
             let status = actor.task.resume(slice_steps);
             self.expire_requests();
             return match status {
-                Ok(ExecutionStatus::Suspended) => Ok(WorkerEvent::Suspended(pid)),
+                Ok(ExecutionStatus::Suspended) => {
+                    let actor = self.slots[index].actor.as_mut().expect("suspended actor");
+                    if let Some(effect) = actor.task.take_effect() {
+                        let module = actor.task.module().clone();
+                        let budget = actor
+                            .active
+                            .as_ref()
+                            .expect("active message")
+                            .message
+                            .max_steps;
+                        let accepted = module
+                            .manifest()
+                            .handlers
+                            .get(effect.handler)
+                            .and_then(|schema| module.handler(&schema.name).ok())
+                            .is_some_and(|handler| {
+                                self.enqueue(
+                                    pid,
+                                    &handler,
+                                    &effect.arguments[..effect.count],
+                                    budget,
+                                    None,
+                                )
+                                .is_ok()
+                            });
+                        self.slots[index]
+                            .actor
+                            .as_mut()
+                            .expect("effect actor")
+                            .task
+                            .acknowledge_effect(if accepted {
+                                wings_abi::STATUS_OK
+                            } else {
+                                wings_abi::STATUS_SEND_REJECTED
+                            });
+                    }
+                    Ok(WorkerEvent::Suspended(pid))
+                }
                 Ok(ExecutionStatus::Complete(reply)) => {
                     let active = self.slots[index]
                         .actor

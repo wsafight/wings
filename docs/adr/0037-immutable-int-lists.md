@@ -1,6 +1,7 @@
 # ADR-0037：不可变 IntList 与传递根
 
 - 日期：2026-11-13
+- 后续：[ADR-0038](0038-self-send-effects.md) 升至 ABI v8 并增加 worker 自发送回调；列表及传递根契约保留。
 - 状态：已采纳（M0/M1 业务值切片）
 - 补充：[ADR-0018](0018-bounded-record-heap.md)、[ADR-0034](0034-record-state-loops.md)、[ADR-0036](0036-bounded-inline-functions.md)
 

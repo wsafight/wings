@@ -156,6 +156,7 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
         assert_eq!(process.state, committed);
         let heap = process.heap.as_mut().unwrap();
         let mut context = ScalarContext {
+            effect_call: None,
             cancellation: std::ptr::null(),
             remaining_steps: 0,
             yield_request: std::ptr::null(),

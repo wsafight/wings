@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；跨进程 Pid、send/spawn/request 和引用消息仍须完成，不降低 MVP 门槛。
+
 [ADR-0037](adr/0037-immutable-int-lists.md) 增加有界不可变 IntList 及传递根，ABI v7；字符串、通用记录、引用消息和三级账本全覆盖仍未完成，不降低 MVP 门槛。
 
 [ADR-0036](adr/0036-bounded-inline-functions.md) 先开放有界内联 fn，动态调用栈、跨帧根和完整 M0 仍未完成；不跳过语言消息、业务值、外部事件与双平台 BEAM 门槛。

@@ -123,6 +123,8 @@ pub fn analyze(text: &str) -> Analysis {
         functions: HashMap::new(),
         in_function: false,
         function_depth: 1,
+        handlers: HashMap::new(),
+        effects_allowed: false,
     };
     let mut process_names = HashMap::new();
     for process in &parsed.program.processes {
@@ -141,6 +143,8 @@ pub fn analyze(text: &str) -> Analysis {
             );
         }
         checker.functions.clear();
+        checker.handlers.clear();
+        checker.effects_allowed = false;
         for function in &process.functions {
             let parameters: Vec<_> = function
                 .parameters
@@ -163,6 +167,7 @@ pub fn analyze(text: &str) -> Analysis {
                     | "head_int"
                     | "tail_ints"
                     | "is_empty_ints"
+                    | "send_self"
             ) || checker.functions.contains_key(&function.name.text)
             {
                 checker.error(
@@ -269,8 +274,23 @@ pub fn analyze(text: &str) -> Analysis {
                 process.span,
                 &mut handler_names,
             );
+            if let Some(&symbol) = handler_names.get(&handler.name.text) {
+                checker.handlers.insert(handler.name.text.clone(), symbol);
+            }
+        }
+        checker.effects_allowed = true;
+        for handler in &process.handlers {
+            let parameters: Vec<_> = handler
+                .parameters
+                .iter()
+                .map(|parameter| checker.declared_type(&parameter.ty))
+                .collect();
+            let reply = handler
+                .reply_type
+                .as_ref()
+                .map(|name| checker.declared_type(name));
             let mut scope = state_scope.clone();
-            for (parameter, (_, ty)) in handler.parameters.iter().zip(parameters) {
+            for (parameter, ty) in handler.parameters.iter().zip(parameters) {
                 checker.bind(
                     &parameter.name,
                     SymbolKind::Parameter,
@@ -303,6 +323,8 @@ struct Checker {
     functions: HashMap<String, (usize, usize)>,
     in_function: bool,
     function_depth: usize,
+    handlers: HashMap<String, usize>,
+    effects_allowed: bool,
 }
 
 impl Checker {
@@ -451,6 +473,69 @@ impl Checker {
                 .resolve(name, scope)
                 .map_or(Type::Unknown, |symbol| self.symbols[symbol].ty.clone()),
             ExprKind::Call { callee, arguments } => {
+                if callee.text == "send_self" {
+                    if !self.effects_allowed {
+                        self.error(
+                            "T018",
+                            "send_self is only supported in handlers",
+                            expression.span,
+                        );
+                    }
+                    if scope.contains_key(&callee.text) {
+                        self.error("T012", "bindings are not callable", callee.span);
+                    }
+                    let Some((target, values)) = arguments.split_first() else {
+                        self.error(
+                            "T013",
+                            "send_self requires a static message name",
+                            expression.span,
+                        );
+                        return Type::Unit;
+                    };
+                    let ExprKind::Name(name) = &target.kind else {
+                        self.error(
+                            "T018",
+                            "send_self requires a static message name",
+                            target.span,
+                        );
+                        return Type::Unit;
+                    };
+                    if scope.contains_key(&name.text) {
+                        self.error(
+                            "T018",
+                            "send_self target is shadowed by a binding",
+                            name.span,
+                        );
+                    }
+                    let types: Vec<_> = values
+                        .iter()
+                        .map(|value| self.expression(value, scope))
+                        .collect();
+                    let Some(&symbol) = self.handlers.get(&name.text) else {
+                        self.error("T018", "unknown self-send message", name.span);
+                        return Type::Unit;
+                    };
+                    self.references.push(Reference {
+                        span: name.span,
+                        symbol,
+                    });
+                    let Type::Message { parameters, reply } = self.symbols[symbol].ty.clone()
+                    else {
+                        unreachable!()
+                    };
+                    if reply.is_some() {
+                        self.error("T018", "send_self requires a one-way handler", name.span);
+                    }
+                    if types.len() != parameters.len() {
+                        self.error("T013", "send_self argument count mismatch", expression.span);
+                    }
+                    for ((actual, (_, expected)), value) in
+                        types.iter().zip(&parameters).zip(values)
+                    {
+                        self.require(actual, expected, value.span);
+                    }
+                    return Type::Unit;
+                }
                 let types: Vec<Type> = arguments
                     .iter()
                     .map(|argument| self.expression(argument, scope))

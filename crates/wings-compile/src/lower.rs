@@ -24,8 +24,15 @@ pub fn lower(text: &str) -> Result<Program, String> {
         .iter()
         .map(|function| (function.name.text.as_str(), function))
         .collect();
+    let handler_ids: HashMap<_, _> = process
+        .handlers
+        .iter()
+        .enumerate()
+        .map(|(index, handler)| (handler.name.text.as_str(), index))
+        .collect();
     let mut initializer = Lowerer {
         functions: functions.clone(),
+        handlers: handler_ids.clone(),
         ..Lowerer::default()
     };
     let initial_state = initializer.expression(&state.default)?;
@@ -39,6 +46,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
     for handler in &process.handlers {
         let mut lowerer = Lowerer {
             functions: functions.clone(),
+            handlers: handler_ids.clone(),
             ..Lowerer::default()
         };
         let mut candidate = lowerer.push(state_type, Operation::State)?;
@@ -89,6 +97,7 @@ struct Lowerer<'program> {
     functions: HashMap<&'program str, &'program wings_syntax::ast::Function>,
     call_depth: usize,
     expression_depth: usize,
+    handlers: HashMap<&'program str, usize>,
 }
 
 impl Lowerer<'_> {
@@ -163,6 +172,20 @@ impl Lowerer<'_> {
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
             ExprKind::Call { callee, arguments } => {
+                if callee.text == "send_self" {
+                    let ExprKind::Name(name) = &arguments[0].kind else {
+                        return Err("expected static self-send target".into());
+                    };
+                    let handler = *self
+                        .handlers
+                        .get(name.text.as_str())
+                        .ok_or("unknown self-send target")?;
+                    let arguments = arguments[1..]
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    return self.push(ValueType::Unit, Operation::SendSelf { handler, arguments });
+                }
                 if let Some(function) = self.functions.get(callee.text.as_str()).copied() {
                     if self.call_depth == 32 {
                         return Err("function call chain exceeds 32".into());

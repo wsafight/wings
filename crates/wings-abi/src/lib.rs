@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 7;
+pub const SCALAR_ABI_VERSION: u32 = 8;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -14,6 +14,7 @@ pub const STATUS_STACK_EXHAUSTED: u32 = 6;
 pub const STATUS_HEAP_EXHAUSTED: u32 = 7;
 pub const STATUS_INVALID_ROOT: u32 = 8;
 pub const STATUS_EMPTY_LIST: u32 = 9;
+pub const STATUS_SEND_REJECTED: u32 = 10;
 pub const HEAP_RECORD_INT: u32 = 0;
 pub const HEAP_READ_INT: u32 = 1;
 pub const HEAP_COLLECT: u32 = 2;
@@ -68,6 +69,7 @@ pub struct ScalarContext {
     pub roots: *const ShadowFrame,
     pub heap_call: Option<HeapCall>,
     pub heap_data: *mut c_void,
+    pub effect_call: Option<EffectCall>,
 }
 
 #[repr(C)]
@@ -78,6 +80,7 @@ pub struct ShadowFrame {
 }
 
 pub type HeapCall = unsafe extern "C" fn(*mut ScalarContext, u32, u64, *mut u64) -> u32;
+pub type EffectCall = unsafe extern "C" fn(*mut ScalarContext, u32, *const i64, usize) -> u32;
 
 pub type ScalarSlowPath = unsafe extern "C" fn(*mut ScalarContext) -> u32;
 

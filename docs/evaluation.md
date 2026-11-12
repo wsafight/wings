@@ -1,5 +1,9 @@
 # 评测与验收
 
+`self_send` 由 debug/release AOT 脚本构建真实产物后在受限子进程运行：检查发送当片可见但候选尚未提交、既有队尾 FIFO、正常提交后只执行一次自消息、发送后除零/预算失败和队满故障的清理前诊断、三级消息额度拒绝零入队、stop/Drop 正常取消、0/64 参数与 Bool/Unit，以及带外层引用和候选 state 的后续 GC。脚本另在每个 heap/slow/effect 回调前强制收集，验证 effect 边界没有失根。命令仍为 workspace 检查和 `python3 scripts/verify_scalar_aot.py`，release 使用 `WINGS_PROFILE=release`。
+
+[ADR-0038](adr/0038-self-send-effects.md) 校验自发送调用点可见、FIFO、失败不撤回、满队列/三级准入、独立执行拒绝和逐片/Drop 不重放；effect 边界同时核对引用根与退出清理，不将自发送当完整语言消息或跨 worker 证明。
+
 [ADR-0037](adr/0037-immutable-int-lists.md) 用每个内建/慢路径前收集验证列表传递根、共享尾、条件/循环/函数和最终候选，另核对小堆 push/pop、空读取、预算/取消及完整计费清理。列表不是同业务 BEAM 基线实现。
 
 [ADR-0036](adr/0036-bounded-inline-functions.md) 验证函数状态隔离、顺序/递归/链深与展开上限，真实 AOT 在函数参数/返回/collect 及循环调用处强制 GC；再核对逐片恢复、预算/取消和失败清理。内联不替代动态帧或双平台验证。

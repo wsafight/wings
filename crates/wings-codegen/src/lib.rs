@@ -212,6 +212,14 @@ fn compile_body(
         AbiParam::new(pointer_type),
     ];
     heap_signature.returns.push(AbiParam::new(types::I32));
+    let mut effect_signature = module.make_signature();
+    effect_signature.params = vec![
+        AbiParam::new(pointer_type),
+        AbiParam::new(types::I32),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+    ];
+    effect_signature.returns.push(AbiParam::new(types::I32));
     let plan = function.root_plan();
     let uses_heap = function.instructions.iter().any(|instruction| {
         matches!(
@@ -229,6 +237,7 @@ fn compile_body(
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let slow_signature = builder.import_signature(slow_signature);
     let heap_signature = builder.import_signature(heap_signature);
+    let effect_signature = builder.import_signature(effect_signature);
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
@@ -287,6 +296,18 @@ fn compile_body(
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
         builder.ins().stack_addr(pointer_type, slot, 0)
     });
+    let effect_arguments = function
+        .instructions
+        .iter()
+        .any(|instruction| matches!(instruction.operation, Operation::SendSelf { .. }))
+        .then(|| {
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                64 * 8,
+                3,
+            ));
+            builder.ins().stack_addr(pointer_type, slot, 0)
+        });
     let mut registers = Vec::new();
     let mut branches = Vec::new();
     let mut loops = Vec::new();
@@ -330,6 +351,41 @@ fn compile_body(
             exit,
         );
         let value = match instruction.operation {
+            Operation::SendSelf {
+                handler,
+                ref arguments,
+            } => {
+                let buffer = effect_arguments.expect("effect argument storage");
+                for (index, register) in arguments.iter().enumerate() {
+                    builder.ins().store(
+                        MemFlags::new(),
+                        registers[*register],
+                        buffer,
+                        (index * 8) as i32,
+                    );
+                }
+                let callback = builder.ins().load(
+                    pointer_type,
+                    MemFlags::new(),
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, effect_call) as i32,
+                );
+                let missing = builder.ins().icmp_imm(IntCC::Equal, callback, 0);
+                fail_if_to(&mut builder, missing, STATUS_INVALID_CONTROL, exit);
+                let target = builder.ins().iconst(types::I32, handler as i64);
+                let count = builder.ins().iconst(pointer_type, arguments.len() as i64);
+                let call = builder.ins().call_indirect(
+                    effect_signature,
+                    callback,
+                    &[parameters[3], target, buffer, count],
+                );
+                let status = builder.inst_results(call)[0];
+                let failed = builder.ins().icmp_imm(IntCC::NotEqual, status, 0);
+                let continued = builder.create_block();
+                builder.ins().brif(failed, exit, &[status], continued, &[]);
+                builder.switch_to_block(continued);
+                builder.ins().iconst(types::I64, 0)
+            }
             Operation::Loop(_) => loop_header.expect("validated loop header"),
             Operation::While(condition) => {
                 let (_, after, header_index) = *loops.last().expect("validated loop");

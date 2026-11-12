@@ -1,0 +1,45 @@
+process SelfSend {
+  state n: Int = 0
+  on Start(value: Int) -> Int {
+    n = 9;
+    send_self(Add, value);
+    n
+  }
+  on Twice -> Int {
+    send_self(Add, 1);
+    send_self(Add, 2);
+    n
+  }
+  on Fail(divisor: Int) -> Int {
+    n = 9;
+    send_self(Add, 3);
+    n / divisor
+  }
+  on Budget -> Int { send_self(Add, 4); n + 1 }
+  on Flags -> Int { send_self(Flag, true, ()); n }
+  on Flag(value: Bool, unit: Unit) { n = if value { 7 } else { 8 } }
+  on Ping { send_self(Empty) }
+  on WideStart -> Int {
+    send_self(Wide, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+      33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+      49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64);
+    n
+  }
+  on Wide(a00: Int, a01: Int, a02: Int, a03: Int, a04: Int, a05: Int, a06: Int, a07: Int,
+    a08: Int, a09: Int, a10: Int, a11: Int, a12: Int, a13: Int, a14: Int, a15: Int,
+    a16: Int, a17: Int, a18: Int, a19: Int, a20: Int, a21: Int, a22: Int, a23: Int,
+    a24: Int, a25: Int, a26: Int, a27: Int, a28: Int, a29: Int, a30: Int, a31: Int,
+    a32: Int, a33: Int, a34: Int, a35: Int, a36: Int, a37: Int, a38: Int, a39: Int,
+    a40: Int, a41: Int, a42: Int, a43: Int, a44: Int, a45: Int, a46: Int, a47: Int,
+    a48: Int, a49: Int, a50: Int, a51: Int, a52: Int, a53: Int, a54: Int, a55: Int,
+    a56: Int, a57: Int, a58: Int, a59: Int, a60: Int, a61: Int, a62: Int, a63: Int) {
+    n = a00 + a01 + a02 + a03 + a04 + a05 + a06 + a07 + a08 + a09 + a10 + a11 + a12 + a13 + a14 + a15 +
+      a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 +
+      a32 + a33 + a34 + a35 + a36 + a37 + a38 + a39 + a40 + a41 + a42 + a43 + a44 + a45 + a46 + a47 +
+      a48 + a49 + a50 + a51 + a52 + a53 + a54 + a55 + a56 + a57 + a58 + a59 + a60 + a61 + a62 + a63
+  }
+  on Empty { () }
+  on Add(value: Int) { n = n * 10 + value }
+  on Read -> Int { n }
+}

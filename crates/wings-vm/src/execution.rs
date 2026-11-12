@@ -19,6 +19,14 @@ type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult,
 struct Checkpoint {
     remaining_steps: u64,
     heap: Option<HeapStats>,
+    effect: Option<SelfSend>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SelfSend {
+    pub handler: usize,
+    pub arguments: [i64; 64],
+    pub count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +49,7 @@ pub enum ExecutionFault {
     InvalidRoot,
     InvalidOutput,
     EmptyList,
+    SendRejected,
     UnknownStatus(u32),
 }
 
@@ -57,6 +66,7 @@ impl ExecutionFault {
             wings_abi::STATUS_HEAP_EXHAUSTED => Self::HeapExhausted,
             wings_abi::STATUS_INVALID_ROOT => Self::InvalidRoot,
             wings_abi::STATUS_EMPTY_LIST => Self::EmptyList,
+            wings_abi::STATUS_SEND_REJECTED => Self::SendRejected,
             other => Self::UnknownStatus(other),
         })
     }
@@ -101,6 +111,7 @@ pub(crate) fn initialize(
         &PreemptionToken::default(),
         pool.acquire()?,
         &mut heap,
+        false,
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
         CoroutineResult::Return((status, output, heap, _)) => Ok((status, output, heap)),
@@ -139,6 +150,7 @@ pub enum ExecutionStatus {
 
 enum ResumeCommand {
     Run(u64),
+    Effect(u32, u64),
     Cancel,
 }
 
@@ -152,12 +164,15 @@ pub struct ScalarTask {
     invocation: Option<Invocation>,
     process: ScalarProcess,
     last: Option<ExecutionSnapshot>,
+    effects_enabled: bool,
 }
 
 struct Invocation {
     handler: usize,
     coroutine: Option<ExecutionCoroutine>,
     snapshot: ExecutionSnapshot,
+    effect: Option<SelfSend>,
+    acknowledgement: Option<u32>,
 }
 
 impl ScalarProcess {
@@ -193,6 +208,7 @@ impl ScalarProcess {
             cancellation,
             preemption,
             &pool,
+            false,
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -219,6 +235,7 @@ impl ScalarProcess {
             cancellation,
             preemption,
             pool,
+            false,
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -234,7 +251,25 @@ impl ScalarTask {
             invocation: None,
             process,
             last: None,
+            effects_enabled: false,
         }
+    }
+
+    pub(crate) fn enable_effects(&mut self) {
+        self.effects_enabled = true;
+    }
+
+    pub(crate) fn take_effect(&mut self) -> Option<SelfSend> {
+        self.invocation
+            .as_mut()
+            .and_then(|active| active.effect.take())
+    }
+
+    pub(crate) fn acknowledge_effect(&mut self, status: u32) {
+        self.invocation
+            .as_mut()
+            .expect("active effect invocation")
+            .acknowledgement = Some(status);
     }
 
     pub fn module(&self) -> &ScalarModule {
@@ -284,6 +319,7 @@ impl ScalarTask {
             cancellation,
             preemption,
             pool,
+            self.effects_enabled,
         )?);
         Ok(())
     }
@@ -307,6 +343,7 @@ impl ScalarTask {
 }
 
 impl Invocation {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         process: &mut ScalarProcess,
         handler: usize,
@@ -315,6 +352,7 @@ impl Invocation {
         cancellation: &CancellationToken,
         preemption: &PreemptionToken,
         pool: &StackPool,
+        effects_enabled: bool,
     ) -> Result<Self, String> {
         if process
             .heap
@@ -340,11 +378,14 @@ impl Invocation {
             preemption,
             pool.acquire()?,
             &mut process.heap,
+            effects_enabled,
         )?;
         Ok(Self {
             handler,
             coroutine: Some(coroutine),
             snapshot,
+            effect: None,
+            acknowledgement: None,
         })
     }
 }
@@ -359,6 +400,7 @@ fn new_coroutine(
     preemption: &PreemptionToken,
     stack: PooledStack,
     heap: &mut Option<Box<AotHeap>>,
+    effects_enabled: bool,
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
     let mut owned_arguments = Vec::new();
@@ -375,6 +417,7 @@ fn new_coroutine(
             let checkpoint = Checkpoint {
                 remaining_steps: max_steps,
                 heap: heap.as_deref().map(AotHeap::stats),
+                effect: None,
             };
             return (STATUS_CANCELLED, output, heap, checkpoint);
         };
@@ -395,6 +438,7 @@ fn new_coroutine(
             heap_data: heap.as_mut().map_or(std::ptr::null_mut(), |heap| {
                 std::ptr::from_mut(&mut **heap).cast()
             }),
+            effect_call: effects_enabled.then_some(send_self as wings_abi::EffectCall),
         };
         let status = unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) };
         let status = if context.roots.is_null() {
@@ -405,6 +449,7 @@ fn new_coroutine(
         let checkpoint = Checkpoint {
             remaining_steps: context.remaining_steps,
             heap: heap.as_deref().map(AotHeap::stats),
+            effect: None,
         };
         (status, output, heap, checkpoint)
     });
@@ -451,11 +496,16 @@ fn resume_invocation(
         return Err("execution time slice must contain at least one step".into());
     }
     let coroutine = active.coroutine.as_mut().expect("active coroutine");
-    match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
+    let command = match active.acknowledgement.take() {
+        Some(status) => ResumeCommand::Effect(status, max_slice_steps),
+        None => ResumeCommand::Run(max_slice_steps),
+    };
+    match coroutine.resume(command) {
         CoroutineResult::Yield(checkpoint) => {
             active.snapshot.phase = ExecutionPhase::Suspended;
             active.snapshot.remaining_steps = checkpoint.remaining_steps;
             active.snapshot.heap = checkpoint.heap;
+            active.effect = checkpoint.effect;
             Ok(ExecutionStatus::Suspended)
         }
         CoroutineResult::Return((status, output, heap, checkpoint)) => {
@@ -508,13 +558,47 @@ unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
+        effect: None,
     };
     match yielder.suspend(checkpoint) {
         ResumeCommand::Run(steps) => {
             context.slice_remaining = steps;
             STATUS_OK
         }
-        ResumeCommand::Cancel => STATUS_CANCELLED,
+        ResumeCommand::Cancel | ResumeCommand::Effect(_, _) => STATUS_CANCELLED,
+    }
+}
+
+unsafe extern "C" fn send_self(
+    context: *mut ScalarContext,
+    handler: u32,
+    arguments: *const i64,
+    count: usize,
+) -> u32 {
+    if count > 64 || (count != 0 && arguments.is_null()) {
+        return wings_abi::STATUS_INVALID_CONTROL;
+    }
+    let context = unsafe { &mut *context };
+    let mut copied = [0; 64];
+    if count != 0 {
+        copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
+    }
+    let checkpoint = Checkpoint {
+        remaining_steps: context.remaining_steps,
+        heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
+        effect: Some(SelfSend {
+            handler: handler as usize,
+            arguments: copied,
+            count,
+        }),
+    };
+    let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
+    match yielder.suspend(checkpoint) {
+        ResumeCommand::Effect(status, steps) => {
+            context.slice_remaining = steps;
+            status
+        }
+        _ => STATUS_CANCELLED,
     }
 }
 
@@ -550,6 +634,10 @@ mod tests {
             ),
             (wings_abi::STATUS_INVALID_ROOT, ExecutionFault::InvalidRoot),
             (wings_abi::STATUS_EMPTY_LIST, ExecutionFault::EmptyList),
+            (
+                wings_abi::STATUS_SEND_REJECTED,
+                ExecutionFault::SendRejected,
+            ),
             (u32::MAX, ExecutionFault::UnknownStatus(u32::MAX)),
         ] {
             assert_eq!(ExecutionFault::from_status(status), Some(fault));

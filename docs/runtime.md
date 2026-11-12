@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0038](adr/0038-self-send-effects.md) 的自发送经协程按值交出、worker 同线程立即准入入队，下一片确认后继续原调用；不重入 actor，不保存挂起 context 指针。独立 CLI 无此能力，调用受管失败；退出按现有规则清理已排队消息，不作为副作用回滚。
+
 IntList 按 [ADR-0037](adr/0037-immutable-int-lists.md) 使用同进程计费节点和不可变共享尾；内建每次只操作一个节点，空 head/tail 受管失败。持久列表根传递保活尾部，退出不保留业务引用。
 
 [ADR-0036](adr/0036-bounded-inline-functions.md) 的源码 fn 内联到当前 handler/initializer，参数按序求值一次，记录引用仍归当前堆；调用内失败直接终止入口，候选不提交，不新增原生调用入口。

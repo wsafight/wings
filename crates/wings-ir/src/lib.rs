@@ -40,6 +40,10 @@ pub enum Operation {
     HeadInt(Register),
     TailInts(Register),
     IsEmptyInts(Register),
+    SendSelf {
+        handler: usize,
+        arguments: Vec<Register>,
+    },
     If(Register),
     Else(Register),
     EndIf(Register),
@@ -95,6 +99,14 @@ impl Program {
         }
         self.initializer
             .validate(self.state, &[], ValueType::Unit, true)?;
+        if self
+            .initializer
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction.operation, Operation::SendSelf { .. }))
+        {
+            return Err("self-send is not supported in initializers".into());
+        }
         for handler in &self.handlers {
             if handler.parameters.len() > MAX_PARAMETERS {
                 return Err("too many parameters for the scalar prototype".into());
@@ -105,6 +117,29 @@ impl Program {
                 handler.reply.unwrap_or(ValueType::Unit),
                 false,
             )?;
+            for instruction in &handler.function.instructions {
+                if let Operation::SendSelf {
+                    handler: target,
+                    arguments,
+                } = &instruction.operation
+                {
+                    let target = self
+                        .handlers
+                        .get(*target)
+                        .ok_or("invalid self-send handler")?;
+                    if target.reply.is_some()
+                        || target.parameters.len() != arguments.len()
+                        || arguments
+                            .iter()
+                            .zip(&target.parameters)
+                            .any(|(register, (_, ty))| {
+                                handler.function.instructions[*register].ty != *ty
+                            })
+                    {
+                        return Err("self-send requires matching one-way handler parameters".into());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -128,7 +163,6 @@ impl Function {
             let operands = operands(&instruction.operation);
             if operands
                 .into_iter()
-                .flatten()
                 .any(|register| available.get(register) != Some(&true))
             {
                 return Err(
@@ -184,6 +218,13 @@ impl Function {
                 Operation::IsEmptyInts(value) => {
                     instruction.ty == ValueType::Bool
                         && types.get(value) == Some(&ValueType::ListRef)
+                }
+                Operation::SendSelf { ref arguments, .. } => {
+                    instruction.ty == ValueType::Unit
+                        && arguments.len() <= MAX_PARAMETERS
+                        && arguments.iter().all(|register| {
+                            types.get(*register).is_some_and(|ty| !ty.is_reference())
+                        })
                 }
                 Operation::If(condition) => {
                     if branches.len() == 64 {
@@ -266,7 +307,7 @@ impl Function {
         let mut last_uses: Vec<usize> = (0..self.instructions.len()).collect();
         for (index, instruction) in self.instructions.iter().enumerate() {
             let operands = operands(&instruction.operation);
-            for operand in operands.into_iter().flatten() {
+            for operand in operands {
                 if let Some(last) = last_uses.get_mut(operand) {
                     *last = index;
                 }
@@ -347,25 +388,27 @@ impl Function {
     }
 }
 
-fn operands(operation: &Operation) -> [Option<Register>; 2] {
-    match *operation {
+fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
+    let (fixed, extra): (_, &[Register]) = match *operation {
         Operation::Negate(value)
         | Operation::RecordInt(value)
         | Operation::ReadInt(value)
         | Operation::If(value)
         | Operation::Else(value)
-        | Operation::EndIf(value) => [Some(value), None],
+        | Operation::EndIf(value) => ([Some(value), None], &[]),
         Operation::HeadInt(value) | Operation::TailInts(value) | Operation::IsEmptyInts(value) => {
-            [Some(value), None]
+            ([Some(value), None], &[])
         }
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
-            [Some(value), None]
+            ([Some(value), None], &[])
         }
         Operation::Binary(_, left, right)
         | Operation::Compare(_, left, right)
-        | Operation::PrependInt(left, right) => [Some(left), Some(right)],
-        _ => [None, None],
-    }
+        | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),
+        Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
+        _ => ([None, None], &[]),
+    };
+    fixed.into_iter().flatten().chain(extra.iter().copied())
 }
 
 pub struct RootPlan {

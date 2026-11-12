@@ -36,6 +36,44 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
+fn self_send_checks_forward_one_way_protocol_and_handler_scope() {
+    let text = "process P { state n: Int = 0; on Start { send_self(Add, 1, true, ()) } on Add(v: Int, b: Bool, u: Unit) { n = v } }";
+    let analysis = checked(text);
+    let target = text.find("Add, 1").unwrap();
+    let reference = analysis
+        .references
+        .iter()
+        .find(|reference| reference.span.start == target)
+        .unwrap();
+    assert_eq!(analysis.symbols[reference.symbol].kind, SymbolKind::Handler);
+    for (body, code, fragment) in [
+        ("send_self()", "T013", "static message"),
+        ("send_self(3)", "T018", "static message"),
+        ("send_self(Missing)", "T018", "unknown self-send"),
+        ("send_self(Get, 1)", "T018", "one-way"),
+        ("send_self(Add)", "T013", "count mismatch"),
+        ("send_self(Add, true)", "T005", "expected Int"),
+        ("let Add = 1; send_self(Add, 1)", "T018", "shadowed"),
+        (
+            "let send_self = 1; send_self(Add, 1)",
+            "T012",
+            "not callable",
+        ),
+    ] {
+        let text = format!(
+            "process P {{ state n: Int = 0; on Start {{ {body} }} on Get(v: Int) -> Int {{ v }} on Add(v: Int) {{ n = v }} }}"
+        );
+        assert_error(&text, code, fragment);
+    }
+    for text in [
+        "process P { state n: Unit = send_self(Add); on Add {} }",
+        "process P { fn emit() -> Unit { send_self(Add) } state n: Int = 0; on Add {} }",
+    ] {
+        assert_error(text, "T018", "only supported in handlers");
+    }
+}
+
+#[test]
 fn while_requires_bool_condition_unit_body_and_local_scope() {
     checked(
         "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",
