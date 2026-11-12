@@ -54,11 +54,8 @@ impl Manifest {
             return Err("invalid process name or handler count".into());
         }
         if self.handlers.iter().any(|handler| {
-            handler.reply == Some(ValueType::Ref)
-                || handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::Ref)
+            handler.reply.is_some_and(ValueType::is_reference)
+                || handler.parameters.iter().any(|(_, ty)| ty.is_reference())
         }) {
             return Err("record references cannot cross scalar artifact boundaries".into());
         }

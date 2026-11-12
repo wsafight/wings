@@ -101,7 +101,7 @@ impl ScalarModule {
         pool: &crate::StackPool,
         heap: Option<Box<crate::aot_heap::AotHeap>>,
     ) -> Result<ScalarProcess, String> {
-        if self.inner.manifest.state == wings_abi::ValueType::Ref && heap.is_none() {
+        if self.inner.manifest.state.is_reference() && heap.is_none() {
             return Err("record state requires an explicitly configured accounted heap".into());
         }
         let (status, output, mut heap) =

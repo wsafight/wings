@@ -69,6 +69,41 @@ fn while_requires_bool_condition_unit_body_and_local_scope() {
 }
 
 #[test]
+fn lists_have_distinct_types_across_builtins_state_functions_and_messages() {
+    let text = "process P { fn keep(values: IntList) -> IntList { collect(); values } state values: IntList = empty_ints(); on Work { values = prepend_int(7, keep(values)); while is_empty_ints(values) == false { values = tail_ints(values) } } }";
+    checked(text);
+    for (body, code, fragment) in [
+        ("head_int(record_int(7))", "T005", "expected IntList"),
+        ("read_int(empty_ints())", "T005", "expected RecordInt"),
+        ("prepend_int(true, empty_ints()); 0", "T005", "expected Int"),
+        ("prepend_int(1); 0", "T013", "expects 2"),
+        ("empty_ints(1); 0", "T013", "expects 0"),
+        (
+            "let same = empty_ints() == empty_ints(); 0",
+            "T015",
+            "cannot be compared",
+        ),
+        (
+            "let values = if true { empty_ints() } else { record_int(7) }; 0",
+            "T005",
+            "expected IntList",
+        ),
+    ] {
+        assert_error(&handler(body), code, fragment);
+    }
+    for declaration in [
+        "on Work(value: IntList) {}",
+        "on Get -> IntList { empty_ints() }",
+    ] {
+        assert_error(
+            &format!("process P {{ state n: Int = 0; {declaration} }}"),
+            "T011",
+            "IntList is not supported",
+        );
+    }
+}
+
+#[test]
 fn functions_share_types_and_references_without_process_state_or_recursion() {
     let text = "process P { state n: RecordInt = make(0); fn make(value: Int) -> RecordInt { record_int(value) } fn next(value: RecordInt) -> RecordInt { collect(); make(read_int(value) + 1) } on Count -> Int { n = next(n); read_int(n) } }";
     let analysis = checked(text);

@@ -119,10 +119,10 @@ impl Server {
                         for keyword in ["process", "state", "on", "fn", "let", "if", "else", "while", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
-                        for ty in ["Int", "Bool", "Unit", "RecordInt"] {
+                        for ty in ["Int", "Bool", "Unit", "RecordInt", "IntList"] {
                             labels.insert(ty.to_owned(), json!({ "label": ty, "kind": 7 }));
                         }
-                        for (name, detail) in [("record_int", "(Int) -> RecordInt"), ("read_int", "(RecordInt) -> Int"), ("collect", "() -> Unit")] {
+                        for (name, detail) in [("record_int", "(Int) -> RecordInt"), ("read_int", "(RecordInt) -> Int"), ("collect", "() -> Unit"), ("empty_ints", "() -> IntList"), ("prepend_int", "(Int, IntList) -> IntList"), ("head_int", "(IntList) -> Int"), ("tail_ints", "(IntList) -> IntList"), ("is_empty_ints", "(IntList) -> Bool")] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
                         for symbol in document.analysis.visible_symbols(offset) {

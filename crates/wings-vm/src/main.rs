@@ -107,7 +107,9 @@ fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<
                     .ok_or_else(|| "expected a Bool argument".to_owned()),
                 ValueType::Unit if value.is_null() => Ok(0),
                 ValueType::Unit => Err("expected null for Unit".into()),
-                ValueType::Ref => Err("record references are not JSON arguments".into()),
+                ValueType::Ref | ValueType::ListRef => {
+                    Err("record references are not JSON arguments".into())
+                }
             }?;
         }
         let reply = process.invoke_handler(

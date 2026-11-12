@@ -233,6 +233,15 @@ impl RecordHeap {
         })
     }
 
+    pub(crate) fn has_layout(
+        &self,
+        reference: HeapRef,
+        layout: RecordLayout,
+    ) -> Result<bool, String> {
+        self.schema(layout)?;
+        Ok(self.validate(reference)?.layout == layout.index)
+    }
+
     pub fn stats(&self) -> HeapStats {
         HeapStats {
             capacity: self.slots.len(),

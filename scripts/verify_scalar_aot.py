@@ -71,7 +71,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 6
+    assert manifest["abi"] == 7
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -162,7 +162,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v6 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v7 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def example(name, *arguments):
@@ -170,7 +170,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -207,8 +207,18 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             roots.update(frame.contents.slots[index] for index in range(frame.contents.count))
             frame = frame.contents.previous
         assert roots <= records.keys(), (roots, records)
+        retained = set(roots)
+        if committed is not None:
+            retained.add(committed)
+        pending = list(retained)
+        while pending:
+            reference = pending.pop()
+            value = records[reference]
+            if isinstance(value, tuple) and value[2] not in retained:
+                retained.add(value[2])
+                pending.append(value[2])
         for reference in list(records):
-            if reference not in roots and reference != committed:
+            if reference not in retained:
                 del records[reference]
         return roots
 
@@ -225,6 +235,24 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 result[0] = sequence
             elif operation == 1:
                 result[0] = records[argument]
+            elif operation == 3:
+                sequence += 1
+                records[sequence] = None
+                result[0] = sequence
+            elif operation == 4:
+                tail = result[0]
+                assert tail in records
+                sequence += 1
+                records[sequence] = ("cons", argument, tail)
+                result[0] = sequence
+            elif operation in [5, 6, 7]:
+                node = records[argument]
+                if operation == 7:
+                    result[0] = int(node is None)
+                elif node is None:
+                    return 9
+                else:
+                    result[0] = node[1 if operation == 5 else 2]
             else:
                 assert operation == 2
                 result[0] = 0
@@ -248,8 +276,10 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches or loops else "Ref")
-    if record_loops or functions:
+    assert manifest["abi"] == 7 and manifest["state"] == ("ListRef" if lists else ("Int" if branches or loops else "Ref"))
+    if lists:
+        name = "Build"
+    elif record_loops or functions:
         name = "Count"
     elif record_branches:
         name = "Nested"
@@ -263,7 +293,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
-    if record_branches or record_loops or functions:
+    if record_branches or record_loops or functions or lists:
         def execute(entry, values):
             arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
             entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
@@ -278,6 +308,20 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return output
 
         output = execute(library.wings_scalar_init, [])
+        if lists:
+            assert records[output.state] is None
+            committed = output.state
+            for name, values, expected_reply in [
+                ("Empty", [], 1), ("Push", [7], 7), ("Push", [11], 11),
+                ("Shared", [1], 18), ("Shared", [0], 106), ("Pop", [], 11), ("Pop", [], 7),
+                ("Empty", [], 1), ("Build", [7], 7), ("Drain", [], 0), ("Empty", [], 1),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert output.reply == expected_reply, (name, output.reply)
+                committed = output.state
+            print("Compiler roots verified: transitive list tails, merges, loops and inline calls")
+            return
         assert records[output.state] == (0 if record_loops or functions else 7)
         committed = output.state
         if functions:
@@ -555,6 +599,10 @@ def main():
         command([COMPILER, "build", ROOT / "examples/functions.wings", "-o", functions])
         example("inline_functions", functions)
         command([sys.executable, Path(__file__), "--check-function-roots", functions])
+        lists = parent / "lists"
+        command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
+        example("int_lists", lists)
+        command([sys.executable, Path(__file__), "--check-list-roots", lists])
         command([sys.executable, Path(__file__), "--check-loop-roots", loops])
         command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
         for limit, budget in [(0, 6), (1, 12), (10, 66)]:
@@ -643,7 +691,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 6), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -694,5 +742,7 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), record_loops=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-function-roots":
         verify_persistent_roots(Path(sys.argv[2]), functions=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-roots":
+        verify_persistent_roots(Path(sys.argv[2]), lists=True)
     else:
         main()

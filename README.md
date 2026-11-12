@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt 分支、比较、state while、有界内联 fn 与临时/持久记录。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；尚无语言消息副作用、引用消息、动态调用栈或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界内联 fn 与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；尚无语言消息副作用、引用消息、动态调用栈或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
+
+未发布源码 ABI v7 新增 `IntList`：不可变整数节点和共享尾，可作 state、局部或内联 fn 值，仍禁止引用消息。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。旧 v6 产物须重编译。
 
 process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；编译器有界内联，每次入口保留预算检查。示例 `examples/functions.wings`、限制和根验证见 [ADR-0036](docs/adr/0036-bounded-inline-functions.md)。
 
@@ -36,11 +38,11 @@ process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_i
 
 `ExecutionSnapshot::fault` 给出 ABI 故障或输出校验类别；worker/supervisor 的 `last_exit` 保留最近一次受管失败的固定快照，旧 Pid 失效或重启后仍可定位 handler 和预算/GC。快照不保留旧资源，账目是清理前值，不是泄漏量，见 [ADR-0035](docs/adr/0035-bounded-exit-diagnostics.md)。
 
-未发布源码支持 `if flag { expression } else { expression }`，只执行选中臂，条件为 Bool、两臂为同类型标量或 RecordInt；臂内暂不支持语句。示例为 `examples/branches.wings` 与 `examples/record-branches.wings`，实际路径预算和根边界见 [ADR-0029](docs/adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](docs/adr/0033-record-conditional-roots.md)。
+未发布源码支持 `if flag { expression } else { expression }`，只执行选中臂，条件为 Bool、两臂为同类型标量、RecordInt 或 IntList；臂内暂不支持语句。示例为 `examples/branches.wings` 与 `examples/record-branches.wings`，实际路径预算和根边界见 [ADR-0029](docs/adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](docs/adr/0033-record-conditional-roots.md)。
 
 条件可使用标量 `==`/`!=` 或有符号 Int 的 `<`/`<=`/`>`/`>=`；比较不转换类型或比较记录 handle。示例为 `examples/comparisons.wings`，契约见 [ADR-0030](docs/adr/0030-scalar-comparisons.md)。
 
-标量或 RecordInt state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 break/continue 或任意引用 phi，见 `examples/loops.wings`、`examples/record-loops.wings`、[ADR-0031](docs/adr/0031-scalar-state-loops.md) 和 [ADR-0034](docs/adr/0034-record-state-loops.md)。
+标量、RecordInt 或 IntList state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 break/continue 或任意引用 phi，见 `examples/loops.wings`、`examples/record-loops.wings`、[ADR-0031](docs/adr/0031-scalar-state-loops.md) 和 [ADR-0034](docs/adr/0034-record-state-loops.md)。
 
 需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
 
@@ -66,7 +68,7 @@ Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LS
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-未发布源码另有执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v6 只装载匹配源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2–v5 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)，根链与持久状态见 [ADR-0025](docs/adr/0025-aot-record-roots.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)。
+未发布源码另有执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v7 只装载匹配源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2–v6 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)，根链与持久状态见 [ADR-0025](docs/adr/0025-aot-record-roots.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)。
 
 原栈分配现由自研 `StackPool` 管理：默认每线程最多 64 个活跃槽位、缓存 2 个已完成栈，耗尽明确失败；可显式传入池并读取容量统计、调用 `trim` 回收缓存页。完成调用立即归还槽位，挂起栈不能复用。此优化主要约束容量和缓存，不消除同时挂起栈的物理成本。实验与限制见[栈分配实验](docs/evaluation.md#原生栈分配实验)。
 

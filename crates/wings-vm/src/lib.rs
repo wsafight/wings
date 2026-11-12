@@ -200,10 +200,10 @@ fn commit_state(
     heap: &mut Option<Box<aot_heap::AotHeap>>,
     value: i64,
 ) -> Result<(), String> {
-    if ty == ValueType::Ref {
+    if ty.is_reference() {
         heap.as_mut()
             .ok_or("record state requires an accounted heap")?
-            .commit(value)
+            .commit_typed(ty, value)
             .map_err(|error| format!("entry returned an invalid record state: {error}"))
     } else if ty.accepts(value) {
         Ok(())
@@ -223,6 +223,7 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_STACK_EXHAUSTED => Err("managed execution stack exhausted".into()),
         STATUS_HEAP_EXHAUSTED => Err("managed record heap exhausted".into()),
         STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
+        wings_abi::STATUS_EMPTY_LIST => Err("managed empty IntList access".into()),
         _ => Err(format!("unknown scalar ABI status {status}")),
     }
 }

@@ -1,0 +1,47 @@
+process Lists {
+  fn singleton(value: Int) -> IntList { prepend_int(value, empty_ints()) }
+  fn first(values: IntList) -> Int { collect(); head_int(values) }
+  fn keep(flag: Bool, values: IntList) -> IntList {
+    if flag { values } else { prepend_int(99, values) }
+  }
+  state values: IntList = empty_ints()
+  on Empty -> Bool { is_empty_ints(values) }
+  on Push(value: Int) -> Int {
+    values = prepend_int(value, values)
+    collect()
+    head_int(values)
+  }
+  on Pop -> Int {
+    let value = head_int(values)
+    values = tail_ints(values)
+    collect()
+    value
+  }
+  on Head -> Int { first(values) }
+  on Shared(flag: Bool) -> Int {
+    let one = singleton(7)
+    let two = prepend_int(11, one)
+    let chosen = keep(flag, two)
+    collect()
+    first(chosen) + first(tail_ints(two))
+  }
+  on Drain -> Unit {
+    while is_empty_ints(values) == false {
+      values = tail_ints(values)
+      collect()
+    }
+  }
+  on Build(limit: Int) -> Int {
+    values = singleton(0)
+    while head_int(values) < limit {
+      values = prepend_int(head_int(values) + 1, values)
+      collect()
+    }
+    head_int(values)
+  }
+  on Fail -> Int {
+    values = prepend_int(99, values)
+    collect()
+    1 / 0
+  }
+}

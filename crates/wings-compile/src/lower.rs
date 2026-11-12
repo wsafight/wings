@@ -207,6 +207,21 @@ impl Lowerer<'_> {
                         self.push(ValueType::Int, Operation::ReadInt(value))
                     }
                     "collect" => self.push(ValueType::Unit, Operation::Collect),
+                    "empty_ints" => self.push(ValueType::ListRef, Operation::EmptyInts),
+                    "prepend_int" => {
+                        let value = self.expression(&arguments[0])?;
+                        let tail = self.expression(&arguments[1])?;
+                        self.push(ValueType::ListRef, Operation::PrependInt(value, tail))
+                    }
+                    "head_int" | "tail_ints" | "is_empty_ints" => {
+                        let value = self.expression(&arguments[0])?;
+                        let (ty, operation) = match callee.text.as_str() {
+                            "head_int" => (ValueType::Int, Operation::HeadInt(value)),
+                            "tail_ints" => (ValueType::ListRef, Operation::TailInts(value)),
+                            _ => (ValueType::Bool, Operation::IsEmptyInts(value)),
+                        };
+                        self.push(ty, operation)
+                    }
                     _ => Err("unsupported builtin call".into()),
                 }
             }
@@ -274,6 +289,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "Bool" => Ok(ValueType::Bool),
         "Unit" => Ok(ValueType::Unit),
         "RecordInt" => Ok(ValueType::Ref),
+        "IntList" => Ok(ValueType::ListRef),
         _ => Err(format!("unsupported scalar type {name}")),
     }
 }

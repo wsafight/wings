@@ -1,5 +1,7 @@
 # ADR-0027：持久记录状态与提交根
 
+- 后续：[ADR-0037](0037-immutable-int-lists.md) 升至 ABI v7 并增加 ListRef；原有独立持久根及正常返回后提交契约保留。
+
 - 日期：2026-11-13
 - 状态：已采纳（M0/M1 有界持久状态切片）
 - 补充：[ADR-0025](0025-aot-record-roots.md)、[ADR-0026](0026-language-temporary-records.md)

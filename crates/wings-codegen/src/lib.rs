@@ -11,7 +11,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
-    HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
+    HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
+    HEAP_READ_INT, HEAP_RECORD_INT, HEAP_TAIL_INTS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
     STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
     STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, host_target,
 };
@@ -215,7 +216,14 @@ fn compile_body(
     let uses_heap = function.instructions.iter().any(|instruction| {
         matches!(
             instruction.operation,
-            Operation::RecordInt(_) | Operation::ReadInt(_) | Operation::Collect
+            Operation::RecordInt(_)
+                | Operation::ReadInt(_)
+                | Operation::Collect
+                | Operation::EmptyInts
+                | Operation::PrependInt(_, _)
+                | Operation::HeadInt(_)
+                | Operation::TailInts(_)
+                | Operation::IsEmptyInts(_)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -431,14 +439,53 @@ fn compile_body(
                     exit,
                 )
             }
-            Operation::Collect => {
+            Operation::PrependInt(value, tail) => {
+                let output = heap_output.expect("heap operation scratch");
+                builder
+                    .ins()
+                    .store(MemFlags::new(), registers[tail], output, 0);
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    HEAP_PREPEND_INT,
+                    registers[value],
+                    output,
+                    exit,
+                )
+            }
+            Operation::HeadInt(value)
+            | Operation::TailInts(value)
+            | Operation::IsEmptyInts(value) => {
+                let operation = match instruction.operation {
+                    Operation::HeadInt(_) => HEAP_HEAD_INT,
+                    Operation::TailInts(_) => HEAP_TAIL_INTS,
+                    _ => HEAP_IS_EMPTY_INTS,
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    operation,
+                    registers[value],
+                    heap_output.expect("heap operation scratch"),
+                    exit,
+                )
+            }
+            Operation::Collect | Operation::EmptyInts => {
                 let argument = builder.ins().iconst(types::I64, 0);
                 call_heap(
                     &mut builder,
                     pointer_type,
                     parameters[3],
                     heap_signature,
-                    HEAP_COLLECT,
+                    if matches!(instruction.operation, Operation::Collect) {
+                        HEAP_COLLECT
+                    } else {
+                        HEAP_EMPTY_INTS
+                    },
                     argument,
                     heap_output.expect("heap operation scratch"),
                     exit,

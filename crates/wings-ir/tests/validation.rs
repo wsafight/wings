@@ -43,6 +43,46 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::ListRef, Operation::EmptyInts),
+        instruction(ValueType::ListRef, Operation::PrependInt(0, 1)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::ListRef, Operation::TailInts(2)),
+        instruction(ValueType::Bool, Operation::IsEmptyInts(4)),
+        instruction(ValueType::Int, Operation::HeadInt(2)),
+    ];
+    function.state = 0;
+    function.reply = 6;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[2], vec![1]);
+    assert_eq!(plan.at[3], vec![2]);
+    assert_eq!(plan.at[5], vec![2, 4]);
+    for (index, replacement) in [
+        (1, instruction(ValueType::ListRef, Operation::Constant(0))),
+        (1, instruction(ValueType::Ref, Operation::EmptyInts)),
+        (
+            2,
+            instruction(ValueType::ListRef, Operation::PrependInt(1, 0)),
+        ),
+        (4, instruction(ValueType::ListRef, Operation::TailInts(0))),
+        (5, instruction(ValueType::Int, Operation::IsEmptyInts(2))),
+        (6, instruction(ValueType::Int, Operation::ReadInt(2))),
+    ] {
+        let mut wrong = program.clone();
+        wrong.handlers[0].function.instructions[index] = replacement;
+        rejects(&wrong, "operand, type");
+    }
+    let mut wrong = program;
+    wrong.handlers[0].reply = Some(ValueType::ListRef);
+    rejects(&wrong, "cannot cross scalar IR");
+}
+
+#[test]
 fn record_merges_publish_only_outer_and_selected_values_before_the_merge_poll() {
     let mut program = valid_program();
     let function = &mut program.handlers[0].function;

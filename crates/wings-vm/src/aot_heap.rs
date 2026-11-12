@@ -1,8 +1,10 @@
 use std::alloc::{Layout, alloc};
 
 use wings_abi::{
-    HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT, MAX_SHADOW_ROOTS, STATUS_HEAP_EXHAUSTED,
-    STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK, ScalarContext, ShadowFrame,
+    HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
+    HEAP_READ_INT, HEAP_RECORD_INT, HEAP_TAIL_INTS, MAX_SHADOW_ROOTS, STATUS_EMPTY_LIST,
+    STATUS_HEAP_EXHAUSTED, STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK, ScalarContext,
+    ShadowFrame,
 };
 
 use crate::{
@@ -15,13 +17,15 @@ pub(crate) struct AotHeap {
     heap: RecordHeap,
     roots: ShadowRoots,
     layout: RecordLayout,
+    empty_list: RecordLayout,
+    cons_list: RecordLayout,
     committed: Option<HeapRef>,
     _metadata: Reservation,
 }
 
 impl AotHeap {
     pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Box<Self>, String> {
-        let mut heap = RecordHeap::new(account, capacity, 1)?;
+        let mut heap = RecordHeap::new(account, capacity, 3)?;
         let metadata = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
                 - std::mem::size_of::<RecordHeap>()
@@ -29,6 +33,8 @@ impl AotHeap {
             ..Resources::default()
         })?;
         let layout = heap.register_layout(&[FieldType::Int])?;
+        let empty_list = heap.register_layout(&[FieldType::Unit])?;
+        let cons_list = heap.register_layout(&[FieldType::Int, FieldType::Ref])?;
         let roots = ShadowRoots::with_state_root(&heap)?;
         let pointer = unsafe { alloc(Layout::new::<Self>()) }.cast::<Self>();
         if pointer.is_null() {
@@ -40,6 +46,8 @@ impl AotHeap {
                 heap,
                 roots,
                 layout,
+                empty_list,
+                cons_list,
                 committed: None,
                 _metadata: metadata,
             })
@@ -53,11 +61,57 @@ impl AotHeap {
 
     pub(crate) fn commit(&mut self, encoded: i64) -> Result<(), String> {
         let reference = self.heap.import_reference(encoded as u64)?;
-        if !matches!(self.heap.get(reference, 0)?, RecordValue::Int(_)) {
+        if !self.heap.has_layout(reference, self.layout)? {
             return Err("record state requires an Int field".into());
         }
         self.committed = Some(reference);
         Ok(())
+    }
+
+    pub(crate) fn commit_list(&mut self, encoded: i64) -> Result<(), String> {
+        let reference = self.list_reference(encoded as u64)?;
+        self.committed = Some(reference);
+        Ok(())
+    }
+
+    pub(crate) fn commit_typed(
+        &mut self,
+        ty: wings_abi::ValueType,
+        encoded: i64,
+    ) -> Result<(), String> {
+        if ty == wings_abi::ValueType::ListRef {
+            self.commit_list(encoded)
+        } else {
+            self.commit(encoded)
+        }
+    }
+
+    fn list_reference(&self, encoded: u64) -> Result<HeapRef, String> {
+        let reference = self.heap.import_reference(encoded)?;
+        if !self.heap.has_layout(reference, self.empty_list)?
+            && !self.heap.has_layout(reference, self.cons_list)?
+        {
+            return Err("expected an IntList node".into());
+        }
+        Ok(reference)
+    }
+
+    unsafe fn allocate(
+        &mut self,
+        layout: RecordLayout,
+        values: &[RecordValue],
+        frame: *const ShadowFrame,
+    ) -> Result<u64, u32> {
+        match self.heap.allocate(layout, values) {
+            Ok(reference) => Ok(reference.encoded()),
+            Err(_) => {
+                unsafe { self.collect(frame) }.map_err(|_| STATUS_INVALID_ROOT)?;
+                self.heap
+                    .allocate(layout, values)
+                    .map(|reference| reference.encoded())
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)
+            }
+        }
     }
 
     unsafe fn collect(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
@@ -83,7 +137,7 @@ impl AotHeap {
             frame = current.previous;
         }
         if let Some(committed) = self.committed {
-            self.heap.get(committed, 0)?;
+            self.heap.import_reference(committed.encoded())?;
             references[count] = Some(committed);
             count += 1;
         }
@@ -107,24 +161,62 @@ pub(crate) unsafe extern "C" fn heap_call(
     let value = match operation {
         HEAP_RECORD_INT => {
             let values = [RecordValue::Int(argument as i64)];
-            let reference = match heap.heap.allocate(heap.layout, &values) {
-                Ok(reference) => reference,
-                Err(_) => {
-                    if unsafe { heap.collect(context.roots) }.is_err() {
-                        return STATUS_INVALID_ROOT;
-                    }
-                    match heap.heap.allocate(heap.layout, &values) {
-                        Ok(reference) => reference,
-                        Err(_) => return STATUS_HEAP_EXHAUSTED,
-                    }
-                }
+            match unsafe { heap.allocate(heap.layout, &values, context.roots) } {
+                Ok(encoded) => encoded,
+                Err(status) => return status,
+            }
+        }
+        HEAP_EMPTY_INTS => {
+            match unsafe { heap.allocate(heap.empty_list, &[RecordValue::Unit], context.roots) } {
+                Ok(encoded) => encoded,
+                Err(status) => return status,
+            }
+        }
+        HEAP_PREPEND_INT => {
+            let Ok(tail) = heap.list_reference(unsafe { *output }) else {
+                return STATUS_INVALID_ROOT;
             };
-            reference.encoded()
+            let values = [RecordValue::Int(argument as i64), RecordValue::Ref(tail)];
+            match unsafe { heap.allocate(heap.cons_list, &values, context.roots) } {
+                Ok(encoded) => encoded,
+                Err(status) => return status,
+            }
+        }
+        HEAP_HEAD_INT | HEAP_TAIL_INTS | HEAP_IS_EMPTY_INTS => {
+            let Ok(reference) = heap.list_reference(argument) else {
+                return STATUS_INVALID_ROOT;
+            };
+            let empty = heap
+                .heap
+                .has_layout(reference, heap.empty_list)
+                .unwrap_or(false);
+            if operation == HEAP_IS_EMPTY_INTS {
+                u64::from(empty)
+            } else if empty {
+                return STATUS_EMPTY_LIST;
+            } else if operation == HEAP_HEAD_INT {
+                let Ok(RecordValue::Int(value)) = heap.heap.get(reference, 0) else {
+                    return STATUS_INVALID_ROOT;
+                };
+                value as u64
+            } else {
+                let Ok(RecordValue::Ref(tail)) = heap.heap.get(reference, 1) else {
+                    return STATUS_INVALID_ROOT;
+                };
+                tail.encoded()
+            }
         }
         HEAP_READ_INT => {
             let Ok(reference) = heap.heap.import_reference(argument) else {
                 return STATUS_INVALID_ROOT;
             };
+            if !heap
+                .heap
+                .has_layout(reference, heap.layout)
+                .unwrap_or(false)
+            {
+                return STATUS_INVALID_ROOT;
+            }
             let Ok(RecordValue::Int(value)) = heap.heap.get(reference, 0) else {
                 return STATUS_INVALID_ROOT;
             };
@@ -156,6 +248,48 @@ mod tests {
         let tenant = vm.tenant(limits).unwrap();
         let account = tenant.process(limits).unwrap();
         (vm, AotHeap::new(&account, capacity).unwrap())
+    }
+
+    #[test]
+    fn typed_state_roots_reject_other_shapes_and_trace_list_tails() {
+        let (vm, mut heap) = fixture(5);
+        let empty = heap
+            .heap
+            .allocate(heap.empty_list, &[RecordValue::Unit])
+            .unwrap();
+        let tail = heap
+            .heap
+            .allocate(
+                heap.cons_list,
+                &[RecordValue::Int(7), RecordValue::Ref(empty)],
+            )
+            .unwrap();
+        let head = heap
+            .heap
+            .allocate(
+                heap.cons_list,
+                &[RecordValue::Int(11), RecordValue::Ref(tail)],
+            )
+            .unwrap();
+        let record = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(99)])
+            .unwrap();
+        assert!(heap.commit_list(record.encoded() as i64).is_err());
+        assert!(heap.commit(head.encoded() as i64).is_err());
+        heap.commit_list(head.encoded() as i64).unwrap();
+        let used = vm.used();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 3);
+        assert!(heap.heap.get(record, 0).is_err());
+        assert_eq!(heap.heap.get(tail, 0).unwrap(), RecordValue::Int(7));
+        heap.commit_list(empty.encoded() as i64).unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 1);
+        assert!(heap.commit_list(head.encoded() as i64).is_err());
+        assert_eq!(vm.used(), used);
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]

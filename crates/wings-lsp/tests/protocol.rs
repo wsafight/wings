@@ -105,6 +105,41 @@ fn function_calls_share_signature_definition_and_keyword_completion() {
 }
 
 #[test]
+fn list_values_share_types_hover_and_builtin_completion() {
+    let mut server = server();
+    let text = "process P { state values: IntList = empty_ints(); on Push(value: Int) -> Int { values = prepend_int(value, values); head_int(values) } }";
+    let diagnostics = open(&mut server, URI, 1, text);
+    assert!(
+        diagnostics[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let offset = text.rfind("values").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+        "values: IntList"
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    for label in [
+        "IntList",
+        "empty_ints",
+        "prepend_int",
+        "head_int",
+        "tail_ints",
+        "is_empty_ints",
+    ] {
+        assert!(
+            completion["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+}
+
+#[test]
 fn record_state_shares_types_definitions_and_diagnostics() {
     let mut server = server();
     let text = "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get -> Int { while read_int(saved) < 11 { saved = if true { record_int(11) } else { saved } }; collect(); read_int(saved) } }";

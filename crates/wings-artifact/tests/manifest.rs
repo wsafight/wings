@@ -127,19 +127,21 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 
 #[test]
 fn accepts_record_state_but_rejects_reference_messages_and_replies() {
-    let mut with_state = manifest();
-    with_state.state = ValueType::Ref;
-    with_state.validate().unwrap();
-    with_state.encode().unwrap();
-    for boundary in 1..3 {
-        let mut manifest = manifest();
-        match boundary {
-            1 => manifest.handlers[0]
-                .parameters
-                .push(("reference".into(), ValueType::Ref)),
-            _ => manifest.handlers[0].reply = Some(ValueType::Ref),
+    for ty in [ValueType::Ref, ValueType::ListRef] {
+        let mut with_state = manifest();
+        with_state.state = ty;
+        with_state.validate().unwrap();
+        with_state.encode().unwrap();
+        for boundary in 1..3 {
+            let mut manifest = manifest();
+            match boundary {
+                1 => manifest.handlers[0]
+                    .parameters
+                    .push(("reference".into(), ty)),
+                _ => manifest.handlers[0].reply = Some(ty),
+            }
+            rejects(&manifest, "cannot cross scalar artifact boundaries");
         }
-        rejects(&manifest, "cannot cross scalar artifact boundaries");
     }
 }
 

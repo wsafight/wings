@@ -70,7 +70,7 @@ fn optional_slow_path_has_the_nullable_function_pointer_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 6);
+    assert_eq!(SCALAR_ABI_VERSION, 7);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
@@ -80,6 +80,7 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(STATUS_STACK_EXHAUSTED, 6);
     assert_eq!(STATUS_HEAP_EXHAUSTED, 7);
     assert_eq!(STATUS_INVALID_ROOT, 8);
+    assert_eq!(wings_abi::STATUS_EMPTY_LIST, 9);
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
 }
 
@@ -87,6 +88,7 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
 fn references_have_no_scalar_encoding_and_shadow_frames_are_native_c_layout() {
     for value in [0, 1, -1, i64::MIN, i64::MAX] {
         assert!(!ValueType::Ref.accepts(value));
+        assert!(!ValueType::ListRef.accepts(value));
     }
     assert_eq!(offset_of!(ShadowFrame, previous), 0);
     assert_eq!(offset_of!(ShadowFrame, slots), size_of::<usize>());

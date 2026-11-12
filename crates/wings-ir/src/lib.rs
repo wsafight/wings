@@ -35,6 +35,11 @@ pub enum Operation {
     RecordInt(Register),
     ReadInt(Register),
     Collect,
+    EmptyInts,
+    PrependInt(Register, Register),
+    HeadInt(Register),
+    TailInts(Register),
+    IsEmptyInts(Register),
     If(Register),
     Else(Register),
     EndIf(Register),
@@ -80,11 +85,8 @@ enum Region {
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
         if self.handlers.iter().any(|handler| {
-            handler.reply == Some(ValueType::Ref)
-                || handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::Ref)
+            handler.reply.is_some_and(ValueType::is_reference)
+                || handler.parameters.iter().any(|(_, ty)| ty.is_reference())
         }) {
             return Err("record references cannot cross scalar IR boundaries".into());
         }
@@ -165,6 +167,24 @@ impl Function {
                     instruction.ty == ValueType::Int && types.get(value) == Some(&ValueType::Ref)
                 }
                 Operation::Collect => instruction.ty == ValueType::Unit,
+                Operation::EmptyInts => instruction.ty == ValueType::ListRef,
+                Operation::PrependInt(value, tail) => {
+                    instruction.ty == ValueType::ListRef
+                        && types.get(value) == Some(&ValueType::Int)
+                        && types.get(tail) == Some(&ValueType::ListRef)
+                }
+                Operation::HeadInt(value) => {
+                    instruction.ty == ValueType::Int
+                        && types.get(value) == Some(&ValueType::ListRef)
+                }
+                Operation::TailInts(value) => {
+                    instruction.ty == ValueType::ListRef
+                        && types.get(value) == Some(&ValueType::ListRef)
+                }
+                Operation::IsEmptyInts(value) => {
+                    instruction.ty == ValueType::Bool
+                        && types.get(value) == Some(&ValueType::ListRef)
+                }
                 Operation::If(condition) => {
                     if branches.len() == 64 {
                         return Err("conditional nesting exceeds 64 branches".into());
@@ -287,13 +307,13 @@ impl Function {
             if matches!(instruction.operation, Operation::Loop(_)) {
                 active.retain(|register: &usize| last_uses[*register] > index);
                 loops.push(active.clone());
-                if instruction.ty == ValueType::Ref && last_uses[index] > index {
+                if instruction.ty.is_reference() && last_uses[index] > index {
                     active.push(index);
                 }
             }
             if matches!(instruction.operation, Operation::EndIf(_)) {
                 active = branches.pop().unwrap_or_default();
-                if instruction.ty == ValueType::Ref && last_uses[index] > index {
+                if instruction.ty.is_reference() && last_uses[index] > index {
                     active.push(index);
                 }
             }
@@ -306,7 +326,7 @@ impl Function {
                 Operation::EndLoop(_) => active = loops.pop().unwrap_or_default(),
                 _ => {}
             }
-            if instruction.ty == ValueType::Ref
+            if instruction.ty.is_reference()
                 && last_uses[index] > index
                 && !matches!(
                     instruction.operation,
@@ -335,12 +355,15 @@ fn operands(operation: &Operation) -> [Option<Register>; 2] {
         | Operation::If(value)
         | Operation::Else(value)
         | Operation::EndIf(value) => [Some(value), None],
+        Operation::HeadInt(value) | Operation::TailInts(value) | Operation::IsEmptyInts(value) => {
+            [Some(value), None]
+        }
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
             [Some(value), None]
         }
-        Operation::Binary(_, left, right) | Operation::Compare(_, left, right) => {
-            [Some(left), Some(right)]
-        }
+        Operation::Binary(_, left, right)
+        | Operation::Compare(_, left, right)
+        | Operation::PrependInt(left, right) => [Some(left), Some(right)],
         _ => [None, None],
     }
 }

@@ -148,6 +148,28 @@ fn failed_output_validation_marks_snapshot_failed() {
 }
 
 #[test]
+fn wrong_record_shape_cannot_commit_as_list_state() {
+    let [vm, tenant, account] = accounts();
+    let mut module = module();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::ListRef;
+    data.initializer = super::persistent_state::record_initializer;
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let baseline = vm.used();
+    assert!(
+        module
+            .instantiate_with_heap(&bound, &account, 4)
+            .err()
+            .unwrap()
+            .contains("IntList node")
+    );
+    assert_eq!(vm.used(), baseline);
+    drop((bound, pool));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn worker_snapshot_reports_queue_current_handler_committed_state_and_identity() {
     let (vm, tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
     let initial = worker.snapshot(pid).unwrap();

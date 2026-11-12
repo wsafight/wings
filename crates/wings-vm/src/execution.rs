@@ -40,6 +40,7 @@ pub enum ExecutionFault {
     HeapExhausted,
     InvalidRoot,
     InvalidOutput,
+    EmptyList,
     UnknownStatus(u32),
 }
 
@@ -55,6 +56,7 @@ impl ExecutionFault {
             wings_abi::STATUS_STACK_EXHAUSTED => Self::StackExhausted,
             wings_abi::STATUS_HEAP_EXHAUSTED => Self::HeapExhausted,
             wings_abi::STATUS_INVALID_ROOT => Self::InvalidRoot,
+            wings_abi::STATUS_EMPTY_LIST => Self::EmptyList,
             other => Self::UnknownStatus(other),
         })
     }
@@ -547,6 +549,7 @@ mod tests {
                 ExecutionFault::HeapExhausted,
             ),
             (wings_abi::STATUS_INVALID_ROOT, ExecutionFault::InvalidRoot),
+            (wings_abi::STATUS_EMPTY_LIST, ExecutionFault::EmptyList),
             (u32::MAX, ExecutionFault::UnknownStatus(u32::MAX)),
         ] {
             assert_eq!(ExecutionFault::from_status(status), Some(fault));

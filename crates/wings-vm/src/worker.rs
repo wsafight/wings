@@ -490,7 +490,7 @@ impl ScalarWorker {
                         pid,
                         execution: actor.task.snapshot().expect("failed invocation snapshot"),
                         state_type,
-                        committed_state: (state_type != wings_abi::ValueType::Ref)
+                        committed_state: (!state_type.is_reference())
                             .then(|| actor.task.committed_state()),
                         queued: actor.mailbox.count,
                         resources_before_cleanup: actor.account.used(),
@@ -542,8 +542,7 @@ impl ScalarWorker {
                 .as_ref()
                 .map(|active| active.message.handler.schema().name.as_str()),
             state_type,
-            committed_state: (state_type != wings_abi::ValueType::Ref)
-                .then(|| actor.task.committed_state()),
+            committed_state: (!state_type.is_reference()).then(|| actor.task.committed_state()),
             execution: actor.task.snapshot(),
             heap: actor.task.heap_stats(),
             resources: actor.account.used(),
@@ -552,7 +551,7 @@ impl ScalarWorker {
 
     pub fn committed_state(&self, pid: Pid) -> Result<i64, String> {
         let actor = self.actor(pid)?;
-        if actor.task.module().manifest().state == wings_abi::ValueType::Ref {
+        if actor.task.module().manifest().state.is_reference() {
             return Err("record state is not exposed as a scalar diagnostic".into());
         }
         Ok(actor.task.committed_state())

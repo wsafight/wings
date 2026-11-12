@@ -1,5 +1,7 @@
 # 运行时
 
+IntList 按 [ADR-0037](adr/0037-immutable-int-lists.md) 使用同进程计费节点和不可变共享尾；内建每次只操作一个节点，空 head/tail 受管失败。持久列表根传递保活尾部，退出不保留业务引用。
+
 [ADR-0036](adr/0036-bounded-inline-functions.md) 的源码 fn 内联到当前 handler/initializer，参数按序求值一次，记录引用仍归当前堆；调用内失败直接终止入口，候选不提交，不新增原生调用入口。
 
 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 在清理前复制单槽最近退出诊断，保留失败 handler、结构化 ABI 故障、预算/GC 与旧标量提交；不保留旧堆/栈/账户，supervisor 重启不会覆盖。仅报告最近一次受管失败，不提供无界历史或语言 monitor。

@@ -1,14 +1,16 @@
 # wings-lang
 
+`IntList` 支持 `empty_ints()`、`prepend_int(Int, IntList)`、`head_int(IntList)`、`tail_ints(IntList)` 和 `is_empty_ints(IntList)`；可作 state/局部/内联 fn 值，不可作消息参数/回复。列表不可变，空 head/tail 受管失败，节点及共享尾计费/根边界见 [ADR-0037](adr/0037-immutable-int-lists.md)。
+
 process 内可按 [ADR-0036](adr/0036-bounded-inline-functions.md) 声明有显式参数/返回类型的 `fn`：只访问参数/局部和更早函数，不访问 state，禁止递归/while。编译器有界内联，支持 RecordInt 参数/返回及 collect；不是新的跨帧调用 ABI，展开后仍受操作、根与实际帧限额约束。
 
 持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；消息字段和回复仍禁止 RecordInt。执行必须显式配置计费堆，不接受外部 handle。
 
-条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量及 RecordInt，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
+条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量、RecordInt 及 IntList，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
 
 标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
 
-handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量与 RecordInt state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
+handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量、RecordInt 与 IntList state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -141,18 +143,19 @@ let id = request(counter, Inc(by: 2))
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v6 不兼容已发布 `0.0.2` 及旧源码 v2–v5 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v7 不兼容已发布 `0.0.2` 及旧源码 v2–v6 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 
 - `process`、一个具名 state、统一的 `on`、具名类型化参数和可选回复类型。
-- `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
+- `Int`、`Bool`、`Unit`、RecordInt/IntList 引用类型，整数、布尔与 `()` 字面量，括号、取负和四则运算。
 - 同类型标量相等与有符号 Int 顺序比较，结果为 Bool，不比较引用。
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
 - `RecordInt` 局部/state、受限记录内建、同类型标量/RecordInt `if` 与唯一 state 的 while；无任意引用 phi。
 - handler 内携带唯一标量/RecordInt state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
 - process 内最多 64 个 fn、64 个显式类型参数、32 层声明顺序调用；非递归内联，无 state 访问/赋值或函数内 while，展开后仍受入口操作/根/帧上限约束。
+- 不可变 IntList 的单节点构造/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
 
 尚未实现模块、动态函数调用/递归、任意引用 phi、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 

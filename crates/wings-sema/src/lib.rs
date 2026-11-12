@@ -10,6 +10,7 @@ pub enum Type {
     Bool,
     Unit,
     RecordInt,
+    IntList,
     Function {
         parameters: Vec<(String, Type)>,
         result: Box<Type>,
@@ -28,6 +29,7 @@ impl std::fmt::Display for Type {
             Self::Bool => formatter.write_str("Bool"),
             Self::Unit => formatter.write_str("Unit"),
             Self::RecordInt => formatter.write_str("RecordInt"),
+            Self::IntList => formatter.write_str("IntList"),
             Self::Function { parameters, result } => {
                 formatter.write_str("(")?;
                 for (index, (name, ty)) in parameters.iter().enumerate() {
@@ -153,7 +155,14 @@ pub fn analyze(text: &str) -> Analysis {
             let result = checker.declared_type(&function.result);
             if matches!(
                 function.name.text.as_str(),
-                "record_int" | "read_int" | "collect"
+                "record_int"
+                    | "read_int"
+                    | "collect"
+                    | "empty_ints"
+                    | "prepend_int"
+                    | "head_int"
+                    | "tail_ints"
+                    | "is_empty_ints"
             ) || checker.functions.contains_key(&function.name.text)
             {
                 checker.error(
@@ -298,10 +307,10 @@ struct Checker {
 
 impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
-        if *ty == Type::RecordInt {
+        if matches!(ty, Type::RecordInt | Type::IntList) {
             self.error(
                 "T011",
-                "RecordInt is not supported in message fields or replies",
+                format!("{ty} is not supported in message fields or replies"),
                 span,
             );
         }
@@ -319,12 +328,13 @@ impl Checker {
             "Bool" => Type::Bool,
             "Unit" => Type::Unit,
             "RecordInt" => Type::RecordInt,
+            "IntList" => Type::IntList,
             "" => Type::Unknown,
             _ => {
                 self.error(
                     "T002",
                     format!(
-                        "unknown type '{}'; supported types are Int, Bool, Unit and RecordInt",
+                        "unknown type '{}'; supported types are Int, Bool, Unit, RecordInt and IntList",
                         name.text
                     ),
                     name.span,
@@ -484,9 +494,14 @@ impl Checker {
                     return *result;
                 }
                 let (expected, result) = match callee.text.as_str() {
-                    "record_int" => (Some(Type::Int), Type::RecordInt),
-                    "read_int" => (Some(Type::RecordInt), Type::Int),
-                    "collect" => (None, Type::Unit),
+                    "record_int" => (vec![Type::Int], Type::RecordInt),
+                    "read_int" => (vec![Type::RecordInt], Type::Int),
+                    "collect" => (vec![], Type::Unit),
+                    "empty_ints" => (vec![], Type::IntList),
+                    "prepend_int" => (vec![Type::Int, Type::IntList], Type::IntList),
+                    "head_int" => (vec![Type::IntList], Type::Int),
+                    "tail_ints" => (vec![Type::IntList], Type::IntList),
+                    "is_empty_ints" => (vec![Type::IntList], Type::Bool),
                     _ => {
                         self.error(
                             "T012",
@@ -496,7 +511,7 @@ impl Checker {
                         return Type::Unknown;
                     }
                 };
-                let count = usize::from(expected.is_some());
+                let count = expected.len();
                 if arguments.len() != count {
                     self.error(
                         "T013",
@@ -508,10 +523,8 @@ impl Checker {
                         expression.span,
                     );
                 }
-                if let (Some(expected), Some(actual), Some(argument)) =
-                    (expected, types.first(), arguments.first())
-                {
-                    self.require(actual, &expected, argument.span);
+                for ((actual, expected), argument) in types.iter().zip(&expected).zip(arguments) {
+                    self.require(actual, expected, argument.span);
                 }
                 result
             }
@@ -541,7 +554,9 @@ impl Checker {
                 let right_type = self.expression(right, scope);
                 if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                     self.require(&right_type, &left_type, right.span);
-                    if left_type == Type::RecordInt || right_type == Type::RecordInt {
+                    if matches!(left_type, Type::RecordInt | Type::IntList)
+                        || matches!(right_type, Type::RecordInt | Type::IntList)
+                    {
                         self.error(
                             "T015",
                             "record references cannot be compared",
