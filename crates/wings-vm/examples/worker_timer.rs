@@ -7,7 +7,7 @@ use wings_vm::{
     ScalarWorker, WorkerEvent,
 };
 
-const WORK_STEPS: u64 = 1203;
+const WORK_STEPS: u64 = 387;
 const MAX_ATTEMPTS: usize = 128;
 const MAX_TICKS: usize = 128;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -66,7 +66,7 @@ fn snapshot(
 }
 
 fn total(seed: i64) -> i64 {
-    400 * seed + 79_800
+    128 * seed + 8_128
 }
 
 fn enqueue(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid, seed: i64) -> RequestId {

@@ -93,7 +93,7 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `scalar_requests` 另验证 Int/Unit 回复、pending 满（含已完成未取走）、requests/messages 限额拒绝零变化、零超时及挂起超时、取消不撤回状态副作用、迟到回复与槽位复用、stale/跨 worker 请求 ID、退出/stop 终结和结果票据的释放。请求 deadline 使用单调时钟，不改变 handler 的总步数预算，见 [ADR-0021](adr/0021-bounded-requests.md)。两示例均不覆盖语言内 send/spawn/request、自动计时唤醒、真实 I/O、compiler 根或同业务 BEAM 性能。
 
-`worker_timer` 使用 400 个活跃标量的 Timer 产物验证可选 deadline 让出：先拒绝未启用、零时长和不可表示时长，再验证容量准入、原栈恢复/提交、总预算与挂起清理。短 deadline 的有限观察只证明原子请求可到达强制检查点，不是抢占延迟、服务尾延迟或 BEAM 性能结果；空闲线程无轮询，Drop 应唤醒并 join，不等待原 deadline，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+`worker_timer` 使用 128 个活跃标量的 Timer 产物验证可选 deadline 让出：先拒绝未启用、零时长和不可表示时长，再验证容量准入、原栈恢复/提交、总预算与挂起清理。原 400 值产物曾在共享 macOS CI 上编译触发 20 秒 CPU 限额；现缩小产物但保留强制检查和既定子进程资源上限。短 deadline 的有限观察只证明原子请求可到达强制检查点，不是抢占延迟、服务尾延迟或 BEAM 性能结果；空闲线程无轮询，Drop 应唤醒并 join，不等待原 deadline，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
 `scalar_supervisor` 在受限子进程运行同一 Queue 产物，验证失败前提交的状态不会进入重启实例、候选状态不提交、旧消息不重放、旧请求 Failed、其他子项继续执行、滚动窗口达到强度上限后不再重启，以及挂起 stop 和资源归零。Rust 单元回归另外验证精确窗口边界（不靠 sleep）、策略和构造拒绝、历史计费、stale/跨 supervisor ID、initializer 重建失败及 timer Drop。只覆盖宿主 one-for-one，不代表语言级监督、OTP oracle 或性能验收完成，见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
 

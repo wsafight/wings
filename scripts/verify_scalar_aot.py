@@ -203,12 +203,12 @@ def main():
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)
         timer_source = parent / "timer.wings"
-        timer_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(400))
+        timer_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
         timer_groups = "\n".join(
-            f"let group_{group} = " + " + ".join(f"value_{index}" for index in range(group * 100, (group + 1) * 100))
-            for group in range(4)
+            f"let group_{group} = " + " + ".join(f"value_{index}" for index in range(group * 64, (group + 1) * 64))
+            for group in range(2)
         )
-        timer_total = " + ".join(f"group_{group}" for group in range(4))
+        timer_total = " + ".join(f"group_{group}" for group in range(2))
         timer_source.write_text(f"""process Timer {{
   state count: Int = 0
   on Work(seed: Int) -> Int {{
