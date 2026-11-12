@@ -6,11 +6,11 @@
 
 宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
 
-有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；[ADR-0033](adr/0033-record-conditional-roots.md) 增加 RecordInt 合流，恢复外层路径根并在合流检查前发布选中结果。ABI v6 不变，尚无臂内语句或引用循环携带值；标量 while 另见 ADR-0031。
+有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；[ADR-0033](adr/0033-record-conditional-roots.md) 增加 RecordInt 合流，恢复外层路径根并在合流检查前发布选中结果。ABI v6 不变，尚无臂内语句或任意引用 phi；state while 另见 ADR-0031/0034。
 
 标量比较使用显式类型化 IR 与 Cranelift signed compare，不通过可能溢出的相减模拟顺序；根、检查点、ABI v6 及消息边界不变。见 [ADR-0030](adr/0030-scalar-comparisons.md)。
 
-标量 state 循环使用结构化 Loop/While/EndLoop、header/exit 标量块参数与回边强制检查；Ref 不跨迭代携带，外层循环活跃根延长至回边。ABI v6、固定栈和预算不变，见 [ADR-0031](adr/0031-scalar-state-loops.md)。
+state 循环使用结构化 Loop/While/EndLoop、header/exit 块参数与回边强制检查；[ADR-0034](adr/0034-record-state-loops.md) 开放唯一 RecordInt state 携带值，检查前发布 header、回边保活候选、出口恢复外层根。ABI v6、固定栈和预算不变；无任意引用 phi，基础标量契约见 [ADR-0031](adr/0031-scalar-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -72,7 +72,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 执行所有权有两种宿主接口：`ScalarExecution<'_>` 独占借用已有实例；`ScalarTask` 按值拥有实例与私有 invocation，无需把借用和被借用者放进自引用槽位。任务可在同线程容器内移动，挂起时不暴露可变实例；`start` 直接接收模块绑定的 `HandlerId`，忙时拒绝新调用，完成后才允许下一条。两条路径共用原栈恢复、候选提交和正常取消清理，均不能跨线程恢复。任务仍无身份、mailbox 或调度协议，细节见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。
 
-当前源码的 `wings-compile build` 将单个 process 的 handler 降为有类型寄存器 IR，校验结构化分支/标量 state 回边及作用域后由 Cranelift 0.118 生成 PIC 对象，再用系统 `cc` 链接为共享库。不使用 JIT，也不执行源码完成编译或 LSP 查询。每入口最多 4096 条静态操作、每 process 最多 128 个 handler、每 handler 最多 64 个参数，超限拒绝构建；动态执行仍受总预算约束。
+当前源码的 `wings-compile build` 将单个 process 的 handler 降为有类型寄存器 IR，校验结构化分支、标量/RecordInt state 回边及作用域后由 Cranelift 0.118 生成 PIC 对象，再用系统 `cc` 链接为共享库。不使用 JIT，也不执行源码完成编译或 LSP 查询。每入口最多 4096 条静态操作、每 process 最多 128 个 handler、每 handler 最多 64 个参数，超限拒绝构建；动态执行仍受总预算约束。
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 

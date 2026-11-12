@@ -1,0 +1,56 @@
+process RecordLoops {
+  state value: RecordInt = record_int(0)
+  on Get -> Int { read_int(value) }
+  on Count(limit: Int) -> Int {
+    while read_int(value) < limit {
+      value = record_int(read_int(value) + 1)
+      collect()
+    }
+    read_int(value)
+  }
+  on Preserve(flag: Bool, next: Int) -> Int {
+    value = record_int(next)
+    while flag {
+      value = record_int(read_int(value) + 1)
+    }
+    collect()
+    read_int(value)
+  }
+  on Advance(limit: Int, next: Int) -> Int {
+    value = record_int(next)
+    while read_int(value) < limit {
+      value = record_int(read_int(value) + 1)
+      collect()
+    }
+    read_int(value)
+  }
+  on Retain(limit: Int) -> Int {
+    while read_int(value) < limit {
+      let previous = value
+      value = record_int(read_int(value) + 1)
+      collect()
+      read_int(previous);
+    }
+    read_int(value)
+  }
+  on Nested(limit: Int) -> Int {
+    let saved = value
+    while read_int(value) < limit {
+      let until = read_int(value) + 2
+      while read_int(value) < until {
+        value = if read_int(value) < limit {
+          record_int(read_int(value) + 1)
+        } else { record_int(read_int(value) + 2) }
+        collect()
+      }
+    }
+    read_int(value) + read_int(saved)
+  }
+  on Fail(limit: Int) -> Int {
+    while read_int(value) < limit {
+      value = record_int(read_int(value) + 1)
+      collect()
+    }
+    1 / 0
+  }
+}

@@ -6,7 +6,7 @@
 
 标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
 
-标量 state handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。RecordInt state、break/continue 和循环携带引用暂不支持，见 [ADR-0031](adr/0031-scalar-state-loops.md)。
+handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量与 RecordInt state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -133,7 +133,7 @@ let id = request(counter, Inc(by: 2))
 | Rust | 参数与回复签名、联合类型和穷尽匹配方向 | 业务层所有权、生命周期和借用标注 |
 | Go | 少量规则、明确控制流 | 每个进程手写接收循环和阻塞 `select` |
 
-后续普通代码按 `fn`、`match`、通用记录和联合类型推进；目前已实现 `let`、受限标量 `if` 和记录内建，不支持任意函数调用。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
+后续普通代码按 `fn`、`match`、通用记录和联合类型推进；目前已实现 `let`、标量/RecordInt `if` 与 state while 和记录内建，不支持任意函数调用。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
 
 ## 当前原型支持范围
 
@@ -147,11 +147,11 @@ let id = request(counter, Inc(by: 2))
 - `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
 - 同类型标量相等与有符号 Int 顺序比较，结果为 Bool，不比较引用。
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
-- `RecordInt` 局部/state、受限记录内建与同类型标量/RecordInt `if` 表达式；无引用循环携带值。
-- handler 内只携带标量 state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
+- `RecordInt` 局部/state、受限记录内建、同类型标量/RecordInt `if` 与唯一 state 的 while；无任意引用 phi。
+- handler 内携带唯一标量/RecordInt state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
 
-尚未实现模块、函数、引用循环携带值、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现模块、函数、任意引用 phi、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 

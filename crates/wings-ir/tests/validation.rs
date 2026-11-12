@@ -304,6 +304,59 @@ fn loop_structure_types_scope_and_extended_reference_lifetimes_are_validated() {
 }
 
 #[test]
+fn reference_loop_headers_replace_initial_roots_and_keep_zero_exit_values() {
+    let mut program = valid_program();
+    program.state = ValueType::Ref;
+    program
+        .initializer
+        .instructions
+        .insert(1, instruction(ValueType::Ref, Operation::RecordInt(0)));
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Ref, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Ref, Operation::Loop(2)),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::While(4)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Ref, Operation::EndLoop(6)),
+        instruction(ValueType::Int, Operation::ReadInt(7)),
+    ];
+    function.state = 7;
+    function.reply = 8;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.last_uses[2], 3);
+    assert_eq!(plan.last_uses[3], 5);
+    assert_eq!(plan.at[3], vec![3]);
+    assert_eq!(plan.at[5], vec![3]);
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[8], vec![7]);
+    assert_eq!(plan.at[9], vec![7]);
+    let mut wrong = program.clone();
+    wrong.handlers[0].function.instructions[7].operation = Operation::EndLoop(1);
+    rejects(&wrong, "operand, type");
+    for local in [3, 6] {
+        let mut wrong = program.clone();
+        wrong.handlers[0].function.instructions[8].operation = Operation::ReadInt(local);
+        rejects(&wrong, "branch scope");
+    }
+    let mut alias = program;
+    alias.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Int, Operation::ReadInt(2)));
+    alias.handlers[0].function.reply = 9;
+    alias.validate().unwrap();
+    let plan = alias.handlers[0].function.root_plan();
+    assert_eq!(plan.at[3], vec![2, 3]);
+    assert_eq!(plan.at[8], vec![2, 7]);
+}
+
+#[test]
 fn comparison_types_and_operands_are_validated_before_codegen() {
     for comparison in [
         Comparison::Equal,

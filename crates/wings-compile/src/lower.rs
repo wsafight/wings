@@ -223,6 +223,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn record_state_while_lowers_to_rooted_header_and_exit() {
+        let program = lower("process P { state n: RecordInt = record_int(0); on Count(limit: Int) -> Int { while read_int(n) < limit { n = record_int(read_int(n) + 1) }; read_int(n) } }").unwrap();
+        let function = &program.handlers[0].function;
+        let plan = function.root_plan();
+        let header = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::Loop(_)))
+            .unwrap();
+        assert_eq!(function.instructions[header].ty, ValueType::Ref);
+        assert!(plan.at[header].contains(&header));
+        assert!(!plan.at[header].contains(&0));
+        assert!(plan.at[function.instructions.len()].contains(&function.state));
+    }
+
+    #[test]
     fn record_conditionals_lower_to_typed_merges_and_path_roots() {
         let program = lower(
             "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get(flag: Bool) -> Int { let selected = if flag { saved } else { record_int(11) }; collect(); read_int(selected) } }",

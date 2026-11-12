@@ -303,7 +303,8 @@ fn compile_body(
         } else {
             None
         };
-        if let Some(value) = merged {
+        let early_value = loop_header.or(merged);
+        if let Some(value) = early_value {
             registers.push(value);
         }
         publish_roots(
@@ -444,7 +445,7 @@ fn compile_body(
                 )
             }
         };
-        if merged.is_none() {
+        if early_value.is_none() {
             registers.push(value);
         }
     }

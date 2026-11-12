@@ -36,7 +36,7 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
-fn while_requires_scalar_state_bool_condition_unit_body_and_local_scope() {
+fn while_requires_bool_condition_unit_body_and_local_scope() {
     checked(
         "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",
     );
@@ -63,10 +63,8 @@ fn while_requires_scalar_state_bool_condition_unit_body_and_local_scope() {
     ] {
         assert_error(&handler(body), code, fragment);
     }
-    assert_error(
-        "process P { state n: RecordInt = record_int(0); on Work { while false {} } }",
-        "T016",
-        "scalar state",
+    checked(
+        "process P { state n: RecordInt = record_int(0); on Work { while read_int(n) < 10 { n = record_int(read_int(n) + 1) } } }",
     );
 }
 

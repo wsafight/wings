@@ -36,7 +36,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 条件可使用标量 `==`/`!=` 或有符号 Int 的 `<`/`<=`/`>`/`>=`；比较不转换类型或比较记录 handle。示例为 `examples/comparisons.wings`，契约见 [ADR-0030](docs/adr/0030-scalar-comparisons.md)。
 
-标量 state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 RecordInt state 循环或 break/continue，见 `examples/loops.wings` 和 [ADR-0031](docs/adr/0031-scalar-state-loops.md)。
+标量或 RecordInt state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 break/continue 或任意引用 phi，见 `examples/loops.wings`、`examples/record-loops.wings`、[ADR-0031](docs/adr/0031-scalar-state-loops.md) 和 [ADR-0034](docs/adr/0034-record-state-loops.md)。
 
 需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
 

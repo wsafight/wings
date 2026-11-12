@@ -1,5 +1,7 @@
 # ADR-0031：标量状态循环与回边检查
 
+- 后续：[ADR-0034](0034-record-state-loops.md) 替代 state 限标量的限制，增加 RecordInt 回边与出口根；下文保留最初切片的边界与理由。
+
 - 日期：2026-11-13
 - 状态：已采纳（M0 回边执行切片）
 - 补充：[ADR-0029](0029-scalar-conditional-expressions.md)、[ADR-0030](0030-scalar-comparisons.md)

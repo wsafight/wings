@@ -196,10 +196,7 @@ impl Function {
                         return Err("control nesting exceeds 64 regions".into());
                     }
                     branches.push(Region::Loop(types.len(), instruction.ty, false));
-                    !initializer
-                        && state != ValueType::Ref
-                        && instruction.ty == state
-                        && types.get(initial) == Some(&state)
+                    !initializer && instruction.ty == state && types.get(initial) == Some(&state)
                 }
                 Operation::While(condition) => {
                     let Some(Region::Loop(_, _, tested)) = branches.last_mut() else {
@@ -264,6 +261,11 @@ impl Function {
         for (index, instruction) in self.instructions.iter().enumerate() {
             match instruction.operation {
                 Operation::Loop(_) => loops.push(index),
+                Operation::While(_) => {
+                    if let Some(start) = loops.last() {
+                        last_uses[*start] = last_uses[*start].max(index);
+                    }
+                }
                 Operation::EndLoop(_) => {
                     if let Some(start) = loops.pop() {
                         for last in &mut last_uses[..start] {
@@ -278,9 +280,17 @@ impl Function {
         }
         let mut active = Vec::new();
         let mut branches = Vec::new();
+        let mut loops = Vec::new();
         let mut at = Vec::with_capacity(self.instructions.len() + 1);
         let mut capacity = 0;
         for (index, instruction) in self.instructions.iter().enumerate() {
+            if matches!(instruction.operation, Operation::Loop(_)) {
+                active.retain(|register: &usize| last_uses[*register] > index);
+                loops.push(active.clone());
+                if instruction.ty == ValueType::Ref && last_uses[index] > index {
+                    active.push(index);
+                }
+            }
             if matches!(instruction.operation, Operation::EndIf(_)) {
                 active = branches.pop().unwrap_or_default();
                 if instruction.ty == ValueType::Ref && last_uses[index] > index {
@@ -293,11 +303,15 @@ impl Function {
             match instruction.operation {
                 Operation::If(_) => branches.push(active.clone()),
                 Operation::Else(_) => active = branches.last().cloned().unwrap_or_default(),
+                Operation::EndLoop(_) => active = loops.pop().unwrap_or_default(),
                 _ => {}
             }
             if instruction.ty == ValueType::Ref
                 && last_uses[index] > index
-                && !matches!(instruction.operation, Operation::EndIf(_))
+                && !matches!(
+                    instruction.operation,
+                    Operation::EndIf(_) | Operation::Loop(_)
+                )
             {
                 active.push(index);
             }
