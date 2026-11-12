@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。未发布宿主库另有单 worker mailbox、异步请求和强制检查点活栈恢复；独立记录堆/精确根尚未接入语言或 AOT，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
 
 ## 开发
 
@@ -48,13 +48,27 @@ cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
 cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
 ```
 
-可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
+Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。
 
-此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、资源账户或监督。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、完整资源准入或监督。资源账户目前仅有单线程独立原语，未接入全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制轮询原子取消标志并扣除一步预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的上限（默认 1,000,000），库接口支持跨线程共享取消令牌。耗尽或取消后不提交该次状态与回复，实例终止。这不是让出恢复、完整抢占或资源计费；源码 ABI v2 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 产物。契约见 [ADR-0010](docs/adr/0010-scalar-execution-control.md)。
+未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消或总预算耗尽才终止，不提交该次状态与回复。暂挂调用持有固定 256 KiB 可用栈，Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是调度器、GC 或三级资源账本；源码 ABI v3 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 产物。契约与验证边界见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)。
+
+原栈分配现由自研 `StackPool` 管理：默认每线程最多 64 个活跃槽位、缓存 2 个已完成栈，耗尽明确失败；可显式传入池并读取容量统计、调用 `trim` 回收缓存页。完成调用立即归还槽位，挂起栈不能复用。此优化主要约束容量和缓存，不消除同时挂起栈的物理成本。实验与限制见[栈分配实验](docs/evaluation.md#原生栈分配实验)。
+
+`ScalarModule` 可装载一次并反复实例化，共享只读清单和入口数组，各实例独立执行初始化、保存状态与失败标记。宿主可预解析模块绑定的 `HandlerId`，直接调用时不再按字符串查找；外部 JSON 协议不变。此功能尚无语言内 spawn 或 mailbox，见 [ADR-0013](docs/adr/0013-shared-scalar-modules.md)。
+
+宿主可用 `ScalarTask` 按值保存实例和未完成调用，在同线程内移动而无需自引用；忙时拒绝新调用，正常结束才提交并释放栈，见 [ADR-0015](docs/adr/0015-owned-scalar-tasks.md)。`ScalarWorker` 在此基础上提供有限进程表、generation Pid、mailbox、固定 pending 表的异步请求及手动轮转时间片；process、消息、请求和活栈经过三级准入。超时/取消不撤回已接受消息，迟到回复不能覆盖复用请求槽位。该宿主切片尚无语言内 send/spawn/request 或真实 I/O，不是 M:N 调度器，见 [ADR-0020](docs/adr/0020-single-worker-mailbox.md) 与 [ADR-0021](docs/adr/0021-bounded-requests.md)。
+
+worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出，仍在强制 safepoint 挂起、原线程恢复。默认不创建计时线程，未验证真实服务尾延迟或 M:N 扩展成本，见 [ADR-0022](docs/adr/0022-worker-deadline-preemption.md)。
+
+`ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
+
+源码还有独立 `RecordHeap`/`ShadowRoots` 切片，用三级容量准入验证不可变定长记录、精确非移动回收和作用域根帧；尚未接入语言或 AOT，不把它称为 compiler 根链已经完成，见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。
+
+MVP 的待办和验收顺序见[路线图](docs/roadmap.md#mvp-范围与开发顺序)：先完成活栈、精确根和资源边界，再推进消息、调度、恢复与双平台 BEAM 对照，不以示例运行成功代替可试用验收。
 
 当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。全部十个已有实现的包均已发布，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
 

@@ -18,6 +18,19 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0008](0008-wings-naming.md) | Wings VM 的项目、包、工具与源码命名约定 | 已采纳；前端已采用 |
 | [0009](0009-scalar-aot-prototype.md) | 有界标量 IR、Cranelift AOT、可信本机装载与状态提交原型 | 已采纳（M0 原型）；完整受管模型待验证 |
 | [0010](0010-scalar-execution-control.md) | 标量 ABI v2、强制原子取消检查与执行步数预算 | 已采纳（M0 原型）；替代 0009 的 ABI v1 |
+| [0011](0011-scalar-stackful-resume.md) | 标量 ABI v3、同线程原栈让出恢复及无 unwind 取消清理 | 已采纳（M0 原型设计）；替代 0010 的 ABI 与阶段限制 |
+| [0012](0012-bounded-stack-pool.md) | 自主管理 mmap、guard page、准入、缓存与回收的有界栈池 | 已采纳（M0 原型设计）；替代 0011 的独立栈分配策略 |
+| [0013](0013-shared-scalar-modules.md) | 共享只读模块、独立实例状态与预解析 handler ID | 已采纳（M0 原型设计） |
+| [0014](0014-resource-reservations.md) | 单 worker 三级资源预留、回滚与净额度转移 | 已采纳（实现契约） |
+| [0015](0015-owned-scalar-tasks.md) | 按值持有实例与 invocation 的同线程执行槽，无自引用 | 已采纳（M0 实现契约） |
+| [0016](0016-worker-wakeup.md) | epoll/eventfd 与 kqueue 用户事件的单 waiter 通知 | 已采纳（M0 实现契约） |
+| [0017](0017-scalar-frame-admission.md) | 机器码生成后、写产物前的标量编译帧准入 | 已采纳（M0 有界标量切片） |
+| [0018](0018-bounded-record-heap.md) | 有界不可变记录、精确 mark-sweep 与作用域根帧原语 | 已采纳（独立原型，未接入 AOT） |
+| [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳（单线程接入契约） |
+| [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
+| [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳（宿主请求切片） |
+| [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
+| [0023](0023-bounded-host-supervision.md) | 宿主 one-for-one 恢复、有限重启窗口与新实例身份 | 已采纳（单 worker 恢复切片） |
 
 ## 维护方式
 

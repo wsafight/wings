@@ -8,8 +8,9 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPILER = ROOT / "target/debug/wings-compile"
-VM = ROOT / "target/debug/wings-vm"
+PROFILE = os.environ.get("WINGS_PROFILE", "debug")
+COMPILER = ROOT / f"target/{PROFILE}/wings-compile"
+VM = ROOT / f"target/{PROFILE}/wings-vm"
 
 
 def limit_child():
@@ -51,12 +52,22 @@ def verify_control_abi(directory):
         _fields_ = [("state", ctypes.c_int64), ("reply", ctypes.c_int64)]
 
     class Context(ctypes.Structure):
-        _fields_ = [("cancellation", ctypes.POINTER(ctypes.c_uint32)), ("remaining_steps", ctypes.c_uint64)]
+        _fields_ = [
+            ("cancellation", ctypes.POINTER(ctypes.c_uint32)),
+            ("remaining_steps", ctypes.c_uint64),
+            ("yield_request", ctypes.POINTER(ctypes.c_uint32)),
+            ("slice_remaining", ctypes.c_uint64),
+            ("slow_path", ctypes.c_void_p),
+            ("data", ctypes.c_void_p),
+        ]
+
+    def control(budget, slice_steps=2**64 - 1, callback=None):
+        return Context(ctypes.pointer(flag), budget, ctypes.pointer(request), slice_steps, callback, None)
 
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 2
+    assert manifest["abi"] == 3
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -64,33 +75,91 @@ def verify_control_abi(directory):
         function.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
         function.restype = ctypes.c_uint32
     flag = ctypes.c_uint32(0)
+    request = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(3)
     for budget in range(4):
         output = Output(71, 91)
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
         assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
     for budget in [0, 4]:
         flag.value = 1
         output = Output(71, 91)
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
         assert (output.state, output.reply, context.remaining_steps) == (71, 91, budget)
     output = Output(71, 91)
-    context = Context(ctypes.pointer(flag), 3)
+    context = control(3)
     assert initializer(0, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
     assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
     flag.value = 0
     for budget in [4, 2**64 - 1]:
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 0
         assert (output.state, output.reply, context.remaining_steps) == (7, 7, budget - 4)
-    print("Scalar ABI v2 control verified: each poll, cancellation, priority, output commit")
+    for requested, slice_steps in [(0, 0), (1, 4)]:
+        request.value = requested
+        output = Output(71, 91)
+        context = control(4, slice_steps)
+        assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 5
+        assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
+    request.value = 0
+    observations = []
+    callback_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context))
+
+    @callback_type
+    def replenish(context_pointer):
+        current = context_pointer.contents
+        observations.append((current.remaining_steps, output.state, output.reply))
+        current.slice_remaining = 1
+        return 0
+
+    output = Output(71, 91)
+    context = control(4, 1, ctypes.cast(replenish, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 0
+    assert observations == [(3, 71, 91), (2, 71, 91), (1, 71, 91)]
+    assert (output.state, output.reply, context.remaining_steps) == (7, 7, 0)
+
+    @callback_type
+    def cancel_on_resume(context_pointer):
+        flag.value = 1
+        context_pointer.contents.slice_remaining = 1
+        return 0
+
+    output = Output(71, 91)
+    context = control(4, 1, ctypes.cast(cancel_on_resume, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
+    flag.value = 0
+
+    @callback_type
+    def fail_slow_path(context_pointer):
+        return 3
+
+    context = control(4, 1, ctypes.cast(fail_slow_path, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
+
+    @callback_type
+    def exhaust_on_resume(context_pointer):
+        context_pointer.contents.remaining_steps = 0
+        context_pointer.contents.slice_remaining = 1
+        return 0
+
+    context = control(4, 1, ctypes.cast(exhaust_on_resume, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
+    print("Scalar ABI v3 verified: polls, budgets, callback, cancellation, output commit")
+
+
+def example(name, *arguments):
+    options = ["--release"] if PROFILE == "release" else []
+    return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
 def main():
     if not COMPILER.is_file() or not VM.is_file():
-        raise SystemExit("Run cargo build --locked -p wings-compile -p wings-vm first")
+        raise SystemExit("Build wings-compile and wings-vm for the selected WINGS_PROFILE first")
     with tempfile.TemporaryDirectory(prefix="wings-aot-") as temporary:
         parent = Path(temporary)
         counter = parent / "counter"
@@ -109,7 +178,80 @@ def main():
         for invalid in ["-1", "1.5", "18446744073709551616", "not-a-number"]:
             assert "unsigned 64-bit" in command(controlled + [invalid], expected=2).stderr
         command([sys.executable, Path(__file__), "--check-control", counter])
-        command(["cargo", "run", "--locked", "-p", "wings-vm", "--example", "execution_control", "--", "--trusted", counter])
+        example("execution_control", counter)
+        example("stack_pool", counter)
+        example("accounted_stacks", counter)
+        example("shared_module", counter)
+        example("resource_accounts")
+        example("record_heap")
+        example("worker_wakeup")
+        worker_source = parent / "worker.wings"
+        worker_source.write_text("""process Queue {
+  state count: Int = 0
+  on Add(value: Int) { count = count + value }
+  on Set(value: Int) { count = value }
+  on Fail { count = 99; let failure = 1 / 0 }
+  on Get -> Int { count }
+  on Bump(value: Int) -> Int { count = count + value; count }
+  on Ack -> Unit { () }
+  on FailRequest -> Int { count = 99; 1 / 0 }
+}
+""")
+        worker_artifact = parent / "worker"
+        command([COMPILER, "build", worker_source, "-o", worker_artifact])
+        example("scalar_worker", worker_artifact)
+        example("scalar_requests", worker_artifact)
+        example("scalar_supervisor", worker_artifact)
+        timer_source = parent / "timer.wings"
+        timer_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
+        timer_groups = "\n".join(
+            f"let group_{group} = " + " + ".join(f"value_{index}" for index in range(group * 64, (group + 1) * 64))
+            for group in range(2)
+        )
+        timer_total = " + ".join(f"group_{group}" for group in range(2))
+        timer_source.write_text(f"""process Timer {{
+  state count: Int = 0
+  on Work(seed: Int) -> Int {{
+    {timer_bindings}
+    {timer_groups}
+    let total = {timer_total}
+    count = count + total
+    total
+  }}
+  on Get -> Int {{ count }}
+  on Fail -> Int {{ count = 99; 1 / 0 }}
+}}
+""")
+        timer_artifact = parent / "timer"
+        command([COMPILER, "build", timer_source, "-o", timer_artifact])
+        example("worker_timer", timer_artifact)
+        command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
+        resume_source = parent / "resume.wings"
+        bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
+        total = " + ".join(f"value_{index}" for index in range(48))
+        resume_source.write_text(f"""process Resume {{
+  state count: Int = 0
+  on Work(seed: Int) -> Int {{
+    {bindings}
+    let total = {total}
+    count = count + total
+    total
+  }}
+  on Get -> Int {{ count }}
+  on Fail -> Int {{ count = 99; 1 / 0 }}
+}}
+""")
+        resume_artifact = parent / "resume"
+        command([COMPILER, "build", resume_source, "-o", resume_artifact])
+        pressure_source = parent / "pressure.wings"
+        pressure_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
+        pressure_total = " + ".join(f"value_{index}" for index in range(128))
+        pressure_source.write_text(f"process Pressure {{ state count: Int = 0; on Work(seed: Int) -> Int {{ {pressure_bindings}; {pressure_total} }} }}")
+        pressure_artifact = parent / "pressure"
+        command([COMPILER, "build", pressure_source, "-o", pressure_artifact])
+        assert json.loads(invoke(pressure_artifact, [message("Work", 2)]).stdout) == {"reply": 8384}
+        example("stackful_resume", counter, resume_artifact)
+        example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
         source_path.write_text("""process Arithmetic {
   state count: Int = 0
@@ -169,7 +311,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -198,7 +340,7 @@ def main():
         assert not invalid_artifact.exists()
         invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
         assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: state, replies, Bool/Unit, arithmetic boundaries, execution control, input and artifact rejection")
+        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes/requests/deadlines, bounded supervision, OS wakeup and artifact rejection")
 
 
 if __name__ == "__main__":

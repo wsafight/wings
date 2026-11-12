@@ -23,9 +23,13 @@
 
 ## 里程碑
 
-当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。safepoint、精确根、活栈切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。完整 safepoint、精确根、跨线程切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码按 [ADR-0010](adr/0010-scalar-execution-control.md) 增加逐 IR 原子取消检查与执行预算，先验证无 unwind 的终止路径；它不是让出恢复，完整 safepoint、根链与活栈验证仍是下一步，不扩展语言语法或调度规模。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码先按 [ADR-0010](adr/0010-scalar-execution-control.md) 实现取消和总预算，再按 [ADR-0011](adr/0011-scalar-stackful-resume.md) 扩展为 ABI v3、同线程活栈让出恢复和无 unwind 清理。当前仍无根链、计时线程、worker 或消息；标量恢复不等于完整 safepoint/GC 验证，不扩展语言语法或调度规模。
+
+资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
+
+[ADR-0015](adr/0015-owned-scalar-tasks.md) 的 owned 执行槽只是后续进程表的所有权前置，不改变下述 MVP 的阶段顺序或验收门槛。
 
 - **M0：双平台执行模型与 BEAM 基线。** 在 macOS AArch64 与 Linux x86-64 选定代表性负载，固定 BEAM 版本与配置、性能和内存验收协议。确定产物格式、入口、启动与退出约定、对外 I/O 范围及受管契约。完成两个平台的 Cranelift AOT + safepoint + shadow stack + 切换恢复原型，验证链接、程序装载和 `kqueue`/`epoll` 唤醒。
 - **M1：单 worker 的最小实现与内存账本。** 在两个首要平台交付 VM 与编译工具，包含最小语言、逻辑独立 arena、有限 inbox、非移动精确 GC、栈限额和三级计费。最小程序要能编译运行，消息和状态正确，局部超限返回受管错误，失败后不泄漏。按平台发布内存账本和同状态 BEAM 对照，优先试验紧凑 PCB、内联值与分配快路径，同时交付基础诊断。
@@ -39,6 +43,38 @@
 工具链与上述阶段同步推进：M0 确定 workspace 边界和可查询的容错前端；M1 提供 `wings-vm`、`wings-compile` 与首版 `wings-lsp`，支持文档同步、诊断、跳转、悬停和基础补全；M2 起完善增量分析与取消，再扩展引用查找、重命名和语义高亮。详细拆分见 [Crate 设计](crates.md)，已采纳的选择见 [ADR](adr/README.md)。
 
 下一步是 M0 最小原型与 BEAM 基线测试。性能和内存目标未验证前，不扩展语言语法、平台数量或热更新范围。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
+
+OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd，须在本分支 CI 各自验证。它未接入 worker 队列、计时器和真实 I/O，不替代 M0 的根链、栈限额及 BEAM 负载冻结门槛。
+
+## MVP 范围与开发顺序
+
+[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它尚无语言 send/spawn/request 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
+
+[ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。这是第 5 项的有限前置，不覆盖循环、runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
+
+[ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。尚无语言级监督、link/monitor、GC/预算等完整诊断，不跳过 M0/M1 或性能门禁。
+
+[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表，容量在构造前经过三级准入。它没有 compiler 根发布、消息/状态根集成，不视为完整 GC、业务语言堆或 M0 精确根验收完成。
+
+BEAM 对照先固化 [v1 最小协议与 oracle](beam-workloads.md)：已在本机检查有界 Counter 的 i64、FIFO 和失败退出，代表负载组合与采样要求单独列明。未来多 actor、超时、过载及 Wings 等价端尚待实现，不因协议落盘而称 BEAM 基线全部完成。
+
+[ADR-0017](adr/0017-scalar-frame-admission.md) 先限制当前标量产物的编译帧，64 KiB 以上在写产物前拒绝；这只是静态准入，不包含宿主慢路径或动态调用深度，不等于表中 M0 的剩余栈限额已完成。
+
+MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有实现并通过本分支双平台 debug/release CI；第 4 项只有独立账户、记录堆与根表切片，尚未覆盖业务执行与全部分配。
+
+| 顺序 | 技术切片 | 最小验收 |
+|---|---|---|
+| 1 | 同线程活栈让出与恢复 | 生成代码在强制检查点让出；保留原栈和活跃值；取消、丢弃挂起调用不跨 ABI unwind，不重放 handler |
+| 2 | 完成受管执行与 M0 | shadow stack、根发布、栈限额、双平台 OS 唤醒；先限定栈与堆，再开放必要的控制流、函数及分块内建；同时冻结 BEAM 负载与测量口径 |
+| 3 | 单 worker 多进程与有限 mailbox | spawn、send、异步 request/reply、超时；唯一执行权、FIFO 的明确范围、队列满显式失败、无饿死；副作用不随 handler 失败回滚 |
+| 4 | 业务值、GC 与三级资源账本 | 最小字符串/记录等业务值、每进程逻辑 arena、非移动精确 GC；堆、栈、消息、请求表在分配前准入，失败回滚预留，退出完整清理 |
+| 5 | 公平调度与外部事件 | 计时线程原子请求让出、长操作有界；先验收单 worker，再验证 M:N 唯一执行权/迁移；用受限 I/O 适配器跑一个真实服务场景 |
+| 6 | 最小故障恢复与诊断 | 退出原因、受控重启及重启强度上限；定位队列、预算、GC 和 handler 失败；不承诺完整 OTP 兼容 |
+| 7 | 双平台业务与性能门禁 | 在各平台同机同负载对照 BEAM，吞吐与内存两项目标同时验证；含尾延迟、清理、过载与受限子进程故障测试，不用单项微基准替代 |
+
+工程上先完成 1–4，得到单 worker 内部演示；只有 5–7 的边界和采用价值也得到验证后，才称为可试用 MVP。性能或内存目标未达成时保留结果、缩小适用负载或停止，不因功能齐全就宣布达标。
+
+暂不纳入 MVP：热更新、冬眠、分布式、不可信原生扩展、额外平台、完整 OTP、完整 IDE 重构能力。已发布 `0.0.2` 不变；在 `feat/mvp` 按可验证技术切片多次提交，不为每个切片发布 crate。活栈切片的契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
 
 ## 相关文档
 

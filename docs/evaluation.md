@@ -14,6 +14,8 @@ M0 确定 Erlang/OTP 版本、JIT 状态、调度器数量、堆与 GC 配置，
 
 ## 负载矩阵与基线
 
+可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例；Linux oracle 尚待执行，Wings 同业务与性能采样尚未接入，不能当作性能达标。
+
 - **内存维度**：逻辑 state 为 `0B/256B/4KiB/64KiB`，编码大小另报；mailbox 深度为 `0/1/100`，消息 payload 为 `32B/1KiB/64KiB`，活跃比例为 `0%/1%/10%/100%`。选代表性交叉组合并公开选择原因，不只挑 tiny state。
 - **行为维度**：Idle、冬眠、正常计算、被抢占挂起、request/回复、超时/取消、热点收件人、spawn 风暴和关系 fan-out；空闲会话与同时执行的进程分开报告。
 - **基线维度**：主基线为 BEAM 普通与冬眠进程；辅助基线为 kameo/Tokio 原生实现和固定版本、配置的 Wasmtime 实例。Lunatic 只有在版本、依赖和运行条件可复现时作为附加对照。
@@ -65,15 +67,93 @@ M0 后沿用确定的基线，完整报告各分位结果。需求或硬件改�
 
 ## 工具链与 LSP 验收
 
-当前标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。此脚本不是 GC、抢占、三级资源账户或 BEAM 性能验收。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过同一检查。
+Rust 自动化回归入口为 `cargo test --workspace --locked`；优化构建使用 `cargo test --workspace --release --locked`。测试分为公共 API 集成测试与少量私有单测，覆盖源码位置/Unicode、词法语法及错误恢复、语义分析、LSP stdio 与文档同步、IR/清单验证、编译拒绝路径，以及资源预留/转移、精确根、活栈生命周期、mailbox、请求终结和 timer 清理。测试对象数、容量和操作次数均有固定上限；额度拒绝使用逻辑限额，不制造真实 OOM 或非法访存。
 
-未发布源码增加 ABI v2 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI 和 `execution_control` 示例；并发运行中的取消延迟、活栈恢复与 GC 根仍未验证。这些新增用例不能沿用旧版 CI 作为已验证证据，须在相应 PR 的两个平台重新执行。
+VM 宿主执行单测使用仓库内小型可信 Rust ABI 入口，不依赖磁盘动态库，不能据此证明编译器生成了强制检查点。真实 AOT 的检查点、候选输出提交及 debug/release 原栈恢复仍必须运行下面的受限子进程脚本。测试命令已进入既有双平台 CI，但本次新增测试的通过结果须以实际运行记录为准，不沿用历史结果。
+
+已发布标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。该版本尚不验证执行控制或资源账户。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过该版本检查；后续新增用例不沿用这次结果。
+
+未发布源码增加 ABI v3 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI、`execution_control`、`stackful_resume` 与 `owned_tasks` 示例。活栈用例包含逐步让出、48 个跨检查点活跃标量、恰好足够的总预算、两个实例交错、未开始/挂起 Drop、挂起取消、算术失败与重复恢复错误；`owned_tasks` 另覆盖同线程槽位移动、忙时拒绝、跨模块 ID 拒绝、池耗尽不毒化实例、连续调用及未完成任务丢弃/取回时的清理，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。这些是正确性验证，不是调度或性能测量。
+
+debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后运行 `python3 scripts/verify_scalar_aot.py`。release：同一构建命令增加 `--release`，再执行 `WINGS_PROFILE=release python3 scripts/verify_scalar_aot.py`。两个平台均需实际执行；新增用例不能沿用旧 CI 作为证据。GC 根、浮点/SIMD、迁移、guard page 故障注入、运行中并发取消延迟仍未验证；当前仅固定栈和标量，不添加无约束压力测试。
 
 - 从编译命令产出目标平台程序，再由 `wings-vm` 装载运行。核对产物版本、目标、ABI、诊断、结果和退出状态；编译器与 VM 的共享格式要有一致性及错误输入测试。
 - workspace 依赖符合 [Crate 设计](crates.md)且无环。检查 `wings-lsp` 的传递依赖不包含 Cranelift、`wings-codegen`、`wings-compile` 或 `wings-vm`，VM 构建也不引入解析器或 LSP 协议。
 - 同一完整程序在编译器和 LSP 中的语法、符号、类型诊断一致；不完整输入覆盖缺失结束符、未知名称与跨文件修改，语言服务器能够恢复并继续查询。
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
+
+`accounted_stacks` 另在相同受限子进程验证：VM/tenant 满额时净转移不双计，process 上限不足不激活/不毒化实例，同租户校验，完成/丢弃/取消归还，缓存和 trim 保留承诺，以及最后一个活栈释放时所有账目归零。见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
+
+独立记录堆、根帧与栈池计费已在 `ca8072b` 通过 macOS AArch64、Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43156013824)，并通过 Rust 1.85 all-target 检查。该证据不覆盖后续 worker 变更。
+
+## 单 worker 标量消息回归
+
+行为脚本构建含单向及回复入口的 Queue 产物，受限子进程运行 `scalar_worker`。检查 FIFO、多实例隔离、轮转、逐片候选提交、满队列拒绝、stale/跨 worker Pid、输入校验不改变队列、预算/算术失败退出、stop 满队列/挂起清理和三级用量回收，见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+
+`scalar_requests` 另验证 Int/Unit 回复、pending 满（含已完成未取走）、requests/messages 限额拒绝零变化、零超时及挂起超时、取消不撤回状态副作用、迟到回复与槽位复用、stale/跨 worker 请求 ID、退出/stop 终结和结果票据的释放。请求 deadline 使用单调时钟，不改变 handler 的总步数预算，见 [ADR-0021](adr/0021-bounded-requests.md)。两示例均不覆盖语言内 send/spawn/request、自动计时唤醒、真实 I/O、compiler 根或同业务 BEAM 性能。
+
+`worker_timer` 使用 128 个活跃标量的 Timer 产物验证可选 deadline 让出：先拒绝未启用、零时长和不可表示时长，再验证容量准入、原栈恢复/提交、总预算与挂起清理。原 400 值产物曾在共享 macOS CI 上编译触发 20 秒 CPU 限额；现缩小产物但保留强制检查和既定子进程资源上限。短 deadline 的有限观察只证明原子请求可到达强制检查点，不是抢占延迟、服务尾延迟或 BEAM 性能结果；空闲线程无轮询，Drop 应唤醒并 join，不等待原 deadline，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+
+`scalar_supervisor` 在受限子进程运行同一 Queue 产物，验证失败前提交的状态不会进入重启实例、候选状态不提交、旧消息不重放、旧请求 Failed、其他子项继续执行、滚动窗口达到强度上限后不再重启，以及挂起 stop 和资源归零。Rust 单元回归另外验证精确窗口边界（不靠 sleep）、策略和构造拒绝、历史计费、stale/跨 supervisor ID、initializer 重建失败及 timer Drop。只覆盖宿主 one-for-one，不代表语言级监督、OTP oracle 或性能验收完成，见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
+
+## 独立记录堆与根帧回归
+
+`record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+
+## 标量编译帧准入回归
+
+行为脚本执行 `wings-compile` 的 `frame_limits` 示例，检查零值及超硬上限配置、1 字节限额拒绝，以及 128 个跨检查点活跃标量在 512 字节限额下拒绝；每次失败都确认输出目录不存在。默认 64 KiB 限额下构建并运行高寄存器压力入口，校验结果；既有 48 活跃值的原栈恢复继续运行。用例验证实际后端帧和写产物顺序，不证明 Rust 慢路径栈上界或动态栈安全，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
+
+该切片已在 `a12461e` 通过 macOS AArch64、Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101893550)。后续变更仍需独立验证；CI 的 MSRV 检查同时覆盖所有 targets，避免行为示例脱离 Rust 1.85 基线。
+
+## OS 唤醒原语回归
+
+本分支活栈、owned task、资源守恒及 OS 唤醒已分别通过 macOS AArch64 与 Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43101080186)，另通过 Rust 1.85 检查。该结果对应 `a446119`，不作为后续编译帧准入或 BEAM 工作负载的验收。
+
+同一行为脚本在受限子进程运行 `worker_wakeup`，验证零超时、无通知超时、提前通知、通知合并、跨线程通知、256 次发送/等待交错、四个生产者各 4096 次通知、等待端线程移交和 handle 释放顺序，另反复创建/释放 128 次。循环、线程数与等待时间有固定上限，不做无约束 FD 耗尽。debug/release、macOS kqueue 与 Linux epoll/eventfd 分别执行；信号打断及内核错误注入仍未验证，不把正常通知回归当作完整 reactor 或调度器证明。契约见 [ADR-0016](adr/0016-worker-wakeup.md)。
+
+## 独立资源账户回归
+
+未发布源码的 `resource_accounts` 示例验证 [ADR-0014](adr/0014-resource-reservations.md) 单线程原语，不是所有运行时分配的接入验收或完整资源隔离证明：
+
+- 定点用例检查合法层级、三级分别拒绝、四维额度、零预留、父 handle 提前释放及 Drop 回收；每个维度分别在 VM、租户、进程层制造 `u64` 加法溢出，拒绝后逐级核对零变化。
+- 固定种子 `0x0014_5eed_cafe_beef` 驱动 4096 步预留、转移和 Drop，固定两个 VM、各两个租户及每租户两个进程，最多 24 张活跃票据；VM 与租户也可直接持有预留，零预留参与序列。
+- 独立模型按票据所有者求和，再从子账户向祖先汇总四维用量；每步比较全部账户、额度与票据金额，核对操作成功与否，失败比较全账本快照且不改变模型所有权，最后逐张释放并确认所有账户归零。
+- 转移定点用例覆盖同账户、共同祖先已满、祖先目标、跨租户与跨 VM 拒绝；固定序列另断言预留和转移的成功、失败及 Drop 均实际发生。未验证跨 worker 原子性、真实分配失败、退出清理接入或 OS OOM。
+
+专项构建：`cargo build --locked -p wings-vm --example resource_accounts`，产物为 `target/debug/examples/resource_accounts`；加 `--release` 后为 `target/release/examples/resource_accounts`。上面的验证脚本已在禁 core dump、20 秒 CPU 限制、30 秒墙钟超时的独立子进程运行此示例；两个平台的 debug/release 结果须分别记录。此序列分配有固定上限，不是内存耗尽压力测试。
+
+## 原生栈分配实验
+
+2026-11-12 在 macOS 26.6.2 / Apple M3 Pro / 36 GiB / 16 KiB 页、Rust 1.99.1 release 上测试 `corosensei 0.3.3`。每种条件用独立 OS 子进程重复 3 次，数量为 512/2048；先测基线，再测分配/挂起，最后正常返回释放。`ps` RSS、`footprint` 的 `phys_footprint` 与 `vmmap` region 分开记录，以下为 2048 个实例扣除本进程基线后的中位数，不是单实例 allocator 字节数：
+
+| 条件 | 物理增量 | 虚拟增量 | 每实例物理增量 |
+|---|---|---|---|
+| 浅挂起栈，32 KiB 容量 | 32.19 MiB | 96 MiB | 16.09 KiB |
+| 浅挂起栈，64 KiB 容量 | 32.22 MiB | 160 MiB | 16.11 KiB |
+| 浅挂起栈，256 KiB 容量 | 32.41 MiB | 544 MiB | 16.20 KiB |
+| 256 KiB 容量，16 个各 4 KiB 的活跃递归帧 | 160.41 MiB | 544 MiB | 80.20 KiB |
+| AOT 实例 Idle，无独立栈 | 1.44 MiB | 本次增量 0 | 0.72 KiB |
+| AOT 调用挂起，48 个跨检查点活跃标量 | 33.98 MiB | 544 MiB | 16.99 KiB |
+
+浅栈三种容量的 RSS 增量均为 32.125 MiB；独立栈使 VM region 增加约 4096 个，另有少量 allocator 差异。浅栈正常释放后物理增量回到约 128 KiB；AOT 实例释放后仍有约 1.72 MiB allocator/装载等残留，不能把它全算为泄漏或全算为已归还。未启动协程也已触碰栈顶一页。此实验没有 BEAM 同业务对照、GC、mailbox 或三级账户，不证明完整 VM 更省内存。
+
+结论：暂保留已验证的切换实现，按 [ADR-0012](adr/0012-bounded-stack-pool.md) 自研分配/准入/复用/回收。单纯缩小预留不能显著降低浅栈 RSS，也不能用栈池消除挂起栈。低纳秒热栈微基准不代表调度延迟或吞吐，不作为选型门槛。
+
+复现：`cargo build --release --locked -p wings-compile -p wings-vm --bins --examples`，再执行 `python3 scripts/measure_stacks.py --output target/stack-measurements-new --repetitions 3`。驱动限定每子进程 30 秒 CPU、60 秒测量墙钟、禁 core dump、最多 2048 个栈，最大栈映射 544 MiB，阶段检查 RSS 不超过 384 MiB。当前 macOS 拒绝 `RLIMIT_AS/DATA/RSS`，因此这不是 OS 硬内存配额或 OOM 实验；分配量由程序上限约束。原始 `vmmap`/`footprint` 和 JSON 保存在本地 `target/stack-measurements-run4`；精简结果随仓库记录，Linux 不复用本机数据。
+
+### 有界栈池复测
+
+同机、相同工具链及 48 活跃标量 AOT 负载，512/2048 调用、三次独立子进程重复。2048 个同时挂起时，零缓存/缓存 2 槽/缓存全部的物理增量中位数均约 33.95–33.99 MiB，峰值没有实质下降。完成后分别约 1.72 / 1.78 / 33.99 MiB；缓存全部经 `trim` 后降至约 1.70 MiB。零缓存完成后 VM region 增量约 3，缓存全部仍约 4101。池证明了缓存/回收策略影响完成后的内存，不能减少同时挂起的活页。
+
+复现同一构建命令后执行 `python3 scripts/measure_stacks.py --suite pool --output target/stack-pool-new --repetitions 3`，原始结果在本机 `target/stack-pool-measurements`。未测受限重映射失败注入，未与 BEAM 同负载比较，不把本结果作为 MVP 性能验收。正确性脚本增加 `stack_pool` 示例，覆盖容量拒绝、即时归还、独占、缓存、trim、取消和所有权生命周期。
+
+### 共享模块复测
+
+同一台 macOS、release、相同 48 活跃标量产物，512/2048 实例、三次独立子进程重复。2048 个 Idle 实例若每次装载模块，物理增量中位数约 1.53 MiB；复用一个已预热模块约 128 KiB（最小 112 KiB、最大 128 KiB），实例固定头部为 24 字节，其余差异包括 Vec 容量、allocator 页与固定成本。共享模块创建的挂起调用约 32.63 MiB，仍由每栈触碰页主导。不把 24 字节称为完整微进程成本，也不把初始化耗时差异称为业务吞吐提升。
+
+复现：同一 release 构建后运行 `python3 scripts/measure_stacks.py --suite shared --output target/shared-module-new --repetitions 3`，原始结果在本机 `target/shared-module-measurements`。`shared_module` 行为示例验证状态、失败和 initializer 独立，以及 ID 身份、生命周期和兼容接口。尚无 BEAM 等价业务对照。
 
 ## 优化实验规则
 

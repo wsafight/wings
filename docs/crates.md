@@ -6,6 +6,8 @@
 
 成员目录统一放在 `crates/<crate-name>/`。同时提供库与命令的包分别使用 `src/lib.rs` 和 `src/main.rs`，命令行入口只做参数、日志与退出状态适配，业务逻辑放在库中。
 
+`wings-vm` 的 `module` 内部模块负责一次装载、只读 schema/入口共享与预解析 handler ID，实例只持模块引用和独立标量状态。它不进入前端依赖链，产物 ABI 不变。
+
 ## 命名与层次
 
 **`wings-vm`** 是虚拟机 crate 和运行命令的拟用名称，负责装载、微进程、内存、调度、消息和监督。包内包含库与薄的命令行入口，库便于测试和组织实现，首版不承诺稳定的嵌入式 SDK。
@@ -16,7 +18,9 @@
 
 已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片；十个包均已发布 `0.0.2`。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
 
-未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v2 context 与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 提供每次调用预算与共享取消令牌，不新增 crate 或依赖。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0010](adr/0010-scalar-execution-control.md)。
+未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v3 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，作为可移动的进程表槽位前置而非调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 模块自主管理有界栈池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
+
+`wings-vm` 的 `resources` 内部模块已按 [ADR-0014](adr/0014-resource-reservations.md) 提供单线程账户原语：`ResourceAccount`、`Resources` 与不可克隆的 `Reservation` 支持三级四维预留、同 VM 净转移和 Drop 回收。独立记录堆/根表和宿主 worker 的栈池、mailbox、pending 表已接入；语言业务堆、模块及 allocator 内部开销尚未完整覆盖，不能宣称已有完整资源隔离；跨 worker 同步也未实现。契约集中在[资源准入](runtime.md#资源准入)，有界确定性示例见[独立资源账户回归](evaluation.md#独立资源账户回归)。
 
 | Crate | 形态 | 负责内容 | 不负责 |
 |---|---|---|---|
@@ -61,7 +65,21 @@
 
 ## 包内先保留的模块
 
-`wings-vm` 内先按 `process`、`heap`、`gc`、`scheduler`、`mailbox`、`resource`、`supervision`、`loader`、`io` 和 `platform` 组织。macOS 与 Linux 的 I/O、映射和切换实现放在平台模块，不预先拆出平台 crate。
+内部 `worker` 使用现有模块、owned task、资源账户和计费栈池实现单线程宿主 mailbox 与有限请求表，不新增 crate、前端或线程共享依赖。generation Pid/RequestId 与 send/request 不是外部线协议，见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
+
+内部 `timer` 可选用标准库线程、Mutex/Condvar 给 worker 请求原子让出；线程没有 actor/账户所有权，启动前预留控制和请求栈容量，不新增依赖。它不是 OS I/O reactor 或共享 M:N timer，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+
+内部 `supervision` 在单 worker 外维护固定子项槽与有界重启历史，`ScalarSupervisor` 不暴露可变 worker；没有新增 crate 或依赖，也不引入语言级监督或 OTP 兼容承诺，见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
+
+`stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
+
+`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集的独立原型。它只依赖已有资源账户和标准库；预留后按固定容量申请存储，不新增 crate 或前端依赖。尚未进入 `wings-abi` 或生成代码，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+
+`wings-codegen::build_with_frame_limit` 在已有后端生成流程中检查机器帧，并由编译驱动库转发；只允许降低 64 KiB 上限，入口超限时不写目录、不链接，不添加 runtime 或平台依赖，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
+
+未发布 `wings-vm::wakeup` 内部模块通过既有 libc 提供 `WorkerParker`/`WorkerNotifier`，平台后端分别封装 epoll/eventfd 与 kqueue 用户事件，无新增 crate，不进入前端链。只提供独占等待和共享通知，不把它当作 I/O 或调度实现，见 [ADR-0016](adr/0016-worker-wakeup.md)。
+
+`wings-vm` 内先按 `process`、`heap`、`gc`、`scheduler`、`mailbox`、`resources`、`supervision`、`loader`、`io` 和 `platform` 组织，其中 `resources` 已有上述独立原语，其余按切片落地。macOS 与 Linux 的 I/O、映射和切换实现放在平台模块，不预先拆出平台 crate。
 
 `wings-compile` 内分开编译驱动、lowering、链接与命令行适配。`wings-codegen` 隔离重型后端依赖，以便前端和 LSP 单独开发。测试夹具先跟随各自 crate，不提前建立只有转发接口的公共测试包。
 
