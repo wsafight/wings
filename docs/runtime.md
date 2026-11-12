@@ -4,6 +4,8 @@
 
 监督带堆进程用显式 `ScalarSupervisor::spawn_with_heap`，记录槽数随子项配置保留；重建先释放旧实例，再在相同限额下创建全新计费堆并重新执行 initializer，不恢复状态或重放消息。失败移除子项且回滚预留，普通 spawn 仍无堆。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
 
+条件表达式仅执行被选中的一臂，预算按实际路径含分支/合流标记扣减；每个已执行操作和最终提交前仍检查取消/让出。未选臂不分配、不触发错误，失败不提交状态。根计划可暂时多保活外层引用但不能扫描未执行臂的引用。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 一个 VM 实例对应一个 OS 进程，内部微进程由 runtime 调度，共享该地址空间。

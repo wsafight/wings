@@ -24,6 +24,9 @@ pub enum Operation {
     RecordInt(Register),
     ReadInt(Register),
     Collect,
+    If(Register),
+    Else(Register),
+    EndIf(Register),
 }
 
 #[derive(Clone, Debug)]
@@ -98,7 +101,19 @@ impl Function {
             return Err("too many operations for the scalar prototype".into());
         }
         let mut types = Vec::new();
+        let mut available = Vec::new();
+        let mut branches: Vec<(usize, Option<ValueType>)> = Vec::new();
         for instruction in &self.instructions {
+            let operands = operands(&instruction.operation);
+            if operands
+                .into_iter()
+                .flatten()
+                .any(|register| available.get(register) != Some(&true))
+            {
+                return Err(
+                    "invalid scalar IR operand, type or forward reference, or branch scope".into(),
+                );
+            }
             let valid = match instruction.operation {
                 Operation::Constant(value) => instruction.ty.accepts(value),
                 Operation::State => !initializer && instruction.ty == state,
@@ -120,13 +135,52 @@ impl Function {
                     instruction.ty == ValueType::Int && types.get(value) == Some(&ValueType::Ref)
                 }
                 Operation::Collect => instruction.ty == ValueType::Unit,
+                Operation::If(condition) => {
+                    if branches.len() == 64 {
+                        return Err("conditional nesting exceeds 64 branches".into());
+                    }
+                    branches.push((types.len(), None));
+                    instruction.ty == ValueType::Unit
+                        && types.get(condition) == Some(&ValueType::Bool)
+                }
+                Operation::Else(value) => {
+                    let Some((start, then_type)) = branches.last_mut() else {
+                        return Err("else without matching if".into());
+                    };
+                    if then_type.is_some() {
+                        return Err("duplicate else in conditional".into());
+                    }
+                    *then_type = types.get(value).copied();
+                    available[start.saturating_add(1)..].fill(false);
+                    instruction.ty == ValueType::Unit && *then_type != Some(ValueType::Ref)
+                }
+                Operation::EndIf(value) => {
+                    let Some((start, Some(then_type))) = branches.pop() else {
+                        return Err("end-if without matching if/else".into());
+                    };
+                    available[start.saturating_add(1)..].fill(false);
+                    instruction.ty != ValueType::Ref
+                        && instruction.ty == then_type
+                        && types.get(value) == Some(&then_type)
+                }
             };
             if !valid {
                 return Err("invalid scalar IR operand, type or forward reference".into());
             }
             types.push(instruction.ty);
+            available.push(!matches!(
+                instruction.operation,
+                Operation::If(_) | Operation::Else(_)
+            ));
         }
-        if types.get(self.state) != Some(&state) || types.get(self.reply) != Some(&reply) {
+        if !branches.is_empty() {
+            return Err("unterminated conditional in scalar IR".into());
+        }
+        if types.get(self.state) != Some(&state)
+            || types.get(self.reply) != Some(&reply)
+            || available.get(self.state) != Some(&true)
+            || available.get(self.reply) != Some(&true)
+        {
             return Err("invalid scalar IR state or reply register".into());
         }
         if self.root_plan().capacity > MAX_SHADOW_ROOTS {
@@ -138,13 +192,7 @@ impl Function {
     pub fn root_plan(&self) -> RootPlan {
         let mut last_uses: Vec<usize> = (0..self.instructions.len()).collect();
         for (index, instruction) in self.instructions.iter().enumerate() {
-            let operands = match instruction.operation {
-                Operation::Negate(value)
-                | Operation::RecordInt(value)
-                | Operation::ReadInt(value) => [Some(value), None],
-                Operation::Binary(_, left, right) => [Some(left), Some(right)],
-                _ => [None, None],
-            };
+            let operands = operands(&instruction.operation);
             for operand in operands.into_iter().flatten() {
                 if let Some(last) = last_uses.get_mut(operand) {
                     *last = index;
@@ -171,6 +219,19 @@ impl Function {
             last_uses,
             capacity,
         }
+    }
+}
+
+fn operands(operation: &Operation) -> [Option<Register>; 2] {
+    match *operation {
+        Operation::Negate(value)
+        | Operation::RecordInt(value)
+        | Operation::ReadInt(value)
+        | Operation::If(value)
+        | Operation::Else(value)
+        | Operation::EndIf(value) => [Some(value), None],
+        Operation::Binary(_, left, right) => [Some(left), Some(right)],
+        _ => [None, None],
     }
 }
 

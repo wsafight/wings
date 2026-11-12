@@ -22,4 +22,10 @@ process RecordState {
     collect()
     1 / 0
   }
+
+  on Conditional(flag: Bool) -> Int {
+    let selected = if flag { read_int(record_int(11)) } else { read_int(current) }
+    collect()
+    read_int(current) + selected
+  }
 }

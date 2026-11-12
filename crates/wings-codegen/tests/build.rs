@@ -96,6 +96,30 @@ fn builds_a_host_library_and_matching_manifest_without_leaving_object_files() {
 }
 
 #[test]
+fn malformed_branch_scope_is_rejected_before_writing_artifact() {
+    let directory = Directory::new();
+    let mut program = program();
+    let function = &mut program.initializer;
+    function.instructions = vec![
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(0)),
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::Unit, Operation::Else(2)),
+        instruction(ValueType::Int, Operation::Negate(2)),
+        instruction(ValueType::Int, Operation::EndIf(4)),
+        instruction(ValueType::Unit, Operation::Constant(0)),
+    ];
+    function.state = 5;
+    function.reply = 6;
+    assert!(
+        build(&program, &directory.artifact())
+            .unwrap_err()
+            .contains("branch scope")
+    );
+    assert!(!directory.artifact().exists());
+}
+
+#[test]
 fn roots_exceeding_capacity_are_rejected_before_creating_output() {
     let directory = Directory::new();
     let mut program = program();

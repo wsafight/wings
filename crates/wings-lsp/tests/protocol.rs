@@ -28,6 +28,28 @@ fn server() -> Server {
 }
 
 #[test]
+fn conditional_queries_share_scope_and_keyword_completion() {
+    let mut server = server();
+    let text =
+        "process P { state n: Int = 0; on Get(flag: Bool) -> Int { if flag { n } else { 7 } } }";
+    let diagnostics = open(&mut server, URI, 1, text);
+    assert!(
+        diagnostics[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let offset = text.find("if flag").unwrap() as u32 + 3;
+    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
+    assert_eq!(hover["result"]["contents"]["value"], "flag: Bool");
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    let items = completion["result"]["items"].as_array().unwrap();
+    for label in ["if", "else"] {
+        assert!(items.iter().any(|item| item["label"] == label));
+    }
+}
+
+#[test]
 fn record_state_shares_types_definitions_and_diagnostics() {
     let mut server = server();
     let text = "process P { state saved: RecordInt = record_int(7); on Get -> Int { collect(); read_int(saved) } }";

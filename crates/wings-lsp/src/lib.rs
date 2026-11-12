@@ -116,7 +116,7 @@ impl Server {
                     })),
                     _ => {
                         let mut labels = HashMap::new();
-                        for keyword in ["process", "state", "on", "let", "true", "false"] {
+                        for keyword in ["process", "state", "on", "let", "if", "else", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
                         for ty in ["Int", "Bool", "Unit", "RecordInt"] {

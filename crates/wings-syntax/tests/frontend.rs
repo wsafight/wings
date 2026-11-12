@@ -37,6 +37,70 @@ fn shape(expression: &Expr) -> String {
 }
 
 #[test]
+fn parses_conditional_expressions_and_multiline_nested_arms() {
+    let parsed = expression("if true {\n if false { 1 } else { 2 }\n} else {\n 3 + 4\n}");
+    let ExprKind::If {
+        condition,
+        then_value,
+        else_value,
+    } = parsed.kind
+    else {
+        panic!("conditional expected")
+    };
+    assert!(matches!(condition.kind, ExprKind::Boolean(true)));
+    assert!(matches!(then_value.kind, ExprKind::If { .. }));
+    assert!(matches!(else_value.kind, ExprKind::Binary { .. }));
+    let parsed = expression("1 + if false { 2 } else { 3 } * 4");
+    assert!(matches!(
+        parsed.kind,
+        ExprKind::Binary {
+            operator: BinaryOperator::Add,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn malformed_conditionals_and_nesting_are_bounded_and_recover() {
+    for body in [
+        "if",
+        "if true",
+        "if true {} else { 2 }",
+        "if true { 1 }",
+        "if true { let n = 1 } else { 2 }",
+        "if true { 1 } else",
+        "if true { 1 } else { 2; 3 }",
+    ] {
+        let source = format!(
+            "process P {{ state n: Int = 0; on Work -> Int {{ {body} }} on Get -> Int {{ n }} }}"
+        );
+        let parsed = parse(&source);
+        assert!(!parsed.diagnostics.is_empty(), "{body}");
+        assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
+        assert!(
+            parsed.program.processes[0]
+                .handlers
+                .iter()
+                .any(|handler| handler.name.text == "Get"),
+            "{body}: {:?}",
+            parsed.program
+        );
+    }
+    let nested = format!(
+        "{}1{}",
+        "if true { ".repeat(300),
+        " } else { 2 }".repeat(300)
+    );
+    let parsed = parse(&format!("process P {{ state n: Int = {nested} }}"));
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("256-node"))
+    );
+}
+
+#[test]
 fn parses_nested_calls_and_multiline_arguments_with_exact_spans() {
     let parsed = expression("read_int(record_int(1 + 2))");
     let ExprKind::Call { callee, arguments } = parsed.kind else {

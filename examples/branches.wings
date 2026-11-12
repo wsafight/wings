@@ -1,0 +1,31 @@
+process Branches {
+  state count: Int = if true { 7 } else { 1 / 0 }
+  on Select(flag: Bool, value: Int) -> Int {
+    count = if flag { value } else { count }
+    count
+  }
+  on Nested(first: Bool, second: Bool) -> Int {
+    if first { if second { 11 } else { 22 } } else { if second { 33 } else { 44 } }
+  }
+  on Guard(flag: Bool) -> Int {
+    if flag { 17 } else { 1 / 0 }
+  }
+  on Heap(flag: Bool) -> Int {
+    let saved = record_int(count)
+    let selected = if flag { read_int(record_int(11)) } else { read_int(record_int(22)) }
+    collect()
+    read_int(saved) + selected
+  }
+  on OptionalHeap(flag: Bool) -> Int {
+    if flag { 9 } else { read_int(record_int(4)) }
+  }
+  on Unit(flag: Bool) -> Unit {
+    if flag { () } else { collect() }
+  }
+  on Bool(flag: Bool) -> Bool {
+    if flag { false } else { true }
+  }
+  on Overflow(flag: Bool) -> Int {
+    if flag { 9223372036854775807 + 1 } else { 9 }
+  }
+}

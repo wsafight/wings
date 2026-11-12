@@ -128,6 +128,21 @@ impl Lowerer {
                 let register = self.expression(value)?;
                 self.push(ValueType::Int, Operation::Negate(register))
             }
+            ExprKind::If {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                let condition = self.expression(condition)?;
+                self.push(ValueType::Unit, Operation::If(condition))?;
+                let then_value = self.expression(then_value)?;
+                self.push(ValueType::Unit, Operation::Else(then_value))?;
+                let else_value = self.expression(else_value)?;
+                self.push(
+                    self.instructions[then_value].ty,
+                    Operation::EndIf(else_value),
+                )
+            }
             ExprKind::Binary {
                 operator,
                 left,
@@ -161,6 +176,26 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_conditionals_as_lazy_structured_operations() {
+        let program = lower("process P { state n: Int = 0; on Get(flag: Bool) -> Int { if flag { 1 } else { 1 / 0 } } }").unwrap();
+        let function = &program.handlers[0].function;
+        assert!(matches!(
+            function.instructions[2].operation,
+            Operation::If(1)
+        ));
+        assert!(matches!(
+            function.instructions[4].operation,
+            Operation::Else(3)
+        ));
+        assert!(matches!(
+            function.instructions[8].operation,
+            Operation::EndIf(7)
+        ));
+        assert_eq!(function.reply, 8);
+        program.validate().unwrap();
+    }
 
     #[test]
     fn lowers_persistent_state_without_exposing_reference_messages() {

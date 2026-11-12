@@ -36,6 +36,27 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
+fn conditional_types_follow_bool_conditions_and_same_scalar_arms() {
+    checked(
+        "process P { state n: Int = if true { 7 } else { 8 }; on Get(flag: Bool) -> Int { let selected = if flag { read_int(record_int(n)) } else { 9 }; selected } }",
+    );
+    for (body, code, fragment) in [
+        ("if 1 { 2 } else { 3 }", "T005", "expected Bool"),
+        ("if true { 1 } else { false }", "T005", "expected Int"),
+        (
+            "if true { record_int(1) } else { record_int(2) }",
+            "T014",
+            "scalar results",
+        ),
+        ("if true { 1 } else { missing }", "T006", "unknown name"),
+    ] {
+        assert_error(&handler(body), code, fragment);
+    }
+    let text = "process P { state n: Int = 0; on Get(flag: Bool) -> Bool { if flag { false } else { true } } on Unit(flag: Bool) -> Unit { if flag { () } else { collect() } } }";
+    checked(text);
+}
+
+#[test]
 fn record_builtins_infer_locals_and_resolve_aliases() {
     let text = handler(
         "let saved: RecordInt = record_int(value); let alias = saved; collect(); read_int(alias)",

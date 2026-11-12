@@ -170,7 +170,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory):
+def verify_persistent_roots(directory, branches=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -248,11 +248,15 @@ def verify_persistent_roots(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 6 and manifest["state"] == "Ref"
-    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Replace")
+    assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches else "Ref")
+    name = "Heap" if branches else "Replace"
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == name)
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
-    for entry, state, expected in [(library.wings_scalar_init, 0, 7), (getattr(library, f"wings_scalar_handler_{index}"), 1, 19)]:
+    handler = getattr(library, f"wings_scalar_handler_{index}")
+    cases = [(handler, 7, 18), (handler, 7, 29)] if branches else [(library.wings_scalar_init, 0, 7), (handler, 1, 19)]
+    for case, (entry, state, expected) in enumerate(cases):
+        arguments[0] = (1 if case == 0 else 0) if branches else 19
         entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
         entry.restype = ctypes.c_uint32
         context = Context(ctypes.pointer(flag), 128, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
@@ -260,10 +264,14 @@ def verify_persistent_roots(directory):
         observations.clear()
         assert entry(state, arguments, ctypes.byref(output), ctypes.byref(context)) == 0, errors
         assert not errors and not context.roots
-        assert records[output.state] == expected
-        assert observations[-1][1] == {output.state}, observations
-        committed = output.state
-    print("Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
+        if branches:
+            assert output.state == 7 and output.reply == expected
+            assert not records and not observations[-1][1], (records, observations)
+        else:
+            assert records[output.state] == expected
+            assert observations[-1][1] == {output.state}, observations
+            committed = output.state
+    print("Compiler roots verified: chosen branch GC" if branches else "Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
 
 
 def main():
@@ -393,6 +401,8 @@ def main():
         messages = [message("Get"), message("Replace", 17), message("Get"), message("Set", 23), message("Get")]
         result = command(state_run, "".join(json.dumps(item) + "\n" for item in messages))
         assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": 7}, {"accepted": True}, {"reply": 17}, {"reply": 23}, {"reply": 23}]
+        result = command(state_run, json.dumps(message("Conditional", True)) + "\n" + json.dumps(message("Conditional", False)) + "\n")
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [18, 14]
         assert "accounted heap" in invoke(record_state, [], expected=1).stderr
         result = command(state_run, json.dumps(message("Fail")) + "\n", expected=1)
         assert not result.stdout and "division by zero" in result.stderr
@@ -401,6 +411,23 @@ def main():
         example("persistent_records", record_state)
         example("record_supervisor", record_state)
         command([sys.executable, Path(__file__), "--check-record-roots", record_state])
+        branches = parent / "branches"
+        command([COMPILER, "build", ROOT / "examples/branches.wings", "-o", branches])
+        result = invoke(branches, [message("Select", True, 9), message("Select", False, 11), message("Guard", True), message("OptionalHeap", True), message("Unit", True), message("Bool", False), message("Overflow", False)])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [9, 9, 17, 9, None, True, 9]
+        result = invoke(branches, [message("Nested", first, second) for first in [True, False] for second in [True, False]])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 22, 33, 44]
+        for request, reason in [(message("Guard", False), "division by zero"), (message("OptionalHeap", False), "callback"), (message("Overflow", True), "overflow")]:
+            result = invoke(branches, [request], expected=1)
+            assert not result.stdout and reason in result.stderr
+        for flag, budget in [(True, 7), (False, 6)]:
+            text = json.dumps(message("Select", flag, 17)) + "\n"
+            result = command([VM, "run", "--trusted", branches, "--max-steps", budget], text)
+            assert json.loads(result.stdout)["reply"] == (17 if flag else 7)
+            result = command([VM, "run", "--trusted", branches, "--max-steps", budget - 1], text, expected=1)
+            assert not result.stdout and "step budget exhausted" in result.stderr
+        example("conditional_execution", branches)
+        command([sys.executable, Path(__file__), "--check-branch-roots", branches])
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
@@ -499,5 +526,7 @@ if __name__ == "__main__":
         verify_control_abi(Path(sys.argv[2]))
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-roots":
         verify_persistent_roots(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), branches=True)
     else:
         main()

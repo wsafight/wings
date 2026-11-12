@@ -78,6 +78,11 @@ pub enum ExprKind {
         callee: Name,
         arguments: Vec<Expr>,
     },
+    If {
+        condition: Box<Expr>,
+        then_value: Box<Expr>,
+        else_value: Box<Expr>,
+    },
     Negate(Box<Expr>),
     Binary {
         operator: BinaryOperator,

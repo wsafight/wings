@@ -43,6 +43,124 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn conditional_structure_types_depth_and_branch_scopes_are_validated() {
+    fn conditional() -> Program {
+        let mut program = valid_program();
+        program.initializer.instructions = vec![
+            instruction(ValueType::Bool, Operation::Constant(1)),
+            instruction(ValueType::Unit, Operation::If(0)),
+            instruction(ValueType::Int, Operation::Constant(7)),
+            instruction(ValueType::Unit, Operation::Else(2)),
+            instruction(ValueType::Int, Operation::Constant(9)),
+            instruction(ValueType::Int, Operation::EndIf(4)),
+            instruction(ValueType::Unit, Operation::Constant(0)),
+        ];
+        program.initializer.state = 5;
+        program.initializer.reply = 6;
+        program
+    }
+    conditional().validate().unwrap();
+    for (index, replacement, message) in [
+        (
+            0,
+            instruction(ValueType::Int, Operation::Constant(1)),
+            "operand, type",
+        ),
+        (
+            1,
+            instruction(ValueType::Unit, Operation::Else(0)),
+            "else without",
+        ),
+        (
+            3,
+            instruction(ValueType::Unit, Operation::EndIf(2)),
+            "end-if without",
+        ),
+        (
+            4,
+            instruction(ValueType::Int, Operation::Negate(2)),
+            "branch scope",
+        ),
+        (
+            4,
+            instruction(ValueType::Int, Operation::Negate(3)),
+            "branch scope",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::Else(0)),
+            "duplicate else",
+        ),
+        (
+            5,
+            instruction(ValueType::Bool, Operation::EndIf(4)),
+            "operand, type",
+        ),
+        (
+            5,
+            instruction(ValueType::Int, Operation::Constant(0)),
+            "unterminated",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Negate(4)),
+            "branch scope",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Negate(2)),
+            "branch scope",
+        ),
+    ] {
+        let mut program = conditional();
+        program.initializer.instructions[index] = replacement;
+        rejects(&program, message);
+    }
+    for state in [2, 4] {
+        let mut program = conditional();
+        program.initializer.state = state;
+        rejects(&program, "state or reply register");
+    }
+    for depth in [64, 65] {
+        let mut program = conditional();
+        let function = &mut program.initializer;
+        function.instructions.truncate(1);
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::If(0)));
+        }
+        function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::Constant(7)));
+        let mut value = function.instructions.len() - 1;
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::Else(value)));
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::Constant(9)));
+            function.instructions.push(instruction(
+                ValueType::Int,
+                Operation::EndIf(function.instructions.len() - 1),
+            ));
+            value = function.instructions.len() - 1;
+        }
+        function.state = value;
+        function.reply = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Constant(0)));
+        if depth == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "nesting exceeds 64");
+        }
+    }
+}
+
+#[test]
 fn temporary_records_are_well_typed_and_have_exact_last_uses() {
     let mut program = valid_program();
     let function = &mut program.handlers[0].function;

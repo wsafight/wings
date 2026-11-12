@@ -301,10 +301,66 @@ impl Parser<'_> {
         left
     }
 
+    fn conditional_arm(&mut self) -> Expr {
+        if !self.at(TokenKind::LeftBrace) {
+            self.error("expected '{' before conditional arm");
+            return Expr {
+                kind: ExprKind::Error,
+                span: self.current().span,
+            };
+        }
+        self.bump();
+        let value = self.expression(0, true);
+        if !self.at(TokenKind::RightBrace) {
+            self.error("expected one expression followed by '}' in conditional arm");
+            let mut depth = 0;
+            while !matches!(
+                self.current().kind,
+                TokenKind::On | TokenKind::State | TokenKind::Process | TokenKind::Eof
+            ) {
+                if self.at(TokenKind::RightBrace) {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                } else if self.at(TokenKind::LeftBrace) {
+                    depth += 1;
+                }
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RightBrace, "expected '}' after conditional arm");
+        value
+    }
+
     fn primary(&mut self, multiline: bool) -> Expr {
         let start = self.current().span.start;
         let mut span = self.current().span;
         let kind = match self.current().kind {
+            TokenKind::If => {
+                self.bump();
+                let condition = self.expression(0, true);
+                let then_value = self.conditional_arm();
+                if !self.at(TokenKind::Else) {
+                    self.error("expected 'else' after if expression");
+                    return Expr {
+                        kind: ExprKind::Error,
+                        span: Span::new(start, then_value.span.end),
+                    };
+                }
+                self.bump();
+                let else_value = self.conditional_arm();
+                let end = self.tokens[self.cursor.saturating_sub(1)]
+                    .span
+                    .end
+                    .max(else_value.span.end);
+                span = Span::new(start, end);
+                ExprKind::If {
+                    condition: Box::new(condition),
+                    then_value: Box::new(then_value),
+                    else_value: Box::new(else_value),
+                }
+            }
             TokenKind::Integer => {
                 self.bump();
                 self.integer(&self.text[span.start..span.end], span)

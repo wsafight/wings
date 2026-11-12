@@ -36,6 +36,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0026](0026-language-temporary-records.md) | 语言临时 RecordInt、受限内建调用与同账户堆/栈执行 | 已采纳（M0/M1 语言集成切片） |
 | [0027](0027-persistent-record-state.md) | ABI v6、RecordInt 状态、宿主持久根与候选提交 | 已采纳；替代 0025/0026 的 Ref 状态限制 |
 | [0028](0028-supervised-record-heaps.md) | 显式监督堆配置、全新堆重建及失败回滚 | 已采纳（宿主恢复集成切片） |
+| [0029](0029-scalar-conditional-expressions.md) | 无回边标量 if 表达式、结构化分支与检查点 | 已采纳（M0 控制流前置切片） |
 
 ## 维护方式
 

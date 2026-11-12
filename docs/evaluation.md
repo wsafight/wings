@@ -4,6 +4,8 @@
 
 带堆监督按 [ADR-0028](adr/0028-supervised-record-heaps.md) 验证首次与重建准入失败、全新状态、旧请求终结、强度上限、sibling 与挂起 stop/Drop 清理；不使用旧标量监督结果代替新切片验证。
 
+条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 检查结构化 IR、实际路径预算、未选臂无副作用/错误、逐步恢复与记录根，不以直线用例代替分支验收。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 用作辅助对照。所有实验公开版本、编译参数、CPU/内存限制、数据生成器和原始结果。
@@ -128,6 +130,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 同一行为脚本的 `record_supervisor` 使用 RecordState 源码产物，验证两次全新堆重建后强度耗尽、旧提交状态与候选不迁移、失败后的排队请求不重放、旧请求终结、sibling 状态和挂起 stop 清理。Rust 回归验证显式容量、三级额度、首次创建回滚及第二次 initializer 在新堆分配后失败时释放旧/新堆且不再重试。命令与资源限制同上，契约见 [ADR-0028](adr/0028-supervised-record-heaps.md)；双平台结果独立记录，不作为性能结果。
 
 2026-11-13 本机 macOS AArch64 通过本切片 workspace 测试、check/clippy/fmt、Rust 1.85 all-target、debug/release 行为脚本与 VM release 测试（74 个 VM 单元、17 个堆及 15 个资源用例）。本机 Docker daemon 未运行，没有可复用的 Linux x86-64 验证环境；Linux 仍待本分支独立 CI，不启动额外 VM 或用模拟结果代替原生性能验证。
+
+## 条件表达式回归
+
+`examples/branches.wings` 和 `conditional_execution` 由同一受限脚本验证两臂/嵌套、未选错误/分配不发生、实际路径预算、跨分支保活及分支内临时记录 GC、逐步恢复、取消/Drop 清理。`--check-branch-roots` 另在每个内建及慢路径主动 GC，防止只测显式 collect 掩盖漏根。IR 回归覆盖分支类型、配对/重复/缺失、64 层、跨臂/作用域泄漏与产物写入前拒绝；前端覆盖畸形输入和后续 handler 恢复。契约见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
+
+2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 和 debug/release 原生行为脚本；持久状态另覆盖两方向分支中的临时分配与 GC。Linux x86-64 尚待独立验证，没有性能测量或 MVP 达标结论。
 
 ## 标量编译帧准入回归
 

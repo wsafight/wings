@@ -281,7 +281,16 @@ fn compile_body(
     });
     let mut registers = Vec::new();
     let mut live = Vec::new();
+    let mut branches = Vec::new();
     for (index, instruction) in function.instructions.iter().enumerate() {
+        let merged = if let Operation::EndIf(value) = instruction.operation {
+            let (_, merge_block) = branches.pop().expect("validated branch");
+            builder.ins().jump(merge_block, &[registers[value]]);
+            builder.switch_to_block(merge_block);
+            Some(builder.block_params(merge_block)[0])
+        } else {
+            None
+        };
         live.retain(|register: &usize| plan.last_uses[*register] >= index);
         publish_roots(&mut builder, pointer_type, roots, &live, &registers);
         poll_control(
@@ -292,6 +301,25 @@ fn compile_body(
             exit,
         );
         let value = match instruction.operation {
+            Operation::If(condition) => {
+                let then_block = builder.create_block();
+                let else_block = builder.create_block();
+                let merge_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(registers[condition], then_block, &[], else_block, &[]);
+                builder.switch_to_block(then_block);
+                branches.push((else_block, merge_block));
+                builder.ins().iconst(types::I64, 0)
+            }
+            Operation::Else(value) => {
+                let (else_block, merge_block) = *branches.last().expect("validated branch");
+                builder.append_block_param(merge_block, types::I64);
+                builder.ins().jump(merge_block, &[registers[value]]);
+                builder.switch_to_block(else_block);
+                builder.ins().iconst(types::I64, 0)
+            }
+            Operation::EndIf(_) => merged.expect("validated branch merge"),
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
             Operation::State => parameters[0],
             Operation::Argument(index) => builder.ins().load(
