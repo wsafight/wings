@@ -14,6 +14,8 @@ M0 确定 Erlang/OTP 版本、JIT 状态、调度器数量、堆与 GC 配置，
 
 ## 负载矩阵与基线
 
+可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例；Linux oracle 尚待执行，Wings 同业务与性能采样尚未接入，不能当作性能达标。
+
 - **内存维度**：逻辑 state 为 `0B/256B/4KiB/64KiB`，编码大小另报；mailbox 深度为 `0/1/100`，消息 payload 为 `32B/1KiB/64KiB`，活跃比例为 `0%/1%/10%/100%`。选代表性交叉组合并公开选择原因，不只挑 tiny state。
 - **行为维度**：Idle、冬眠、正常计算、被抢占挂起、request/回复、超时/取消、热点收件人、spawn 风暴和关系 fan-out；空闲会话与同时执行的进程分开报告。
 - **基线维度**：主基线为 BEAM 普通与冬眠进程；辅助基线为 kameo/Tokio 原生实现和固定版本、配置的 Wasmtime 实例。Lunatic 只有在版本、依赖和运行条件可复现时作为附加对照。

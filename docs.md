@@ -15,6 +15,7 @@
 | [语言设计](docs/language.md) | 类型化消息入口、具名状态、尾表达式、异步请求与副作用时机 |
 | [激进优化](docs/optimizations.md) | 优化候选、适用条件、风险、实验顺序与回退路径 |
 | [评测与验收](docs/evaluation.md) | BEAM 对照、负载矩阵、指标、正确性与故障注入 |
+| [BEAM 工作负载 v1](docs/beam-workloads.md) | 有界 Counter 正确性 oracle 与后续同业务对照协议 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 
 ## 维护
