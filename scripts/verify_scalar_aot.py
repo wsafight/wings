@@ -180,8 +180,10 @@ def main():
         command([sys.executable, Path(__file__), "--check-control", counter])
         example("execution_control", counter)
         example("stack_pool", counter)
+        example("accounted_stacks", counter)
         example("shared_module", counter)
         example("resource_accounts")
+        example("record_heap")
         example("worker_wakeup")
         command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
         resume_source = parent / "resume.wings"

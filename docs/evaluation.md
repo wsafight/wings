@@ -79,6 +79,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 - 测试未保存内容、连续编辑、模块依赖失效、查询取消与过时诊断，确认旧快照不会覆盖新版本。位置转换覆盖中文、emoji、组合字符、CRLF 和协议默认的 UTF-16。
 - 验证 stdio 消息边界、初始化与关闭、capability 声明，以及日志不污染 stdout。测量首次诊断、增量编辑后诊断与补全的延迟、内存和取消响应，M0 确定数据集与目标，不预先编造响应时间。
 
+`accounted_stacks` 另在相同受限子进程验证：VM/tenant 满额时净转移不双计，process 上限不足不激活/不毒化实例，同租户校验，完成/丢弃/取消归还，缓存和 trim 保留承诺，以及最后一个活栈释放时所有账目归零。见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
+
+## 独立记录堆与根帧回归
+
+`record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+
 ## 标量编译帧准入回归
 
 行为脚本执行 `wings-compile` 的 `frame_limits` 示例，检查零值及超硬上限配置、1 字节限额拒绝，以及 128 个跨检查点活跃标量在 512 字节限额下拒绝；每次失败都确认输出目录不存在。默认 64 KiB 限额下构建并运行高寄存器压力入口，校验结果；既有 48 活跃值的原栈恢复继续运行。用例验证实际后端帧和写产物顺序，不证明 Rust 慢路径栈上界或动态栈安全，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。

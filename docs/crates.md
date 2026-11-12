@@ -65,6 +65,10 @@
 
 ## 包内先保留的模块
 
+`stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
+
+`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集的独立原型。它只依赖已有资源账户和标准库；预留后按固定容量申请存储，不新增 crate 或前端依赖。尚未进入 `wings-abi` 或生成代码，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+
 `wings-codegen::build_with_frame_limit` 在已有后端生成流程中检查机器帧，并由编译驱动库转发；只允许降低 64 KiB 上限，入口超限时不写目录、不链接，不添加 runtime 或平台依赖，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
 
 未发布 `wings-vm::wakeup` 内部模块通过既有 libc 提供 `WorkerParker`/`WorkerNotifier`，平台后端分别封装 epoll/eventfd 与 kqueue 用户事件，无新增 crate，不进入前端链。只提供独占等待和共享通知，不把它当作 I/O 或调度实现，见 [ADR-0016](adr/0016-worker-wakeup.md)。

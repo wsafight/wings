@@ -85,6 +85,13 @@ impl ResourceAccount {
         self.node.used.get()
     }
 
+    pub(crate) fn is_child_of(&self, parent: &Self) -> bool {
+        self.node
+            .parent
+            .as_ref()
+            .is_some_and(|owner| owner.same(parent))
+    }
+
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
         for node in self.path().into_iter().flatten() {
             node.admit(amount)?;

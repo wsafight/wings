@@ -4,12 +4,15 @@ use std::rc::Rc;
 
 use corosensei::stack::{STACK_ALIGNMENT, Stack, StackPointer};
 
+use crate::{Reservation, ResourceAccount, ResourceLevel, Resources};
+
 pub const EXECUTION_STACK_BYTES: usize = 256 * 1024;
 const MAX_POOL_SLOTS: usize = 2048;
 
 #[derive(Clone)]
 pub struct StackPool {
     inner: Rc<PoolInner>,
+    process: Option<ResourceAccount>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +25,7 @@ pub struct StackPoolStats {
     pub usable_bytes_per_stack: usize,
     pub guard_bytes_per_stack: usize,
     pub reset_failures: u64,
+    pub charged_bytes: u64,
 }
 
 struct PoolInner {
@@ -32,6 +36,7 @@ struct PoolInner {
     capacity: usize,
     max_cached: usize,
     state: RefCell<PoolState>,
+    accounting: Option<PoolAccounting>,
 }
 
 struct PoolState {
@@ -39,15 +44,57 @@ struct PoolState {
     cached: Vec<usize>,
     active: usize,
     reset_failures: u64,
+    charges: Vec<Option<Reservation>>,
+}
+
+struct PoolAccounting {
+    tenant: ResourceAccount,
+    _metadata: Reservation,
+    charged_bytes: u64,
 }
 
 pub(crate) struct PooledStack {
     pool: Rc<PoolInner>,
     index: usize,
+    charge: Option<Reservation>,
 }
 
 impl StackPool {
     pub fn new(capacity: usize, max_cached: usize) -> Result<Self, String> {
+        Self::create(capacity, max_cached, None)
+    }
+
+    pub fn new_accounted(
+        tenant: &ResourceAccount,
+        capacity: usize,
+        max_cached: usize,
+    ) -> Result<Self, String> {
+        if tenant.level() != ResourceLevel::Tenant {
+            return Err("accounted stack pool requires a tenant account".into());
+        }
+        Self::create(capacity, max_cached, Some(tenant))
+    }
+
+    pub fn for_process(&self, process: &ResourceAccount) -> Result<Self, String> {
+        let accounting = self
+            .inner
+            .accounting
+            .as_ref()
+            .ok_or("stack pool is not accounted")?;
+        if process.level() != ResourceLevel::Process || !process.is_child_of(&accounting.tenant) {
+            return Err("stack pool requires a process in its tenant".into());
+        }
+        Ok(Self {
+            inner: self.inner.clone(),
+            process: Some(process.clone()),
+        })
+    }
+
+    fn create(
+        capacity: usize,
+        max_cached: usize,
+        tenant: Option<&ResourceAccount>,
+    ) -> Result<Self, String> {
         wings_abi::host_target()?;
         if !(1..=MAX_POOL_SLOTS).contains(&capacity) || max_cached > capacity {
             return Err("stack pool requires 1..=2048 slots and max_cached <= capacity".into());
@@ -67,6 +114,37 @@ impl StackPool {
         let mapping_bytes = slot_bytes
             .checked_mul(capacity)
             .ok_or("stack pool size overflow")?;
+        let accounting = tenant
+            .map(|tenant| {
+                let metadata_bytes = std::mem::size_of::<PoolInner>()
+                    + std::mem::size_of::<StackPool>()
+                    + 2 * std::mem::size_of::<usize>()
+                    + capacity
+                        * (2 * std::mem::size_of::<usize>()
+                            + std::mem::size_of::<Option<Reservation>>());
+                let metadata = tenant.reserve(Resources {
+                    bytes: metadata_bytes as u64,
+                    ..Resources::default()
+                })?;
+                Ok::<_, String>(PoolAccounting {
+                    tenant: tenant.clone(),
+                    _metadata: metadata,
+                    charged_bytes: (metadata_bytes + mapping_bytes) as u64,
+                })
+            })
+            .transpose()?;
+        let mut charges = Vec::new();
+        if let Some(accounting) = &accounting {
+            charges
+                .try_reserve_exact(capacity)
+                .map_err(|error| error.to_string())?;
+            for _ in 0..capacity {
+                charges.push(Some(accounting.tenant.reserve(Resources {
+                    bytes: slot_bytes as u64,
+                    ..Resources::default()
+                })?));
+            }
+        }
         let mut free = Vec::new();
         free.try_reserve_exact(capacity)
             .map_err(|error| error.to_string())?;
@@ -108,8 +186,11 @@ impl StackPool {
                     cached,
                     active: 0,
                     reset_failures: 0,
+                    charges,
                 }),
+                accounting,
             }),
+            process: None,
         })
     }
 
@@ -124,6 +205,11 @@ impl StackPool {
             usable_bytes_per_stack: self.inner.slot_bytes - self.inner.page_bytes,
             guard_bytes_per_stack: self.inner.page_bytes,
             reset_failures: state.reset_failures,
+            charged_bytes: self
+                .inner
+                .accounting
+                .as_ref()
+                .map_or(0, |accounting| accounting.charged_bytes),
         }
     }
 
@@ -142,6 +228,25 @@ impl StackPool {
 
     pub(crate) fn acquire(&self) -> Result<PooledStack, String> {
         let mut state = self.inner.state.borrow_mut();
+        let index = state
+            .cached
+            .last()
+            .or(state.free.last())
+            .copied()
+            .ok_or("execution stack pool exhausted")?;
+        let mut charge = if self.inner.accounting.is_some() {
+            let process = self
+                .process
+                .as_ref()
+                .ok_or("accounted stack pool must be bound to a process")?;
+            let charge = state.charges[index]
+                .as_mut()
+                .expect("available stack charge");
+            charge.transfer(process)?;
+            state.charges[index].take()
+        } else {
+            None
+        };
         let index = if let Some(index) = state.cached.pop() {
             index
         } else {
@@ -155,11 +260,22 @@ impl StackPool {
                 )
             };
             if status != 0 {
+                let error = std::io::Error::last_os_error();
                 state.free.push(index);
-                return Err(format!(
-                    "activate stack slot: {}",
-                    std::io::Error::last_os_error()
-                ));
+                if let Some(mut ticket) = charge.take() {
+                    ticket
+                        .transfer(
+                            &self
+                                .inner
+                                .accounting
+                                .as_ref()
+                                .expect("pool accounting")
+                                .tenant,
+                        )
+                        .expect("return reserved stack capacity");
+                    state.charges[index] = Some(ticket);
+                }
+                return Err(format!("activate stack slot: {error}"));
             }
             index
         };
@@ -167,6 +283,7 @@ impl StackPool {
         Ok(PooledStack {
             pool: self.inner.clone(),
             index,
+            charge,
         })
     }
 }
@@ -221,6 +338,19 @@ unsafe impl Stack for PooledStack {
 impl Drop for PooledStack {
     fn drop(&mut self) {
         let mut state = self.pool.state.borrow_mut();
+        if let Some(mut charge) = self.charge.take() {
+            charge
+                .transfer(
+                    &self
+                        .pool
+                        .accounting
+                        .as_ref()
+                        .expect("pool accounting")
+                        .tenant,
+                )
+                .expect("return reserved stack capacity");
+            state.charges[self.index] = Some(charge);
+        }
         state.active -= 1;
         if state.cached.len() < self.pool.max_cached {
             state.cached.push(self.index);
