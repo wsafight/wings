@@ -89,6 +89,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `scalar_requests` 另验证 Int/Unit 回复、pending 满（含已完成未取走）、requests/messages 限额拒绝零变化、零超时及挂起超时、取消不撤回状态副作用、迟到回复与槽位复用、stale/跨 worker 请求 ID、退出/stop 终结和结果票据的释放。请求 deadline 使用单调时钟，不改变 handler 的总步数预算，见 [ADR-0021](adr/0021-bounded-requests.md)。两示例均不覆盖语言内 send/spawn/request、自动计时唤醒、真实 I/O、compiler 根或同业务 BEAM 性能。
 
+`worker_timer` 使用 400 个活跃标量的 Timer 产物验证可选 deadline 让出：先拒绝未启用、零时长和不可表示时长，再验证容量准入、原栈恢复/提交、总预算与挂起清理。短 deadline 的有限观察只证明原子请求可到达强制检查点，不是抢占延迟、服务尾延迟或 BEAM 性能结果；空闲线程无轮询，Drop 应唤醒并 join，不等待原 deadline，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+
 ## 独立记录堆与根帧回归
 
 `record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。

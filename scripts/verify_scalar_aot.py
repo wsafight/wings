@@ -201,6 +201,29 @@ def main():
         command([COMPILER, "build", worker_source, "-o", worker_artifact])
         example("scalar_worker", worker_artifact)
         example("scalar_requests", worker_artifact)
+        timer_source = parent / "timer.wings"
+        timer_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(400))
+        timer_groups = "\n".join(
+            f"let group_{group} = " + " + ".join(f"value_{index}" for index in range(group * 100, (group + 1) * 100))
+            for group in range(4)
+        )
+        timer_total = " + ".join(f"group_{group}" for group in range(4))
+        timer_source.write_text(f"""process Timer {{
+  state count: Int = 0
+  on Work(seed: Int) -> Int {{
+    {timer_bindings}
+    {timer_groups}
+    let total = {timer_total}
+    count = count + total
+    total
+  }}
+  on Get -> Int {{ count }}
+  on Fail -> Int {{ count = 99; 1 / 0 }}
+}}
+""")
+        timer_artifact = parent / "timer"
+        command([COMPILER, "build", timer_source, "-o", timer_artifact])
+        example("worker_timer", timer_artifact)
         command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
@@ -316,7 +339,7 @@ def main():
         assert not invalid_artifact.exists()
         invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
         assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes/requests, OS wakeup and artifact rejection")
+        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes/requests/deadlines, OS wakeup and artifact rejection")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ mod heap;
 mod module;
 mod resources;
 mod stack_pool;
+mod timer;
 mod wakeup;
 mod worker;
 

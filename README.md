@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。未发布宿主库另有单 worker mailbox、异步请求和强制检查点活栈恢复；独立记录堆/精确根尚未接入语言或 AOT，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
 
 ## 开发
 
@@ -61,6 +61,8 @@ LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳
 `ScalarModule` 可装载一次并反复实例化，共享只读清单和入口数组，各实例独立执行初始化、保存状态与失败标记。宿主可预解析模块绑定的 `HandlerId`，直接调用时不再按字符串查找；外部 JSON 协议不变。此功能尚无语言内 spawn 或 mailbox，见 [ADR-0013](docs/adr/0013-shared-scalar-modules.md)。
 
 宿主可用 `ScalarTask` 按值保存实例和未完成调用，在同线程内移动而无需自引用；忙时拒绝新调用，正常结束才提交并释放栈，见 [ADR-0015](docs/adr/0015-owned-scalar-tasks.md)。`ScalarWorker` 在此基础上提供有限进程表、generation Pid、mailbox、固定 pending 表的异步请求及手动轮转时间片；process、消息、请求和活栈经过三级准入。超时/取消不撤回已接受消息，迟到回复不能覆盖复用请求槽位。该宿主切片尚无语言内 send/spawn/request 或真实 I/O，不是 M:N 调度器，见 [ADR-0020](docs/adr/0020-single-worker-mailbox.md) 与 [ADR-0021](docs/adr/0021-bounded-requests.md)。
+
+worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出，仍在强制 safepoint 挂起、原线程恢复。默认不创建计时线程，未验证真实服务尾延迟或 M:N 扩展成本，见 [ADR-0022](docs/adr/0022-worker-deadline-preemption.md)。
 
 源码还有独立 `RecordHeap`/`ShadowRoots` 切片，用三级容量准入验证不可变定长记录、精确非移动回收和作用域根帧；尚未接入语言或 AOT，不把它称为 compiler 根链已经完成，见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。
 

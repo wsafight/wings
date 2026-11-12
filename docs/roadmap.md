@@ -50,6 +50,8 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 [ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它尚无语言 send/spawn/request 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
 
+[ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。这是第 5 项的有限前置，不覆盖循环、runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
+
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表，容量在构造前经过三级准入。它没有 compiler 根发布、消息/状态根集成，不视为完整 GC、业务语言堆或 M0 精确根验收完成。
 
 BEAM 对照先固化 [v1 最小协议与 oracle](beam-workloads.md)：已在本机检查有界 Counter 的 i64、FIFO 和失败退出，代表负载组合与采样要求单独列明。未来多 actor、超时、过载及 Wings 等价端尚待实现，不因协议落盘而称 BEAM 基线全部完成。

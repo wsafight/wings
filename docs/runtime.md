@@ -112,7 +112,9 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 宿主异步请求按 [ADR-0021](adr/0021-bounded-requests.md) 接入固定 pending 表。`request` 只接受回复入口（包括 Unit），消息与 requests 额度全部满足才入队；`take_reply` 非阻塞，结果取走前一直占用槽位和 requests 额度。每次 tick/take/cancel 及 handler 返回后按单调时钟检查 deadline，超时、取消、回复或目标退出只选择一个终结结果。超时/取消不撤回已接受消息，迟到回复必须匹配完整 generation ID，不能覆盖复用槽位。目标退出仍保留已完成未取走结果的计费，直到取走或 worker 销毁。
 
-该切片无语言内 spawn/send/request、计时线程、真实 I/O 或迁移；没有 tick/poll 时不会主动通知超时。记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
+`enable_timer` 可选启动一个计费控制线程，`tick_timed` 在非零单调 deadline 到达时原子请求让出，仍由下一个强制 safepoint 挂起，不重置总预算。arm/disarm 与计时请求在同一控制锁串行，撤销后不把旧 deadline 泄漏到普通 tick；没有 deadline 时不周期轮询，Drop 唤醒并 join。该线程不持有 actor、账户或活栈，不提供迁移，容量及验证限制见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。默认 worker 不创建线程，当前每 worker 一个的形式不作为 M:N 的既定方案。
+
+该切片无语言内 spawn/send/request、真实 I/O 或迁移；可选执行 timer 也不主动通知请求 timeout，没有 tick/poll 时请求结果不更新。记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
 
 ### 分层
 

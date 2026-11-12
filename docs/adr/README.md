@@ -29,6 +29,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳（单线程接入契约） |
 | [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
 | [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳（宿主请求切片） |
+| [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
 
 ## 维护方式
 

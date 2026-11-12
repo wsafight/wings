@@ -22,6 +22,10 @@ impl PreemptionToken {
     pub fn request(&self) {
         self.flag.store(1, Ordering::SeqCst);
     }
+
+    pub(crate) fn clear(&self) {
+        self.flag.store(0, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

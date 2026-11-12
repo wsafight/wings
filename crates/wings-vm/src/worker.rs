@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::timer::DeadlineTimer;
 use crate::{
     CancellationToken, ExecutionStatus, HandlerId, PreemptionToken, Reservation, ResourceAccount,
     ResourceLevel, Resources, ScalarModule, ScalarTask, StackPool,
@@ -43,6 +44,8 @@ pub enum WorkerEvent {
 }
 
 pub struct ScalarWorker {
+    timer: Option<DeadlineTimer>,
+    preemption: PreemptionToken,
     identity: u64,
     slots: Box<[ProcessSlot]>,
     requests: Box<[RequestSlot]>,
@@ -146,6 +149,8 @@ impl ScalarWorker {
         })?;
         let pool = StackPool::new_accounted(tenant, capacity, 2.min(capacity))?;
         Ok(Self {
+            timer: None,
+            preemption: PreemptionToken::default(),
             identity,
             slots,
             requests,
@@ -154,6 +159,34 @@ impl ScalarWorker {
             cursor: 0,
             _charge: charge,
         })
+    }
+
+    pub fn enable_timer(&mut self) -> Result<(), String> {
+        if self.timer.is_some() {
+            return Err("worker timer is already enabled".into());
+        }
+        self.timer = Some(DeadlineTimer::new(&self.tenant, &self.preemption)?);
+        Ok(())
+    }
+
+    pub fn tick_timed(
+        &mut self,
+        slice_steps: u64,
+        duration: Duration,
+    ) -> Result<WorkerEvent, String> {
+        if slice_steps == 0 || duration.is_zero() {
+            return Err("timed worker slice requires nonzero steps and duration".into());
+        }
+        let deadline = Instant::now()
+            .checked_add(duration)
+            .ok_or("worker deadline is out of range")?;
+        self.timer
+            .as_ref()
+            .ok_or("worker timer is not enabled")?
+            .arm(deadline)?;
+        let result = self.tick(slice_steps);
+        self.timer.as_ref().expect("enabled worker timer").disarm();
+        result
     }
 
     pub fn spawn(
@@ -339,7 +372,7 @@ impl ScalarWorker {
                     &message.arguments[..message.count],
                     message.max_steps,
                     &CancellationToken::default(),
-                    &PreemptionToken::default(),
+                    &self.preemption,
                     &actor.pool,
                 )?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
