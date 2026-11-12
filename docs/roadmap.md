@@ -27,7 +27,7 @@
 
 `0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码先按 [ADR-0010](adr/0010-scalar-execution-control.md) 实现取消和总预算，再按 [ADR-0011](adr/0011-scalar-stackful-resume.md) 扩展为 ABI v3、同线程活栈让出恢复和无 unwind 清理。当前仍无根链、计时线程、worker 或消息；标量恢复不等于完整 safepoint/GC 验证，不扩展语言语法或调度规模。
 
-资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程独立原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆及根表现按固定容量接入；活栈、mailbox、请求表等运行时分配仍待接入，也未提供跨 worker 同步；该切片不等于 M1 三级计费完成，更不代表完整资源隔离。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
+资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 
 [ADR-0015](adr/0015-owned-scalar-tasks.md) 的 owned 执行槽只是后续进程表的所有权前置，不改变下述 MVP 的阶段顺序或验收门槛。
 
@@ -48,7 +48,7 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 ## MVP 范围与开发顺序
 
-[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限单向 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行。它尚无语言 send/spawn、request/timeout 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把单向消息演示称为完整 MVP。
+[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它尚无语言 send/spawn/request 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表，容量在构造前经过三级准入。它没有 compiler 根发布、消息/状态根集成，不视为完整 GC、业务语言堆或 M0 精确根验收完成。
 

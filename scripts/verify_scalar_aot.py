@@ -192,11 +192,15 @@ def main():
   on Set(value: Int) { count = value }
   on Fail { count = 99; let failure = 1 / 0 }
   on Get -> Int { count }
+  on Bump(value: Int) -> Int { count = count + value; count }
+  on Ack -> Unit { () }
+  on FailRequest -> Int { count = 99; 1 / 0 }
 }
 """)
         worker_artifact = parent / "worker"
         command([COMPILER, "build", worker_source, "-o", worker_artifact])
         example("scalar_worker", worker_artifact)
+        example("scalar_requests", worker_artifact)
         command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
@@ -312,7 +316,7 @@ def main():
         assert not invalid_artifact.exists()
         invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
         assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes, OS wakeup and artifact rejection")
+        print("Scalar AOT verification passed: scalar execution, live stacks, quota accounting, precise heap roots, worker mailboxes/requests, OS wakeup and artifact rejection")
 
 
 if __name__ == "__main__":

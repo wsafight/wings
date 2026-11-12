@@ -80,7 +80,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 低层实现范围
 
-宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界单向 mailbox 与计费栈池轮转执行；ABI v3 和标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。ABI v3 和标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
 
 当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer 与每个 handler 的实际编译帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链，只适用于当前无递归、无业务函数调用的子集；不是完整 256 KiB 栈成本或动态剩余栈检查，不据此开放函数或业务堆。
 

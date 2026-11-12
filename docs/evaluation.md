@@ -85,7 +85,9 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 ## 单 worker 标量消息回归
 
-行为脚本构建单向 Add/Set/Fail 与请求 Get 的 Queue 产物，受限子进程运行 `scalar_worker`。检查 FIFO、多实例隔离、轮转、逐片候选提交、满队列拒绝、stale/跨 worker Pid、输入校验不改变队列、预算/算术失败退出、stop 满队列/挂起清理和三级用量回收。它不覆盖语言内 send/spawn、request/timeout、真实 I/O、compiler 根或同业务 BEAM 性能，见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+行为脚本构建含单向及回复入口的 Queue 产物，受限子进程运行 `scalar_worker`。检查 FIFO、多实例隔离、轮转、逐片候选提交、满队列拒绝、stale/跨 worker Pid、输入校验不改变队列、预算/算术失败退出、stop 满队列/挂起清理和三级用量回收，见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+
+`scalar_requests` 另验证 Int/Unit 回复、pending 满（含已完成未取走）、requests/messages 限额拒绝零变化、零超时及挂起超时、取消不撤回状态副作用、迟到回复与槽位复用、stale/跨 worker 请求 ID、退出/stop 终结和结果票据的释放。请求 deadline 使用单调时钟，不改变 handler 的总步数预算，见 [ADR-0021](adr/0021-bounded-requests.md)。两示例均不覆盖语言内 send/spawn/request、自动计时唤醒、真实 I/O、compiler 根或同业务 BEAM 性能。
 
 ## 独立记录堆与根帧回归
 

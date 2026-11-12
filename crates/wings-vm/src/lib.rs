@@ -25,7 +25,7 @@ pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use wakeup::{WorkerNotifier, WorkerParker};
-pub use worker::{Pid, ScalarWorker, WorkerEvent};
+pub use worker::{Pid, RequestId, RequestOutcome, ScalarWorker, WorkerEvent};
 
 pub struct ScalarProcess {
     module: ScalarModule,

@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::{
     CancellationToken, ExecutionStatus, HandlerId, PreemptionToken, Reservation, ResourceAccount,
@@ -18,6 +19,21 @@ pub struct Pid {
     generation: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestId {
+    worker: u64,
+    slot: u32,
+    generation: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestOutcome {
+    Reply(i64),
+    TimedOut,
+    Cancelled,
+    Failed,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerEvent {
     Idle,
@@ -29,6 +45,7 @@ pub enum WorkerEvent {
 pub struct ScalarWorker {
     identity: u64,
     slots: Box<[ProcessSlot]>,
+    requests: Box<[RequestSlot]>,
     pool: StackPool,
     tenant: ResourceAccount,
     cursor: usize,
@@ -38,6 +55,18 @@ pub struct ScalarWorker {
 struct ProcessSlot {
     generation: u32,
     actor: Option<Actor>,
+}
+
+struct RequestSlot {
+    generation: u32,
+    pending: Option<PendingRequest>,
+}
+
+struct PendingRequest {
+    target: Pid,
+    deadline: Instant,
+    outcome: Option<RequestOutcome>,
+    _charge: Reservation,
 }
 
 struct Actor {
@@ -50,7 +79,7 @@ struct Actor {
 }
 
 struct ActiveMessage {
-    _message: Message,
+    message: Message,
     _execution_charge: Reservation,
 }
 
@@ -59,6 +88,7 @@ struct Message {
     arguments: [i64; MAX_ARGUMENTS],
     count: usize,
     max_steps: u64,
+    request: Option<RequestId>,
     _charge: Reservation,
 }
 
@@ -70,10 +100,23 @@ struct Mailbox {
 
 impl ScalarWorker {
     pub fn new(tenant: &ResourceAccount, capacity: usize) -> Result<Self, String> {
+        Self::with_request_capacity(tenant, capacity, capacity)
+    }
+
+    pub fn with_request_capacity(
+        tenant: &ResourceAccount,
+        capacity: usize,
+        request_capacity: usize,
+    ) -> Result<Self, String> {
         if tenant.level() != ResourceLevel::Tenant || !(1..=MAX_PROCESSES).contains(&capacity) {
             return Err("scalar worker requires a tenant and 1..=256 process slots".into());
         }
-        let bytes = std::mem::size_of::<Self>() + capacity * std::mem::size_of::<ProcessSlot>();
+        if !(1..=MAX_PROCESSES).contains(&request_capacity) {
+            return Err("scalar worker requires 1..=256 request slots".into());
+        }
+        let bytes = std::mem::size_of::<Self>()
+            + capacity * std::mem::size_of::<ProcessSlot>()
+            + request_capacity * std::mem::size_of::<RequestSlot>();
         let charge = tenant.reserve(Resources {
             bytes: bytes as u64,
             ..Resources::default()
@@ -97,10 +140,15 @@ impl ScalarWorker {
             generation: 1,
             actor: None,
         })?;
+        let requests = storage(request_capacity, || RequestSlot {
+            generation: 1,
+            pending: None,
+        })?;
         let pool = StackPool::new_accounted(tenant, capacity, 2.min(capacity))?;
         Ok(Self {
             identity,
             slots,
+            requests,
             pool,
             tenant: tenant.clone(),
             cursor: 0,
@@ -157,13 +205,78 @@ impl ScalarWorker {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
+        self.enqueue(pid, handler, arguments, max_steps, None)
+    }
+
+    pub fn request(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        timeout: Duration,
+    ) -> Result<RequestId, String> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or("request deadline is out of range")?;
+        let actor = self.actor(pid)?;
+        let index = self
+            .requests
+            .iter()
+            .position(|slot| slot.pending.is_none() && slot.generation != 0)
+            .ok_or("request_table_full")?;
+        let request = RequestId {
+            worker: self.identity,
+            slot: index as u32,
+            generation: self.requests[index].generation,
+        };
+        let charge = actor.account.reserve(Resources {
+            requests: 1,
+            ..Resources::default()
+        })?;
+        self.enqueue(pid, handler, arguments, max_steps, Some(request))?;
+        self.requests[index].pending = Some(PendingRequest {
+            target: pid,
+            deadline,
+            outcome: None,
+            _charge: charge,
+        });
+        Ok(request)
+    }
+
+    pub fn take_reply(&mut self, request: RequestId) -> Result<Option<RequestOutcome>, String> {
+        self.expire_requests();
+        let outcome = self.pending(request)?.outcome;
+        if outcome.is_some() {
+            let slot = &mut self.requests[request.slot as usize];
+            slot.pending.take();
+            slot.generation = slot.generation.checked_add(1).unwrap_or(0);
+        }
+        Ok(outcome)
+    }
+
+    pub fn cancel_request(&mut self, request: RequestId) -> Result<(), String> {
+        self.expire_requests();
+        self.pending(request)?;
+        self.finish_request(request, RequestOutcome::Cancelled);
+        Ok(())
+    }
+
+    fn enqueue(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+    ) -> Result<(), String> {
         let actor = self.actor_mut(pid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
             return Err("handler ID belongs to a different module".into());
         }
         let schema = handler.schema();
-        if schema.reply.is_some() {
-            return Err("send requires a one-way handler".into());
+        if schema.reply.is_some() != request.is_some() {
+            return Err("send requires a one-way handler; request requires a reply handler".into());
         }
         if arguments.len() != schema.parameters.len()
             || arguments.len() > MAX_ARGUMENTS
@@ -189,6 +302,7 @@ impl ScalarWorker {
             arguments: owned_arguments,
             count: arguments.len(),
             max_steps,
+            request,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -201,6 +315,7 @@ impl ScalarWorker {
         if slice_steps == 0 {
             return Err("worker slice must contain at least one step".into());
         }
+        self.expire_requests();
         for _ in 0..self.slots.len() {
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % self.slots.len();
@@ -233,19 +348,33 @@ impl ScalarWorker {
                 actor.mailbox.head = (actor.mailbox.head + 1) % actor.mailbox.slots.len();
                 actor.mailbox.count -= 1;
                 actor.active = Some(ActiveMessage {
-                    _message: message,
+                    message,
                     _execution_charge: execution_charge,
                 });
             }
-            return match actor.task.resume(slice_steps) {
+            let status = actor.task.resume(slice_steps);
+            self.expire_requests();
+            return match status {
                 Ok(ExecutionStatus::Suspended) => Ok(WorkerEvent::Suspended(pid)),
-                Ok(ExecutionStatus::Complete(None)) => {
-                    actor.active.take();
+                Ok(ExecutionStatus::Complete(reply)) => {
+                    let active = self.slots[index]
+                        .actor
+                        .as_mut()
+                        .expect("running actor")
+                        .active
+                        .take()
+                        .expect("completed message");
+                    match (active.message.request, reply) {
+                        (Some(request), Some(value)) => {
+                            self.finish_request(request, RequestOutcome::Reply(value));
+                        }
+                        (None, None) => {}
+                        _ => {
+                            self.remove(index);
+                            return Err("handler reply does not match message kind".into());
+                        }
+                    }
                     Ok(WorkerEvent::Delivered(pid))
-                }
-                Ok(ExecutionStatus::Complete(Some(_))) => {
-                    self.remove(index);
-                    Err("one-way handler returned a request reply".into())
                 }
                 Err(reason) => {
                     self.remove(index);
@@ -258,6 +387,7 @@ impl ScalarWorker {
 
     pub fn stop(&mut self, pid: Pid) -> Result<(), String> {
         self.actor_mut(pid)?;
+        self.expire_requests();
         self.remove(pid.slot as usize);
         Ok(())
     }
@@ -309,8 +439,50 @@ impl ScalarWorker {
     }
 
     fn remove(&mut self, index: usize) {
+        let pid = self.pid(index);
+        for slot in &mut self.requests {
+            if let Some(pending) = &mut slot.pending {
+                if pending.target == pid && pending.outcome.is_none() {
+                    pending.outcome = Some(RequestOutcome::Failed);
+                }
+            }
+        }
         self.slots[index].actor.take();
         self.slots[index].generation = self.slots[index].generation.checked_add(1).unwrap_or(0);
+    }
+
+    fn pending(&self, request: RequestId) -> Result<&PendingRequest, String> {
+        if request.worker != self.identity {
+            return Err("request ID belongs to a different worker".into());
+        }
+        self.requests
+            .get(request.slot as usize)
+            .filter(|slot| slot.generation == request.generation)
+            .and_then(|slot| slot.pending.as_ref())
+            .ok_or_else(|| "stale or consumed request ID".into())
+    }
+
+    fn finish_request(&mut self, request: RequestId, outcome: RequestOutcome) {
+        if self.pending(request).is_ok() {
+            let pending = self.requests[request.slot as usize]
+                .pending
+                .as_mut()
+                .expect("validated request");
+            if pending.outcome.is_none() {
+                pending.outcome = Some(outcome);
+            }
+        }
+    }
+
+    fn expire_requests(&mut self) {
+        let now = Instant::now();
+        for slot in &mut self.requests {
+            if let Some(pending) = &mut slot.pending {
+                if pending.outcome.is_none() && pending.deadline <= now {
+                    pending.outcome = Some(RequestOutcome::TimedOut);
+                }
+            }
+        }
     }
 }
 

@@ -20,7 +20,7 @@
 
 未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v3 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，作为可移动的进程表槽位前置而非调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 模块自主管理有界栈池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 与 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
-`wings-vm` 的 `resources` 内部模块已按 [ADR-0014](adr/0014-resource-reservations.md) 提供单线程独立账户原语：`ResourceAccount`、`Resources` 与不可克隆的 `Reservation` 支持三级四维预留、同 VM 净转移和 Drop 回收。仅使用标准库，不新增 crate 或前端依赖，也不改变 ABI。它尚未接入堆、活栈、mailbox、请求表等全部运行时分配，不能宣称已有完整资源隔离；跨 worker 同步也未实现。契约集中在[资源准入](runtime.md#资源准入)，有界确定性示例见[独立资源账户回归](evaluation.md#独立资源账户回归)。
+`wings-vm` 的 `resources` 内部模块已按 [ADR-0014](adr/0014-resource-reservations.md) 提供单线程账户原语：`ResourceAccount`、`Resources` 与不可克隆的 `Reservation` 支持三级四维预留、同 VM 净转移和 Drop 回收。独立记录堆/根表和宿主 worker 的栈池、mailbox、pending 表已接入；语言业务堆、模块及 allocator 内部开销尚未完整覆盖，不能宣称已有完整资源隔离；跨 worker 同步也未实现。契约集中在[资源准入](runtime.md#资源准入)，有界确定性示例见[独立资源账户回归](evaluation.md#独立资源账户回归)。
 
 | Crate | 形态 | 负责内容 | 不负责 |
 |---|---|---|---|
@@ -65,7 +65,7 @@
 
 ## 包内先保留的模块
 
-内部 `worker` 使用现有模块、owned task、资源账户和计费栈池实现单线程宿主 mailbox，不新增 crate、前端或线程共享依赖。generation Pid 与单向 send 不是外部线协议，见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+内部 `worker` 使用现有模块、owned task、资源账户和计费栈池实现单线程宿主 mailbox 与有限请求表，不新增 crate、前端或线程共享依赖。generation Pid/RequestId 与 send/request 不是外部线协议，见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
 
 `stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 

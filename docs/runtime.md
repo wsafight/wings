@@ -88,7 +88,7 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 子进程池还需要独立的内存/CPU 限额、凭证、文件系统和网络权限策略。OS 进程隔离了地址空间与崩溃范围，但完整的安全沙箱还需要这些限制。需要防范不可信代码时，优先选择成熟的 WASM 沙箱或经过加固的 OS 隔离。
 
-当前静态标量编译帧准入见 [ADR-0017](adr/0017-scalar-frame-admission.md)：后端实际帧超过 64 KiB 在构建期拒绝，宿主可降低该值。它不包含运行时调用链，也不提供动态 `stack_overflow`；上文编译器显式剩余栈限额与三级栈准入仍是待办，不能用静态帧上限替代。
+当前静态标量编译帧准入见 [ADR-0017](adr/0017-scalar-frame-admission.md)：后端实际帧超过 64 KiB 在构建期拒绝，宿主可降低该值。它不包含运行时调用链，也不提供动态 `stack_overflow`；编译器显式剩余栈限额仍是待办，不能用静态帧上限替代。宿主 worker 的固定栈池容量与活栈转移已接入三级准入，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
 ### 冬眠：只收缩已返回 handler 的状态
 
@@ -110,7 +110,9 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 每次 `tick` 至多开始/恢复一个入口的一片，挂起时保留原栈、候选不提交；成功才提交并归还消息/执行预留。受管失败返回退出事件并清理该实例和队列，其他实例可继续。开始前额度不足不丢队首；外部收到错误后可继续驱动其他 actor。`stop` 不经过普通队列，挂起时先正常取消退出，满队列也可清理。宿主可读已提交标量 state 和账目用于诊断，不能取得可变实例。
 
-该切片无语言内 spawn/send、request/reply、计时线程、真实 I/O 或迁移；记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
+宿主异步请求按 [ADR-0021](adr/0021-bounded-requests.md) 接入固定 pending 表。`request` 只接受回复入口（包括 Unit），消息与 requests 额度全部满足才入队；`take_reply` 非阻塞，结果取走前一直占用槽位和 requests 额度。每次 tick/take/cancel 及 handler 返回后按单调时钟检查 deadline，超时、取消、回复或目标退出只选择一个终结结果。超时/取消不撤回已接受消息，迟到回复必须匹配完整 generation ID，不能覆盖复用槽位。目标退出仍保留已完成未取走结果的计费，直到取走或 worker 销毁。
+
+该切片无语言内 spawn/send/request、计时线程、真实 I/O 或迁移；没有 tick/poll 时不会主动通知超时。记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
 
 ### 分层
 
