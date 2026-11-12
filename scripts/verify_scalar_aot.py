@@ -269,6 +269,28 @@ def main():
         options = ["--release"] if PROFILE == "release" else []
         command(["cargo", "run", "--locked", *options, "-p", "wings-compile", "--example", "build_aot_records", "--", records])
         example("aot_records", records)
+        language_records = parent / "language-records"
+        command([COMPILER, "build", ROOT / "examples/records.wings", "-o", language_records])
+        heap_run = [VM, "run", "--trusted", language_records, "--heap-records", 2]
+        result = command(heap_run, json.dumps(message("Work", 11)) + "\n" + json.dumps(message("Get")) + "\n")
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 11]
+        for failure, expected in [(message("Full"), "heap exhausted"), (message("Fail"), "division by zero")]:
+            result = command(heap_run, json.dumps(message("Work", 7)) + "\n" + json.dumps(failure) + "\n", expected=1)
+            assert result.stdout == '{"reply":7}\n' and expected in result.stderr
+        result = command([VM, "run", "--trusted", language_records, "--max-steps", 128, "--heap-records", 2], json.dumps(message("Work", 5)) + "\n")
+        assert result.stdout == '{"reply":5}\n'
+        assert "callback" in invoke(language_records, [message("Work", 5)], expected=1).stderr
+        for invalid in ["0", "1025", "-1", "1.5", "not-a-number", "18446744073709551616"]:
+            assert "1..=1024" in command([VM, "run", "--trusted", language_records, "--heap-records", invalid], expected=2).stderr
+        for options in [["--heap-records", 2, "--heap-records", 2], ["--max-steps", 4, "--max-steps", 8], ["--unknown", 1]]:
+            assert "option" in command([VM, "run", "--trusted", language_records, *options], expected=2).stderr
+        initializer_source = parent / "record-initializer.wings"
+        initializer_source.write_text("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }")
+        initializer_artifact = parent / "record-initializer"
+        command([COMPILER, "build", initializer_source, "-o", initializer_artifact])
+        assert "callback" in invoke(initializer_artifact, [], expected=1).stderr
+        assert command([VM, "run", "--trusted", initializer_artifact, "--heap-records", 1], json.dumps(message("Get")) + "\n").stdout == '{"reply":7}\n'
+        example("language_records", language_records)
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"

@@ -70,6 +70,8 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 [ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径：compiler 按最后使用位置发布 Ref，堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；尚不支持引用状态/消息/回复或后台收集。
 
+[ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；消息/request 只接受标量，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
+
 这不是语言可用堆、跨进程消息格式或 AOT GC；业务 state、当前消息、候选回复和生成代码 safepoint 的根发布仍待接入。细节、替代方案与验证边界见 [ADR-0018](adr/0018-bounded-record-heap.md)。
 
 ### 隔离机制：语言级封闭 + 段隔离堆

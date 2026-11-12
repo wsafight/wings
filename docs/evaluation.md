@@ -107,6 +107,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 构建与执行命令仍为 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 和 `python3 scripts/verify_scalar_aot.py`；release 增加 `--release` 与 `WINGS_PROFILE=release`。本机 macOS AArch64 已通过 debug/release 原生行为验证、workspace 测试、clippy 及 Rust 1.85 all-target 检查；Linux x86-64 待本分支 CI 独立验证，不沿用历史结果。此为内部 IR 的有界临时堆，不是语言业务堆或全部根证明，也没有 BEAM 性能对照，见 [ADR-0025](adr/0025-aot-record-roots.md)。
 
+## 语言临时记录回归
+
+`examples/records.wings` 经共享前端检查、AOT 编译及 CLI `--heap-records` 执行，校验 GC 保活、候选提交、缺少堆配置、堆满/算术失败、initializer 内建、CLI 数值/重复/未知选项拒绝。`language_records` 在受限 OS 子进程验证两个带堆 worker actor 的请求/回复、逐步交错、堆满退出不影响 sibling、挂起 stop 与三级清理。Rust 回归覆盖调用类型/数量/遮蔽、畸形及节点限额、引用边界、LSP 局部类型/跳转/补全、初始化失败回滚，以及堆实例不能绕过计费池。仍由既有 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 和 `python3 scripts/verify_scalar_aot.py` 驱动，release 使用原有 profile 参数。此切片不覆盖引用状态/消息、循环或完整 MVP，见 [ADR-0026](adr/0026-language-temporary-records.md)。
+
+语言临时记录切片在 2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 检查及 debug/release 行为脚本；BEAM oracle 另通过 11 个行为及 23 个拒绝输入用例，不含 Wings 性能测量。Linux x86-64 仍待本分支独立验证，不引用历史 CI 作为新切片证据。
+
 ## 标量编译帧准入回归
 
 ABI v4 新增业务帧前的剩余栈边界回归：`stack_boundary` 在受限子进程对真实 initializer/handler（含高寄存器压力）设置零、过高、距当前 SP 仅 1 KiB 和可用限额，检查错误码 6、零扣步、输出不变及慢路径未调用；原有高压力帧、原栈恢复、取消和 worker 回归继续执行。Rust 回归检查布局、旧 v3 拒绝、guard/慢路径预留关系、同步池满拒绝及初始化计费。2026-11-12 本机 macOS AArch64 已通过 workspace 测试、check/clippy/fmt、Rust 1.85 全 targets 检查及 debug/release 行为脚本；Linux x86-64 仍待本分支 CI 独立验证，不能沿用下述历史结果。它不证明任意 Rust 慢路径或递归栈安全，也不是性能结果，见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。

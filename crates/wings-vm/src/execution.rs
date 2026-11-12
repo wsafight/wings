@@ -116,6 +116,10 @@ impl ScalarProcess {
         cancellation: &CancellationToken,
         preemption: &PreemptionToken,
     ) -> Result<ScalarExecution<'_>, String> {
+        let pool = match self.heap.as_ref().and_then(|heap| heap.pool.as_ref()) {
+            Some(pool) => pool.clone(),
+            None => default_stack_pool()?,
+        };
         let invocation = Invocation::new(
             self,
             handler,
@@ -123,7 +127,7 @@ impl ScalarProcess {
             max_steps,
             cancellation,
             preemption,
-            &default_stack_pool()?,
+            &pool,
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -225,6 +229,14 @@ impl Invocation {
         preemption: &PreemptionToken,
         pool: &StackPool,
     ) -> Result<Self, String> {
+        if process
+            .heap
+            .as_ref()
+            .and_then(|heap| heap.pool.as_ref())
+            .is_some_and(|owner| !owner.shares_process(pool))
+        {
+            return Err("AOT heap execution requires its process-accounted stack pool".into());
+        }
         let coroutine = new_coroutine(
             process.module.inner.entries[handler],
             process.state,

@@ -9,6 +9,7 @@ pub enum Type {
     Int,
     Bool,
     Unit,
+    RecordInt,
     Message {
         parameters: Vec<(String, Type)>,
         reply: Option<Box<Type>>,
@@ -22,6 +23,7 @@ impl std::fmt::Display for Type {
             Self::Int => formatter.write_str("Int"),
             Self::Bool => formatter.write_str("Bool"),
             Self::Unit => formatter.write_str("Unit"),
+            Self::RecordInt => formatter.write_str("RecordInt"),
             Self::Message { parameters, reply } => {
                 formatter.write_str("(")?;
                 for (index, (name, ty)) in parameters.iter().enumerate() {
@@ -121,6 +123,7 @@ pub fn analyze(text: &str) -> Analysis {
         let mut state_scope = HashMap::new();
         for state in &process.states {
             let declared = checker.declared_type(&state.ty);
+            checker.external_type(&declared, state.ty.span);
             let actual = checker.expression(&state.default, &HashMap::new());
             checker.require(&actual, &declared, state.default.span);
             checker.bind(
@@ -151,16 +154,18 @@ pub fn analyze(text: &str) -> Analysis {
                 .parameters
                 .iter()
                 .map(|parameter| {
-                    (
-                        parameter.name.text.clone(),
-                        checker.declared_type(&parameter.ty),
-                    )
+                    (parameter.name.text.clone(), {
+                        let ty = checker.declared_type(&parameter.ty);
+                        checker.external_type(&ty, parameter.ty.span);
+                        ty
+                    })
                 })
                 .collect();
-            let reply = handler
-                .reply_type
-                .as_ref()
-                .map(|ty| checker.declared_type(ty));
+            let reply = handler.reply_type.as_ref().map(|name| {
+                let ty = checker.declared_type(name);
+                checker.external_type(&ty, name.span);
+                ty
+            });
             checker.bind(
                 &handler.name,
                 SymbolKind::Handler,
@@ -205,6 +210,11 @@ struct Checker {
 }
 
 impl Checker {
+    fn external_type(&mut self, ty: &Type, span: Span) {
+        if *ty == Type::RecordInt {
+            self.error("T011", "RecordInt is only supported in local bindings, not state, message fields or replies", span);
+        }
+    }
     fn error(&mut self, code: &'static str, message: impl Into<String>, span: Span) {
         if self.diagnostics.len() < MAX_DIAGNOSTICS {
             self.diagnostics
@@ -217,12 +227,13 @@ impl Checker {
             "Int" => Type::Int,
             "Bool" => Type::Bool,
             "Unit" => Type::Unit,
+            "RecordInt" => Type::RecordInt,
             "" => Type::Unknown,
             _ => {
                 self.error(
                     "T002",
                     format!(
-                        "unknown type '{}'; supported types are Int, Bool and Unit",
+                        "unknown type '{}'; supported types are Int, Bool, Unit and local RecordInt",
                         name.text
                     ),
                     name.span,
@@ -325,6 +336,52 @@ impl Checker {
             ExprKind::Name(name) => self
                 .resolve(name, scope)
                 .map_or(Type::Unknown, |symbol| self.symbols[symbol].ty.clone()),
+            ExprKind::Call { callee, arguments } => {
+                let types: Vec<Type> = arguments
+                    .iter()
+                    .map(|argument| self.expression(argument, scope))
+                    .collect();
+                if scope.contains_key(&callee.text) {
+                    self.resolve(callee, scope);
+                    self.error(
+                        "T012",
+                        "bindings are not callable; this name shadows a builtin",
+                        callee.span,
+                    );
+                    return Type::Unknown;
+                }
+                let (expected, result) = match callee.text.as_str() {
+                    "record_int" => (Some(Type::Int), Type::RecordInt),
+                    "read_int" => (Some(Type::RecordInt), Type::Int),
+                    "collect" => (None, Type::Unit),
+                    _ => {
+                        self.error(
+                            "T012",
+                            format!("unsupported builtin '{}'", callee.text),
+                            callee.span,
+                        );
+                        return Type::Unknown;
+                    }
+                };
+                let count = usize::from(expected.is_some());
+                if arguments.len() != count {
+                    self.error(
+                        "T013",
+                        format!(
+                            "{} expects {count} argument(s), found {}",
+                            callee.text,
+                            arguments.len()
+                        ),
+                        expression.span,
+                    );
+                }
+                if let (Some(expected), Some(actual), Some(argument)) =
+                    (expected, types.first(), arguments.first())
+                {
+                    self.require(actual, &expected, argument.span);
+                }
+                result
+            }
             ExprKind::Negate(value) => {
                 let actual = self.expression(value, scope);
                 self.require(&actual, &Type::Int, value.span);

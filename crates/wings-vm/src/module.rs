@@ -121,7 +121,11 @@ impl ScalarModule {
         account: &crate::ResourceAccount,
         capacity: usize,
     ) -> Result<ScalarProcess, String> {
-        let heap = crate::aot_heap::AotHeap::new(account, capacity)?;
+        if !pool.is_for_process(account) {
+            return Err("AOT heap requires a stack pool bound to the same process account".into());
+        }
+        let mut heap = crate::aot_heap::AotHeap::new(account, capacity)?;
+        heap.pool = Some(pool.clone());
         self.instantiate_owned(pool, Some(heap))
     }
 }

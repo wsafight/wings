@@ -119,8 +119,11 @@ impl Server {
                         for keyword in ["process", "state", "on", "let", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
-                        for ty in ["Int", "Bool", "Unit"] {
+                        for ty in ["Int", "Bool", "Unit", "RecordInt"] {
                             labels.insert(ty.to_owned(), json!({ "label": ty, "kind": 7 }));
+                        }
+                        for (name, detail) in [("record_int", "(Int) -> RecordInt"), ("read_int", "(RecordInt) -> Int"), ("collect", "() -> Unit")] {
+                            labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
                         for symbol in document.analysis.visible_symbols(offset) {
                             let kind = match symbol.kind { SymbolKind::Process => 7, SymbolKind::Handler => 3, _ => 6 };

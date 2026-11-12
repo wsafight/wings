@@ -158,13 +158,25 @@ fn heap_initialization_rejections_release_every_reservation() {
         assert_eq!(vm.used(), baseline);
     }
     let small = tenant.process(limits(1)).unwrap();
-    assert!(module().instantiate_with_heap(&bound, &small, 1).is_err());
+    let small_bound = pool.for_process(&small).unwrap();
+    assert!(
+        module()
+            .instantiate_with_heap(&small_bound, &small, 1)
+            .is_err()
+    );
+    drop(small_bound);
     assert_eq!(vm.used(), baseline);
     let probe = module().instantiate_with_heap(&bound, &account, 1).unwrap();
     let full_heap_bytes = account.used().bytes;
     drop(probe);
     let small = tenant.process(limits(full_heap_bytes - 1)).unwrap();
-    assert!(module().instantiate_with_heap(&bound, &small, 1).is_err());
+    let small_bound = pool.for_process(&small).unwrap();
+    assert!(
+        module()
+            .instantiate_with_heap(&small_bound, &small, 1)
+            .is_err()
+    );
+    drop(small_bound);
     assert_eq!(vm.used(), baseline);
     let stack = bound.acquire().unwrap();
     let active = vm.used();
@@ -183,5 +195,50 @@ fn heap_initialization_rejections_release_every_reservation() {
     drop(process);
     assert_eq!(vm.used(), baseline);
     drop((bound, pool));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn heap_calls_keep_their_accounted_pool_and_reject_foreign_pools_before_execution() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = module();
+    let baseline = vm.used();
+    let mut process = module.instantiate_with_heap(&bound, &account, 1).unwrap();
+    let held = vm.used();
+    let stack = bound.acquire().unwrap();
+    let active = vm.used();
+    assert!(process.invoke("Bump", &[7]).is_err());
+    assert_eq!(vm.used(), active);
+    assert!(!process.failed);
+    drop(stack);
+    assert_eq!(vm.used(), held);
+    let other = tenant.process(limits(1 << 20)).unwrap();
+    let foreign = pool.for_process(&other).unwrap();
+    let unaccounted = StackPool::new(1, 0).unwrap();
+    for invalid in [&foreign, &unaccounted] {
+        assert!(
+            process
+                .start_in_pool(
+                    "Get",
+                    &[],
+                    64,
+                    &CancellationToken::default(),
+                    &PreemptionToken::default(),
+                    invalid
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), held);
+        assert!(!process.failed);
+        assert!(module.instantiate_with_heap(invalid, &account, 1).is_err());
+        assert_eq!(vm.used(), held);
+    }
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    assert_eq!(vm.used(), held);
+    drop(process);
+    assert_eq!(vm.used(), baseline);
+    drop((foreign, unaccounted, bound, pool));
     assert_eq!(vm.used(), Resources::default());
 }

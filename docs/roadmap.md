@@ -25,7 +25,7 @@
 
 当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。完整 safepoint、精确根、跨线程切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；当前按 [ADR-0025](adr/0025-aot-record-roots.md) 升至 ABI v5，将内部 IR 的临时记录接入 compiler 精确根及进程计费 GC。尚无语言堆语法、持久状态/消息根或业务函数调用，不等于完整 safepoint/GC 或 M0 验证，不因此开放控制流。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 升至 ABI v5，接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放局部 RecordInt 受限内建。尚无持久状态/消息根或业务函数调用，不等于完整 safepoint/GC 或 M0 验证，不因此开放控制流。
 
 资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 
@@ -42,7 +42,7 @@
 
 工具链与上述阶段同步推进：M0 确定 workspace 边界和可查询的容错前端；M1 提供 `wings-vm`、`wings-compile` 与首版 `wings-lsp`，支持文档同步、诊断、跳转、悬停和基础补全；M2 起完善增量分析与取消，再扩展引用查找、重命名和语义高亮。详细拆分见 [Crate 设计](crates.md)，已采纳的选择见 [ADR](adr/README.md)。
 
-下一步是 M0 最小原型与 BEAM 基线测试。性能和内存目标未验证前，不扩展语言语法、平台数量或热更新范围。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
+下一步继续 M0 执行/根边界与 BEAM 基线测试；语言扩展只接入完成契约和验证的必要切片，不同时铺开可选语法、平台或热更新。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
 
 OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd，须在本分支 CI 各自验证。它未接入 worker 队列、计时器和真实 I/O，不替代 M0 的根链、栈限额及 BEAM 负载冻结门槛。
 
@@ -54,11 +54,11 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 [ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。尚无语言级监督、link/monitor、GC/预算等完整诊断，不跳过 M0/M1 或性能门禁。
 
-[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加真实 AOT 临时引用的根发布、活跃度、失败解链和堆所有权闭环。容量构造前三级准入，但语言语法、消息/状态根尚未集成，不视为完整 GC、业务语言堆或 M0 精确根验收完成。
+[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费。容量构造前三级准入，但消息/状态根和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
 BEAM 对照先固化 [v1 最小协议与 oracle](beam-workloads.md)：已在本机检查有界 Counter 的 i64、FIFO 和失败退出，代表负载组合与采样要求单独列明。未来多 actor、超时、过载及 Wings 等价端尚待实现，不因协议落盘而称 BEAM 基线全部完成。
 
-[ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。该切片仍依赖固定可信慢路径余量，不包含业务调用、递归或 compiler 根链，表中第 2 项与 M0 尚未完成。
+[ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。栈边界切片仍依赖固定可信慢路径余量，不包含业务调用或递归；临时 compiler 根链另见 ADR-0025。表中第 2 项与 M0 尚未完成。
 
 MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有实现并通过本分支双平台 debug/release CI；第 4 项已从独立原语推进至内部 IR/AOT 临时记录，仍未覆盖完整业务值与全部分配。
 

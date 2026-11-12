@@ -1,0 +1,27 @@
+process Records {
+  state count: Int = 0
+
+  on Work(value: Int) -> Int {
+    let first: RecordInt = record_int(value)
+    record_int(value + 1)
+    record_int(value + 2)
+    collect()
+    count = read_int(first)
+    count
+  }
+
+  on Get -> Int { count }
+
+  on Fail -> Int {
+    let candidate = record_int(99)
+    count = read_int(candidate)
+    1 / 0
+  }
+
+  on Full -> Int {
+    let first = record_int(1)
+    let second = record_int(2)
+    let third = record_int(3)
+    read_int(first) + read_int(second) + read_int(third)
+  }
+}

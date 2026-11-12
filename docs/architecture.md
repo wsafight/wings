@@ -43,7 +43,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
-未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的独立 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 将单 Int 字段临时记录接入内部 IR/AOT 与 compiler 精确活跃根；尚无业务语言堆、持久状态/消息/回复根，下面的完整受管契约仍待实现。
+未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的独立 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确活跃根，[ADR-0026](adr/0026-language-temporary-records.md) 开放语言局部单 Int 字段记录；尚无持久状态/消息/回复根与通用业务值，下面的完整受管契约仍待实现。
 
 首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 
@@ -82,7 +82,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 当前 ABI v5 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，增加 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。
 
-宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。复用当前 ABI，worker 默认实例仍无堆，标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
+宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。`spawn` 默认无堆，`spawn_with_heap` 在初始化前建立进程计费堆；`instantiate_with_heap` 要求传入同 process 绑定池，实例的同步调用复用该池，显式传入其他账户或未计费池则执行前拒绝。CLI 可用 `--heap-records`，不改变标量 JSON 消息协议，不将它当作语言内消息或完整受管执行。契约见 [ADR-0020](adr/0020-single-worker-mailbox.md)、[ADR-0021](adr/0021-bounded-requests.md) 与 [ADR-0026](adr/0026-language-temporary-records.md)。
 
 可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不额外改变当前 ABI，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 

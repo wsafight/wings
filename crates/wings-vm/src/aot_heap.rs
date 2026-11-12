@@ -7,10 +7,11 @@ use wings_abi::{
 
 use crate::{
     FieldType, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation, ResourceAccount,
-    Resources, ShadowRoots,
+    Resources, ShadowRoots, StackPool,
 };
 
 pub(crate) struct AotHeap {
+    pub(crate) pool: Option<StackPool>,
     heap: RecordHeap,
     roots: ShadowRoots,
     layout: RecordLayout,
@@ -34,6 +35,7 @@ impl AotHeap {
         }
         unsafe {
             pointer.write(Self {
+                pool: None,
                 heap,
                 roots,
                 layout,

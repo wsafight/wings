@@ -363,6 +363,37 @@ fn status_mapping_and_unknown_status_fail_closed() {
 }
 
 #[test]
+fn worker_heap_spawn_admission_and_cleanup_are_atomic() {
+    let [vm, tenant, _] = accounts();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let module = module();
+    let baseline = vm.used();
+    for capacity in [0, 1025, usize::MAX] {
+        assert!(
+            worker
+                .spawn_with_heap(&module, limits(1 << 20), 1, capacity)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(worker.process_count(), 0);
+    }
+    assert!(worker.spawn_with_heap(&module, limits(1), 1, 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let pid = worker
+        .spawn_with_heap(&module, limits(1 << 20), 1, 1)
+        .unwrap();
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[3], 64)
+        .unwrap();
+    assert_eq!(worker.tick(64).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 3);
+    worker.stop(pid).unwrap();
+    assert_eq!(vm.used(), baseline);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn invalid_initializer_state_and_managed_initializer_failure_are_rejected() {
     let mut module = module();
     let data = Arc::get_mut(&mut module.inner).unwrap();

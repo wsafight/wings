@@ -67,6 +67,18 @@ impl PooledStack {
 }
 
 impl StackPool {
+    pub(crate) fn is_for_process(&self, account: &ResourceAccount) -> bool {
+        self.process
+            .as_ref()
+            .is_some_and(|owner| owner.same(account))
+    }
+
+    pub(crate) fn shares_process(&self, other: &Self) -> bool {
+        self.process
+            .as_ref()
+            .zip(other.process.as_ref())
+            .is_some_and(|(left, right)| left.same(right))
+    }
     pub fn new(capacity: usize, max_cached: usize) -> Result<Self, String> {
         Self::create(capacity, max_cached, None)
     }

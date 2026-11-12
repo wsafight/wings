@@ -195,6 +195,26 @@ impl ScalarWorker {
         limits: Resources,
         mailbox_capacity: usize,
     ) -> Result<Pid, String> {
+        self.spawn_configured(module, limits, mailbox_capacity, None)
+    }
+
+    pub fn spawn_with_heap(
+        &mut self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox_capacity: usize,
+        heap_records: usize,
+    ) -> Result<Pid, String> {
+        self.spawn_configured(module, limits, mailbox_capacity, Some(heap_records))
+    }
+
+    fn spawn_configured(
+        &mut self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox_capacity: usize,
+        heap_records: Option<usize>,
+    ) -> Result<Pid, String> {
         if !(1..=MAX_MAILBOX).contains(&mailbox_capacity) {
             return Err("mailbox requires 1..=64 messages".into());
         }
@@ -219,7 +239,11 @@ impl ScalarWorker {
             count: 0,
         };
         let pool = self.pool.for_process(&account)?;
-        let task = ScalarTask::new(module.instantiate_in_pool(&pool)?);
+        let process = match heap_records {
+            Some(capacity) => module.instantiate_with_heap(&pool, &account, capacity)?,
+            None => module.instantiate_in_pool(&pool)?,
+        };
+        let task = ScalarTask::new(process);
         self.slots[index].actor = Some(Actor {
             task,
             active: None,

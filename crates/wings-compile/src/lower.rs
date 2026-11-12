@@ -112,6 +112,18 @@ impl Lowerer {
                 .get(&name.text)
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
+            ExprKind::Call { callee, arguments } => match callee.text.as_str() {
+                "record_int" => {
+                    let value = self.expression(&arguments[0])?;
+                    self.push(ValueType::Ref, Operation::RecordInt(value))
+                }
+                "read_int" => {
+                    let value = self.expression(&arguments[0])?;
+                    self.push(ValueType::Int, Operation::ReadInt(value))
+                }
+                "collect" => self.push(ValueType::Unit, Operation::Collect),
+                _ => Err("unsupported builtin call".into()),
+            },
             ExprKind::Negate(value) => {
                 let register = self.expression(value)?;
                 self.push(ValueType::Int, Operation::Negate(register))
@@ -148,6 +160,17 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_temporary_records_in_source_evaluation_order() {
+        let program = lower("process P { state n: Int = 0; on Get -> Int { let record: RecordInt = record_int(n + 1); collect(); read_int(record) } }").unwrap();
+        let instructions = &program.handlers[0].function.instructions;
+        assert!(matches!(instructions[3].operation, Operation::RecordInt(2)));
+        assert_eq!(instructions[3].ty, ValueType::Ref);
+        assert!(matches!(instructions[4].operation, Operation::Collect));
+        assert!(matches!(instructions[5].operation, Operation::ReadInt(3)));
+        assert_eq!(program.handlers[0].function.root_plan().capacity, 1);
+    }
 
     fn instruction(program: &Program, register: Register) -> &Instruction {
         &program.handlers[0].function.instructions[register]

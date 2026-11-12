@@ -4,6 +4,7 @@
 - 状态：已采纳（M0 内部 IR 集成切片）
 - 补充：[ADR-0004](0004-safepoints-and-gc.md)、[ADR-0018](0018-bounded-record-heap.md)
 - 替代：[ADR-0024](0024-scalar-stack-boundary.md) 的 v4 context 布局；保留栈准入与正常返回契约
+- 后续：[ADR-0026](0026-language-temporary-records.md) 将临时记录接入源码与显式 worker/CLI 堆，修正同步堆实例的同账户栈计费；ABI v5 不变。
 
 ## 背景
 

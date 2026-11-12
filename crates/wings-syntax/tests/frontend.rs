@@ -37,6 +37,48 @@ fn shape(expression: &Expr) -> String {
 }
 
 #[test]
+fn parses_nested_calls_and_multiline_arguments_with_exact_spans() {
+    let parsed = expression("read_int(record_int(1 + 2))");
+    let ExprKind::Call { callee, arguments } = parsed.kind else {
+        panic!("call expected")
+    };
+    assert_eq!(callee.text, "read_int");
+    assert_eq!(arguments.len(), 1);
+    assert!(matches!(arguments[0].kind, ExprKind::Call { .. }));
+    let parsed = expression("record_int(\n 1,\n 2,\n)");
+    let ExprKind::Call { arguments, .. } = parsed.kind else {
+        panic!("call expected")
+    };
+    assert_eq!(arguments.len(), 2);
+    assert!(
+        matches!(expression("collect()").kind, ExprKind::Call { arguments, .. } if arguments.is_empty())
+    );
+}
+
+#[test]
+fn malformed_calls_and_excessive_nesting_are_bounded() {
+    for body in [
+        "record_int(",
+        "read_int(,)",
+        "collect(1 2)",
+        "record_int(1;)",
+    ] {
+        let text = format!("process P {{ state n: Int = 0; on Get -> Int {{ {body} }} }}");
+        let parsed = parse(&text);
+        assert!(!parsed.diagnostics.is_empty(), "{body}");
+        assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
+    }
+    let text = format!("{}1{}", "record_int(".repeat(300), ")".repeat(300));
+    let parsed = parse(&format!("process P {{ state n: Int = {text} }}"));
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("256-node"))
+    );
+}
+
+#[test]
 fn lexer_classifies_keywords_punctuation_and_trivia() {
     let text = "process state on let true false p 42 : , = -> ; { } ( ) + - * / # note\n";
     let (tokens, diagnostics) = lex(text);

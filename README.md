@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布宿主库另有单 worker mailbox、异步请求和强制检查点活栈恢复；内部 IR 的临时记录已接入 compiler 精确根与 GC，尚无语言堆语法、引用状态或消息，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。可信本机 AOT 原型可编译运行 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布源码另有单 worker mailbox、异步请求和强制检查点活栈恢复；语言临时 RecordInt 已接入 compiler 精确根、计费堆及 GC，尚无引用状态/消息或循环，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
@@ -66,7 +66,12 @@ worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出
 
 `ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
 
-独立 `RecordHeap`/`ShadowRoots` 见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。内部 IR 另有 `RecordInt`/`ReadInt`/`Collect`，由 compiler 按最后使用位置发布精确根；`instantiate_with_heap` 为宿主实例显式建立固定容量、进程计费堆。状态、参数和回复仍是标量，CLI 不提供堆配置，业务语言不增加记录语法，worker 默认不带堆。范围和回归见 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
+语言局部 `RecordInt` 与 `record_int(value)`、`read_int(record)`、`collect()` 可编译执行，compiler 只发布仍活跃的引用。状态、参数和回复仍是标量，记录不可变、不支持字段赋值。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置，不带堆时调用记录内建明确失败。堆实例的同步及显式执行均保持同 process 计费栈池，见 [ADR-0026](docs/adr/0026-language-temporary-records.md)。底层独立堆和 compiler 根分别见 [ADR-0018](docs/adr/0018-bounded-record-heap.md) 与 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
+
+```sh
+cargo run -p wings-compile -- build examples/records.wings -o target/records-aot
+printf '%s\n' '{"message":"Work","args":[11]}' | cargo run -p wings-vm -- run --trusted target/records-aot --heap-records 2
+```
 
 MVP 的待办和验收顺序见[路线图](docs/roadmap.md#mvp-范围与开发顺序)：先完成活栈、精确根和资源边界，再推进消息、调度、恢复与双平台 BEAM 对照，不以示例运行成功代替可试用验收。
 

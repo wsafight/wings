@@ -156,7 +156,7 @@ impl ResourceAccount {
         }
     }
 
-    fn same(&self, other: &Self) -> bool {
+    pub(crate) fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.node, &other.node)
     }
 }

@@ -36,6 +36,57 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
+fn record_builtins_infer_locals_and_resolve_aliases() {
+    let text = handler(
+        "let saved: RecordInt = record_int(value); let alias = saved; collect(); read_int(alias)",
+    );
+    let analysis = checked(&text);
+    let symbol = analysis
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "alias")
+        .unwrap();
+    assert_eq!(symbol.ty, Type::RecordInt);
+    assert_eq!(symbol.ty.to_string(), "RecordInt");
+    let reference = text.rfind("alias").unwrap();
+    assert_eq!(analysis.symbol_at(reference).unwrap().span, symbol.span);
+}
+
+#[test]
+fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
+    for (body, code, fragment) in [
+        ("record_int(true); 0", "T005", "expected Int"),
+        ("read_int(1)", "T005", "expected RecordInt"),
+        ("collect(1); 0", "T013", "expects 0"),
+        ("record_int(); 0", "T013", "expects 1"),
+        ("record_int(1, 2); 0", "T013", "found 2"),
+        ("request(1); 0", "T012", "unsupported builtin"),
+        ("let collect = 1; collect(); 0", "T012", "shadows a builtin"),
+        (
+            "let saved = record_int(1); saved = record_int(2); 0",
+            "T008",
+            "only state",
+        ),
+        ("count = record_int(1); 0", "T005", "found RecordInt"),
+        ("record_int(1)", "T005", "found RecordInt"),
+    ] {
+        assert_error(&handler(body), code, fragment);
+    }
+}
+
+#[test]
+fn rejects_record_types_at_every_external_boundary() {
+    for source in [
+        "process P { state n: RecordInt = record_int(0) }",
+        "process P { state n: Int = 0; on Get(value: RecordInt) {} }",
+        "process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }",
+    ] {
+        assert_error(source, "T011", "only supported in local");
+    }
+    checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
+}
+
+#[test]
 fn counter_checks_and_preserves_typed_message_protocol() {
     let text = "process Counter {\n state count: Int = 0\n on Inc(by: Int) -> Int { let next = count + by; count = next; next }\n on Reset { count = 0 }\n on Confirm -> Unit {}\n}";
     let analysis = checked(text);

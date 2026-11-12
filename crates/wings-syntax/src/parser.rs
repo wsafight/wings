@@ -326,7 +326,32 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Boolean(value)
             }
-            TokenKind::Identifier => ExprKind::Name(self.name()),
+            TokenKind::Identifier => {
+                let callee = self.name();
+                if self.at(TokenKind::LeftParen) && !self.line_break() {
+                    self.bump();
+                    let mut arguments = Vec::new();
+                    while !self.at(TokenKind::RightParen) && !self.boundary() {
+                        let previous = self.cursor;
+                        arguments.push(self.expression(0, true));
+                        if self.cursor == previous || self.expression_nodes > 256 {
+                            break;
+                        }
+                        if !self.at(TokenKind::Comma) {
+                            break;
+                        }
+                        self.bump();
+                    }
+                    span = Span::new(
+                        start,
+                        self.expect(TokenKind::RightParen, "expected ')' after call arguments")
+                            .end,
+                    );
+                    ExprKind::Call { callee, arguments }
+                } else {
+                    ExprKind::Name(callee)
+                }
+            }
             TokenKind::LeftParen => {
                 self.bump();
                 if self.at(TokenKind::RightParen) {

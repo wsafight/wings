@@ -74,6 +74,10 @@ pub enum ExprKind {
     Boolean(bool),
     Unit,
     Name(Name),
+    Call {
+        callee: Name,
+        arguments: Vec<Expr>,
+    },
     Negate(Box<Expr>),
     Binary {
         operator: BinaryOperator,

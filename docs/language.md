@@ -63,6 +63,24 @@ process Flag {
 
 ## 状态与失败
 
+### 局部不可变记录
+
+当前受限记录类型为 `RecordInt`，只能作为局部值。`record_int(Int)` 创建单 Int 字段记录，`read_int(RecordInt)` 读取该字段，`collect()` 返回 Unit 并显式触发本进程 GC。这些内建只能按固定名称调用，参数从左到右求值；不是通用函数或 native FFI。普通绑定可遮蔽内建名称，遮蔽后的名字不再可调用。记录不可变，不能对局部重新赋值或修改字段。
+
+```text
+process Records {
+  state count: Int = 0
+  on Work(value: Int) -> Int {
+    let saved: RecordInt = record_int(value)
+    collect()
+    count = read_int(saved)
+    count
+  }
+}
+```
+
+该子集可检查并 AOT 编译运行，CLI 需显式传 `--heap-records`；宿主/worker 分别用 `instantiate_with_heap`/`spawn_with_heap`。state、消息字段和回复的 `RecordInt` 类型仍静态拒绝。堆容量固定，分配不足先从 compiler 发布的全部活跃根回收一次，仍不足则受管失败且不提交状态/成功回复。原生栈不保守扫描，不因局部名字仍在作用域就保留已无后续用途的记录。嵌套内建和括号内换行受既有表达式限制约束；不允许任意用户函数调用。契约见 [ADR-0026](adr/0026-language-temporary-records.md)。
+
 业务值不可变，状态绑定可以替换。`count = next` 表示替换本次 handler 的候选状态，不代表对象字段可变，也不暴露共享可变引用。后续语句读取更新后的候选值。
 
 执行契约如下；标量 AOT 原型已实现候选状态与正常返回提交，完整 VM 的消息投递、退出和监督尚未实现：
@@ -107,13 +125,13 @@ let id = request(counter, Inc(by: 2))
 | Rust | 参数与回复签名、联合类型和穷尽匹配方向 | 业务层所有权、生命周期和借用标注 |
 | Go | 少量规则、明确控制流 | 每个进程手写接收循环和阻塞 `select` |
 
-后续普通代码按 `fn`、`let`、`if`、`match`、记录和联合类型推进；目前只实现了其中的 `let`。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
+后续普通代码按 `fn`、`if`、`match`、通用记录和联合类型推进；目前已实现 `let` 与受限记录内建，不支持任意函数调用。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
 
 ## 当前原型支持范围
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码额外插入取消、让出和预算检查，不增加业务语法。总预算耗尽、取消或入口剩余栈不足属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v5 不兼容已发布 `0.0.2` 及旧源码 v2–v4 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，剩余栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。[ADR-0025](adr/0025-aot-record-roots.md) 仅对内部 IR 开放临时记录与精确根，业务语言尚无记录构造、字段读取或显式 GC 语法，不能在 Wings 源码中直接使用这些 IR 操作。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v5 不兼容已发布 `0.0.2` 及旧源码 v2–v4 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与语言记录分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0026](adr/0026-language-temporary-records.md)。
 
 当前子集包含：
 
@@ -122,7 +140,7 @@ let id = request(counter, Inc(by: 2))
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
 
-尚未实现模块、函数、分支、循环、记录、联合类型、完整模式匹配、消息构造与发送、系统事件或其他副作用调用。标量原型只处理一个 process、无业务堆分配的直线入口；状态提交与回复可运行验证，但异步消息、资源账户和监督仍是待实现契约。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现模块、函数、分支、循环、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，执行直线入口，可显式配置临时记录堆；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 
