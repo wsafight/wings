@@ -11,6 +11,7 @@ pub enum Type {
     Unit,
     RecordInt,
     IntList,
+    Pid,
     Function {
         parameters: Vec<(String, Type)>,
         result: Box<Type>,
@@ -30,6 +31,7 @@ impl std::fmt::Display for Type {
             Self::Unit => formatter.write_str("Unit"),
             Self::RecordInt => formatter.write_str("RecordInt"),
             Self::IntList => formatter.write_str("IntList"),
+            Self::Pid => formatter.write_str("Pid"),
             Self::Function { parameters, result } => {
                 formatter.write_str("(")?;
                 for (index, (name, ty)) in parameters.iter().enumerate() {
@@ -168,6 +170,9 @@ pub fn analyze(text: &str) -> Analysis {
                     | "tail_ints"
                     | "is_empty_ints"
                     | "send_self"
+                    | "self_pid"
+                    | "spawn_self"
+                    | "send"
             ) || checker.functions.contains_key(&function.name.text)
             {
                 checker.error(
@@ -222,6 +227,9 @@ pub fn analyze(text: &str) -> Analysis {
         let mut state_scope = HashMap::new();
         for state in &process.states {
             let declared = checker.declared_type(&state.ty);
+            if declared == Type::Pid {
+                checker.error("T018", "Pid state is not supported", state.ty.span);
+            }
             let actual = checker.expression(&state.default, &HashMap::new());
             checker.require(&actual, &declared, state.default.span);
             checker.bind(
@@ -329,7 +337,7 @@ struct Checker {
 
 impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
-        if matches!(ty, Type::RecordInt | Type::IntList) {
+        if matches!(ty, Type::RecordInt | Type::IntList | Type::Pid) {
             self.error(
                 "T011",
                 format!("{ty} is not supported in message fields or replies"),
@@ -351,6 +359,7 @@ impl Checker {
             "Unit" => Type::Unit,
             "RecordInt" => Type::RecordInt,
             "IntList" => Type::IntList,
+            "Pid" => Type::Pid,
             "" => Type::Unknown,
             _ => {
                 self.error(
@@ -473,18 +482,52 @@ impl Checker {
                 .resolve(name, scope)
                 .map_or(Type::Unknown, |symbol| self.symbols[symbol].ty.clone()),
             ExprKind::Call { callee, arguments } => {
-                if callee.text == "send_self" {
+                if matches!(callee.text.as_str(), "self_pid" | "spawn_self") {
                     if !self.effects_allowed {
                         self.error(
                             "T018",
-                            "send_self is only supported in handlers",
+                            "process effects are only supported in handlers",
                             expression.span,
                         );
                     }
                     if scope.contains_key(&callee.text) {
                         self.error("T012", "bindings are not callable", callee.span);
                     }
-                    let Some((target, values)) = arguments.split_first() else {
+                    for argument in arguments {
+                        self.expression(argument, scope);
+                    }
+                    if !arguments.is_empty() {
+                        self.error(
+                            "T013",
+                            "process identity or creation expects no arguments",
+                            expression.span,
+                        );
+                    }
+                    return Type::Pid;
+                }
+                if matches!(callee.text.as_str(), "send_self" | "send") {
+                    if !self.effects_allowed {
+                        self.error(
+                            "T018",
+                            "send effects are only supported in handlers",
+                            expression.span,
+                        );
+                    }
+                    if scope.contains_key(&callee.text) {
+                        self.error("T012", "bindings are not callable", callee.span);
+                    }
+                    let message_arguments = if callee.text == "send" {
+                        if let Some((pid, rest)) = arguments.split_first() {
+                            let actual = self.expression(pid, scope);
+                            self.require(&actual, &Type::Pid, pid.span);
+                            rest
+                        } else {
+                            &[]
+                        }
+                    } else {
+                        arguments.as_slice()
+                    };
+                    let Some((target, values)) = message_arguments.split_first() else {
                         self.error(
                             "T013",
                             "send_self requires a static message name",
@@ -639,12 +682,12 @@ impl Checker {
                 let right_type = self.expression(right, scope);
                 if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                     self.require(&right_type, &left_type, right.span);
-                    if matches!(left_type, Type::RecordInt | Type::IntList)
-                        || matches!(right_type, Type::RecordInt | Type::IntList)
+                    if matches!(left_type, Type::RecordInt | Type::IntList | Type::Pid)
+                        || matches!(right_type, Type::RecordInt | Type::IntList | Type::Pid)
                     {
                         self.error(
                             "T015",
-                            "record references cannot be compared",
+                            "record references and process capabilities cannot be compared",
                             expression.span,
                         );
                     }

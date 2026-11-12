@@ -1,0 +1,13 @@
+process LocalProcessRoots {
+  state count: RecordInt = record_int(0)
+  on Start(value: Int, fail: Bool) -> Int {
+    let old = count;
+    count = record_int(9);
+    let child = spawn_self();
+    send(child, Add, value);
+    collect();
+    (read_int(old) + read_int(count)) / if fail { 0 } else { 1 }
+  }
+  on Add(value: Int) { count = record_int(read_int(count) + value) }
+  on Read -> Int { read_int(count) }
+}

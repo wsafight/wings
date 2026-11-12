@@ -74,6 +74,42 @@ fn self_send_checks_forward_one_way_protocol_and_handler_scope() {
 }
 
 #[test]
+fn process_capabilities_are_local_typed_values_and_effects_are_handler_only() {
+    checked(include_str!("../../../examples/local-processes.wings"));
+    checked(include_str!("../../../examples/local-process-roots.wings"));
+    for (body, code, fragment) in [
+        ("send(1, Add, 3)", "T005", "expected Pid"),
+        ("send(self_pid(), Read)", "T018", "one-way"),
+        ("send(self_pid(), Add, false)", "T005", "expected Int"),
+        ("self_pid(1)", "T013", "no arguments"),
+        ("spawn_self(1)", "T013", "no arguments"),
+        (
+            "let me = self_pid(); let same = me == me",
+            "T015",
+            "cannot be compared",
+        ),
+        ("let spawn_self = 1; spawn_self()", "T012", "not callable"),
+    ] {
+        let text = format!(
+            "process P {{ state n: Int = 0; on Test {{ {body}; () }} on Add(value: Int) {{ n = value }} on Read -> Int {{ n }} }}"
+        );
+        assert_error(&text, code, fragment);
+    }
+    for text in [
+        "process P { state me: Pid = self_pid(); on Test {} }",
+        "process P { fn create() -> Pid { spawn_self() } state n: Int = 0; on Test {} }",
+    ] {
+        assert_error(text, "T018", "supported");
+    }
+    for text in [
+        "process P { state n: Int = 0; on Test(value: Pid) {} }",
+        "process P { state n: Int = 0; on Test -> Pid { self_pid() } }",
+    ] {
+        assert_error(text, "T011", "not supported in message");
+    }
+}
+
+#[test]
 fn while_requires_bool_condition_unit_body_and_local_scope() {
     checked(
         "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",

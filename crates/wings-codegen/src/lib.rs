@@ -21,6 +21,8 @@ use wings_ir::{Comparison, Function, Operation, Operator, Program};
 
 pub const MAX_SCALAR_FRAME_BYTES: u32 = 64 * 1024;
 const ENTRY_STACK_MARGIN: u32 = 4 * 1024;
+const EFFECT_RESULT_OFFSET: i32 = std::mem::size_of::<wings_abi::EffectRequest>() as i32;
+const EFFECT_ARGUMENT_OFFSET: i32 = EFFECT_RESULT_OFFSET + 8;
 
 pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
     build_with_frame_limit(program, directory, MAX_SCALAR_FRAME_BYTES)
@@ -215,7 +217,6 @@ fn compile_body(
     let mut effect_signature = module.make_signature();
     effect_signature.params = vec![
         AbiParam::new(pointer_type),
-        AbiParam::new(types::I32),
         AbiParam::new(pointer_type),
         AbiParam::new(pointer_type),
     ];
@@ -299,11 +300,19 @@ fn compile_body(
     let effect_arguments = function
         .instructions
         .iter()
-        .any(|instruction| matches!(instruction.operation, Operation::SendSelf { .. }))
+        .any(|instruction| {
+            matches!(
+                instruction.operation,
+                Operation::SendSelf { .. }
+                    | Operation::Send { .. }
+                    | Operation::SelfPid
+                    | Operation::SpawnSelf
+            )
+        })
         .then(|| {
             let slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
-                64 * 8,
+                64 * 8 + EFFECT_ARGUMENT_OFFSET as u32,
                 3,
             ));
             builder.ins().stack_addr(pointer_type, slot, 0)
@@ -351,11 +360,29 @@ fn compile_body(
             exit,
         );
         let value = match instruction.operation {
-            Operation::SendSelf {
-                handler,
-                ref arguments,
-            } => {
-                let buffer = effect_arguments.expect("effect argument storage");
+            Operation::SendSelf { .. }
+            | Operation::Send { .. }
+            | Operation::SelfPid
+            | Operation::SpawnSelf => {
+                let (operation, handler, arguments): (_, _, &[usize]) = match &instruction.operation
+                {
+                    Operation::SendSelf { handler, arguments } => {
+                        (wings_abi::EFFECT_SEND_SELF, *handler, arguments)
+                    }
+                    Operation::Send {
+                        handler, arguments, ..
+                    } => (wings_abi::EFFECT_SEND, *handler, arguments),
+                    Operation::SelfPid => (wings_abi::EFFECT_SELF_PID, 0, &[]),
+                    Operation::SpawnSelf => (wings_abi::EFFECT_SPAWN_SELF, 0, &[]),
+                    _ => unreachable!(),
+                };
+                let request = effect_arguments.expect("effect argument storage");
+                let buffer = builder
+                    .ins()
+                    .iadd_imm(request, i64::from(EFFECT_ARGUMENT_OFFSET));
+                let output = builder
+                    .ins()
+                    .iadd_imm(request, i64::from(EFFECT_RESULT_OFFSET));
                 for (index, register) in arguments.iter().enumerate() {
                     builder.ins().store(
                         MemFlags::new(),
@@ -373,18 +400,53 @@ fn compile_body(
                 let missing = builder.ins().icmp_imm(IntCC::Equal, callback, 0);
                 fail_if_to(&mut builder, missing, STATUS_INVALID_CONTROL, exit);
                 let target = builder.ins().iconst(types::I32, handler as i64);
+                let operation = builder.ins().iconst(types::I32, i64::from(operation));
+                let pid = match &instruction.operation {
+                    Operation::Send { target, .. } => registers[*target],
+                    _ => builder.ins().iconst(types::I64, 0),
+                };
                 let count = builder.ins().iconst(pointer_type, arguments.len() as i64);
+                builder.ins().store(
+                    MemFlags::new(),
+                    operation,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, operation) as i32,
+                );
+                builder.ins().store(
+                    MemFlags::new(),
+                    target,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, handler) as i32,
+                );
+                builder.ins().store(
+                    MemFlags::new(),
+                    pid,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, target) as i32,
+                );
+                builder.ins().store(
+                    MemFlags::new(),
+                    buffer,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, arguments) as i32,
+                );
+                builder.ins().store(
+                    MemFlags::new(),
+                    count,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, count) as i32,
+                );
                 let call = builder.ins().call_indirect(
                     effect_signature,
                     callback,
-                    &[parameters[3], target, buffer, count],
+                    &[parameters[3], request, output],
                 );
                 let status = builder.inst_results(call)[0];
                 let failed = builder.ins().icmp_imm(IntCC::NotEqual, status, 0);
                 let continued = builder.create_block();
                 builder.ins().brif(failed, exit, &[status], continued, &[]);
                 builder.switch_to_block(continued);
-                builder.ins().iconst(types::I64, 0)
+                builder.ins().load(types::I64, MemFlags::new(), output, 0)
             }
             Operation::Loop(_) => loop_header.expect("validated loop header"),
             Operation::While(condition) => {

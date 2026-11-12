@@ -74,8 +74,19 @@ fn optional_slow_path_has_the_nullable_function_pointer_layout() {
 }
 
 #[test]
+fn process_effect_request_is_a_fixed_native_c_layout() {
+    use wings_abi::EffectRequest;
+    assert_eq!(offset_of!(EffectRequest, operation), 0);
+    assert_eq!(offset_of!(EffectRequest, handler), 4);
+    assert_eq!(offset_of!(EffectRequest, target), 8);
+    assert_eq!(offset_of!(EffectRequest, arguments), 16);
+    assert_eq!(offset_of!(EffectRequest, count), 24);
+    assert_eq!(size_of::<EffectRequest>(), 32);
+}
+
+#[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 8);
+    assert_eq!(SCALAR_ABI_VERSION, 9);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
@@ -87,6 +98,7 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(STATUS_INVALID_ROOT, 8);
     assert_eq!(wings_abi::STATUS_EMPTY_LIST, 9);
     assert_eq!(wings_abi::STATUS_SEND_REJECTED, 10);
+    assert_eq!(wings_abi::STATUS_SPAWN_REJECTED, 11);
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
 }
 
@@ -95,6 +107,7 @@ fn references_have_no_scalar_encoding_and_shadow_frames_are_native_c_layout() {
     for value in [0, 1, -1, i64::MIN, i64::MAX] {
         assert!(!ValueType::Ref.accepts(value));
         assert!(!ValueType::ListRef.accepts(value));
+        assert!(!ValueType::Pid.accepts(value));
     }
     assert_eq!(offset_of!(ShadowFrame, previous), 0);
     assert_eq!(offset_of!(ShadowFrame, slots), size_of::<usize>());

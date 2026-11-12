@@ -44,6 +44,13 @@ pub enum Operation {
         handler: usize,
         arguments: Vec<Register>,
     },
+    SelfPid,
+    SpawnSelf,
+    Send {
+        target: Register,
+        handler: usize,
+        arguments: Vec<Register>,
+    },
     If(Register),
     Else(Register),
     EndIf(Register),
@@ -88,6 +95,17 @@ enum Region {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
+        if self.state == ValueType::Pid
+            || self.handlers.iter().any(|handler| {
+                handler.reply == Some(ValueType::Pid)
+                    || handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| *ty == ValueType::Pid)
+            })
+        {
+            return Err("Pid is only supported as a local value".into());
+        }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_reference)
                 || handler.parameters.iter().any(|(_, ty)| ty.is_reference())
@@ -99,12 +117,15 @@ impl Program {
         }
         self.initializer
             .validate(self.state, &[], ValueType::Unit, true)?;
-        if self
-            .initializer
-            .instructions
-            .iter()
-            .any(|instruction| matches!(instruction.operation, Operation::SendSelf { .. }))
-        {
+        if self.initializer.instructions.iter().any(|instruction| {
+            matches!(
+                instruction.operation,
+                Operation::SendSelf { .. }
+                    | Operation::Send { .. }
+                    | Operation::SelfPid
+                    | Operation::SpawnSelf
+            )
+        }) {
             return Err("self-send is not supported in initializers".into());
         }
         for handler in &self.handlers {
@@ -121,6 +142,11 @@ impl Program {
                 if let Operation::SendSelf {
                     handler: target,
                     arguments,
+                }
+                | Operation::Send {
+                    handler: target,
+                    arguments,
+                    ..
                 } = &instruction.operation
                 {
                     let target = self
@@ -223,7 +249,24 @@ impl Function {
                     instruction.ty == ValueType::Unit
                         && arguments.len() <= MAX_PARAMETERS
                         && arguments.iter().all(|register| {
-                            types.get(*register).is_some_and(|ty| !ty.is_reference())
+                            types.get(*register).is_some_and(|ty| {
+                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                            })
+                        })
+                }
+                Operation::SelfPid | Operation::SpawnSelf => instruction.ty == ValueType::Pid,
+                Operation::Send {
+                    target,
+                    ref arguments,
+                    ..
+                } => {
+                    instruction.ty == ValueType::Unit
+                        && types.get(target) == Some(&ValueType::Pid)
+                        && arguments.len() <= MAX_PARAMETERS
+                        && arguments.iter().all(|register| {
+                            types.get(*register).is_some_and(|ty| {
+                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                            })
                         })
                 }
                 Operation::If(condition) => {
@@ -406,6 +449,11 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::Compare(_, left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
+        Operation::Send {
+            target,
+            ref arguments,
+            ..
+        } => ([Some(target), None], arguments),
         _ => ([None, None], &[]),
     };
     fixed.into_iter().flatten().chain(extra.iter().copied())

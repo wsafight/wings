@@ -225,7 +225,10 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
         wings_abi::STATUS_EMPTY_LIST => Err("managed empty IntList access".into()),
         wings_abi::STATUS_SEND_REJECTED => {
-            Err("managed self-send rejected by mailbox or quota".into())
+            Err("managed send rejected by identity, mailbox or quota".into())
+        }
+        wings_abi::STATUS_SPAWN_REJECTED => {
+            Err("managed spawn rejected by capacity, initialization or quota".into())
         }
         _ => Err(format!("unknown scalar ABI status {status}")),
     }

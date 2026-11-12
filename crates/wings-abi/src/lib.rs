@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 8;
+pub const SCALAR_ABI_VERSION: u32 = 9;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -15,6 +15,11 @@ pub const STATUS_HEAP_EXHAUSTED: u32 = 7;
 pub const STATUS_INVALID_ROOT: u32 = 8;
 pub const STATUS_EMPTY_LIST: u32 = 9;
 pub const STATUS_SEND_REJECTED: u32 = 10;
+pub const STATUS_SPAWN_REJECTED: u32 = 11;
+pub const EFFECT_SEND_SELF: u32 = 0;
+pub const EFFECT_SELF_PID: u32 = 1;
+pub const EFFECT_SPAWN_SELF: u32 = 2;
+pub const EFFECT_SEND: u32 = 3;
 pub const HEAP_RECORD_INT: u32 = 0;
 pub const HEAP_READ_INT: u32 = 1;
 pub const HEAP_COLLECT: u32 = 2;
@@ -33,6 +38,7 @@ pub enum ValueType {
     Unit,
     Ref,
     ListRef,
+    Pid,
 }
 
 impl ValueType {
@@ -41,7 +47,7 @@ impl ValueType {
             Self::Int => true,
             Self::Bool => matches!(value, 0 | 1),
             Self::Unit => value == 0,
-            Self::Ref | Self::ListRef => false,
+            Self::Ref | Self::ListRef | Self::Pid => false,
         }
     }
 
@@ -80,7 +86,18 @@ pub struct ShadowFrame {
 }
 
 pub type HeapCall = unsafe extern "C" fn(*mut ScalarContext, u32, u64, *mut u64) -> u32;
-pub type EffectCall = unsafe extern "C" fn(*mut ScalarContext, u32, *const i64, usize) -> u32;
+
+#[repr(C)]
+pub struct EffectRequest {
+    pub operation: u32,
+    pub handler: u32,
+    pub target: i64,
+    pub arguments: *const i64,
+    pub count: usize,
+}
+
+pub type EffectCall =
+    unsafe extern "C" fn(*mut ScalarContext, *const EffectRequest, *mut i64) -> u32;
 
 pub type ScalarSlowPath = unsafe extern "C" fn(*mut ScalarContext) -> u32;
 

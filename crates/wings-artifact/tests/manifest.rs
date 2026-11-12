@@ -146,6 +146,19 @@ fn accepts_record_state_but_rejects_reference_messages_and_replies() {
 }
 
 #[test]
+fn process_capabilities_are_not_artifact_state_or_external_values() {
+    let mut invalid = manifest();
+    invalid.state = ValueType::Pid;
+    rejects(&invalid, "Pid state");
+    let mut invalid = manifest();
+    invalid.handlers[0].reply = Some(ValueType::Pid);
+    rejects(&invalid, "Pid cannot cross");
+    let mut invalid = manifest();
+    invalid.handlers[0].parameters[0].1 = ValueType::Pid;
+    rejects(&invalid, "Pid cannot cross");
+}
+
+#[test]
 fn rejects_foreign_or_unrecognized_targets() {
     for target in [
         "",

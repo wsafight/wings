@@ -1,0 +1,19 @@
+process LocalProcesses {
+  fn identity(pid: Pid) -> Pid { pid }
+  state count: Int = 0
+  on Start(value: Int, fail: Bool) -> Int {
+    let child = identity(spawn_self());
+    send(child, Add, value);
+    count = 9;
+    count / if fail { 0 } else { 1 }
+  }
+  on Me(value: Int) -> Int { send(self_pid(), Add, value); count }
+  on Choose(flag: Bool) -> Int {
+    let me = self_pid();
+    let child = spawn_self();
+    send(if flag { me } else { child }, Add, 7);
+    count
+  }
+  on Add(value: Int) { count = count + value }
+  on Read -> Int { count }
+}

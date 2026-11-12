@@ -1,6 +1,7 @@
 # ADR-0038：语言自发送与调用点副作用
 
 - 日期：2026-11-13
+- 后续：[ADR-0039](0039-local-process-capabilities.md) 以 ABI v9 扩展按值 effect 协议及同 worker 创建/发送，调用点契约保留。
 - 状态：已采纳（M0/M1 消息副作用前置切片）
 - 补充：[ADR-0020](0020-single-worker-mailbox.md)、[ADR-0036](0036-bounded-inline-functions.md)
 

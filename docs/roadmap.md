@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；跨进程 Pid、send/spawn/request 和引用消息仍须完成，不降低 MVP 门槛。
+[ADR-0039](adr/0039-local-process-capabilities.md) 接入同 worker 同模块创建与单向发送；Pid 暂不跨 state/消息，异步语言请求、跨 worker 迁移与完整业务值仍未完成，不降低 MVP 门槛。
+
+[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；同模块创建/发送由 ADR-0039 扩展，异步语言请求和引用消息仍须完成，不降低 MVP 门槛。
 
 [ADR-0037](adr/0037-immutable-int-lists.md) 增加有界不可变 IntList 及传递根，ABI v7；字符串、通用记录、引用消息和三级账本全覆盖仍未完成，不降低 MVP 门槛。
 
@@ -12,7 +14,7 @@
 
 宿主诊断先按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 暴露单 worker 最近安全点的预算/堆统计；跨线程、故障历史与完整可试用诊断仍在 MVP 门槛内。
 
-M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 RecordInt 持久状态；不改变 MVP 门槛，引用消息、业务控制流、语言消息副作用、真实 I/O、M:N 及双平台 BEAM 对照仍须完成。
+M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 RecordInt 持久状态；不改变 MVP 门槛，引用消息、业务控制流、完整语言消息交互、真实 I/O、M:N 及双平台 BEAM 对照仍须完成。
 
 宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
 
@@ -70,7 +72,7 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 ## MVP 范围与开发顺序
 
-[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它尚无语言 send/spawn/request 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
+[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它的语言自发送/同模块创建与发送另见 ADR-0038/0039，尚无语言异步请求或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
 
 [ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。ADR-0031 补充标量循环中的计时请求与有限轮转回归，但仍不覆盖 runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
 

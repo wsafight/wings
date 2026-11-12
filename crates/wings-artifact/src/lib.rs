@@ -53,6 +53,18 @@ impl Manifest {
         if !valid_name(&self.process) || self.handlers.len() > 128 {
             return Err("invalid process name or handler count".into());
         }
+        if self.state == ValueType::Pid {
+            return Err("Pid state is not supported".into());
+        }
+        if self.handlers.iter().any(|handler| {
+            handler.reply == Some(ValueType::Pid)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::Pid)
+        }) {
+            return Err("Pid cannot cross scalar artifact boundaries".into());
+        }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_reference)
                 || handler.parameters.iter().any(|(_, ty)| ty.is_reference())

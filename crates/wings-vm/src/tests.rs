@@ -17,6 +17,7 @@ use crate::*;
 mod diagnostics;
 mod persistent_state;
 mod primitives;
+mod process_effects;
 mod stack_boundary;
 mod supervision;
 

@@ -91,6 +91,72 @@ fn self_send_validates_target_kind_arguments_and_initializer_boundary() {
 }
 
 #[test]
+fn local_capabilities_cannot_be_constants_state_messages_or_compared() {
+    let mut program = valid_program();
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SpawnSelf));
+    program.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.state = ValueType::Pid;
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].reply = Some(ValueType::Pid);
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].parameters[0].1 = ValueType::Pid;
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[3].operation = Operation::Constant(1);
+    rejects(&invalid, "invalid scalar IR");
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Bool,
+        Operation::Compare(Comparison::Equal, 3, 4),
+    ));
+    rejects(&program, "invalid scalar IR");
+}
+
+#[test]
+fn cross_process_send_requires_local_pid_and_matching_static_one_way_protocol() {
+    let mut program = valid_program();
+    program.handlers[0].reply = None;
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::Send {
+            target: 3,
+            handler: 0,
+            arguments: vec![2],
+        },
+    ));
+    function.reply = 4;
+    program.validate().unwrap();
+    for (target, handler, arguments, error) in [
+        (2, 0, vec![2], "invalid scalar IR"),
+        (usize::MAX, 0, vec![2], "operand"),
+        (3, usize::MAX, vec![2], "invalid self-send handler"),
+        (3, 0, vec![3], "invalid scalar IR"),
+        (3, 0, vec![], "one-way handler"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[4].operation = Operation::Send {
+            target,
+            handler,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+}
+
+#[test]
 fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
     let mut program = valid_program();
     let function = &mut program.handlers[0].function;

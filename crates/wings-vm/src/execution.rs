@@ -19,11 +19,13 @@ type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult,
 struct Checkpoint {
     remaining_steps: u64,
     heap: Option<HeapStats>,
-    effect: Option<SelfSend>,
+    effect: Option<ProcessEffect>,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SelfSend {
+pub(crate) struct ProcessEffect {
+    pub operation: u32,
+    pub target: i64,
     pub handler: usize,
     pub arguments: [i64; 64],
     pub count: usize,
@@ -50,6 +52,7 @@ pub enum ExecutionFault {
     InvalidOutput,
     EmptyList,
     SendRejected,
+    SpawnRejected,
     UnknownStatus(u32),
 }
 
@@ -67,6 +70,7 @@ impl ExecutionFault {
             wings_abi::STATUS_INVALID_ROOT => Self::InvalidRoot,
             wings_abi::STATUS_EMPTY_LIST => Self::EmptyList,
             wings_abi::STATUS_SEND_REJECTED => Self::SendRejected,
+            wings_abi::STATUS_SPAWN_REJECTED => Self::SpawnRejected,
             other => Self::UnknownStatus(other),
         })
     }
@@ -150,7 +154,7 @@ pub enum ExecutionStatus {
 
 enum ResumeCommand {
     Run(u64),
-    Effect(u32, u64),
+    Effect(u32, i64, u64),
     Cancel,
 }
 
@@ -171,8 +175,8 @@ struct Invocation {
     handler: usize,
     coroutine: Option<ExecutionCoroutine>,
     snapshot: ExecutionSnapshot,
-    effect: Option<SelfSend>,
-    acknowledgement: Option<u32>,
+    effect: Option<ProcessEffect>,
+    acknowledgement: Option<(u32, i64)>,
 }
 
 impl ScalarProcess {
@@ -259,17 +263,17 @@ impl ScalarTask {
         self.effects_enabled = true;
     }
 
-    pub(crate) fn take_effect(&mut self) -> Option<SelfSend> {
+    pub(crate) fn take_effect(&mut self) -> Option<ProcessEffect> {
         self.invocation
             .as_mut()
             .and_then(|active| active.effect.take())
     }
 
-    pub(crate) fn acknowledge_effect(&mut self, status: u32) {
+    pub(crate) fn acknowledge_effect(&mut self, status: u32, value: i64) {
         self.invocation
             .as_mut()
             .expect("active effect invocation")
-            .acknowledgement = Some(status);
+            .acknowledgement = Some((status, value));
     }
 
     pub fn module(&self) -> &ScalarModule {
@@ -497,7 +501,7 @@ fn resume_invocation(
     }
     let coroutine = active.coroutine.as_mut().expect("active coroutine");
     let command = match active.acknowledgement.take() {
-        Some(status) => ResumeCommand::Effect(status, max_slice_steps),
+        Some((status, value)) => ResumeCommand::Effect(status, value, max_slice_steps),
         None => ResumeCommand::Run(max_slice_steps),
     };
     match coroutine.resume(command) {
@@ -565,17 +569,21 @@ unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
             context.slice_remaining = steps;
             STATUS_OK
         }
-        ResumeCommand::Cancel | ResumeCommand::Effect(_, _) => STATUS_CANCELLED,
+        ResumeCommand::Cancel | ResumeCommand::Effect(_, _, _) => STATUS_CANCELLED,
     }
 }
 
 unsafe extern "C" fn send_self(
     context: *mut ScalarContext,
-    handler: u32,
-    arguments: *const i64,
-    count: usize,
+    request: *const wings_abi::EffectRequest,
+    output: *mut i64,
 ) -> u32 {
-    if count > 64 || (count != 0 && arguments.is_null()) {
+    let Some(request) = (unsafe { request.as_ref() }) else {
+        return wings_abi::STATUS_INVALID_CONTROL;
+    };
+    let count = request.count;
+    let arguments = request.arguments;
+    if output.is_null() || count > 64 || (count != 0 && arguments.is_null()) {
         return wings_abi::STATUS_INVALID_CONTROL;
     }
     let context = unsafe { &mut *context };
@@ -586,16 +594,23 @@ unsafe extern "C" fn send_self(
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
-        effect: Some(SelfSend {
-            handler: handler as usize,
+        effect: Some(ProcessEffect {
+            operation: request.operation,
+            target: request.target,
+            handler: request.handler as usize,
             arguments: copied,
             count,
         }),
     };
     let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
     match yielder.suspend(checkpoint) {
-        ResumeCommand::Effect(status, steps) => {
+        ResumeCommand::Effect(status, value, steps) => {
             context.slice_remaining = steps;
+            if status == STATUS_OK {
+                unsafe {
+                    output.write(value);
+                }
+            }
             status
         }
         _ => STATUS_CANCELLED,
@@ -637,6 +652,10 @@ mod tests {
             (
                 wings_abi::STATUS_SEND_REJECTED,
                 ExecutionFault::SendRejected,
+            ),
+            (
+                wings_abi::STATUS_SPAWN_REJECTED,
+                ExecutionFault::SpawnRejected,
             ),
             (u32::MAX, ExecutionFault::UnknownStatus(u32::MAX)),
         ] {

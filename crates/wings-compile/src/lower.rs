@@ -172,7 +172,22 @@ impl Lowerer<'_> {
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
             ExprKind::Call { callee, arguments } => {
-                if callee.text == "send_self" {
+                if matches!(callee.text.as_str(), "self_pid" | "spawn_self") {
+                    return self.push(
+                        ValueType::Pid,
+                        if callee.text == "self_pid" {
+                            Operation::SelfPid
+                        } else {
+                            Operation::SpawnSelf
+                        },
+                    );
+                }
+                if matches!(callee.text.as_str(), "send_self" | "send") {
+                    let (target, arguments) = if callee.text == "send" {
+                        (Some(self.expression(&arguments[0])?), &arguments[1..])
+                    } else {
+                        (None, arguments.as_slice())
+                    };
                     let ExprKind::Name(name) = &arguments[0].kind else {
                         return Err("expected static self-send target".into());
                     };
@@ -184,7 +199,17 @@ impl Lowerer<'_> {
                         .iter()
                         .map(|argument| self.expression(argument))
                         .collect::<Result<Vec<_>, _>>()?;
-                    return self.push(ValueType::Unit, Operation::SendSelf { handler, arguments });
+                    return self.push(
+                        ValueType::Unit,
+                        match target {
+                            Some(target) => Operation::Send {
+                                target,
+                                handler,
+                                arguments,
+                            },
+                            None => Operation::SendSelf { handler, arguments },
+                        },
+                    );
                 }
                 if let Some(function) = self.functions.get(callee.text.as_str()).copied() {
                     if self.call_depth == 32 {
@@ -313,6 +338,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "Unit" => Ok(ValueType::Unit),
         "RecordInt" => Ok(ValueType::Ref),
         "IntList" => Ok(ValueType::ListRef),
+        "Pid" => Ok(ValueType::Pid),
         _ => Err(format!("unsupported scalar type {name}")),
     }
 }

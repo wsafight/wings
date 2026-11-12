@@ -100,6 +100,36 @@ fn self_send_targets_resolve_to_forward_handler_definitions() {
 }
 
 #[test]
+fn process_capabilities_share_local_types_and_send_target_navigation() {
+    let mut server = server();
+    let text = "process P { state n: Int = 0; on Start { let child = spawn_self(); send(child, Add, 1) } on Add(value: Int) { n = value } }";
+    assert_eq!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = text.find("child, Add").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+        "child: Pid"
+    );
+    let offset = text.find("Add, 1").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/definition", URI, 0, offset)["result"]["range"]["start"]["character"],
+        text.rfind("Add").unwrap()
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    for label in ["Pid", "spawn_self", "self_pid", "send"] {
+        assert!(
+            completion["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+}
+
+#[test]
 fn function_calls_share_signature_definition_and_keyword_completion() {
     let mut server = server();
     let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";

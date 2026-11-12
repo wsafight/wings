@@ -8,6 +8,7 @@ use crate::{
 };
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
+static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
@@ -112,6 +113,8 @@ struct PendingRequest {
 }
 
 struct Actor {
+    capability: i64,
+    heap_records: Option<usize>,
     task: ScalarTask,
     active: Option<ActiveMessage>,
     mailbox: Mailbox,
@@ -263,6 +266,21 @@ impl ScalarWorker {
             .iter()
             .position(|slot| slot.actor.is_none() && slot.generation != 0)
             .ok_or("worker process table exhausted")?;
+        let mut capability = NEXT_CAPABILITY.load(Ordering::Relaxed);
+        let capability = loop {
+            if capability > i64::MAX as u64 {
+                return Err("process capabilities exhausted".into());
+            }
+            match NEXT_CAPABILITY.compare_exchange_weak(
+                capability,
+                capability + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break capability as i64,
+                Err(current) => capability = current,
+            }
+        };
         let bytes = std::mem::size_of::<Actor>()
             + mailbox_capacity * std::mem::size_of::<Option<Message>>();
         let charge = self.tenant.reserve(Resources {
@@ -286,6 +304,8 @@ impl ScalarWorker {
         let mut task = ScalarTask::new(process);
         task.enable_effects();
         self.slots[index].actor = Some(Actor {
+            capability,
+            heap_records,
             task,
             active: None,
             mailbox,
@@ -456,38 +476,13 @@ impl ScalarWorker {
                 Ok(ExecutionStatus::Suspended) => {
                     let actor = self.slots[index].actor.as_mut().expect("suspended actor");
                     if let Some(effect) = actor.task.take_effect() {
-                        let module = actor.task.module().clone();
-                        let budget = actor
-                            .active
-                            .as_ref()
-                            .expect("active message")
-                            .message
-                            .max_steps;
-                        let accepted = module
-                            .manifest()
-                            .handlers
-                            .get(effect.handler)
-                            .and_then(|schema| module.handler(&schema.name).ok())
-                            .is_some_and(|handler| {
-                                self.enqueue(
-                                    pid,
-                                    &handler,
-                                    &effect.arguments[..effect.count],
-                                    budget,
-                                    None,
-                                )
-                                .is_ok()
-                            });
+                        let (status, value) = self.apply_effect(pid, effect);
                         self.slots[index]
                             .actor
                             .as_mut()
                             .expect("effect actor")
                             .task
-                            .acknowledge_effect(if accepted {
-                                wings_abi::STATUS_OK
-                            } else {
-                                wings_abi::STATUS_SEND_REJECTED
-                            });
+                            .acknowledge_effect(status, value);
                     }
                     Ok(WorkerEvent::Suspended(pid))
                 }
@@ -600,6 +595,80 @@ impl ScalarWorker {
             .iter()
             .filter(|slot| slot.actor.is_some())
             .count()
+    }
+
+    pub fn pids(&self) -> impl Iterator<Item = Pid> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.actor.as_ref().map(|_| self.pid(index)))
+    }
+
+    fn apply_effect(&mut self, pid: Pid, effect: crate::execution::ProcessEffect) -> (u32, i64) {
+        let actor = self.actor(pid).expect("effect actor");
+        let module = actor.task.module().clone();
+        let budget = actor
+            .active
+            .as_ref()
+            .expect("active effect message")
+            .message
+            .max_steps;
+        match effect.operation {
+            wings_abi::EFFECT_SELF_PID if effect.count == 0 => {
+                (wings_abi::STATUS_OK, actor.capability)
+            }
+            wings_abi::EFFECT_SPAWN_SELF if effect.count == 0 => {
+                let limits = actor.account.limit();
+                let capacity = actor.mailbox.slots.len();
+                let heap_records = actor.heap_records;
+                match self.spawn_configured(&module, limits, capacity, heap_records) {
+                    Ok(child) => (
+                        wings_abi::STATUS_OK,
+                        self.actor(child).expect("spawned actor").capability,
+                    ),
+                    Err(_) => (wings_abi::STATUS_SPAWN_REJECTED, 0),
+                }
+            }
+            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND => {
+                let target = if effect.operation == wings_abi::EFFECT_SEND_SELF {
+                    Some(pid)
+                } else {
+                    self.slots.iter().enumerate().find_map(|(index, slot)| {
+                        slot.actor
+                            .as_ref()
+                            .filter(|target| target.capability == effect.target)
+                            .map(|_| self.pid(index))
+                    })
+                };
+                let accepted = target
+                    .zip(module.manifest().handlers.get(effect.handler))
+                    .and_then(|(target, schema)| {
+                        module
+                            .handler(&schema.name)
+                            .ok()
+                            .map(|handler| (target, handler))
+                    })
+                    .is_some_and(|(target, handler)| {
+                        self.enqueue(
+                            target,
+                            &handler,
+                            &effect.arguments[..effect.count],
+                            budget,
+                            None,
+                        )
+                        .is_ok()
+                    });
+                (
+                    if accepted {
+                        wings_abi::STATUS_OK
+                    } else {
+                        wings_abi::STATUS_SEND_REJECTED
+                    },
+                    0,
+                )
+            }
+            _ => (wings_abi::STATUS_INVALID_CONTROL, 0),
+        }
     }
 
     fn pid(&self, index: usize) -> Pid {

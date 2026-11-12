@@ -1,6 +1,8 @@
 # wings-lang
 
-handler 内 `send_self(Message, args...)` 以本 process 单向入口为静态目标，调用点入队、返回 Unit；初始化/fn 禁止，只能由 worker 驱动。失败不撤回此前发送，队满/额度拒绝受管失败，见 [ADR-0038](adr/0038-self-send-effects.md)。尚无 Pid、跨进程 send/spawn/request。
+`self_pid()` / `spawn_self()` 返回局部 Pid，`send(pid, Message, args...)` 向同 worker 同模块的单向入口投递；仅 handler 可调用。Pid 暂不允许 state、消息、回复或比较。创建继承资源配置、不继承状态，细节见 [ADR-0039](adr/0039-local-process-capabilities.md)。
+
+handler 内 `send_self(Message, args...)` 以本 process 单向入口为静态目标，调用点入队、返回 Unit；初始化/fn 禁止，只能由 worker 驱动。失败不撤回此前发送，队满/额度拒绝受管失败，见 [ADR-0038](adr/0038-self-send-effects.md)。同 worker 同模块创建/发送由 ADR-0039 扩展，语言异步 request 尚未实现。
 
 `IntList` 支持 `empty_ints()`、`prepend_int(Int, IntList)`、`head_int(IntList)`、`tail_ints(IntList)` 和 `is_empty_ints(IntList)`；可作 state/局部/内联 fn 值，不可作消息参数/回复。列表不可变，空 head/tail 受管失败，节点及共享尾计费/根边界见 [ADR-0037](adr/0037-immutable-int-lists.md)。
 
@@ -145,7 +147,7 @@ let id = request(counter, Inc(by: 2))
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v8 不兼容已发布 `0.0.2` 及旧源码 v2–v7 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v9 不兼容已发布 `0.0.2` 及旧源码 v2–v8 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 
@@ -159,8 +161,9 @@ let id = request(counter, Inc(by: 2))
 - process 内最多 64 个 fn、64 个显式类型参数、32 层声明顺序调用；非递归内联，无 state 访问/赋值或函数内 while，展开后仍受入口操作/根/帧上限约束。
 - 不可变 IntList 的单节点构造/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
 - handler 中 `send_self` 静态检查单向目标、标量参数和遮蔽；worker 调用点准入入队，队满/额度拒绝受管失败，无 worker 不可调用。
+- 局部 Pid、`self_pid` / `spawn_self` 与同 worker 同模块 `send`；内联 fn 可传递 Pid，但不得在函数内创建/发送，无 Pid state/消息/回复或比较。
 
-尚未实现模块、动态函数调用/递归、任意引用 phi、通用记录、联合类型、完整模式匹配、跨进程语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，自发送仅验证调用点副作用，不代表完整语言交互或恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现模块、动态函数调用/递归、任意引用 phi、通用记录、联合类型、完整模式匹配、跨模块消息、语言异步请求或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，自发送和同模块创建/发送只验证调用点副作用，不代表完整语言交互或恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 
