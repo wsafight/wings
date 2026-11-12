@@ -35,6 +35,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0025](0025-aot-record-roots.md) | ABI v5、内部 IR 临时记录、编译器精确根及进程计费堆 | 已采纳（M0 集成切片）；替代 0024 的 context 布局 |
 | [0026](0026-language-temporary-records.md) | 语言临时 RecordInt、受限内建调用与同账户堆/栈执行 | 已采纳（M0/M1 语言集成切片） |
 | [0027](0027-persistent-record-state.md) | ABI v6、RecordInt 状态、宿主持久根与候选提交 | 已采纳；替代 0025/0026 的 Ref 状态限制 |
+| [0028](0028-supervised-record-heaps.md) | 显式监督堆配置、全新堆重建及失败回滚 | 已采纳（宿主恢复集成切片） |
 
 ## 维护方式
 

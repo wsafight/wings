@@ -2,6 +2,8 @@
 
 M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 RecordInt 持久状态；不改变 MVP 门槛，引用消息、业务控制流、语言消息副作用、真实 I/O、M:N 及双平台 BEAM 对照仍须完成。
 
+宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 ## 风险登记

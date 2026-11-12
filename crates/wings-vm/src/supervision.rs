@@ -49,6 +49,7 @@ struct Child {
     module: ScalarModule,
     limits: Resources,
     mailbox_capacity: usize,
+    heap_records: Option<usize>,
     history: RestartHistory,
     _charge: Reservation,
 }
@@ -128,6 +129,28 @@ impl ScalarSupervisor {
         mailbox_capacity: usize,
         policy: RestartPolicy,
     ) -> Result<ChildId, String> {
+        self.spawn_configured(module, limits, mailbox_capacity, None, policy)
+    }
+
+    pub fn spawn_with_heap(
+        &mut self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox_capacity: usize,
+        heap_records: usize,
+        policy: RestartPolicy,
+    ) -> Result<ChildId, String> {
+        self.spawn_configured(module, limits, mailbox_capacity, Some(heap_records), policy)
+    }
+
+    fn spawn_configured(
+        &mut self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox_capacity: usize,
+        heap_records: Option<usize>,
+        policy: RestartPolicy,
+    ) -> Result<ChildId, String> {
         let (capacity, within) = RestartHistory::capacity(policy)?;
         let index = self
             .children
@@ -144,7 +167,9 @@ impl ScalarSupervisor {
             head: 0,
             count: 0,
         };
-        let pid = self.worker.spawn(module, limits, mailbox_capacity)?;
+        let pid = self
+            .worker
+            .spawn_configured(module, limits, mailbox_capacity, heap_records)?;
         let identity = ChildId(pid);
         self.children[index] = Some(Child {
             identity,
@@ -152,6 +177,7 @@ impl ScalarSupervisor {
             module: module.clone(),
             limits,
             mailbox_capacity,
+            heap_records,
             history,
             _charge: charge,
         });
@@ -260,10 +286,12 @@ impl ScalarSupervisor {
         } else if !child.history.admit(now) {
             RestartStatus::IntensityExceeded
         } else {
-            match self
-                .worker
-                .spawn(&child.module, child.limits, child.mailbox_capacity)
-            {
+            match self.worker.spawn_configured(
+                &child.module,
+                child.limits,
+                child.mailbox_capacity,
+                child.heap_records,
+            ) {
                 Ok(replacement) => {
                     child.pid = replacement;
                     child.history.record(Instant::now());

@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（单 worker 恢复切片）
 - 补充：[宿主 mailbox](0020-single-worker-mailbox.md)、[异步请求](0021-bounded-requests.md)
+- 后续：[ADR-0028](0028-supervised-record-heaps.md) 增加显式带堆子项配置及全新计费堆重建，不改变重启策略。
 
 ## 决定
 

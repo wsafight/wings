@@ -46,6 +46,128 @@ fn failure(supervisor: &mut ScalarSupervisor, module: &ScalarModule, pid: Pid) -
 }
 
 #[test]
+fn supervised_heap_initialization_rejections_roll_back_every_reservation() {
+    let (vm, tenant, mut supervisor, mut module) = fixture(1);
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::Ref;
+    data.initializer = super::persistent_state::record_initializer;
+    let baseline = vm.used();
+    assert!(
+        supervisor
+            .spawn(&module, limits(1 << 20), 1, policy(2))
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    for capacity in [0, 1025, usize::MAX] {
+        assert!(
+            supervisor
+                .spawn_with_heap(&module, limits(1 << 20), 1, capacity, policy(2))
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(supervisor.process_count(), 0);
+    }
+    assert!(
+        supervisor
+            .spawn_with_heap(&module, limits(1), 1, 2, policy(2))
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    let child = supervisor
+        .spawn_with_heap(&module, limits(1 << 20), 1, 2, policy(2))
+        .unwrap();
+    let heap_actor_bytes = supervisor
+        .resources(supervisor.current_pid(child).unwrap())
+        .unwrap()
+        .bytes;
+    assert!(heap_actor_bytes > 0);
+    supervisor.stop(child).unwrap();
+    assert_eq!(vm.used(), baseline);
+    assert!(
+        supervisor
+            .spawn_with_heap(&module, limits(heap_actor_bytes - 1), 1, 2, policy(2))
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    for account in [&vm, &tenant] {
+        let held = account
+            .reserve(Resources {
+                bytes: account.limit().bytes - account.used().bytes,
+                ..Resources::default()
+            })
+            .unwrap();
+        let full = vm.used();
+        assert!(
+            supervisor
+                .spawn_with_heap(&module, limits(1 << 20), 1, 2, policy(2))
+                .is_err()
+        );
+        assert_eq!(vm.used(), full);
+        assert_eq!(supervisor.process_count(), 0);
+        drop(held);
+        assert_eq!(vm.used(), baseline);
+    }
+    drop(supervisor);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn supervised_heap_restart_initializer_failure_releases_old_and_partial_new_heap() {
+    static INITIALIZATIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    unsafe extern "C" fn initializer(
+        state: i64,
+        arguments: *const i64,
+        output: *mut ScalarOutput,
+        context: *mut ScalarContext,
+    ) -> u32 {
+        let status = unsafe {
+            super::persistent_state::record_initializer(state, arguments, output, context)
+        };
+        if status != STATUS_OK {
+            return status;
+        }
+        if INITIALIZATIONS.fetch_add(1, Ordering::SeqCst) == 0 {
+            STATUS_OK
+        } else {
+            STATUS_BUDGET_EXHAUSTED
+        }
+    }
+    let (vm, _, mut supervisor, mut module) = fixture(1);
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::Ref;
+    data.initializer = initializer;
+    let baseline = vm.used();
+    let child = supervisor
+        .spawn_with_heap(&module, limits(1 << 20), 1, 2, policy(2))
+        .unwrap();
+    let pid = supervisor.current_pid(child).unwrap();
+    let pending = request(&mut supervisor, &module, pid, "FailRequest", &[]);
+    assert_eq!(
+        supervisor.tick(64),
+        Ok(SupervisorEvent::Exited {
+            child,
+            pid,
+            reason: "managed division by zero".into(),
+            restart: RestartStatus::Failed("managed execution step budget exhausted".into()),
+        })
+    );
+    assert_eq!(
+        supervisor.take_reply(pending),
+        Ok(Some(RequestOutcome::Failed))
+    );
+    assert_eq!(vm.used(), baseline);
+    assert!(supervisor.current_pid(child).is_err());
+    assert_eq!(supervisor.process_count(), 0);
+    assert_eq!(
+        supervisor.tick(64),
+        Ok(SupervisorEvent::Worker(WorkerEvent::Idle))
+    );
+    assert_eq!(INITIALIZATIONS.load(Ordering::SeqCst), 2);
+    drop(supervisor);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn supervisor_constructor_and_policy_rejections_leave_all_accounts_unchanged() {
     let [vm, tenant, process] = accounts();
     for account in [&vm, &process] {

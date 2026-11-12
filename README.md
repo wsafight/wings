@@ -64,7 +64,7 @@ LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳
 
 worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出，仍在强制 safepoint 挂起、原线程恢复。默认不创建计时线程，未验证真实服务尾延迟或 M:N 扩展成本，见 [ADR-0022](docs/adr/0022-worker-deadline-preemption.md)。
 
-`ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
+`ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。显式 `spawn_with_heap` 以固定槽数创建及重建全新计费堆，不保留旧记录状态；普通 spawn 仍无堆。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md) 和 [ADR-0028](docs/adr/0028-supervised-record-heaps.md)。
 
 语言局部与 state 均可用 `RecordInt`，受限内建为 `record_int(value)`、`read_int(record)`、`collect()`；记录不可变，不支持字段赋值，参数和回复仍只允许标量。compiler 发布活跃引用及候选状态，宿主根独立保活已提交状态。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置。引用状态无堆时在初始化前拒绝，临时内建无堆时受管失败；同步及显式执行均保持同 process 计费栈池。见 [ADR-0026](docs/adr/0026-language-temporary-records.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)，可运行示例为 `examples/records.wings` 与 `examples/record-state.wings`。
 

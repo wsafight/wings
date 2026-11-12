@@ -2,6 +2,8 @@
 
 有界记录状态切片遵循 [ADR-0027](adr/0027-persistent-record-state.md)：已提交状态作为独立宿主根保活至 handler 正常返回，候选由 compiler 根保活，状态与回复校验后才替换根；失败不提前释放旧状态。堆、根及执行栈仍属于同一 process 账户。
 
+监督带堆进程用显式 `ScalarSupervisor::spawn_with_heap`，记录槽数随子项配置保留；重建先释放旧实例，再在相同限额下创建全新计费堆并重新执行 initializer，不恢复状态或重放消息。失败移除子项且回滚预留，普通 spawn 仍无堆。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 一个 VM 实例对应一个 OS 进程，内部微进程由 runtime 调度，共享该地址空间。

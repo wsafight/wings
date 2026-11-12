@@ -208,7 +208,7 @@ impl ScalarWorker {
         self.spawn_configured(module, limits, mailbox_capacity, Some(heap_records))
     }
 
-    fn spawn_configured(
+    pub(crate) fn spawn_configured(
         &mut self,
         module: &ScalarModule,
         limits: Resources,

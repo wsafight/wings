@@ -399,6 +399,7 @@ def main():
         result = command([VM, "run", "--trusted", record_state, "--heap-records", 1], json.dumps(message("Set", 1)) + "\n", expected=1)
         assert not result.stdout and "heap exhausted" in result.stderr
         example("persistent_records", record_state)
+        example("record_supervisor", record_state)
         command([sys.executable, Path(__file__), "--check-record-roots", record_state])
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)

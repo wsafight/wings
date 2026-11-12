@@ -1,7 +1,7 @@
 use super::*;
 use wings_abi::{HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT};
 
-unsafe extern "C" fn record_initializer(
+pub(super) unsafe extern "C" fn record_initializer(
     _state: i64,
     _arguments: *const i64,
     output: *mut ScalarOutput,

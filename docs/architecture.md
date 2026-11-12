@@ -2,6 +2,8 @@
 
 当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v6 保留 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；参数与回复仍限定标量。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
 
+宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang` 编写，`wings-compile` 通过 Cranelift 生成 AOT 产物，`wings-vm` 负责装载、进程、内存、调度和消息。`wings-lsp` 与编译器共用语言分析库，提供编辑器服务。产物格式、入口、启动配置、退出行为与对外 I/O 范围在 M0 确定。
@@ -76,7 +78,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 
-源码/CLI 这条标量路径没有计时线程、调度、业务 GC、mailbox、完整资源准入或监督，不能运行不可信代码；宿主 opt-in 堆与 worker 另见下节。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；活栈、有界池、资源守恒与 owned task 切片已另通过本分支的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43099984279)，历史结果不覆盖后续 ABI/GC/OS 唤醒变更。浮点/SIMD、全部业务根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行不可信代码；`--heap-records` 可显式使用有界 RecordInt GC，宿主 worker 另见下节，资源账本仍未覆盖全部分配。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；活栈、有界池、资源守恒与 owned task 切片已另通过本分支的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43099984279)，历史结果不覆盖后续 ABI/GC/OS 唤醒变更。浮点/SIMD、全部业务根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 共享代码通过 `ScalarModule` 装载一次，再 `instantiate` 创建状态独立的实例；清单和入口表只保存一份，每个实例都执行 initializer。`HandlerId` 持有模块身份与序号，用前检查身份及参数 schema，不接受其他模块的 ID；ID 不是线协议。便利入口 `ScalarProcess::load_trusted` 仍会装载独立模块，不隐式按路径缓存。JSON 适配层只解析一次名称，参数暂存在有界数组，再直接按 ID 调用，避免原先重复查找和参数 Vec 分配。共享对象仅为只读代码元数据，不改变业务状态隔离。见 [ADR-0013](adr/0013-shared-scalar-modules.md)。
 

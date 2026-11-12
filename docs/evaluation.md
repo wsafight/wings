@@ -2,6 +2,8 @@
 
 持久记录状态按 [ADR-0027](adr/0027-persistent-record-state.md) 验证跨调用 GC、已提交根/候选根、最后检查点、无堆拒绝、失败不提交、worker 隔离与三级清理。新增用例须分别执行双平台 debug/release，不能复用临时记录的既有结果。
 
+带堆监督按 [ADR-0028](adr/0028-supervised-record-heaps.md) 验证首次与重建准入失败、全新状态、旧请求终结、强度上限、sibling 与挂起 stop/Drop 清理；不使用旧标量监督结果代替新切片验证。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 用作辅助对照。所有实验公开版本、编译参数、CPU/内存限制、数据生成器和原始结果。
@@ -120,6 +122,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 `examples/record-state.wings` 通过 CLI 验证初始/替换状态、GC 后读取、无堆拒绝、单槽替换堆满及失败无成功输出；`persistent_records` 验证 128 次二槽复用、逐步恢复、最后检查点 Drop、worker 多实例请求交错、失败隔离、标量诊断拒绝及三级清理。脚本的独立受限 `--check-record-roots` 子进程在所有慢路径（含最终提交检查点）及内建前主动收集，验证 initializer 与只用于候选输出的引用均被 compiler 发布，成功返回链为空。该强制收集是测试宿主，不是新增后台 GC API。
 
 执行命令沿用 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 及 `python3 scripts/verify_scalar_aot.py`，release 使用 `--release` 和 `WINGS_PROFILE=release`。2026-11-13 本机 macOS AArch64 通过 debug/release、workspace 测试、check/clippy/fmt 与 Rust 1.85 all-target 检查；Linux x86-64 待独立验证。本切片不包含 BEAM 性能测量，契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
+
+## 带堆监督回归
+
+同一行为脚本的 `record_supervisor` 使用 RecordState 源码产物，验证两次全新堆重建后强度耗尽、旧提交状态与候选不迁移、失败后的排队请求不重放、旧请求终结、sibling 状态和挂起 stop 清理。Rust 回归验证显式容量、三级额度、首次创建回滚及第二次 initializer 在新堆分配后失败时释放旧/新堆且不再重试。命令与资源限制同上，契约见 [ADR-0028](adr/0028-supervised-record-heaps.md)；双平台结果独立记录，不作为性能结果。
+
+2026-11-13 本机 macOS AArch64 通过本切片 workspace 测试、check/clippy/fmt、Rust 1.85 all-target、debug/release 行为脚本与 VM release 测试（74 个 VM 单元、17 个堆及 15 个资源用例）。本机 Docker daemon 未运行，没有可复用的 Linux x86-64 验证环境；Linux 仍待本分支独立 CI，不启动额外 VM 或用模拟结果代替原生性能验证。
 
 ## 标量编译帧准入回归
 

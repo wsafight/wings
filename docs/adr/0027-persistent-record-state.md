@@ -4,6 +4,7 @@
 - 状态：已采纳（M0/M1 有界持久状态切片）
 - 补充：[ADR-0025](0025-aot-record-roots.md)、[ADR-0026](0026-language-temporary-records.md)
 - 替代：上述记录中禁止 Ref 状态的限制；消息与回复仍只允许标量
+- 后续：[ADR-0028](0028-supervised-record-heaps.md) 增加显式监督带堆入口；默认无堆接口仍拒绝。
 
 ## 背景与决定
 
