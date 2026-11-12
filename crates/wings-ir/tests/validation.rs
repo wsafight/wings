@@ -43,6 +43,132 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn record_merges_publish_only_outer_and_selected_values_before_the_merge_poll() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(2)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Else(4)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Ref, Operation::EndIf(6)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, Operation::ReadInt(7)),
+        instruction(ValueType::Int, Operation::ReadInt(1)),
+        instruction(ValueType::Int, Operation::Binary(Operator::Add, 9, 10)),
+    ];
+    function.reply = 11;
+    function.state = 0;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.capacity, 2);
+    assert_eq!(plan.at[5], vec![1, 4]);
+    assert_eq!(plan.at[6], vec![1]);
+    assert_eq!(plan.at[7], vec![1, 7]);
+    assert_eq!(plan.at[8], vec![1, 7]);
+    assert_eq!(plan.at[10], vec![1]);
+    for branch_local in [4, 6] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[9].operation = Operation::ReadInt(branch_local);
+        rejects(&invalid, "branch scope");
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[7].ty = ValueType::Int;
+    rejects(&invalid, "operand, type");
+    let mut dead = program;
+    dead.handlers[0].function.instructions[9].operation = Operation::ReadInt(1);
+    dead.validate().unwrap();
+    assert_eq!(dead.handlers[0].function.root_plan().at[7], vec![1]);
+}
+
+#[test]
+fn nested_record_merges_restore_path_roots_within_loops() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Int, Operation::Loop(0)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::While(3)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::Ref, Operation::RecordInt(2)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::Ref, Operation::RecordInt(2)),
+        instruction(ValueType::Unit, Operation::Else(8)),
+        instruction(ValueType::Ref, Operation::EndIf(6)),
+        instruction(ValueType::Unit, Operation::Else(10)),
+        instruction(ValueType::Ref, Operation::EndIf(1)),
+        instruction(ValueType::Int, Operation::ReadInt(12)),
+        instruction(ValueType::Int, Operation::EndLoop(13)),
+    ];
+    function.state = 14;
+    function.reply = 14;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[10], vec![1, 6, 10]);
+    assert_eq!(plan.at[12], vec![1, 12]);
+    assert_eq!(plan.at[14], vec![1]);
+    assert!(plan.at[15].is_empty());
+    assert_eq!(plan.capacity, 3);
+}
+
+#[test]
+fn record_merge_itself_counts_toward_root_admission_before_its_poll() {
+    for outer_count in [63, 64] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions.truncate(1);
+        for _ in 0..outer_count {
+            function
+                .instructions
+                .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+        }
+        let condition = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Bool, Operation::Constant(1)));
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::If(condition)));
+        let then_value = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Else(then_value)));
+        let else_value = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+        let merged = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::EndIf(else_value)));
+        function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::ReadInt(merged)));
+        for reference in 1..=outer_count {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::ReadInt(reference)));
+        }
+        function.state = 0;
+        function.reply = function.instructions.len() - 1;
+        assert_eq!(function.root_plan().capacity, outer_count + 1);
+        if outer_count == 63 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
+    }
+}
+
+#[test]
 fn loop_structure_types_scope_and_extended_reference_lifetimes_are_validated() {
     fn loop_program() -> Program {
         let mut program = valid_program();

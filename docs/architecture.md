@@ -6,7 +6,7 @@
 
 宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
 
-有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；验证标量合流、分支寄存器作用域和每路径检查点。ABI v6 不变，尚不支持引用合流或臂内语句；标量 while 另见 ADR-0031。
+有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；[ADR-0033](adr/0033-record-conditional-roots.md) 增加 RecordInt 合流，恢复外层路径根并在合流检查前发布选中结果。ABI v6 不变，尚无臂内语句或引用循环携带值；标量 while 另见 ADR-0031。
 
 标量比较使用显式类型化 IR 与 Cranelift signed compare，不通过可能溢出的相减模拟顺序；根、检查点、ABI v6 及消息边界不变。见 [ADR-0030](adr/0030-scalar-comparisons.md)。
 

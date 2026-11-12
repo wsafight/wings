@@ -1,5 +1,7 @@
 # ADR-0029：有界条件表达式
 
+- 后续：[ADR-0033](0033-record-conditional-roots.md) 替代结果限标量与直线根计划限制，增加 RecordInt 合流和路径根恢复；下文保留最初切片的选择理由。
+
 - 日期：2026-11-13
 - 状态：已采纳（M0 控制流前置切片）
 - 补充：[ADR-0027](0027-persistent-record-state.md)、[ADR-0004](0004-safepoints-and-gc.md)

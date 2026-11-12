@@ -6,7 +6,7 @@ M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 
 
 宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
 
-M0 控制流先按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 验证有界标量条件表达式；引用合流、循环和业务函数仍需独立设计与根/栈证明。
+M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 验证标量/RecordInt 惰性合流与路径根；引用循环携带值和业务函数仍需独立设计与根/栈证明。
 
 条件输入补充 [ADR-0030](adr/0030-scalar-comparisons.md) 的标量比较，不改变后续循环、完整受管执行和双平台性能门槛。
 

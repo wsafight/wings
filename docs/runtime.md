@@ -1,5 +1,7 @@
 # 运行时
 
+RecordInt 条件合流按 [ADR-0033](adr/0033-record-conditional-roots.md) 在检查前发布选中引用，未执行臂不分配、不发布局部根；旧状态的宿主持久根独立保留至成功提交。仍无引用循环携带值或引用消息。
+
 宿主诊断按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 汇总单 worker 的排队、当前入口、最近安全点预算/GC 统计和进程账户；查询不执行、收集或暴露记录 handle。挂起数据不是实时采样，完整跨线程与故障历史诊断仍待实现。
 
 有界记录状态切片遵循 [ADR-0027](adr/0027-persistent-record-state.md)：已提交状态作为独立宿主根保活至 handler 正常返回，候选由 compiler 根保活，状态与回复校验后才替换根；失败不提前释放旧状态。堆、根及执行栈仍属于同一 process 账户。

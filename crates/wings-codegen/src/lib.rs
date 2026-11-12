@@ -13,7 +13,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
     HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
     STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
-    STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, ValueType, host_target,
+    STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, host_target,
 };
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
 use wings_ir::{Comparison, Function, Operation, Operator, Program};
@@ -280,7 +280,6 @@ fn compile_body(
         builder.ins().stack_addr(pointer_type, slot, 0)
     });
     let mut registers = Vec::new();
-    let mut live = Vec::new();
     let mut branches = Vec::new();
     let mut loops = Vec::new();
     for (index, instruction) in function.instructions.iter().enumerate() {
@@ -304,8 +303,16 @@ fn compile_body(
         } else {
             None
         };
-        live.retain(|register: &usize| plan.last_uses[*register] >= index);
-        publish_roots(&mut builder, pointer_type, roots, &live, &registers);
+        if let Some(value) = merged {
+            registers.push(value);
+        }
+        publish_roots(
+            &mut builder,
+            pointer_type,
+            roots,
+            &plan.at[index],
+            &registers,
+        );
         poll_control(
             &mut builder,
             pointer_type,
@@ -437,13 +444,17 @@ fn compile_body(
                 )
             }
         };
-        registers.push(value);
-        if instruction.ty == ValueType::Ref && plan.last_uses[index] > index {
-            live.push(index);
+        if merged.is_none() {
+            registers.push(value);
         }
     }
-    live.retain(|register: &usize| plan.last_uses[*register] == function.instructions.len());
-    publish_roots(&mut builder, pointer_type, roots, &live, &registers);
+    publish_roots(
+        &mut builder,
+        pointer_type,
+        roots,
+        &plan.at[function.instructions.len()],
+        &registers,
+    );
     poll_control(
         &mut builder,
         pointer_type,

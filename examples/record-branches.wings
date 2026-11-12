@@ -1,0 +1,33 @@
+process RecordBranches {
+  state value: RecordInt = if true { record_int(7) } else { record_int(1 / 0) }
+  on Get -> Int { read_int(value) }
+  on Replace(flag: Bool, next: Int) -> Int {
+    value = if flag { record_int(next) } else { value }
+    collect()
+    read_int(value)
+  }
+  on Nested(first: Bool, second: Bool, next: Int) -> Int {
+    value = if first {
+      if second { record_int(next) } else { value }
+    } else {
+      if second { value } else { record_int(next + 1) }
+    }
+    collect()
+    read_int(value)
+  }
+  on Local(flag: Bool, next: Int) -> Int {
+    let saved = if flag { record_int(next) } else { record_int(next + 1) }
+    collect()
+    read_int(saved) + read_int(value)
+  }
+  on Discard(flag: Bool) -> Int {
+    if flag { record_int(11) } else { record_int(13) };
+    collect()
+    read_int(value)
+  }
+  on Fail(flag: Bool) -> Int {
+    value = if flag { record_int(99) } else { value }
+    collect()
+    1 / 0
+  }
+}

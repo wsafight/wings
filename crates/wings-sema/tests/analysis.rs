@@ -96,7 +96,7 @@ fn comparisons_require_same_scalar_equality_or_signed_integer_ordering() {
 }
 
 #[test]
-fn conditional_types_follow_bool_conditions_and_same_scalar_arms() {
+fn conditional_types_follow_bool_conditions_and_same_typed_arms() {
     checked(
         "process P { state n: Int = if true { 7 } else { 8 }; on Get(flag: Bool) -> Int { let selected = if flag { read_int(record_int(n)) } else { 9 }; selected } }",
     );
@@ -104,9 +104,9 @@ fn conditional_types_follow_bool_conditions_and_same_scalar_arms() {
         ("if 1 { 2 } else { 3 }", "T005", "expected Bool"),
         ("if true { 1 } else { false }", "T005", "expected Int"),
         (
-            "if true { record_int(1) } else { record_int(2) }",
-            "T014",
-            "scalar results",
+            "if true { record_int(1) } else { 2 }",
+            "T005",
+            "expected RecordInt",
         ),
         ("if true { 1 } else { missing }", "T006", "unknown name"),
     ] {
@@ -114,6 +114,9 @@ fn conditional_types_follow_bool_conditions_and_same_scalar_arms() {
     }
     let text = "process P { state n: Int = 0; on Get(flag: Bool) -> Bool { if flag { false } else { true } } on Unit(flag: Bool) -> Unit { if flag { () } else { collect() } } }";
     checked(text);
+    checked(
+        "process P { state n: RecordInt = if true { record_int(1) } else { record_int(2) }; on Get(flag: Bool) -> Int { n = if flag { record_int(7) } else { n }; let selected = if flag { n } else { if true { record_int(9) } else { n } }; read_int(selected) } }",
+    );
 }
 
 #[test]

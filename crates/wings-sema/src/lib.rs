@@ -416,13 +416,6 @@ impl Checker {
                 let then_type = self.expression(then_value, scope);
                 let else_type = self.expression(else_value, scope);
                 self.require(&else_type, &then_type, else_value.span);
-                if then_type == Type::RecordInt || else_type == Type::RecordInt {
-                    self.error(
-                        "T014",
-                        "if expressions currently require scalar results",
-                        expression.span,
-                    );
-                }
                 then_type
             }
             ExprKind::Binary {

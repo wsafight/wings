@@ -223,6 +223,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn record_conditionals_lower_to_typed_merges_and_path_roots() {
+        let program = lower(
+            "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get(flag: Bool) -> Int { let selected = if flag { saved } else { record_int(11) }; collect(); read_int(selected) } }",
+        ).unwrap();
+        program.validate().unwrap();
+        for function in [&program.initializer, &program.handlers[0].function] {
+            let plan = function.root_plan();
+            let (index, _) = function
+                .instructions
+                .iter()
+                .enumerate()
+                .find(|(_, instruction)| matches!(instruction.operation, Operation::EndIf(_)))
+                .unwrap();
+            assert_eq!(function.instructions[index].ty, ValueType::Ref);
+            assert!(plan.at[index].contains(&index));
+        }
+    }
+
+    #[test]
     fn lowers_while_as_state_carried_header_condition_and_backedge() {
         let program = lower("process P { state n: Int = 0; on Count(limit: Int) -> Int { while n < limit { n = n + 1 }; n } }").unwrap();
         let function = &program.handlers[0].function;

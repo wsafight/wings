@@ -73,7 +73,7 @@ fn conditional_queries_share_scope_and_keyword_completion() {
 #[test]
 fn record_state_shares_types_definitions_and_diagnostics() {
     let mut server = server();
-    let text = "process P { state saved: RecordInt = record_int(7); on Get -> Int { collect(); read_int(saved) } }";
+    let text = "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get -> Int { saved = if false { record_int(11) } else { saved }; collect(); read_int(saved) } }";
     let diagnostics = open(&mut server, URI, 1, text);
     assert!(
         diagnostics[0]["params"]["diagnostics"]

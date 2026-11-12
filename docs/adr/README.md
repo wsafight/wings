@@ -40,6 +40,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0030](0030-scalar-comparisons.md) | 标量相等、有符号整数比较与规范 Bool | 已采纳（M0 表达式切片） |
 | [0031](0031-scalar-state-loops.md) | 标量 state while、回边检查及跨迭代临时根 | 已采纳（M0 回边执行切片） |
 | [0032](0032-safe-point-diagnostics.md) | 按值复制安全点预算/堆统计及单 worker 只读诊断 | 已采纳（M0 宿主诊断切片） |
+| [0033](0033-record-conditional-roots.md) | RecordInt 惰性条件合流、路径根恢复与合流前发布 | 已采纳；替代 0029 的标量结果限制 |
 
 ## 维护方式
 

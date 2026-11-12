@@ -65,6 +65,11 @@ fn main() {
     assert!(process.heap_stats().unwrap().collections >= 10);
     drop(process);
     assert_eq!(vm.used(), baseline);
+    let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
+    assert_eq!(process.invoke("BranchHeap", &[30]).unwrap(), Some(30));
+    assert!(process.heap_stats().unwrap().collections >= 14);
+    drop(process);
+    assert_eq!(vm.used(), baseline);
     for cancel in [false, true] {
         let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
         let cancellation = CancellationToken::default();

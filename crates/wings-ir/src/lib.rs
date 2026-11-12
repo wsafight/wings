@@ -182,16 +182,14 @@ impl Function {
                     }
                     *then_type = types.get(value).copied();
                     available[start.saturating_add(1)..].fill(false);
-                    instruction.ty == ValueType::Unit && *then_type != Some(ValueType::Ref)
+                    instruction.ty == ValueType::Unit
                 }
                 Operation::EndIf(value) => {
                     let Some(Region::Branch(start, Some(then_type))) = branches.pop() else {
                         return Err("end-if without matching if/else".into());
                     };
                     available[start.saturating_add(1)..].fill(false);
-                    instruction.ty != ValueType::Ref
-                        && instruction.ty == then_type
-                        && types.get(value) == Some(&then_type)
+                    instruction.ty == then_type && types.get(value) == Some(&then_type)
                 }
                 Operation::Loop(initial) => {
                     if branches.len() == 64 {
@@ -279,19 +277,38 @@ impl Function {
             }
         }
         let mut active = Vec::new();
+        let mut branches = Vec::new();
+        let mut at = Vec::with_capacity(self.instructions.len() + 1);
         let mut capacity = 0;
         for (index, instruction) in self.instructions.iter().enumerate() {
+            if matches!(instruction.operation, Operation::EndIf(_)) {
+                active = branches.pop().unwrap_or_default();
+                if instruction.ty == ValueType::Ref && last_uses[index] > index {
+                    active.push(index);
+                }
+            }
             active.retain(|register: &usize| last_uses[*register] >= index);
             capacity = capacity.max(active.len());
-            if instruction.ty == ValueType::Ref && last_uses[index] > index {
+            at.push(active.clone());
+            match instruction.operation {
+                Operation::If(_) => branches.push(active.clone()),
+                Operation::Else(_) => active = branches.last().cloned().unwrap_or_default(),
+                _ => {}
+            }
+            if instruction.ty == ValueType::Ref
+                && last_uses[index] > index
+                && !matches!(instruction.operation, Operation::EndIf(_))
+            {
                 active.push(index);
             }
         }
         active.retain(|register: &usize| last_uses[*register] == self.instructions.len());
         capacity = capacity.max(active.len());
+        at.push(active);
         RootPlan {
             last_uses,
             capacity,
+            at,
         }
     }
 }
@@ -317,4 +334,5 @@ fn operands(operation: &Operation) -> [Option<Register>; 2] {
 pub struct RootPlan {
     pub last_uses: Vec<usize>,
     pub capacity: usize,
+    pub at: Vec<Vec<Register>>,
 }

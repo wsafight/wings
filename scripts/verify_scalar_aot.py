@@ -170,7 +170,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory, branches=False, loops=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -249,11 +249,66 @@ def verify_persistent_roots(directory, branches=False, loops=False):
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
     assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches or loops else "Ref")
-    name = "NestedHeap" if loops == "nested" else ("Heap" if branches or loops else "Replace")
+    if record_branches:
+        name = "Nested"
+    elif loops == "nested":
+        name = "NestedHeap"
+    elif loops == "branch":
+        name = "BranchHeap"
+    else:
+        name = "Heap" if branches or loops else "Replace"
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == name)
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
+    if record_branches:
+        def execute(entry, values):
+            arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+            entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+            entry.restype = ctypes.c_uint32
+            context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+            output = Output(71, 91)
+            observations.clear()
+            state = committed or 0
+            status = entry(state, arguments, ctypes.byref(output), ctypes.byref(context))
+            assert status == 0 and not errors and not context.roots, (status, errors)
+            assert output.state in observations[-1][1], (output.state, observations)
+            return output
+
+        output = execute(library.wings_scalar_init, [])
+        assert records[output.state] == 7
+        committed = output.state
+        for first, second in [(1, 1), (1, 0), (0, 1), (0, 0), (1, 1)]:
+            previous = records[committed]
+            output = execute(handler, [first, second, 19])
+            expected = 19 if first and second else (20 if not first and not second else previous)
+            assert output.reply == expected and records[output.state] == expected
+            committed = output.state
+        for name in ["Local", "Discard", "Replace"]:
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+            entry = getattr(library, f"wings_scalar_handler_{index}")
+            for chosen in [1, 0]:
+                previous = records[committed]
+                output = execute(entry, [chosen] if name == "Discard" else [chosen, 23])
+                expected = previous if name == "Discard" else ((23 if chosen else 24) + previous if name == "Local" else (23 if chosen else previous))
+                assert output.reply == expected, (name, chosen, output.reply, expected)
+                committed = output.state
+        index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Fail")
+        entry = getattr(library, f"wings_scalar_handler_{index}")
+        entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+        entry.restype = ctypes.c_uint32
+        previous = records[committed]
+        for budget in range(32):
+            for chosen in [0, 1]:
+                arguments[0] = chosen
+                context = Context(ctypes.pointer(flag), budget, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                output = Output(71, 91)
+                status = entry(committed, arguments, ctypes.byref(output), ctypes.byref(context))
+                assert status in [2, 4] and not errors and not context.roots, (status, errors)
+                assert (output.state, output.reply) == (71, 91)
+                assert records[committed] == previous
+        print("Compiler roots verified: reference merges, both paths, nested candidates, aliases and dead results")
+        return
     if loops:
         limit, expected = (7, 9) if loops == "nested" else (30, 30)
         cases = [(handler, 0, limit, expected), (handler, 0, 0, 0)]
@@ -449,6 +504,11 @@ def main():
             result = command([VM, "run", "--trusted", loops, "--max-steps", budget], json.dumps(request) + "\n", expected=1)
             assert not result.stdout and reason in result.stderr
         example("loop_execution", loops)
+        record_branches = parent / "record-branches"
+        command([COMPILER, "build", ROOT / "examples/record-branches.wings", "-o", record_branches])
+        example("record_conditionals", record_branches)
+        command([sys.executable, Path(__file__), "--check-record-branch-roots", record_branches])
+        command([sys.executable, Path(__file__), "--check-loop-branch-roots", loops])
         command([sys.executable, Path(__file__), "--check-loop-roots", loops])
         command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
         for limit, budget in [(0, 6), (1, 12), (10, 66)]:
@@ -580,5 +640,9 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), loops=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-nested-loop-roots":
         verify_persistent_roots(Path(sys.argv[2]), loops="nested")
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), record_branches=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-loop-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops="branch")
     else:
         main()

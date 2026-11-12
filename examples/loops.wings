@@ -41,6 +41,15 @@ process Loops {
   on Forever {
     while true {}
   }
+  on BranchHeap(limit: Int) -> Int {
+    let saved = record_int(3)
+    while count < limit {
+      let selected = if count < 6 { record_int(1) } else { saved }
+      collect()
+      count = count + read_int(selected)
+    }
+    count
+  }
   on Fail(limit: Int) -> Int {
     while count < limit {
       count = count + 1
