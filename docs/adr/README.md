@@ -42,6 +42,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0032](0032-safe-point-diagnostics.md) | 按值复制安全点预算/堆统计及单 worker 只读诊断 | 已采纳（M0 宿主诊断切片） |
 | [0033](0033-record-conditional-roots.md) | RecordInt 惰性条件合流、路径根恢复与合流前发布 | 已采纳；替代 0029 的标量结果限制 |
 | [0034](0034-record-state-loops.md) | RecordInt state header/回边/出口根及零次路径 | 已采纳；替代 0031 的标量 state 限制 |
+| [0035](0035-bounded-exit-diagnostics.md) | ABI 故障分类与无业务所有权的单槽退出快照 | 已采纳（M0 宿主失败定位切片） |
 
 ## 维护方式
 

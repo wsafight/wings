@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+失败定位按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 增加 ABI 故障分类及单槽最近退出快照；仍无跨线程聚合、历史或语言级监督，不把宿主诊断视为完整 MVP。
+
 [ADR-0034](adr/0034-record-state-loops.md) 补充唯一 RecordInt state 的循环根证明，不开放任意引用 phi 或业务函数，也不跳过双平台及完整 M0 门槛。
 
 宿主诊断先按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 暴露单 worker 最近安全点的预算/堆统计；跨线程、故障历史与完整可试用诊断仍在 MVP 门槛内。

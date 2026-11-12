@@ -63,6 +63,24 @@ pub struct ProcessSnapshot<'module> {
     pub resources: Resources,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExitSnapshot {
+    pub pid: Pid,
+    pub execution: ExecutionSnapshot,
+    pub state_type: wings_abi::ValueType,
+    pub committed_state: Option<i64>,
+    pub queued: usize,
+    pub resources_before_cleanup: Resources,
+    handler: [u8; 256],
+    handler_len: usize,
+}
+
+impl ExitSnapshot {
+    pub fn handler(&self) -> &str {
+        std::str::from_utf8(&self.handler[..self.handler_len]).expect("validated handler name")
+    }
+}
+
 pub struct ScalarWorker {
     timer: Option<DeadlineTimer>,
     preemption: PreemptionToken,
@@ -72,6 +90,7 @@ pub struct ScalarWorker {
     pool: StackPool,
     tenant: ResourceAccount,
     cursor: usize,
+    last_exit: Option<ExitSnapshot>,
     _charge: Reservation,
 }
 
@@ -177,6 +196,7 @@ impl ScalarWorker {
             pool,
             tenant: tenant.clone(),
             cursor: 0,
+            last_exit: None,
             _charge: charge,
         })
     }
@@ -454,6 +474,29 @@ impl ScalarWorker {
                     Ok(WorkerEvent::Delivered(pid))
                 }
                 Err(reason) => {
+                    let actor = self.slots[index].actor.as_ref().expect("failed actor");
+                    let name = &actor
+                        .active
+                        .as_ref()
+                        .expect("failed message")
+                        .message
+                        .handler
+                        .schema()
+                        .name;
+                    let mut handler = [0; 256];
+                    handler[..name.len()].copy_from_slice(name.as_bytes());
+                    let state_type = actor.task.module().manifest().state;
+                    self.last_exit = Some(ExitSnapshot {
+                        pid,
+                        execution: actor.task.snapshot().expect("failed invocation snapshot"),
+                        state_type,
+                        committed_state: (state_type != wings_abi::ValueType::Ref)
+                            .then(|| actor.task.committed_state()),
+                        queued: actor.mailbox.count,
+                        resources_before_cleanup: actor.account.used(),
+                        handler,
+                        handler_len: name.len(),
+                    });
                     self.remove(index);
                     Ok(WorkerEvent::Exited { pid, reason })
                 }
@@ -475,6 +518,10 @@ impl ScalarWorker {
 
     pub fn resources(&self, pid: Pid) -> Result<Resources, String> {
         self.actor(pid).map(|actor| actor.account.used())
+    }
+
+    pub fn last_exit(&self) -> Option<&ExitSnapshot> {
+        self.last_exit.as_ref()
     }
 
     pub fn snapshot(&self, pid: Pid) -> Result<ProcessSnapshot<'_>, String> {

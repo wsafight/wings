@@ -2,8 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use wings_vm::{
-    CancellationToken, ExecutionPhase, ExecutionStatus, PreemptionToken, ProcessPhase,
-    RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarWorker, StackPool, WorkerEvent,
+    CancellationToken, ExecutionFault, ExecutionPhase, ExecutionStatus, PreemptionToken,
+    ProcessPhase, RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarWorker,
+    StackPool, WorkerEvent,
 };
 
 fn limits() -> Resources {
@@ -220,6 +221,12 @@ fn main() {
         worker.take_reply(failing).unwrap(),
         Some(RequestOutcome::Failed)
     );
+    let exit = *worker.last_exit().unwrap();
+    assert_eq!(exit.pid, first);
+    assert_eq!(exit.handler(), "Fail");
+    assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
+    assert_eq!(exit.committed_state, Some(100));
+    assert!(exit.execution.consumed_steps() > 25);
     worker.enable_timer().unwrap();
     let timed = worker
         .request(
@@ -236,6 +243,7 @@ fn main() {
     );
     assert_eq!(worker.committed_state(second).unwrap(), 0);
     worker.stop(second).unwrap();
+    assert_eq!(worker.last_exit(), Some(&exit));
     assert_eq!(
         worker.take_reply(timed).unwrap(),
         Some(RequestOutcome::Failed)

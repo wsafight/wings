@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use crate::{
-    HandlerId, Pid, ProcessSnapshot, RequestId, RequestOutcome, Reservation, ResourceAccount,
-    ResourceLevel, Resources, ScalarModule, ScalarWorker, WorkerEvent,
+    ExitSnapshot, HandlerId, Pid, ProcessSnapshot, RequestId, RequestOutcome, Reservation,
+    ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarWorker, WorkerEvent,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,6 +263,10 @@ impl ScalarSupervisor {
 
     pub fn snapshot(&self, pid: Pid) -> Result<ProcessSnapshot<'_>, String> {
         self.worker.snapshot(pid)
+    }
+
+    pub fn last_exit(&self) -> Option<&ExitSnapshot> {
+        self.worker.last_exit()
     }
 
     pub fn committed_state(&self, pid: Pid) -> Result<i64, String> {

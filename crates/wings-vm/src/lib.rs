@@ -24,8 +24,8 @@ mod worker;
 mod tests;
 
 pub use execution::{
-    ExecutionPhase, ExecutionSnapshot, ExecutionStatus, PreemptionToken, ScalarExecution,
-    ScalarTask,
+    ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, PreemptionToken,
+    ScalarExecution, ScalarTask,
 };
 pub use heap::{
     CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,
@@ -37,7 +37,8 @@ pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};
 pub use worker::{
-    Pid, ProcessPhase, ProcessSnapshot, RequestId, RequestOutcome, ScalarWorker, WorkerEvent,
+    ExitSnapshot, Pid, ProcessPhase, ProcessSnapshot, RequestId, RequestOutcome, ScalarWorker,
+    WorkerEvent,
 };
 
 pub struct ScalarProcess {

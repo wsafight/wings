@@ -30,8 +30,40 @@ pub enum ExecutionPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionFault {
+    Overflow,
+    DivisionByZero,
+    Cancelled,
+    BudgetExhausted,
+    InvalidControl,
+    StackExhausted,
+    HeapExhausted,
+    InvalidRoot,
+    InvalidOutput,
+    UnknownStatus(u32),
+}
+
+impl ExecutionFault {
+    fn from_status(status: u32) -> Option<Self> {
+        Some(match status {
+            STATUS_OK => return None,
+            wings_abi::STATUS_OVERFLOW => Self::Overflow,
+            wings_abi::STATUS_DIVISION_BY_ZERO => Self::DivisionByZero,
+            STATUS_CANCELLED => Self::Cancelled,
+            wings_abi::STATUS_BUDGET_EXHAUSTED => Self::BudgetExhausted,
+            wings_abi::STATUS_INVALID_CONTROL => Self::InvalidControl,
+            wings_abi::STATUS_STACK_EXHAUSTED => Self::StackExhausted,
+            wings_abi::STATUS_HEAP_EXHAUSTED => Self::HeapExhausted,
+            wings_abi::STATUS_INVALID_ROOT => Self::InvalidRoot,
+            other => Self::UnknownStatus(other),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutionSnapshot {
     pub phase: ExecutionPhase,
+    pub fault: Option<ExecutionFault>,
     pub max_steps: u64,
     pub remaining_steps: u64,
     pub heap: Option<HeapStats>,
@@ -292,6 +324,7 @@ impl Invocation {
         }
         let snapshot = ExecutionSnapshot {
             phase: ExecutionPhase::Ready,
+            fault: None,
             max_steps,
             remaining_steps: max_steps,
             heap: process.heap_stats(),
@@ -439,6 +472,11 @@ fn resume_invocation(
             } else {
                 ExecutionPhase::Failed
             };
+            snapshot.fault = if result.is_err() {
+                Some(ExecutionFault::from_status(status).unwrap_or(ExecutionFault::InvalidOutput))
+            } else {
+                None
+            };
             *last = Some(snapshot);
             result
         }
@@ -475,5 +513,43 @@ unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
             STATUS_OK
         }
         ResumeCommand::Cancel => STATUS_CANCELLED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faults_classify_raw_abi_statuses_without_parsing_error_text() {
+        assert_eq!(ExecutionFault::from_status(STATUS_OK), None);
+        for (status, fault) in [
+            (wings_abi::STATUS_OVERFLOW, ExecutionFault::Overflow),
+            (
+                wings_abi::STATUS_DIVISION_BY_ZERO,
+                ExecutionFault::DivisionByZero,
+            ),
+            (STATUS_CANCELLED, ExecutionFault::Cancelled),
+            (
+                wings_abi::STATUS_BUDGET_EXHAUSTED,
+                ExecutionFault::BudgetExhausted,
+            ),
+            (
+                wings_abi::STATUS_INVALID_CONTROL,
+                ExecutionFault::InvalidControl,
+            ),
+            (
+                wings_abi::STATUS_STACK_EXHAUSTED,
+                ExecutionFault::StackExhausted,
+            ),
+            (
+                wings_abi::STATUS_HEAP_EXHAUSTED,
+                ExecutionFault::HeapExhausted,
+            ),
+            (wings_abi::STATUS_INVALID_ROOT, ExecutionFault::InvalidRoot),
+            (u32::MAX, ExecutionFault::UnknownStatus(u32::MAX)),
+        ] {
+            assert_eq!(ExecutionFault::from_status(status), Some(fault));
+        }
     }
 }

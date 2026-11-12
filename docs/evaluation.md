@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0035](adr/0035-bounded-exit-diagnostics.md) 核对故障分类、清理前/后账目区别、重启后旧失败可查及后续覆盖；真实 AOT 预算、除零、堆满失败均需定位 handler 并终结请求，不能因缓存诊断保留旧资源。
+
 [ADR-0034](adr/0034-record-state-loops.md) 的 RecordInt state while 验证 header、回边和零次出口的根，包含不读取状态的条件、嵌套和初始候选不被错误重复发布；每个慢路径/内建前强制收集，再核对 runtime 小堆/逐片恢复/失败不提交和清理。Linux x86-64 仍待独立执行。
 
 RecordInt 条件合流按 [ADR-0033](adr/0033-record-conditional-roots.md) 在每次慢路径/内建前强制 GC，检查两臂、嵌套与循环体的路径根及持久候选；运行时逐片恢复、失败/预算/取消和额度清理另行核对，不以静态类型通过代替运行验证。

@@ -2,9 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use wings_vm::{
-    CancellationToken, ExecutionPhase, ExecutionStatus, PreemptionToken, ProcessPhase,
-    RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarTask, ScalarWorker, StackPool,
-    WorkerEvent,
+    CancellationToken, ExecutionFault, ExecutionPhase, ExecutionStatus, PreemptionToken,
+    ProcessPhase, RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarTask,
+    ScalarWorker, StackPool, WorkerEvent,
 };
 
 fn main() {
@@ -152,10 +152,46 @@ fn main() {
         matches!(worker.tick(4096).unwrap(), WorkerEvent::Exited { reason, .. } if reason.contains("division by zero"))
     );
     assert!(worker.snapshot(pid).is_err());
+    let exit = *worker.last_exit().unwrap();
+    assert_eq!(exit.handler(), "Fail");
+    assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
+    assert_eq!(exit.committed_state, None);
+    assert!(exit.execution.heap.unwrap().collections > 0);
     assert_eq!(
         worker.take_reply(failed).unwrap(),
         Some(RequestOutcome::Failed)
     );
+    for (capacity, budget, fault) in [
+        (3, 16, ExecutionFault::BudgetExhausted),
+        (1, 4096, ExecutionFault::HeapExhausted),
+    ] {
+        let pid = worker
+            .spawn_with_heap(&module, limits, 1, capacity)
+            .unwrap();
+        let request = worker
+            .request(
+                pid,
+                &module.handler("Count").unwrap(),
+                &[30],
+                budget,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        assert!(matches!(
+            worker.tick(4096).unwrap(),
+            WorkerEvent::Exited { .. }
+        ));
+        let exit = worker.last_exit().unwrap();
+        assert_eq!(exit.pid, pid);
+        assert_eq!(exit.handler(), "Count");
+        assert_eq!(exit.execution.fault, Some(fault));
+        assert_eq!(exit.execution.heap.unwrap().capacity, capacity);
+        assert_eq!(exit.committed_state, None);
+        assert_eq!(
+            worker.take_reply(request).unwrap(),
+            Some(RequestOutcome::Failed)
+        );
+    }
     drop(worker);
     assert_eq!(vm.used(), Resources::default());
     println!(
