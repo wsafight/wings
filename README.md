@@ -32,6 +32,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 未发布源码支持 `if flag { expression } else { expression }`，只执行选中臂，条件为 Bool、两臂为同类型标量；臂内暂不支持语句或引用结果。示例为 `examples/branches.wings`，实际路径预算和根边界见 [ADR-0029](docs/adr/0029-scalar-conditional-expressions.md)。
 
+条件可使用标量 `==`/`!=` 或有符号 Int 的 `<`/`<=`/`>`/`>=`；比较不转换类型或比较记录 handle。示例为 `examples/comparisons.wings`，契约见 [ADR-0030](docs/adr/0030-scalar-comparisons.md)。
+
 需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
 
 ```sh

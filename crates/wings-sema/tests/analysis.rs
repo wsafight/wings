@@ -36,6 +36,31 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
+fn comparisons_require_same_scalar_equality_or_signed_integer_ordering() {
+    checked(
+        "process P { state n: Int = 0; on Get(left: Int, right: Int) -> Bool { let less: Bool = left < right; if less { left != right } else { left >= right } } on Eq(left: Bool) -> Bool { left == true } on Unit -> Bool { () != () } }",
+    );
+    for source in [
+        "true == 1",
+        "() != false",
+        "1 < true",
+        "false >= true",
+        "1 < 2 < 3",
+    ] {
+        assert_error(
+            &handler(&format!("let result = {source}; 0")),
+            "T005",
+            "expected",
+        );
+    }
+    assert_error(
+        &handler("let result = record_int(1) == record_int(1); 0"),
+        "T015",
+        "cannot be compared",
+    );
+}
+
+#[test]
 fn conditional_types_follow_bool_conditions_and_same_scalar_arms() {
     checked(
         "process P { state n: Int = if true { 7 } else { 8 }; on Get(flag: Bool) -> Int { let selected = if flag { read_int(record_int(n)) } else { 9 }; selected } }",

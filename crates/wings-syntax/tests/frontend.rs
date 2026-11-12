@@ -29,10 +29,52 @@ fn shape(expression: &Expr) -> String {
                 BinaryOperator::Subtract => "-",
                 BinaryOperator::Multiply => "*",
                 BinaryOperator::Divide => "/",
+                BinaryOperator::Equal => "==",
+                BinaryOperator::NotEqual => "!=",
+                BinaryOperator::Less => "<",
+                BinaryOperator::LessEqual => "<=",
+                BinaryOperator::Greater => ">",
+                BinaryOperator::GreaterEqual => ">=",
             };
             format!("({} {operator} {})", shape(left), shape(right))
         }
         other => panic!("unexpected expression {other:?}"),
+    }
+}
+
+#[test]
+fn comparison_tokens_and_precedence_do_not_confuse_assignment_or_unary_minus() {
+    let (tokens, diagnostics) = lex("= == != < <= > >= ->");
+    assert!(diagnostics.is_empty());
+    let kinds: Vec<_> = tokens
+        .iter()
+        .filter(|token| !token.kind.is_trivia())
+        .map(|token| token.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            TokenKind::Equal,
+            TokenKind::EqualEqual,
+            TokenKind::NotEqual,
+            TokenKind::Less,
+            TokenKind::LessEqual,
+            TokenKind::Greater,
+            TokenKind::GreaterEqual,
+            TokenKind::Arrow,
+            TokenKind::Eof
+        ]
+    );
+    assert_eq!(
+        shape(&expression("-value * 2 + 1 <= other - 3")),
+        "((((-value) * 2) + 1) <= (other - 3))"
+    );
+    assert_eq!(shape(&expression("1 < 2 < 3")), "((1 < 2) < 3)");
+    for body in ["1 ==", "1 ! 2", "1 < = 2", "1 !== 2"] {
+        let parsed = parse(&format!(
+            "process P {{ state n: Int = 0; on Get -> Bool {{ {body} }} }}"
+        ));
+        assert!(!parsed.diagnostics.is_empty(), "{body}");
     }
 }
 

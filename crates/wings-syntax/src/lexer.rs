@@ -15,6 +15,12 @@ pub enum TokenKind {
     Colon,
     Comma,
     Equal,
+    EqualEqual,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
     Arrow,
     Semicolon,
     LeftBrace,
@@ -94,6 +100,24 @@ pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
             match character {
                 ':' => TokenKind::Colon,
                 ',' => TokenKind::Comma,
+                '=' if text.as_bytes().get(offset) == Some(&b'=') => {
+                    offset += 1;
+                    TokenKind::EqualEqual
+                }
+                '!' if text.as_bytes().get(offset) == Some(&b'=') => {
+                    offset += 1;
+                    TokenKind::NotEqual
+                }
+                '<' if text.as_bytes().get(offset) == Some(&b'=') => {
+                    offset += 1;
+                    TokenKind::LessEqual
+                }
+                '>' if text.as_bytes().get(offset) == Some(&b'=') => {
+                    offset += 1;
+                    TokenKind::GreaterEqual
+                }
+                '<' => TokenKind::Less,
+                '>' => TokenKind::Greater,
                 '=' => TokenKind::Equal,
                 ';' => TokenKind::Semicolon,
                 '{' => TokenKind::LeftBrace,

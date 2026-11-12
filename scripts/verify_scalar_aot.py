@@ -428,6 +428,27 @@ def main():
             assert not result.stdout and "step budget exhausted" in result.stderr
         example("conditional_execution", branches)
         command([sys.executable, Path(__file__), "--check-branch-roots", branches])
+        comparisons = parent / "comparisons"
+        command([COMPILER, "build", ROOT / "examples/comparisons.wings", "-o", comparisons])
+        checks = []
+        expected = []
+        for left, right in [(-2**63, 2**63 - 1), (2**63 - 1, -2**63), (-1, 0), (0, -1), (-2**63, -2**63), (2**63 - 1, 2**63 - 1), (0, 0)]:
+            for name, value in [("Eq", left == right), ("Ne", left != right), ("Lt", left < right), ("Le", left <= right), ("Gt", left > right), ("Ge", left >= right), ("Max", max(left, right))]:
+                checks.append(message(name, left, right))
+                expected.append(value)
+        for left in [False, True]:
+            for right in [False, True]:
+                checks.append(message("BoolEq", left, right))
+                expected.append(left == right)
+        checks.append(message("UnitEq", None, None))
+        expected.append(True)
+        result = invoke(comparisons, checks)
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == expected
+        result = command([VM, "run", "--trusted", comparisons, "--heap-records", 1], json.dumps(message("Heap", -2**63)) + "\n")
+        assert json.loads(result.stdout) == {"reply": True}
+        for budget, success in [(5, True), (4, False)]:
+            result = command([VM, "run", "--trusted", comparisons, "--max-steps", budget], json.dumps(message("Lt", -1, 0)) + "\n", expected=0 if success else 1)
+            assert (json.loads(result.stdout)["reply"] is True) if success else (not result.stdout and "step budget exhausted" in result.stderr)
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"

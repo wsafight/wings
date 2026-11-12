@@ -98,4 +98,10 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }

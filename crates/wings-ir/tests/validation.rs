@@ -1,7 +1,7 @@
 use wings_abi::ValueType;
 use wings_ir::{
-    Function, Handler, Instruction, MAX_HANDLERS, MAX_OPERATIONS, MAX_PARAMETERS, Operation,
-    Operator, Program,
+    Comparison, Function, Handler, Instruction, MAX_HANDLERS, MAX_OPERATIONS, MAX_PARAMETERS,
+    Operation, Operator, Program,
 };
 
 fn instruction(ty: ValueType, operation: Operation) -> Instruction {
@@ -40,6 +40,64 @@ fn valid_program() -> Program {
 fn rejects(program: &Program, message: &str) {
     let error = program.validate().unwrap_err();
     assert!(error.contains(message), "unexpected error: {error}");
+}
+
+#[test]
+fn comparison_types_and_operands_are_validated_before_codegen() {
+    for comparison in [
+        Comparison::Equal,
+        Comparison::NotEqual,
+        Comparison::Less,
+        Comparison::LessEqual,
+        Comparison::Greater,
+        Comparison::GreaterEqual,
+    ] {
+        let mut program = valid_program();
+        program.handlers[0].reply = Some(ValueType::Bool);
+        let function = &mut program.handlers[0].function;
+        function.instructions[2] =
+            instruction(ValueType::Bool, Operation::Compare(comparison, 0, 1));
+        function.state = 0;
+        program.validate().unwrap();
+        program.handlers[0].function.instructions[2].ty = ValueType::Int;
+        rejects(&program, "operand, type");
+    }
+    for (left, right) in [(usize::MAX, 1), (0, 2), (2, 0)] {
+        let mut program = valid_program();
+        program.handlers[0].function.instructions[2] = instruction(
+            ValueType::Bool,
+            Operation::Compare(Comparison::Equal, left, right),
+        );
+        rejects(&program, "operand, type");
+    }
+    for (ty, comparison, valid) in [
+        (ValueType::Bool, Comparison::Equal, true),
+        (ValueType::Unit, Comparison::NotEqual, true),
+        (ValueType::Bool, Comparison::Less, false),
+        (ValueType::Ref, Comparison::Equal, false),
+    ] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::Constant(0)),
+            instruction(
+                ty,
+                if ty == ValueType::Ref {
+                    Operation::RecordInt(0)
+                } else {
+                    Operation::Constant(0)
+                },
+            ),
+            instruction(ValueType::Bool, Operation::Compare(comparison, 1, 1)),
+        ];
+        function.state = 0;
+        program.handlers[0].reply = Some(ValueType::Bool);
+        if valid {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "operand, type");
+        }
+    }
 }
 
 #[test]

@@ -16,7 +16,7 @@ use wings_abi::{
     STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, ValueType, host_target,
 };
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
-use wings_ir::{Function, Operation, Operator, Program};
+use wings_ir::{Comparison, Function, Operation, Operator, Program};
 
 pub const MAX_SCALAR_FRAME_BYTES: u32 = 64 * 1024;
 const ENTRY_STACK_MARGIN: u32 = 4 * 1024;
@@ -333,6 +333,20 @@ fn compile_body(
                 let (result, overflow) = builder.ins().ssub_overflow(zero, registers[value]);
                 fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
                 result
+            }
+            Operation::Compare(comparison, left, right) => {
+                let condition = match comparison {
+                    Comparison::Equal => IntCC::Equal,
+                    Comparison::NotEqual => IntCC::NotEqual,
+                    Comparison::Less => IntCC::SignedLessThan,
+                    Comparison::LessEqual => IntCC::SignedLessThanOrEqual,
+                    Comparison::Greater => IntCC::SignedGreaterThan,
+                    Comparison::GreaterEqual => IntCC::SignedGreaterThanOrEqual,
+                };
+                let result = builder
+                    .ins()
+                    .icmp(condition, registers[left], registers[right]);
+                builder.ins().uextend(types::I64, result)
             }
             Operation::Binary(operator, left, right) => {
                 let left = registers[left];

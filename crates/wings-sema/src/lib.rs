@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use wings_source::{Diagnostic, MAX_DIAGNOSTICS, Span};
-use wings_syntax::ast::{Block, Expr, ExprKind, Name, Statement};
+use wings_syntax::ast::{BinaryOperator, Block, Expr, ExprKind, Name, Statement};
 use wings_syntax::{Parse, parse};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -409,12 +409,37 @@ impl Checker {
                 }
                 then_type
             }
-            ExprKind::Binary { left, right, .. } => {
+            ExprKind::Binary {
+                operator,
+                left,
+                right,
+            } => {
                 let left_type = self.expression(left, scope);
                 let right_type = self.expression(right, scope);
+                if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                    self.require(&right_type, &left_type, right.span);
+                    if left_type == Type::RecordInt || right_type == Type::RecordInt {
+                        self.error(
+                            "T015",
+                            "record references cannot be compared",
+                            expression.span,
+                        );
+                    }
+                    return Type::Bool;
+                }
                 self.require(&left_type, &Type::Int, left.span);
                 self.require(&right_type, &Type::Int, right.span);
-                Type::Int
+                if matches!(
+                    operator,
+                    BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                ) {
+                    Type::Bool
+                } else {
+                    Type::Int
+                }
             }
             ExprKind::Error => Type::Unknown,
         }

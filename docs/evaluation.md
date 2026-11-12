@@ -6,6 +6,8 @@
 
 条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 检查结构化 IR、实际路径预算、未选臂无副作用/错误、逐步恢复与记录根，不以直线用例代替分支验收。
 
+标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md) 验证 i64 两端的有符号顺序、规范 Bool、类型/优先级、分支组合和预算；两个平台独立运行新原生用例。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 用作辅助对照。所有实验公开版本、编译参数、CPU/内存限制、数据生成器和原始结果。
@@ -136,6 +138,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 `examples/branches.wings` 和 `conditional_execution` 由同一受限脚本验证两臂/嵌套、未选错误/分配不发生、实际路径预算、跨分支保活及分支内临时记录 GC、逐步恢复、取消/Drop 清理。`--check-branch-roots` 另在每个内建及慢路径主动 GC，防止只测显式 collect 掩盖漏根。IR 回归覆盖分支类型、配对/重复/缺失、64 层、跨臂/作用域泄漏与产物写入前拒绝；前端覆盖畸形输入和后续 handler 恢复。契约见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
 
 2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 和 debug/release 原生行为脚本；持久状态另覆盖两方向分支中的临时分配与 GC。Linux x86-64 尚待独立验证，没有性能测量或 MVP 达标结论。
+
+## 标量比较回归
+
+`examples/comparisons.wings` 由既有行为脚本验证六种 Int 比较（含 i64 两端、相等、反序）、四种 Bool 相等输入、Unit 相等、比较结果驱动 Max 分支、记录字段比较及恰好足够/不足一步的预算。前端/IR 验证词法、优先级、错误/混合/引用类型和无效操作数。命令及子进程限制与条件回归相同，见 [ADR-0030](adr/0030-scalar-comparisons.md)；没有性能结论。
+
+2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 和 debug/release 行为脚本；Linux x86-64 待本分支独立验证。
 
 ## 标量编译帧准入回归
 

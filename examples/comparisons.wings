@@ -1,0 +1,17 @@
+process Comparisons {
+  state count: Int = 0
+  on Eq(left: Int, right: Int) -> Bool { left == right }
+  on Ne(left: Int, right: Int) -> Bool { left != right }
+  on Lt(left: Int, right: Int) -> Bool { left < right }
+  on Le(left: Int, right: Int) -> Bool { left <= right }
+  on Gt(left: Int, right: Int) -> Bool { left > right }
+  on Ge(left: Int, right: Int) -> Bool { left >= right }
+  on BoolEq(left: Bool, right: Bool) -> Bool { left == right }
+  on UnitEq(left: Unit, right: Unit) -> Bool { left == right }
+  on Max(left: Int, right: Int) -> Int { if left >= right { left } else { right } }
+  on Heap(value: Int) -> Bool {
+    let record = record_int(value)
+    collect()
+    read_int(record) == value
+  }
+}

@@ -14,6 +14,16 @@ pub enum Operator {
     Divide,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Comparison {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
 #[derive(Clone, Debug)]
 pub enum Operation {
     Constant(i64),
@@ -21,6 +31,7 @@ pub enum Operation {
     Argument(usize),
     Negate(Register),
     Binary(Operator, Register, Register),
+    Compare(Comparison, Register, Register),
     RecordInt(Register),
     ReadInt(Register),
     Collect,
@@ -128,6 +139,17 @@ impl Function {
                         && types.get(left) == Some(&ValueType::Int)
                         && types.get(right) == Some(&ValueType::Int)
                 }
+                Operation::Compare(comparison, left, right) => {
+                    instruction.ty == ValueType::Bool
+                        && types.get(left) == types.get(right)
+                        && match comparison {
+                            Comparison::Equal | Comparison::NotEqual => matches!(
+                                types.get(left),
+                                Some(ValueType::Int | ValueType::Bool | ValueType::Unit)
+                            ),
+                            _ => types.get(left) == Some(&ValueType::Int),
+                        }
+                }
                 Operation::RecordInt(value) => {
                     instruction.ty == ValueType::Ref && types.get(value) == Some(&ValueType::Int)
                 }
@@ -230,7 +252,9 @@ fn operands(operation: &Operation) -> [Option<Register>; 2] {
         | Operation::If(value)
         | Operation::Else(value)
         | Operation::EndIf(value) => [Some(value), None],
-        Operation::Binary(_, left, right) => [Some(left), Some(right)],
+        Operation::Binary(_, left, right) | Operation::Compare(_, left, right) => {
+            [Some(left), Some(right)]
+        }
         _ => [None, None],
     }
 }

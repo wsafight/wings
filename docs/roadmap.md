@@ -6,6 +6,8 @@ M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 
 
 M0 控制流先按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 验证有界标量条件表达式；引用合流、循环和业务函数仍需独立设计与根/栈证明。
 
+条件输入补充 [ADR-0030](adr/0030-scalar-comparisons.md) 的标量比较，不改变后续循环、完整受管执行和双平台性能门槛。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 ## 风险登记

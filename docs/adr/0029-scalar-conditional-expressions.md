@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（M0 控制流前置切片）
 - 补充：[ADR-0027](0027-persistent-record-state.md)、[ADR-0004](0004-safepoints-and-gc.md)
+- 后续：[ADR-0030](0030-scalar-comparisons.md) 增加比较产生 Bool 条件，保留标量合流与检查点限制。
 
 ## 背景与决定
 

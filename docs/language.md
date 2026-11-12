@@ -2,7 +2,9 @@
 
 持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；消息字段和回复仍禁止 RecordInt。执行必须显式配置计费堆，不接受外部 handle。
 
-条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型标量结果，只求值选中臂。臂内暂不支持语句或引用结果，不包含比较运算与循环；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
+条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型标量结果，只求值选中臂。臂内暂不支持语句或引用结果，也没有循环；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
+
+标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -141,6 +143,7 @@ let id = request(counter, Inc(by: 2))
 
 - `process`、一个具名 state、统一的 `on`、具名类型化参数和可选回复类型。
 - `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
+- 同类型标量相等与有符号 Int 顺序比较，结果为 Bool，不比较引用。
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
 - `RecordInt` 局部/state、受限记录内建与同类型标量 `if` 表达式；无回边、无引用合流。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use wings_abi::ValueType;
 use wings_ir::{
-    Function, Handler, Instruction, MAX_OPERATIONS, Operation, Operator, Program, Register,
+    Comparison, Function, Handler, Instruction, MAX_OPERATIONS, Operation, Operator, Program,
+    Register,
 };
 use wings_syntax::ast::{BinaryOperator, Expr, ExprKind, Statement};
 
@@ -150,13 +151,32 @@ impl Lowerer {
             } => {
                 let left = self.expression(left)?;
                 let right = self.expression(right)?;
-                let operator = match operator {
-                    BinaryOperator::Add => Operator::Add,
-                    BinaryOperator::Subtract => Operator::Subtract,
-                    BinaryOperator::Multiply => Operator::Multiply,
-                    BinaryOperator::Divide => Operator::Divide,
+                let operation = match operator {
+                    BinaryOperator::Add => Operation::Binary(Operator::Add, left, right),
+                    BinaryOperator::Subtract => Operation::Binary(Operator::Subtract, left, right),
+                    BinaryOperator::Multiply => Operation::Binary(Operator::Multiply, left, right),
+                    BinaryOperator::Divide => Operation::Binary(Operator::Divide, left, right),
+                    BinaryOperator::Equal => Operation::Compare(Comparison::Equal, left, right),
+                    BinaryOperator::NotEqual => {
+                        Operation::Compare(Comparison::NotEqual, left, right)
+                    }
+                    BinaryOperator::Less => Operation::Compare(Comparison::Less, left, right),
+                    BinaryOperator::LessEqual => {
+                        Operation::Compare(Comparison::LessEqual, left, right)
+                    }
+                    BinaryOperator::Greater => Operation::Compare(Comparison::Greater, left, right),
+                    BinaryOperator::GreaterEqual => {
+                        Operation::Compare(Comparison::GreaterEqual, left, right)
+                    }
                 };
-                self.push(ValueType::Int, Operation::Binary(operator, left, right))
+                self.push(
+                    if matches!(operation, Operation::Compare(..)) {
+                        ValueType::Bool
+                    } else {
+                        ValueType::Int
+                    },
+                    operation,
+                )
             }
             ExprKind::Error => Err("cannot lower an invalid expression".into()),
         }

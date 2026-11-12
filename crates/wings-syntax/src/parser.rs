@@ -277,10 +277,16 @@ impl Parser<'_> {
                 break;
             }
             let (operator, precedence) = match self.current().kind {
-                TokenKind::Plus => (BinaryOperator::Add, 1),
-                TokenKind::Minus => (BinaryOperator::Subtract, 1),
-                TokenKind::Star => (BinaryOperator::Multiply, 2),
-                TokenKind::Slash => (BinaryOperator::Divide, 2),
+                TokenKind::EqualEqual => (BinaryOperator::Equal, 1),
+                TokenKind::NotEqual => (BinaryOperator::NotEqual, 1),
+                TokenKind::Less => (BinaryOperator::Less, 1),
+                TokenKind::LessEqual => (BinaryOperator::LessEqual, 1),
+                TokenKind::Greater => (BinaryOperator::Greater, 1),
+                TokenKind::GreaterEqual => (BinaryOperator::GreaterEqual, 1),
+                TokenKind::Plus => (BinaryOperator::Add, 2),
+                TokenKind::Minus => (BinaryOperator::Subtract, 2),
+                TokenKind::Star => (BinaryOperator::Multiply, 3),
+                TokenKind::Slash => (BinaryOperator::Divide, 3),
                 _ => break,
             };
             if precedence < minimum {
@@ -372,7 +378,7 @@ impl Parser<'_> {
                     span = Span::new(start, number.end);
                     self.integer(&format!("-{}", &self.text[number.start..number.end]), span)
                 } else {
-                    let value = self.expression(3, multiline);
+                    let value = self.expression(4, multiline);
                     span = Span::new(start, value.span.end);
                     ExprKind::Negate(Box::new(value))
                 }

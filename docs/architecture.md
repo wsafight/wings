@@ -6,6 +6,8 @@
 
 有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为无回边真实分支，只执行选中臂；标量合流、分支寄存器作用域和每路径检查点先验证，再开放后续控制流。ABI v6 不变，尚不支持引用合流、臂内语句或循环。
 
+标量比较使用显式类型化 IR 与 Cranelift signed compare，不通过可能溢出的相减模拟顺序；根、检查点、ABI v6 及消息边界不变。见 [ADR-0030](adr/0030-scalar-comparisons.md)。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang` 编写，`wings-compile` 通过 Cranelift 生成 AOT 产物，`wings-vm` 负责装载、进程、内存、调度和消息。`wings-lsp` 与编译器共用语言分析库，提供编辑器服务。产物格式、入口、启动配置、退出行为与对外 I/O 范围在 M0 确定。
