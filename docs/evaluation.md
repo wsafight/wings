@@ -8,6 +8,8 @@
 
 标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md) 验证 i64 两端的有符号顺序、规范 Bool、类型/优先级、分支组合和预算；两个平台独立运行新原生用例。
 
+标量循环按 [ADR-0031](adr/0031-scalar-state-loops.md) 验证回边强制检查、预算/取消、恢复不重放、跨迭代根、嵌套与双 actor 轮转；空循环和长循环均在受限 OS 子进程内运行，不用宿主无限循环制造压力。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 用作辅助对照。所有实验公开版本、编译参数、CPU/内存限制、数据生成器和原始结果。
@@ -144,6 +146,14 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 `examples/comparisons.wings` 由既有行为脚本验证六种 Int 比较（含 i64 两端、相等、反序）、四种 Bool 相等输入、Unit 相等、比较结果驱动 Max 分支、记录字段比较及恰好足够/不足一步的预算。前端/IR 验证词法、优先级、错误/混合/引用类型和无效操作数。命令及子进程限制与条件回归相同，见 [ADR-0030](adr/0030-scalar-comparisons.md)；没有性能结论。
 
 2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 和 debug/release 行为脚本；Linux x86-64 待本分支独立验证。
+
+## 标量循环回归
+
+`examples/loops.wings` 与 `loop_execution` 在既有受限子进程脚本验证零次/多次/嵌套循环、二槽记录复用、外层根跨回边保活、单步恢复不重放、取消/Drop 清理、候选失败不提交、双 actor 有限轮转和计时请求。`--check-loop-roots`/`--check-nested-loop-roots` 在每个慢路径及内建前主动 GC，包含零次分支，检查根、回边及最终链清理。空循环预算耗尽，Count 的零/一/十轮验证恰好足够与少一步预算。
+
+前端/IR/LSP 回归验证语法、64 层、类型、局部作用域、控制配对及内外嵌套根延长；不测宿主无限循环，不承诺硬实时或公平性延迟目标。契约见 [ADR-0031](adr/0031-scalar-state-loops.md)，执行命令仍为既有 workspace 和 debug/release 行为脚本，Linux x86-64 需独立验证。
+
+2026-11-13 本机 macOS AArch64 通过 workspace debug/release 测试、check/clippy/fmt、Rust 1.85 all-target 和 debug/release 原生行为脚本。计时用例不作为抢占延迟测量，BEAM 双目标与 Linux 新代码验证仍未完成。
 
 ## 标量编译帧准入回归
 

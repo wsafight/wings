@@ -43,6 +43,141 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn loop_structure_types_scope_and_extended_reference_lifetimes_are_validated() {
+    fn loop_program() -> Program {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::State),
+            instruction(ValueType::Ref, Operation::RecordInt(0)),
+            instruction(ValueType::Int, Operation::Loop(0)),
+            instruction(ValueType::Bool, Operation::Constant(1)),
+            instruction(ValueType::Unit, Operation::While(3)),
+            instruction(ValueType::Int, Operation::ReadInt(1)),
+            instruction(ValueType::Int, Operation::EndLoop(5)),
+        ];
+        function.state = 6;
+        function.reply = 6;
+        program
+    }
+    let program = loop_program();
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.last_uses[1], 6);
+    assert_eq!(plan.capacity, 1);
+    for (index, replacement, message) in [
+        (
+            2,
+            instruction(ValueType::Ref, Operation::Loop(1)),
+            "operand, type",
+        ),
+        (
+            2,
+            instruction(ValueType::Unit, Operation::While(3)),
+            "operand, type",
+        ),
+        (
+            3,
+            instruction(ValueType::Int, Operation::Constant(1)),
+            "operand, type",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::If(3)),
+            "end-loop without",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::Collect),
+            "end-loop without",
+        ),
+        (
+            5,
+            instruction(ValueType::Unit, Operation::While(3)),
+            "duplicate while",
+        ),
+        (
+            5,
+            instruction(ValueType::Unit, Operation::Else(0)),
+            "else without",
+        ),
+        (
+            6,
+            instruction(ValueType::Bool, Operation::EndLoop(3)),
+            "operand, type",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Constant(0)),
+            "unterminated",
+        ),
+    ] {
+        let mut program = loop_program();
+        program.handlers[0].function.instructions[index] = replacement;
+        rejects(&program, message);
+    }
+    for register in [2, 3, 5] {
+        let mut program = loop_program();
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::Negate(register)));
+        rejects(&program, "branch scope");
+    }
+    let mut program = loop_program();
+    program.initializer = program.handlers[0].function.clone();
+    rejects(&program, "operand, type");
+    let mut program = loop_program();
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .insert(5, instruction(ValueType::Int, Operation::Loop(2)));
+    function
+        .instructions
+        .insert(6, instruction(ValueType::Unit, Operation::While(3)));
+    function
+        .instructions
+        .insert(8, instruction(ValueType::Int, Operation::EndLoop(7)));
+    function.instructions[9].operation = Operation::EndLoop(8);
+    function.state = 9;
+    function.reply = 9;
+    program.validate().unwrap();
+    assert_eq!(program.handlers[0].function.root_plan().last_uses[1], 9);
+
+    for depth in [64, 65] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::State),
+            instruction(ValueType::Bool, Operation::Constant(0)),
+        ];
+        let mut value = 0;
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::Loop(value)));
+            value = function.instructions.len() - 1;
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::While(1)));
+        }
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::EndLoop(value)));
+            value = function.instructions.len() - 1;
+        }
+        function.state = value;
+        function.reply = value;
+        if depth == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "control nesting exceeds 64");
+        }
+    }
+}
+
+#[test]
 fn comparison_types_and_operands_are_validated_before_codegen() {
     for comparison in [
         Comparison::Equal,

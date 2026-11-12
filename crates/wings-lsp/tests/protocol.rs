@@ -28,6 +28,27 @@ fn server() -> Server {
 }
 
 #[test]
+fn while_local_queries_do_not_leak_body_scope() {
+    let mut server = server();
+    let text = "process P { state n: Int = 0; on Count(limit: Int) -> Int { while n < limit { let inside = n + 1; n = inside }; n } }";
+    let diagnostics = open(&mut server, URI, 1, text);
+    assert!(
+        diagnostics[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let inside = text.rfind("inside").unwrap() as u32;
+    let hover = query(&mut server, "textDocument/hover", URI, 0, inside);
+    assert_eq!(hover["result"]["contents"]["value"], "inside: Int");
+    let outside = text.rfind("n }").unwrap() as u32;
+    let completion = query(&mut server, "textDocument/completion", URI, 0, outside);
+    let items = completion["result"]["items"].as_array().unwrap();
+    assert!(!items.iter().any(|item| item["label"] == "inside"));
+    assert!(items.iter().any(|item| item["label"] == "while"));
+}
+
+#[test]
 fn conditional_queries_share_scope_and_keyword_completion() {
     let mut server = server();
     let text =

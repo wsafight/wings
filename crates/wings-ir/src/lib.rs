@@ -38,6 +38,9 @@ pub enum Operation {
     If(Register),
     Else(Register),
     EndIf(Register),
+    Loop(Register),
+    While(Register),
+    EndLoop(Register),
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +70,11 @@ pub struct Program {
     pub state: ValueType,
     pub initializer: Function,
     pub handlers: Vec<Handler>,
+}
+
+enum Region {
+    Branch(usize, Option<ValueType>),
+    Loop(usize, ValueType, bool),
 }
 
 impl Program {
@@ -113,7 +121,7 @@ impl Function {
         }
         let mut types = Vec::new();
         let mut available = Vec::new();
-        let mut branches: Vec<(usize, Option<ValueType>)> = Vec::new();
+        let mut branches = Vec::new();
         for instruction in &self.instructions {
             let operands = operands(&instruction.operation);
             if operands
@@ -161,12 +169,12 @@ impl Function {
                     if branches.len() == 64 {
                         return Err("conditional nesting exceeds 64 branches".into());
                     }
-                    branches.push((types.len(), None));
+                    branches.push(Region::Branch(types.len(), None));
                     instruction.ty == ValueType::Unit
                         && types.get(condition) == Some(&ValueType::Bool)
                 }
                 Operation::Else(value) => {
-                    let Some((start, then_type)) = branches.last_mut() else {
+                    let Some(Region::Branch(start, then_type)) = branches.last_mut() else {
                         return Err("else without matching if".into());
                     };
                     if then_type.is_some() {
@@ -177,13 +185,41 @@ impl Function {
                     instruction.ty == ValueType::Unit && *then_type != Some(ValueType::Ref)
                 }
                 Operation::EndIf(value) => {
-                    let Some((start, Some(then_type))) = branches.pop() else {
+                    let Some(Region::Branch(start, Some(then_type))) = branches.pop() else {
                         return Err("end-if without matching if/else".into());
                     };
                     available[start.saturating_add(1)..].fill(false);
                     instruction.ty != ValueType::Ref
                         && instruction.ty == then_type
                         && types.get(value) == Some(&then_type)
+                }
+                Operation::Loop(initial) => {
+                    if branches.len() == 64 {
+                        return Err("control nesting exceeds 64 regions".into());
+                    }
+                    branches.push(Region::Loop(types.len(), instruction.ty, false));
+                    !initializer
+                        && state != ValueType::Ref
+                        && instruction.ty == state
+                        && types.get(initial) == Some(&state)
+                }
+                Operation::While(condition) => {
+                    let Some(Region::Loop(_, _, tested)) = branches.last_mut() else {
+                        return Err("while without matching loop".into());
+                    };
+                    if *tested {
+                        return Err("duplicate while in loop".into());
+                    }
+                    *tested = true;
+                    instruction.ty == ValueType::Unit
+                        && types.get(condition) == Some(&ValueType::Bool)
+                }
+                Operation::EndLoop(value) => {
+                    let Some(Region::Loop(start, state_type, true)) = branches.pop() else {
+                        return Err("end-loop without matching loop/while".into());
+                    };
+                    available[start..].fill(false);
+                    instruction.ty == state_type && types.get(value) == Some(&state_type)
                 }
             };
             if !valid {
@@ -192,7 +228,7 @@ impl Function {
             types.push(instruction.ty);
             available.push(!matches!(
                 instruction.operation,
-                Operation::If(_) | Operation::Else(_)
+                Operation::If(_) | Operation::Else(_) | Operation::While(_)
             ));
         }
         if !branches.is_empty() {
@@ -226,6 +262,22 @@ impl Function {
                 *last = self.instructions.len();
             }
         }
+        let mut loops = Vec::new();
+        for (index, instruction) in self.instructions.iter().enumerate() {
+            match instruction.operation {
+                Operation::Loop(_) => loops.push(index),
+                Operation::EndLoop(_) => {
+                    if let Some(start) = loops.pop() {
+                        for last in &mut last_uses[..start] {
+                            if *last > start && *last < index {
+                                *last = index;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut active = Vec::new();
         let mut capacity = 0;
         for (index, instruction) in self.instructions.iter().enumerate() {
@@ -252,6 +304,9 @@ fn operands(operation: &Operation) -> [Option<Register>; 2] {
         | Operation::If(value)
         | Operation::Else(value)
         | Operation::EndIf(value) => [Some(value), None],
+        Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
+            [Some(value), None]
+        }
         Operation::Binary(_, left, right) | Operation::Compare(_, left, right) => {
             [Some(left), Some(right)]
         }

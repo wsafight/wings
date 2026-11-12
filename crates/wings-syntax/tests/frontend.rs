@@ -43,6 +43,46 @@ fn shape(expression: &Expr) -> String {
 }
 
 #[test]
+fn while_blocks_have_bounded_nesting_and_preserve_following_handlers() {
+    let parsed = parse(
+        "process P { state n: Int = 0; on Work { while n < 3 { let next = n + 1; while n < next { n = n + 1 } } } on Get -> Int { n } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    assert!(matches!(
+        parsed.program.processes[0].handlers[0].body.statements[0],
+        Statement::While { .. }
+    ));
+    for body in ["while", "while true", "while true { n = }"] {
+        let parsed = parse(&format!(
+            "process P {{ state n: Int = 0; on Work {{ {body} }} on Get -> Int {{ n }} }}"
+        ));
+        assert!(!parsed.diagnostics.is_empty(), "{body}");
+        assert!(
+            parsed.program.processes[0]
+                .handlers
+                .iter()
+                .any(|handler| handler.name.text == "Get")
+        );
+    }
+    let nested = format!("{}{}", "while true { ".repeat(300), " }".repeat(300));
+    let parsed = parse(&format!(
+        "process P {{ state n: Int = 0; on Work {{ {nested} }} on Get -> Int {{ n }} }}"
+    ));
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("64-level"))
+    );
+    assert!(
+        parsed.program.processes[0]
+            .handlers
+            .iter()
+            .any(|handler| handler.name.text == "Get")
+    );
+}
+
+#[test]
 fn comparison_tokens_and_precedence_do_not_confuse_assignment_or_unary_minus() {
     let (tokens, diagnostics) = lex("= == != < <= > >= ->");
     assert!(diagnostics.is_empty());

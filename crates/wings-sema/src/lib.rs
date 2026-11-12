@@ -296,6 +296,22 @@ impl Checker {
     fn block(&mut self, block: &Block, scope: &mut HashMap<String, usize>) -> Type {
         for statement in &block.statements {
             match statement {
+                Statement::While { condition, body } => {
+                    let condition_type = self.expression(condition, scope);
+                    self.require(&condition_type, &Type::Bool, condition.span);
+                    if scope.values().any(|index| {
+                        self.symbols[*index].kind == SymbolKind::State
+                            && self.symbols[*index].ty == Type::RecordInt
+                    }) {
+                        self.error(
+                            "T016",
+                            "while currently requires a scalar state",
+                            condition.span,
+                        );
+                    }
+                    let result = self.block(body, &mut scope.clone());
+                    self.require(&result, &Type::Unit, body.span);
+                }
                 Statement::Assign { target, value } => {
                     let actual = self.expression(value, scope);
                     if let Some(symbol) = self.resolve(target, scope) {

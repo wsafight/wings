@@ -170,7 +170,7 @@ def example(name, *arguments):
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
 
 
-def verify_persistent_roots(directory, branches=False):
+def verify_persistent_roots(directory, branches=False, loops=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -248,30 +248,41 @@ def verify_persistent_roots(directory, branches=False):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches else "Ref")
-    name = "Heap" if branches else "Replace"
+    assert manifest["abi"] == 6 and manifest["state"] == ("Int" if branches or loops else "Ref")
+    name = "NestedHeap" if loops == "nested" else ("Heap" if branches or loops else "Replace")
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == name)
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
-    cases = [(handler, 7, 18), (handler, 7, 29)] if branches else [(library.wings_scalar_init, 0, 7), (handler, 1, 19)]
-    for case, (entry, state, expected) in enumerate(cases):
-        arguments[0] = (1 if case == 0 else 0) if branches else 19
+    if loops:
+        limit, expected = (7, 9) if loops == "nested" else (30, 30)
+        cases = [(handler, 0, limit, expected), (handler, 0, 0, 0)]
+    elif branches:
+        cases = [(handler, 7, 1, 18), (handler, 7, 0, 29)]
+    else:
+        cases = [(library.wings_scalar_init, 0, 19, 7), (handler, 1, 19, 19)]
+    for entry, state, argument, expected in cases:
+        arguments[0] = argument
         entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
         entry.restype = ctypes.c_uint32
-        context = Context(ctypes.pointer(flag), 128, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+        context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
         output = Output(71, 91)
         observations.clear()
         assert entry(state, arguments, ctypes.byref(output), ctypes.byref(context)) == 0, errors
         assert not errors and not context.roots
-        if branches:
-            assert output.state == 7 and output.reply == expected
+        if branches or loops:
+            assert output.state == (expected if loops else 7) and output.reply == expected, (output.state, output.reply, expected)
             assert not records and not observations[-1][1], (records, observations)
         else:
             assert records[output.state] == expected
             assert observations[-1][1] == {output.state}, observations
             committed = output.state
-    print("Compiler roots verified: chosen branch GC" if branches else "Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
+    if loops:
+        print("Compiler roots verified: loop backedge GC")
+    elif branches:
+        print("Compiler roots verified: chosen branch GC")
+    else:
+        print("Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
 
 
 def main():
@@ -428,6 +439,22 @@ def main():
             assert not result.stdout and "step budget exhausted" in result.stderr
         example("conditional_execution", branches)
         command([sys.executable, Path(__file__), "--check-branch-roots", branches])
+        loops = parent / "loops"
+        command([COMPILER, "build", ROOT / "examples/loops.wings", "-o", loops])
+        result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
+        result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("Heap", 30)) + "\n")
+        assert json.loads(result.stdout) == {"reply": 30}
+        for request, budget, reason in [(message("Forever"), 128, "step budget exhausted"), (message("Count", 100), 32, "step budget exhausted"), (message("Fail", 10), 1024, "division by zero")]:
+            result = command([VM, "run", "--trusted", loops, "--max-steps", budget], json.dumps(request) + "\n", expected=1)
+            assert not result.stdout and reason in result.stderr
+        example("loop_execution", loops)
+        command([sys.executable, Path(__file__), "--check-loop-roots", loops])
+        command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
+        for limit, budget in [(0, 6), (1, 12), (10, 66)]:
+            for exact in [True, False]:
+                result = command([VM, "run", "--trusted", loops, "--max-steps", budget if exact else budget - 1], json.dumps(message("Count", limit)) + "\n", expected=0 if exact else 1)
+                assert (json.loads(result.stdout)["reply"] == limit) if exact else (not result.stdout and "step budget exhausted" in result.stderr)
         comparisons = parent / "comparisons"
         command([COMPILER, "build", ROOT / "examples/comparisons.wings", "-o", comparisons])
         checks = []
@@ -549,5 +576,9 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]))
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-branch-roots":
         verify_persistent_roots(Path(sys.argv[2]), branches=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-loop-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-nested-loop-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops="nested")
     else:
         main()

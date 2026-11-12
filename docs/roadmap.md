@@ -8,6 +8,8 @@ M0 控制流先按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 验证
 
 条件输入补充 [ADR-0030](adr/0030-scalar-comparisons.md) 的标量比较，不改变后续循环、完整受管执行和双平台性能门槛。
 
+回边执行先按 [ADR-0031](adr/0031-scalar-state-loops.md) 验证只携带标量 state 的 while 和临时根，不因此开放引用 phi、业务函数或宣称 M0 完成。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 ## 风险登记
@@ -31,9 +33,9 @@ M0 控制流先按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 验证
 
 ## 里程碑
 
-当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录和无回边条件表达式。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录、条件表达式、比较和标量 state while。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 增加无回边标量分支。尚无引用消息根或业务函数调用，不等于完整 safepoint/GC 或 M0 验证，不因此开放循环。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 增加标量分支，[ADR-0031](adr/0031-scalar-state-loops.md) 增加有预算回边。尚无引用消息根、引用循环携带值或业务函数调用，不等于完整 safepoint/GC 或 M0 验证。
 
 资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 
@@ -58,7 +60,7 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 [ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它尚无语言 send/spawn/request 或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
 
-[ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。这是第 5 项的有限前置，不覆盖循环、runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
+[ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。ADR-0031 补充标量循环中的计时请求与有限轮转回归，但仍不覆盖 runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
 
 [ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。尚无语言级监督、link/monitor、GC/预算等完整诊断，不跳过 M0/M1 或性能门禁。
 

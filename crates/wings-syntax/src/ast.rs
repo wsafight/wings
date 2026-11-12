@@ -50,6 +50,10 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub enum Statement {
+    While {
+        condition: Expr,
+        body: Block,
+    },
     Assign {
         target: Name,
         value: Expr,

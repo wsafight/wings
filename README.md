@@ -26,13 +26,15 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。可信本机 AOT 原型可编译运行 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布源码另有单 worker mailbox、异步请求和强制检查点活栈恢复；语言 RecordInt 临时值及持久状态已接入精确根、计费堆及 GC，尚无引用消息或循环，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量分支、比较、state while 和有界 RecordInt 临时/持久状态。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；尚无语言消息副作用、引用消息、业务函数或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
 未发布源码支持 `if flag { expression } else { expression }`，只执行选中臂，条件为 Bool、两臂为同类型标量；臂内暂不支持语句或引用结果。示例为 `examples/branches.wings`，实际路径预算和根边界见 [ADR-0029](docs/adr/0029-scalar-conditional-expressions.md)。
 
 条件可使用标量 `==`/`!=` 或有符号 Int 的 `<`/`<=`/`>`/`>=`；比较不转换类型或比较记录 handle。示例为 `examples/comparisons.wings`，契约见 [ADR-0030](docs/adr/0030-scalar-comparisons.md)。
+
+标量 state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 RecordInt state 循环或 break/continue，见 `examples/loops.wings` 和 [ADR-0031](docs/adr/0031-scalar-state-loops.md)。
 
 需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
 
@@ -54,7 +56,7 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 
 Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。
 
-此 CLI 路径只验证无回边 handler 的原生执行与状态提交，不驱动宿主 mailbox 或监督。资源账户已接入堆、栈及有限宿主 worker，但未覆盖全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+此 CLI 路径验证原生执行与状态提交，不驱动宿主 mailbox 或监督。资源账户已接入堆、栈及有限宿主 worker，但未覆盖全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 

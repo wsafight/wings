@@ -36,6 +36,41 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
+fn while_requires_scalar_state_bool_condition_unit_body_and_local_scope() {
+    checked(
+        "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",
+    );
+    checked("process P { state flag: Bool = true; on Work { while flag { flag = false } } }");
+    checked("process P { state unit: Unit = (); on Work { while false { unit = () } } }");
+    for (body, code, fragment) in [
+        ("while 1 {}; 0", "T005", "expected Bool"),
+        ("while false { 1 }; 0", "T005", "expected Unit"),
+        (
+            "while false { let inside = 1 }; inside",
+            "T006",
+            "unknown name",
+        ),
+        (
+            "let outer = 1; while false { let outer = 2 }; 0",
+            "T004",
+            "duplicate name",
+        ),
+        (
+            "let outer = 1; while false { outer = 2 }; 0",
+            "T008",
+            "only state",
+        ),
+    ] {
+        assert_error(&handler(body), code, fragment);
+    }
+    assert_error(
+        "process P { state n: RecordInt = record_int(0); on Work { while false {} } }",
+        "T016",
+        "scalar state",
+    );
+}
+
+#[test]
 fn comparisons_require_same_scalar_equality_or_signed_integer_ordering() {
     checked(
         "process P { state n: Int = 0; on Get(left: Int, right: Int) -> Bool { let less: Bool = left < right; if less { left != right } else { left >= right } } on Eq(left: Bool) -> Bool { left == true } on Unit -> Bool { () != () } }",

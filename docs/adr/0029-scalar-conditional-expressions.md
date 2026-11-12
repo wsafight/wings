@@ -4,6 +4,7 @@
 - 状态：已采纳（M0 控制流前置切片）
 - 补充：[ADR-0027](0027-persistent-record-state.md)、[ADR-0004](0004-safepoints-and-gc.md)
 - 后续：[ADR-0030](0030-scalar-comparisons.md) 增加比较产生 Bool 条件，保留标量合流与检查点限制。
+- 后续：[ADR-0031](0031-scalar-state-loops.md) 增加 handler 标量 state 回边，分支自身仍不支持语句或引用合流。
 
 ## 背景与决定
 

@@ -2,9 +2,11 @@
 
 持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；消息字段和回复仍禁止 RecordInt。执行必须显式配置计费堆，不接受外部 handle。
 
-条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型标量结果，只求值选中臂。臂内暂不支持语句或引用结果，也没有循环；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
+条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型标量结果，只求值选中臂。臂内暂不支持语句或引用结果；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md)。
 
 标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
+
+标量 state handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。RecordInt state、break/continue 和循环携带引用暂不支持，见 [ADR-0031](adr/0031-scalar-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -145,10 +147,11 @@ let id = request(counter, Inc(by: 2))
 - `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
 - 同类型标量相等与有符号 Int 顺序比较，结果为 Bool，不比较引用。
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
-- `RecordInt` 局部/state、受限记录内建与同类型标量 `if` 表达式；无回边、无引用合流。
+- `RecordInt` 局部/state、受限记录内建与同类型标量 `if` 表达式；无引用合流。
+- handler 内只携带标量 state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
 
-尚未实现模块、函数、循环、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，执行无回边入口，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现模块、函数、引用循环携带值、通用记录、联合类型、完整模式匹配、语言消息构造与发送或系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，不代表语言副作用或完整恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 

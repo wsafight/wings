@@ -18,6 +18,7 @@ pub fn parse(
             .collect(),
         cursor: 0,
         expression_nodes: 0,
+        block_depth: 0,
         diagnostics,
     };
     let mut program = Program::default();
@@ -38,6 +39,7 @@ struct Parser<'source> {
     tokens: Vec<&'source Token>,
     cursor: usize,
     expression_nodes: usize,
+    block_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -214,6 +216,28 @@ impl Parser<'_> {
     }
 
     fn block(&mut self) -> Block {
+        if self.block_depth == 64 {
+            self.error("block nesting exceeds the 64-level frontend limit");
+            let start = self.current().span.start;
+            if self.at(TokenKind::LeftBrace) {
+                self.bump();
+                let mut depth = 1;
+                while depth != 0 && !self.at(TokenKind::Eof) {
+                    match self.current().kind {
+                        TokenKind::LeftBrace => depth += 1,
+                        TokenKind::RightBrace => depth -= 1,
+                        _ => {}
+                    }
+                    self.bump();
+                }
+            }
+            return Block {
+                statements: Vec::new(),
+                tail: None,
+                span: Span::new(start, self.current().span.start),
+            };
+        }
+        self.block_depth += 1;
         let start = self
             .expect(TokenKind::LeftBrace, "expected '{' before handler body")
             .start;
@@ -222,7 +246,12 @@ impl Parser<'_> {
         while !self.boundary() {
             let previous = self.cursor;
             self.expression_nodes = 0;
-            if self.at(TokenKind::Let) {
+            if self.at(TokenKind::While) {
+                self.bump();
+                let condition = self.expression(0, true);
+                let body = self.block();
+                statements.push(Statement::While { condition, body });
+            } else if self.at(TokenKind::Let) {
                 self.bump();
                 let name = self.name();
                 let ty = if self.at(TokenKind::Colon) {
@@ -255,6 +284,7 @@ impl Parser<'_> {
         let end = self
             .expect(TokenKind::RightBrace, "expected '}' after handler body")
             .end;
+        self.block_depth -= 1;
         Block {
             statements,
             tail,

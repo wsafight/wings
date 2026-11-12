@@ -282,7 +282,20 @@ fn compile_body(
     let mut registers = Vec::new();
     let mut live = Vec::new();
     let mut branches = Vec::new();
+    let mut loops = Vec::new();
     for (index, instruction) in function.instructions.iter().enumerate() {
+        let loop_header = if let Operation::Loop(initial) = instruction.operation {
+            let header = builder.create_block();
+            let after = builder.create_block();
+            builder.append_block_param(header, types::I64);
+            builder.append_block_param(after, types::I64);
+            builder.ins().jump(header, &[registers[initial]]);
+            builder.switch_to_block(header);
+            loops.push((header, after, index));
+            Some(builder.block_params(header)[0])
+        } else {
+            None
+        };
         let merged = if let Operation::EndIf(value) = instruction.operation {
             let (_, merge_block) = branches.pop().expect("validated branch");
             builder.ins().jump(merge_block, &[registers[value]]);
@@ -301,6 +314,26 @@ fn compile_body(
             exit,
         );
         let value = match instruction.operation {
+            Operation::Loop(_) => loop_header.expect("validated loop header"),
+            Operation::While(condition) => {
+                let (_, after, header_index) = *loops.last().expect("validated loop");
+                let body = builder.create_block();
+                builder.ins().brif(
+                    registers[condition],
+                    body,
+                    &[],
+                    after,
+                    &[registers[header_index]],
+                );
+                builder.switch_to_block(body);
+                builder.ins().iconst(types::I64, 0)
+            }
+            Operation::EndLoop(value) => {
+                let (header, after, _) = loops.pop().expect("validated loop");
+                builder.ins().jump(header, &[registers[value]]);
+                builder.switch_to_block(after);
+                builder.block_params(after)[0]
+            }
             Operation::If(condition) => {
                 let then_block = builder.create_block();
                 let else_block = builder.create_block();

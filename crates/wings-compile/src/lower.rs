@@ -41,21 +41,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
             let register = lowerer.push(*ty, Operation::Argument(index))?;
             lowerer.bindings.insert(name.clone(), register);
         }
-        for statement in &handler.body.statements {
-            match statement {
-                Statement::Assign { target, value } => {
-                    candidate = lowerer.expression(value)?;
-                    lowerer.bindings.insert(target.text.clone(), candidate);
-                }
-                Statement::Let { name, value, .. } => {
-                    let register = lowerer.expression(value)?;
-                    lowerer.bindings.insert(name.text.clone(), register);
-                }
-                Statement::Expr(value) => {
-                    lowerer.expression(value)?;
-                }
-            }
-        }
+        candidate = lowerer.statements(&handler.body.statements, &state.name.text, candidate)?;
         let reply = match &handler.body.tail {
             Some(tail) => lowerer.expression(tail)?,
             None => lowerer.push(ValueType::Unit, Operation::Constant(0))?,
@@ -92,6 +78,45 @@ struct Lowerer {
 }
 
 impl Lowerer {
+    fn statements(
+        &mut self,
+        statements: &[Statement],
+        state_name: &str,
+        mut candidate: Register,
+    ) -> Result<Register, String> {
+        for statement in statements {
+            match statement {
+                Statement::Assign { target, value } => {
+                    candidate = self.expression(value)?;
+                    self.bindings.insert(target.text.clone(), candidate);
+                }
+                Statement::Let { name, value, .. } => {
+                    let register = self.expression(value)?;
+                    self.bindings.insert(name.text.clone(), register);
+                }
+                Statement::Expr(value) => {
+                    self.expression(value)?;
+                }
+                Statement::While { condition, body } => {
+                    let outer = self.bindings.clone();
+                    let state_type = self.instructions[candidate].ty;
+                    let header = self.push(state_type, Operation::Loop(candidate))?;
+                    self.bindings.insert(state_name.to_owned(), header);
+                    let condition = self.expression(condition)?;
+                    self.push(ValueType::Unit, Operation::While(condition))?;
+                    let next = self.statements(&body.statements, state_name, header)?;
+                    if let Some(tail) = &body.tail {
+                        self.expression(tail)?;
+                    }
+                    candidate = self.push(state_type, Operation::EndLoop(next))?;
+                    self.bindings = outer;
+                    self.bindings.insert(state_name.to_owned(), candidate);
+                }
+            }
+        }
+        Ok(candidate)
+    }
+
     fn push(&mut self, ty: ValueType, operation: Operation) -> Result<Register, String> {
         if self.instructions.len() >= MAX_OPERATIONS {
             return Err("scalar AOT exceeds 4096 operations per entry".into());
@@ -196,6 +221,26 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_while_as_state_carried_header_condition_and_backedge() {
+        let program = lower("process P { state n: Int = 0; on Count(limit: Int) -> Int { while n < limit { n = n + 1 }; n } }").unwrap();
+        let function = &program.handlers[0].function;
+        assert!(matches!(
+            function.instructions[2].operation,
+            Operation::Loop(0)
+        ));
+        assert!(matches!(
+            function.instructions[4].operation,
+            Operation::While(3)
+        ));
+        assert!(matches!(
+            function.instructions[7].operation,
+            Operation::EndLoop(6)
+        ));
+        assert_eq!((function.state, function.reply), (7, 7));
+        program.validate().unwrap();
+    }
 
     #[test]
     fn lowers_conditionals_as_lazy_structured_operations() {
