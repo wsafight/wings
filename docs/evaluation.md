@@ -101,6 +101,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
 
+## AOT 临时记录与根链回归
+
+`scripts/verify_scalar_aot.py` 在 CPU/墙钟上限、禁 core dump 子进程内执行编译端 `build_aot_records`，再由 VM 端 `aot_records` 运行生成代码，不给 VM 添加前端或代码生成依赖。覆盖一个 live root 与多个 dead records 在二槽堆反复回收、128 次单槽复用、64 个同时存活根、跨时间片与双实例交错恢复、initializer 中分配/收集、整数位型不保活、堆满/算术/预算/取消/Drop 失败及三级归零。IR 与编译回归拒绝 65 个同时活跃根且不创建产物目录；Rust 运行时回归验证嵌套链、重复根、stale handle、无效根零回收、帧/根总上限、初始化各阶段准入回滚。
+
+构建与执行命令仍为 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 和 `python3 scripts/verify_scalar_aot.py`；release 增加 `--release` 与 `WINGS_PROFILE=release`。本机 macOS AArch64 已通过 debug/release 原生行为验证、workspace 测试、clippy 及 Rust 1.85 all-target 检查；Linux x86-64 待本分支 CI 独立验证，不沿用历史结果。此为内部 IR 的有界临时堆，不是语言业务堆或全部根证明，也没有 BEAM 性能对照，见 [ADR-0025](adr/0025-aot-record-roots.md)。
+
 ## 标量编译帧准入回归
 
 ABI v4 新增业务帧前的剩余栈边界回归：`stack_boundary` 在受限子进程对真实 initializer/handler（含高寄存器压力）设置零、过高、距当前 SP 仅 1 KiB 和可用限额，检查错误码 6、零扣步、输出不变及慢路径未调用；原有高压力帧、原栈恢复、取消和 worker 回归继续执行。Rust 回归检查布局、旧 v3 拒绝、guard/慢路径预留关系、同步池满拒绝及初始化计费。2026-11-12 本机 macOS AArch64 已通过 workspace 测试、check/clippy/fmt、Rust 1.85 全 targets 检查及 debug/release 行为脚本；Linux x86-64 仍待本分支 CI 独立验证，不能沿用下述历史结果。它不证明任意 Rust 慢路径或递归栈安全，也不是性能结果，见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。

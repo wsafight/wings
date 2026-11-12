@@ -16,9 +16,9 @@
 
 ## 计划中的包
 
-已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`，仅实现有实际调用方的标量 AOT 切片；十个包均已发布 `0.0.2`。`wings-compile build` 可生成可信本机产物，VM 只直接调用无循环、无业务堆分配的入口；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
+已有源码、语法、语义、编译命令和 LSP 五个前端包。当前另有 `wings-abi`、`wings-ir`、`wings-artifact`、`wings-codegen` 与 `wings-vm`；十个包均已发布 `0.0.2`。当前源码命令生成可信本机标量产物，内部 IR 另验证临时记录与精确根；完整受管 IR、ABI、装载权限、调度与 GC 尚未实现。下表仍描述目标职责，不代表已经全部实现。
 
-未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v4 context、慢路径签名与状态码，`wings-codegen` 固定插入原子检查，并以薄入口先检查剩余栈；`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享控制令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，作为可移动的进程表槽位前置而非调度器，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 模块自主管理有界栈池，同步与 initializer 也在池内执行，worker 初始化使用进程计费池。仅 VM 新增 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测和受限 ABI 回归。源码变更不覆盖 crates.io `0.0.2`，细节见 [ADR-0011](adr/0011-scalar-stackful-resume.md)、[ADR-0012](adr/0012-bounded-stack-pool.md) 与 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
+未发布源码在原有边界内增加执行控制：`wings-abi` 定义 v5 context、慢路径/堆回调、shadow frame 与状态码；`wings-codegen` 固定插入原子检查、根发布与所有返回路径解链，并以薄入口先检查剩余栈；`wings-vm` 内部 `execution` 模块提供同线程活栈恢复、每次调用总预算与共享令牌，并以 owned `ScalarTask` 持有实例及至多一个调用，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)；`stack_pool` 管理有界栈池，同步与 initializer 也在池内执行，worker 初始化使用进程计费池。仅 VM 使用 `corosensei 0.3.3` 和 `libc`，不启用 unwind，不引入编译器依赖，也不新增 crate；corosensei 默认栈只用于对照探测和受限 ABI 回归。源码变更不覆盖 crates.io `0.0.2`；栈契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md)、[ADR-0012](adr/0012-bounded-stack-pool.md) 和 [ADR-0024](adr/0024-scalar-stack-boundary.md)，根链见 [ADR-0025](adr/0025-aot-record-roots.md)。
 
 `wings-vm` 的 `resources` 内部模块已按 [ADR-0014](adr/0014-resource-reservations.md) 提供单线程账户原语：`ResourceAccount`、`Resources` 与不可克隆的 `Reservation` 支持三级四维预留、同 VM 净转移和 Drop 回收。独立记录堆/根表和宿主 worker 的栈池、mailbox、pending 表已接入；语言业务堆、模块及 allocator 内部开销尚未完整覆盖，不能宣称已有完整资源隔离；跨 worker 同步也未实现。契约集中在[资源准入](runtime.md#资源准入)，有界确定性示例见[独立资源账户回归](evaluation.md#独立资源账户回归)。
 
@@ -37,7 +37,7 @@
 
 `wings-sema` 的 HIR 表达业务语义，供编译与编辑器查询共用；`wings-ir` 表达调度点、根和受管调用等执行细节。LSP 不需要把程序降到执行 IR 才能回答悬停或跳转。
 
-当前标量路径暂由编译驱动将通过语义检查的 AST 降为带类型的直线寄存器 IR；后端不依赖语法或语义库。尚无独立 HIR、控制流或根描述，不将当前标量 IR 宣称为完整受管 IR。扩展堆与控制流前须按 [ADR-0009](adr/0009-scalar-aot-prototype.md) 补齐契约。
+当前源码路径由编译驱动将通过语义检查的 AST 降为带类型的直线寄存器 IR；后端不依赖语法或语义库。内部 IR 另有临时记录与按最后使用位置生成的根计划，见 [ADR-0025](adr/0025-aot-record-roots.md)；尚无独立 HIR、控制流或引用状态/消息，不能称为完整受管 IR。
 
 `wings-artifact` 的装载前校验与 `wings-vm` 的可执行映射分开。前者检查目标、版本、长度和结构，后者仍须验证来源、权限与受管入口；通过格式校验不代表代码可信。对象文件格式、最终打包和签名方式在 M0 确定。
 
@@ -73,7 +73,7 @@
 
 `stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
-`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集的独立原型。它只依赖已有资源账户和标准库；预留后按固定容量申请存储，不新增 crate 或前端依赖。尚未进入 `wings-abi` 或生成代码，见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。内部 `aot_heap` 模块通过 ABI v5 堆回调与 compiler shadow frame 接入单 Int 字段临时记录；只依赖已有账户、ABI 与标准库，不增加 crate 或 VM 前端依赖。编译器 fixture 与 VM 验证分开为两个 example，仍保持 VM/LSP 的依赖隔离。范围见 [ADR-0025](adr/0025-aot-record-roots.md)。
 
 `wings-codegen::build_with_frame_limit` 在已有后端生成流程中检查机器帧，并由编译驱动库转发；只允许降低 64 KiB 上限，入口超限时不写目录、不链接，不添加 runtime 或平台依赖，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
 

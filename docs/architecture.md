@@ -43,7 +43,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
-未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的独立 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。它尚未接入生成代码或 ABI，不能把 Rust 侧根表验证称为 compiler shadow stack 已完成；下面的完整受管契约仍待实现。
+未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的独立 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 将单 Int 字段临时记录接入内部 IR/AOT 与 compiler 精确活跃根；尚无业务语言堆、持久状态/消息/回复根，下面的完整受管契约仍待实现。
 
 首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 
@@ -64,9 +64,9 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码的标量 ABI v4 是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针及 `usize` 剩余栈下界。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；预算与数据只由执行线程访问。`Bool` 编码 0/1，`Unit` 编码 0。宿主校验参数数量和类型，产物仅在正常返回时写入输出；算术、取消、总预算或栈空间耗尽通过状态码返回，不 trap 或跨边界 unwind。
+未发布源码 ABI v5 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调与独立 heap data 指针。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。外部只允许 Int/Bool/Unit，Ref 仅内部 IR 临时值；Bool 编码 0/1，Unit 编码 0。宿主校验参数，产物只在正常返回时写输出；算术、取消、预算、栈、堆与无效根错误均以状态码返回，不 trap 或 unwind。
 
-薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码切片使用 v2/v3，均与当前 v4 相互拒绝装载，须使用匹配的编译器和 VM。
+薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；N 条 IR 指令成功需 N+1 步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码 v2–v4 均与当前 v5 拒绝混用，须使用匹配的编译器和 VM。
 
 `start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 与 initializer 也借用池内栈，正常返回立即归还；worker 通过 `instantiate_in_pool` 将初始化栈计入进程额度，额度不足在 spawn 时回滚。池不代替 compiler 根、GC 或完整资源账本，当前栈检查见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，原栈恢复与池契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 和 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
@@ -74,15 +74,15 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 
-这条路径没有计时线程、调度、GC、mailbox、完整资源准入或监督，不能运行不可信代码。独立资源账户原语尚未覆盖运行时分配。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；活栈、有界池、资源守恒与 owned task 切片已另通过本分支的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43099984279)，该结果不覆盖后续 OS 唤醒变更。浮点/SIMD、GC 根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+源码/CLI 这条标量路径没有计时线程、调度、业务 GC、mailbox、完整资源准入或监督，不能运行不可信代码；宿主 opt-in 堆与 worker 另见下节。原标量 AOT 在 macOS AArch64 与 Linux x86-64（glibc）均已通过 [CI 原生执行验证](https://github.com/wsafight/wings/actions/runs/43089909858)；活栈、有界池、资源守恒与 owned task 切片已另通过本分支的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43099984279)，历史结果不覆盖后续 ABI/GC/OS 唤醒变更。浮点/SIMD、全部业务根、跨线程迁移与完整受管执行模型仍未验证。原型边界见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 共享代码通过 `ScalarModule` 装载一次，再 `instantiate` 创建状态独立的实例；清单和入口表只保存一份，每个实例都执行 initializer。`HandlerId` 持有模块身份与序号，用前检查身份及参数 schema，不接受其他模块的 ID；ID 不是线协议。便利入口 `ScalarProcess::load_trusted` 仍会装载独立模块，不隐式按路径缓存。JSON 适配层只解析一次名称，参数暂存在有界数组，再直接按 ID 调用，避免原先重复查找和参数 Vec 分配。共享对象仅为只读代码元数据，不改变业务状态隔离。见 [ADR-0013](adr/0013-shared-scalar-modules.md)。
 
 ## 低层实现范围
 
-未发布源码的当前 ABI 为 v4：导出薄入口先检查剩余栈，再调用本地业务函数；同步调用、initializer 和活栈调用统一使用有界池。栈不足正常返回受管错误，不写输出或扣步。旧 v3 产物拒绝装载；静态帧准入继续保留，尚不开放递归或业务调用。余量、慢路径限制与验证契约见 [ADR-0024](adr/0024-scalar-stack-boundary.md)。
+当前 ABI v5 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，增加 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。
 
-宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。复用当前 ABI v4，标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
+宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。复用当前 ABI，worker 默认实例仍无堆，标量语言范围不变，不将它当作语言内消息或完整受管执行。状态/失败/预算仍复用 owned task。见 [ADR-0020](adr/0020-single-worker-mailbox.md) 与 [ADR-0021](adr/0021-bounded-requests.md)。
 
 可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不额外改变当前 ABI，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 

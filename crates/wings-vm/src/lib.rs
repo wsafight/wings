@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use wings_abi::{
     DEFAULT_MAX_STEPS, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
-    STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, STATUS_STACK_EXHAUSTED, ScalarOutput,
-    ValueType,
+    STATUS_HEAP_EXHAUSTED, STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK, STATUS_OVERFLOW,
+    STATUS_STACK_EXHAUSTED, ScalarOutput, ValueType,
 };
 use wings_artifact::Manifest;
 
+mod aot_heap;
 mod execution;
 mod heap;
 mod module;
@@ -38,6 +39,7 @@ pub struct ScalarProcess {
     module: ScalarModule,
     state: i64,
     failed: bool,
+    heap: Option<Box<aot_heap::AotHeap>>,
 }
 
 #[derive(Clone, Default)]
@@ -52,11 +54,17 @@ impl CancellationToken {
 }
 
 impl ScalarProcess {
+    pub fn heap_stats(&self) -> Option<HeapStats> {
+        self.heap.as_deref().map(aot_heap::AotHeap::stats)
+    }
+
     /// # Safety
     /// The library must be trusted Wings scalar AOT code matching its manifest,
     /// with valid entry signatures, bounded pointer access and no unwinding.
     /// Entries must honor execution controls, return normally from a failed
     /// slow path without writing output, and fit the fixed execution stack.
+    /// Shadow frames must reference valid live stack storage and be unlinked
+    /// on every return; local references must never escape their owning heap.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         unsafe { ScalarModule::load_trusted(directory) }?.instantiate()
     }
@@ -183,6 +191,8 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_BUDGET_EXHAUSTED => Err("managed execution step budget exhausted".into()),
         STATUS_INVALID_CONTROL => Err("managed execution requires a valid yield callback".into()),
         STATUS_STACK_EXHAUSTED => Err("managed execution stack exhausted".into()),
+        STATUS_HEAP_EXHAUSTED => Err("managed record heap exhausted".into()),
+        STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
         _ => Err(format!("unknown scalar ABI status {status}")),
     }
 }

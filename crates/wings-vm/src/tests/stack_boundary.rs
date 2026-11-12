@@ -142,3 +142,46 @@ fn stack_failure_rejects_initializer_and_never_commits_handler_output() {
         );
     }
 }
+
+#[test]
+fn heap_initialization_rejections_release_every_reservation() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let baseline = vm.used();
+    for capacity in [0, 1025, usize::MAX] {
+        assert!(
+            module()
+                .instantiate_with_heap(&bound, &account, capacity)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+    }
+    let small = tenant.process(limits(1)).unwrap();
+    assert!(module().instantiate_with_heap(&bound, &small, 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let probe = module().instantiate_with_heap(&bound, &account, 1).unwrap();
+    let full_heap_bytes = account.used().bytes;
+    drop(probe);
+    let small = tenant.process(limits(full_heap_bytes - 1)).unwrap();
+    assert!(module().instantiate_with_heap(&bound, &small, 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let stack = bound.acquire().unwrap();
+    let active = vm.used();
+    assert!(module().instantiate_with_heap(&bound, &account, 1).is_err());
+    assert_eq!(vm.used(), active);
+    drop(stack);
+    assert_eq!(vm.used(), baseline);
+    assert!(
+        with_entry(stack_failure)
+            .instantiate_with_heap(&bound, &account, 1)
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    let process = module().instantiate_with_heap(&bound, &account, 1).unwrap();
+    assert!(vm.used().bytes > baseline.bytes);
+    drop(process);
+    assert_eq!(vm.used(), baseline);
+    drop((bound, pool));
+    assert_eq!(vm.used(), Resources::default());
+}

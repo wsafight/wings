@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
 
+use crate::aot_heap::AotHeap;
 use crate::stack_pool::PooledStack;
 use crate::{CancellationToken, HandlerId, ScalarModule, ScalarProcess, StackPool};
 
@@ -11,7 +12,8 @@ thread_local! {
     static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
 }
 
-type ExecutionCoroutine = Coroutine<ResumeCommand, (), (u32, ScalarOutput), PooledStack>;
+type InvocationResult = (u32, ScalarOutput, Option<Box<AotHeap>>);
+type ExecutionCoroutine = Coroutine<ResumeCommand, (), InvocationResult, PooledStack>;
 
 pub(crate) fn default_stack_pool() -> Result<StackPool, String> {
     DEFAULT_STACK_POOL.with(|slot| {
@@ -26,7 +28,8 @@ pub(crate) fn default_stack_pool() -> Result<StackPool, String> {
 pub(crate) fn initialize(
     entry: ScalarEntry,
     pool: &StackPool,
-) -> Result<(u32, ScalarOutput), String> {
+    mut heap: Option<Box<AotHeap>>,
+) -> Result<InvocationResult, String> {
     let mut coroutine = new_coroutine(
         entry,
         0,
@@ -35,6 +38,7 @@ pub(crate) fn initialize(
         &CancellationToken::default(),
         &PreemptionToken::default(),
         pool.acquire()?,
+        &mut heap,
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
         CoroutineResult::Return(result) => Ok(result),
@@ -187,7 +191,7 @@ impl ScalarTask {
         }
         let handler = self.process.validate_handler(handler, arguments)?;
         self.invocation = Some(Invocation::new(
-            &self.process,
+            &mut self.process,
             handler,
             arguments,
             max_steps,
@@ -213,7 +217,7 @@ impl ScalarTask {
 
 impl Invocation {
     fn new(
-        process: &ScalarProcess,
+        process: &mut ScalarProcess,
         handler: usize,
         arguments: &[i64],
         max_steps: u64,
@@ -229,6 +233,7 @@ impl Invocation {
             cancellation,
             preemption,
             pool.acquire()?,
+            &mut process.heap,
         )?;
         Ok(Self {
             handler,
@@ -237,6 +242,7 @@ impl Invocation {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn new_coroutine(
     entry: ScalarEntry,
     state: i64,
@@ -245,6 +251,7 @@ fn new_coroutine(
     cancellation: &CancellationToken,
     preemption: &PreemptionToken,
     stack: PooledStack,
+    heap: &mut Option<Box<AotHeap>>,
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
     let mut owned_arguments = Vec::new();
@@ -254,10 +261,11 @@ fn new_coroutine(
     owned_arguments.extend_from_slice(arguments);
     let cancellation = cancellation.clone();
     let preemption = preemption.clone();
+    let mut heap = heap.take();
     let coroutine = Coroutine::with_stack(stack, move |yielder, command| {
         let mut output = ScalarOutput::default();
         let ResumeCommand::Run(slice_remaining) = command else {
-            return (STATUS_CANCELLED, output);
+            return (STATUS_CANCELLED, output, heap);
         };
         let mut context = ScalarContext {
             cancellation: Arc::as_ptr(&cancellation.flag),
@@ -269,9 +277,21 @@ fn new_coroutine(
                 .cast_mut()
                 .cast(),
             stack_limit,
+            roots: std::ptr::null(),
+            heap_call: heap
+                .as_ref()
+                .map(|_| crate::aot_heap::heap_call as wings_abi::HeapCall),
+            heap_data: heap.as_mut().map_or(std::ptr::null_mut(), |heap| {
+                std::ptr::from_mut(&mut **heap).cast()
+            }),
         };
         let status = unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) };
-        (status, output)
+        let status = if context.roots.is_null() {
+            status
+        } else {
+            wings_abi::STATUS_INVALID_ROOT
+        };
+        (status, output, heap)
     });
     Ok(coroutine)
 }
@@ -304,10 +324,11 @@ fn resume_invocation(
     let coroutine = active.coroutine.as_mut().expect("active coroutine");
     match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
         CoroutineResult::Yield(()) => Ok(ExecutionStatus::Suspended),
-        CoroutineResult::Return((status, output)) => {
+        CoroutineResult::Return((status, output, heap)) => {
             let handler = active.handler;
             active.coroutine.take();
             invocation.take();
+            process.heap = heap;
             process
                 .finish_invocation(handler, status, output)
                 .map(ExecutionStatus::Complete)

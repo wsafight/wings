@@ -64,6 +64,9 @@ fn verify(directory: &Path, name: &str, argument: i64, expected: i64) {
                             2 => stack_pointer() - 1024,
                             _ => stack_pointer() - 128 * 1024,
                         },
+                        roots: std::ptr::null(),
+                        heap_call: None,
+                        heap_data: std::ptr::null_mut(),
                     };
                     let mut output = ScalarOutput {
                         state: 71,

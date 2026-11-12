@@ -353,6 +353,8 @@ fn status_mapping_and_unknown_status_fail_closed() {
         (STATUS_BUDGET_EXHAUSTED, "budget"),
         (STATUS_INVALID_CONTROL, "callback"),
         (STATUS_STACK_EXHAUSTED, "stack exhausted"),
+        (STATUS_HEAP_EXHAUSTED, "heap exhausted"),
+        (STATUS_INVALID_ROOT, "shadow roots"),
         (u32::MAX, "unknown"),
     ] {
         assert!(check_status(status).unwrap_err().contains(expected));

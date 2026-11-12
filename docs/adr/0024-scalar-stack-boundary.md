@@ -4,6 +4,7 @@
 - 状态：已采纳（M0 有界标量切片）
 - 补充：[ADR-0017](0017-scalar-frame-admission.md) 的静态编译帧准入
 - 替代：[ADR-0011](0011-scalar-stackful-resume.md) 的 context 布局及同步调用使用宿主栈的安排
+- 后续：[ADR-0025](0025-aot-record-roots.md) 扩展为 ABI v5，保留本文栈边界，增加临时记录与 compiler 根链。
 
 ## 背景
 

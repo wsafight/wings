@@ -43,6 +43,90 @@ fn rejects(program: &Program, message: &str) {
 }
 
 #[test]
+fn temporary_records_are_well_typed_and_have_exact_last_uses() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, Operation::ReadInt(1)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    function.state = 0;
+    function.reply = 3;
+    let plan = function.root_plan();
+    assert_eq!(plan.capacity, 1);
+    assert_eq!(plan.last_uses[1], 3);
+    assert_eq!(plan.last_uses[4], 4);
+    program.validate().unwrap();
+}
+
+#[test]
+fn rejects_record_forging_type_confusion_and_boundary_references() {
+    for (ty, operation) in [
+        (ValueType::Ref, Operation::Constant(1)),
+        (ValueType::Ref, Operation::RecordInt(usize::MAX)),
+        (ValueType::Int, Operation::RecordInt(0)),
+        (ValueType::Int, Operation::ReadInt(0)),
+        (ValueType::Int, Operation::Collect),
+    ] {
+        let mut program = valid_program();
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ty, operation));
+        rejects(&program, "operand, type or forward reference");
+    }
+    for boundary in 0..3 {
+        let mut program = valid_program();
+        match boundary {
+            0 => program.state = ValueType::Ref,
+            1 => program.handlers[0].parameters[0].1 = ValueType::Ref,
+            _ => program.handlers[0].reply = Some(ValueType::Ref),
+        }
+        rejects(&program, "cannot cross scalar IR boundaries");
+    }
+}
+
+#[test]
+fn reference_limit_counts_simultaneously_live_values_not_total_allocations() {
+    for count in [64, 65] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![instruction(ValueType::Int, Operation::Constant(1))];
+        for _ in 0..count {
+            function
+                .instructions
+                .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+        }
+        for reference in 1..=count {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::ReadInt(reference)));
+        }
+        function.state = 0;
+        function.reply = 0;
+        assert_eq!(function.root_plan().capacity, count);
+        if count == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
+    }
+    let mut program = valid_program();
+    for _ in 0..128 {
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+    }
+    assert_eq!(program.handlers[0].function.root_plan().capacity, 0);
+    program.validate().unwrap();
+}
+
+#[test]
 fn accepts_scalar_state_argument_and_arithmetic() {
     let mut program = valid_program();
     for operator in [

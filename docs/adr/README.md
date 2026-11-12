@@ -31,7 +31,8 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳（宿主请求切片） |
 | [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
 | [0023](0023-bounded-host-supervision.md) | 宿主 one-for-one 恢复、有限重启窗口与新实例身份 | 已采纳（单 worker 恢复切片） |
-| [0024](0024-scalar-stack-boundary.md) | ABI v4、业务帧前剩余栈检查及统一池内入口 | 已采纳（M0 栈边界切片）；替代 0011 的布局与同步宿主栈安排 |
+| [0024](0024-scalar-stack-boundary.md) | ABI v4、业务帧前剩余栈检查及统一池内入口 | 已采纳；context 由 0025 扩展，栈边界保留 |
+| [0025](0025-aot-record-roots.md) | ABI v5、内部 IR 临时记录、编译器精确根及进程计费堆 | 已采纳（M0 集成切片）；替代 0024 的 context 布局 |
 
 ## 维护方式
 

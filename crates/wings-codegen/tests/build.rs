@@ -96,6 +96,32 @@ fn builds_a_host_library_and_matching_manifest_without_leaving_object_files() {
 }
 
 #[test]
+fn roots_exceeding_capacity_are_rejected_before_creating_output() {
+    let directory = Directory::new();
+    let mut program = program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![instruction(ValueType::Int, Operation::Constant(11))];
+    for _ in 0..65 {
+        function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+    }
+    for reference in 1..=65 {
+        function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::ReadInt(reference)));
+    }
+    function.state = 0;
+    function.reply = 0;
+    assert!(
+        build(&program, &directory.artifact())
+            .unwrap_err()
+            .contains("64 simultaneously live")
+    );
+    assert!(!directory.artifact().exists());
+}
+
+#[test]
 fn compiles_every_arithmetic_operation_including_runtime_fault_cases() {
     let directory = Directory::new();
     let mut program = program();

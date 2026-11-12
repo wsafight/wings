@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。未发布宿主库另有单 worker mailbox、异步请求和强制检查点活栈恢复；独立记录堆/精确根尚未接入语言或 AOT，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布宿主库另有单 worker mailbox、异步请求和强制检查点活栈恢复；内部 IR 的临时记录已接入 compiler 精确根与 GC，尚无语言堆语法、引用状态或消息，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
 
 ## 开发
 
@@ -54,7 +54,7 @@ Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LS
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v4 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2/v3 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查的余量与限制见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)。
+未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v5 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2–v4 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查的余量与限制见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)，当前根链扩展见 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
 
 原栈分配现由自研 `StackPool` 管理：默认每线程最多 64 个活跃槽位、缓存 2 个已完成栈，耗尽明确失败；可显式传入池并读取容量统计、调用 `trim` 回收缓存页。完成调用立即归还槽位，挂起栈不能复用。此优化主要约束容量和缓存，不消除同时挂起栈的物理成本。实验与限制见[栈分配实验](docs/evaluation.md#原生栈分配实验)。
 
@@ -66,7 +66,7 @@ worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出
 
 `ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
 
-源码还有独立 `RecordHeap`/`ShadowRoots` 切片，用三级容量准入验证不可变定长记录、精确非移动回收和作用域根帧；尚未接入语言或 AOT，不把它称为 compiler 根链已经完成，见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。
+独立 `RecordHeap`/`ShadowRoots` 见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。内部 IR 另有 `RecordInt`/`ReadInt`/`Collect`，由 compiler 按最后使用位置发布精确根；`instantiate_with_heap` 为宿主实例显式建立固定容量、进程计费堆。状态、参数和回复仍是标量，CLI 不提供堆配置，业务语言不增加记录语法，worker 默认不带堆。范围和回归见 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
 
 MVP 的待办和验收顺序见[路线图](docs/roadmap.md#mvp-范围与开发顺序)：先完成活栈、精确根和资源边界，再推进消息、调度、恢复与双平台 BEAM 对照，不以示例运行成功代替可试用验收。
 

@@ -3,15 +3,17 @@ use std::path::Path;
 use std::process::Command;
 
 use cranelift_codegen::ir::{
-    AbiParam, InstBuilder, MemFlags, SigRef, Value, condcodes::IntCC, types,
+    AbiParam, Block, InstBuilder, MemFlags, SigRef, StackSlotData, StackSlotKind, Value,
+    condcodes::IntCC, types,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
-    SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
-    STATUS_INVALID_CONTROL, STATUS_OVERFLOW, STATUS_STACK_EXHAUSTED, ScalarContext, host_target,
+    HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
+    STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
+    STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, ValueType, host_target,
 };
 use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
 use wings_ir::{Function, Operation, Operator, Program};
@@ -201,15 +203,94 @@ fn compile_body(
     let mut slow_signature = module.make_signature();
     slow_signature.params.push(AbiParam::new(pointer_type));
     slow_signature.returns.push(AbiParam::new(types::I32));
+    let mut heap_signature = module.make_signature();
+    heap_signature.params = vec![
+        AbiParam::new(pointer_type),
+        AbiParam::new(types::I32),
+        AbiParam::new(types::I64),
+        AbiParam::new(pointer_type),
+    ];
+    heap_signature.returns.push(AbiParam::new(types::I32));
+    let plan = function.root_plan();
+    let uses_heap = function.instructions.iter().any(|instruction| {
+        matches!(
+            instruction.operation,
+            Operation::RecordInt(_) | Operation::ReadInt(_) | Operation::Collect
+        )
+    });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let slow_signature = builder.import_signature(slow_signature);
+    let heap_signature = builder.import_signature(heap_signature);
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
     let parameters = builder.block_params(entry).to_vec();
+    let exit = builder.create_block();
+    builder.append_block_param(exit, types::I32);
+    let roots = if plan.capacity != 0 {
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (std::mem::size_of::<ShadowFrame>() + plan.capacity * 8) as u32,
+            3,
+        ));
+        let frame = builder.ins().stack_addr(pointer_type, slot, 0);
+        let slots = builder.ins().stack_addr(
+            pointer_type,
+            slot,
+            std::mem::size_of::<ShadowFrame>() as i32,
+        );
+        let previous = builder.ins().load(
+            pointer_type,
+            MemFlags::new(),
+            parameters[3],
+            std::mem::offset_of!(ScalarContext, roots) as i32,
+        );
+        builder.ins().store(
+            MemFlags::new(),
+            previous,
+            frame,
+            std::mem::offset_of!(ShadowFrame, previous) as i32,
+        );
+        builder.ins().store(
+            MemFlags::new(),
+            slots,
+            frame,
+            std::mem::offset_of!(ShadowFrame, slots) as i32,
+        );
+        let zero = builder.ins().iconst(pointer_type, 0);
+        builder.ins().store(
+            MemFlags::new(),
+            zero,
+            frame,
+            std::mem::offset_of!(ShadowFrame, count) as i32,
+        );
+        builder.ins().store(
+            MemFlags::new(),
+            frame,
+            parameters[3],
+            std::mem::offset_of!(ScalarContext, roots) as i32,
+        );
+        Some((frame, slots, previous))
+    } else {
+        None
+    };
+    let heap_output = uses_heap.then(|| {
+        let slot =
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        builder.ins().stack_addr(pointer_type, slot, 0)
+    });
     let mut registers = Vec::new();
-    for instruction in &function.instructions {
-        poll_control(&mut builder, pointer_type, parameters[3], slow_signature);
+    let mut live = Vec::new();
+    for (index, instruction) in function.instructions.iter().enumerate() {
+        live.retain(|register: &usize| plan.last_uses[*register] >= index);
+        publish_roots(&mut builder, pointer_type, roots, &live, &registers);
+        poll_control(
+            &mut builder,
+            pointer_type,
+            parameters[3],
+            slow_signature,
+            exit,
+        );
         let value = match instruction.operation {
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
             Operation::State => parameters[0],
@@ -222,7 +303,7 @@ fn compile_body(
             Operation::Negate(value) => {
                 let zero = builder.ins().iconst(types::I64, 0);
                 let (result, overflow) = builder.ins().ssub_overflow(zero, registers[value]);
-                fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
                 result
             }
             Operation::Binary(operator, left, right) => {
@@ -231,11 +312,11 @@ fn compile_body(
                 match operator {
                     Operator::Divide => {
                         let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
-                        fail_if(&mut builder, zero, STATUS_DIVISION_BY_ZERO);
+                        fail_if_to(&mut builder, zero, STATUS_DIVISION_BY_ZERO, exit);
                         let minimum = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
                         let negative_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
                         let overflow = builder.ins().band(minimum, negative_one);
-                        fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                        fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
                         builder.ins().sdiv(left, right)
                     }
                     _ => {
@@ -245,15 +326,55 @@ fn compile_body(
                             Operator::Multiply => builder.ins().smul_overflow(left, right),
                             Operator::Divide => unreachable!(),
                         };
-                        fail_if(&mut builder, overflow, STATUS_OVERFLOW);
+                        fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
                         result
                     }
                 }
             }
+            Operation::RecordInt(operand) | Operation::ReadInt(operand) => {
+                let operation = if matches!(instruction.operation, Operation::RecordInt(_)) {
+                    HEAP_RECORD_INT
+                } else {
+                    HEAP_READ_INT
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    operation,
+                    registers[operand],
+                    heap_output.expect("heap operation scratch"),
+                    exit,
+                )
+            }
+            Operation::Collect => {
+                let argument = builder.ins().iconst(types::I64, 0);
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    HEAP_COLLECT,
+                    argument,
+                    heap_output.expect("heap operation scratch"),
+                    exit,
+                )
+            }
         };
         registers.push(value);
+        if instruction.ty == ValueType::Ref && plan.last_uses[index] > index {
+            live.push(index);
+        }
     }
-    poll_control(&mut builder, pointer_type, parameters[3], slow_signature);
+    publish_roots(&mut builder, pointer_type, roots, &[], &registers);
+    poll_control(
+        &mut builder,
+        pointer_type,
+        parameters[3],
+        slow_signature,
+        exit,
+    );
     builder
         .ins()
         .store(MemFlags::new(), registers[function.state], parameters[2], 0);
@@ -261,6 +382,17 @@ fn compile_body(
         .ins()
         .store(MemFlags::new(), registers[function.reply], parameters[2], 8);
     let status = builder.ins().iconst(types::I32, 0);
+    builder.ins().jump(exit, &[status]);
+    builder.switch_to_block(exit);
+    let status = builder.block_params(exit)[0];
+    if let Some((_, _, previous)) = roots {
+        builder.ins().store(
+            MemFlags::new(),
+            previous,
+            parameters[3],
+            std::mem::offset_of!(ScalarContext, roots) as i32,
+        );
+    }
     builder.ins().return_(&[status]);
     builder.seal_all_blocks();
     builder.finalize();
@@ -285,6 +417,7 @@ fn poll_control(
     pointer_type: types::Type,
     context: Value,
     slow_signature: SigRef,
+    exit: Block,
 ) {
     let poll = builder.create_block();
     builder.ins().jump(poll, &[]);
@@ -299,7 +432,7 @@ fn poll_control(
         .ins()
         .atomic_load(types::I32, MemFlags::new(), cancellation);
     let cancelled = builder.ins().icmp_imm(IntCC::NotEqual, requested, 0);
-    fail_if(builder, cancelled, STATUS_CANCELLED);
+    fail_if_to(builder, cancelled, STATUS_CANCELLED, exit);
     let remaining = builder.ins().load(
         types::I64,
         MemFlags::new(),
@@ -307,7 +440,7 @@ fn poll_control(
         std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
     );
     let exhausted = builder.ins().icmp_imm(IntCC::Equal, remaining, 0);
-    fail_if(builder, exhausted, STATUS_BUDGET_EXHAUSTED);
+    fail_if_to(builder, exhausted, STATUS_BUDGET_EXHAUSTED, exit);
     let yield_request = builder.ins().load(
         pointer_type,
         MemFlags::new(),
@@ -339,7 +472,7 @@ fn poll_control(
         std::mem::offset_of!(ScalarContext, slow_path) as i32,
     );
     let missing = builder.ins().icmp_imm(IntCC::Equal, callback, 0);
-    fail_if(builder, missing, STATUS_INVALID_CONTROL);
+    fail_if_to(builder, missing, STATUS_INVALID_CONTROL, exit);
     let call = builder
         .ins()
         .call_indirect(slow_signature, callback, &[context]);
@@ -348,7 +481,7 @@ fn poll_control(
     let failure = builder.create_block();
     builder.ins().brif(success, poll, &[], failure, &[]);
     builder.switch_to_block(failure);
-    builder.ins().return_(&[status]);
+    builder.ins().jump(exit, &[status]);
     builder.switch_to_block(continuation);
     let remaining = builder.ins().iadd_imm(remaining, -1);
     builder.ins().store(
@@ -364,6 +497,75 @@ fn poll_control(
         context,
         std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
     );
+}
+
+fn publish_roots(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
+    roots: Option<(Value, Value, Value)>,
+    live: &[usize],
+    registers: &[Value],
+) {
+    if let Some((frame, slots, _)) = roots {
+        for (index, register) in live.iter().enumerate() {
+            builder.ins().store(
+                MemFlags::new(),
+                registers[*register],
+                slots,
+                (index * 8) as i32,
+            );
+        }
+        let count = builder.ins().iconst(pointer_type, live.len() as i64);
+        builder.ins().store(
+            MemFlags::new(),
+            count,
+            frame,
+            std::mem::offset_of!(ShadowFrame, count) as i32,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_heap(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
+    context: Value,
+    signature: SigRef,
+    operation: u32,
+    argument: Value,
+    output: Value,
+    exit: Block,
+) -> Value {
+    let callback = builder.ins().load(
+        pointer_type,
+        MemFlags::new(),
+        context,
+        std::mem::offset_of!(ScalarContext, heap_call) as i32,
+    );
+    let missing = builder.ins().icmp_imm(IntCC::Equal, callback, 0);
+    fail_if_to(builder, missing, STATUS_INVALID_CONTROL, exit);
+    let operation = builder.ins().iconst(types::I32, i64::from(operation));
+    let call =
+        builder
+            .ins()
+            .call_indirect(signature, callback, &[context, operation, argument, output]);
+    let status = builder.inst_results(call)[0];
+    let success = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+    let continuation = builder.create_block();
+    builder
+        .ins()
+        .brif(success, continuation, &[], exit, &[status]);
+    builder.switch_to_block(continuation);
+    builder.ins().load(types::I64, MemFlags::new(), output, 0)
+}
+
+fn fail_if_to(builder: &mut FunctionBuilder<'_>, condition: Value, status: u32, exit: Block) {
+    let continuation = builder.create_block();
+    let status = builder.ins().iconst(types::I32, i64::from(status));
+    builder
+        .ins()
+        .brif(condition, exit, &[status], continuation, &[]);
+    builder.switch_to_block(continuation);
 }
 
 fn fail_if(builder: &mut FunctionBuilder<'_>, condition: Value, status: u32) {

@@ -1,4 +1,4 @@
-use wings_abi::ValueType;
+use wings_abi::{MAX_SHADOW_ROOTS, ValueType};
 
 pub const MAX_OPERATIONS: usize = 4096;
 pub const MAX_HANDLERS: usize = 128;
@@ -21,6 +21,9 @@ pub enum Operation {
     Argument(usize),
     Negate(Register),
     Binary(Operator, Register, Register),
+    RecordInt(Register),
+    ReadInt(Register),
+    Collect,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +57,17 @@ pub struct Program {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
+        if self.state == ValueType::Ref
+            || self.handlers.iter().any(|handler| {
+                handler.reply == Some(ValueType::Ref)
+                    || handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| *ty == ValueType::Ref)
+            })
+        {
+            return Err("record references cannot cross scalar IR boundaries".into());
+        }
         if self.handlers.len() > MAX_HANDLERS {
             return Err("too many handlers for the scalar prototype".into());
         }
@@ -101,6 +115,13 @@ impl Function {
                         && types.get(left) == Some(&ValueType::Int)
                         && types.get(right) == Some(&ValueType::Int)
                 }
+                Operation::RecordInt(value) => {
+                    instruction.ty == ValueType::Ref && types.get(value) == Some(&ValueType::Int)
+                }
+                Operation::ReadInt(value) => {
+                    instruction.ty == ValueType::Int && types.get(value) == Some(&ValueType::Ref)
+                }
+                Operation::Collect => instruction.ty == ValueType::Unit,
             };
             if !valid {
                 return Err("invalid scalar IR operand, type or forward reference".into());
@@ -110,6 +131,45 @@ impl Function {
         if types.get(self.state) != Some(&state) || types.get(self.reply) != Some(&reply) {
             return Err("invalid scalar IR state or reply register".into());
         }
+        if self.root_plan().capacity > MAX_SHADOW_ROOTS {
+            return Err("AOT function exceeds 64 simultaneously live reference roots".into());
+        }
         Ok(())
     }
+
+    pub fn root_plan(&self) -> RootPlan {
+        let mut last_uses: Vec<usize> = (0..self.instructions.len()).collect();
+        for (index, instruction) in self.instructions.iter().enumerate() {
+            let operands = match instruction.operation {
+                Operation::Negate(value)
+                | Operation::RecordInt(value)
+                | Operation::ReadInt(value) => [Some(value), None],
+                Operation::Binary(_, left, right) => [Some(left), Some(right)],
+                _ => [None, None],
+            };
+            for operand in operands.into_iter().flatten() {
+                if let Some(last) = last_uses.get_mut(operand) {
+                    *last = index;
+                }
+            }
+        }
+        let mut active = Vec::new();
+        let mut capacity = 0;
+        for (index, instruction) in self.instructions.iter().enumerate() {
+            active.retain(|register: &usize| last_uses[*register] >= index);
+            capacity = capacity.max(active.len());
+            if instruction.ty == ValueType::Ref && last_uses[index] > index {
+                active.push(index);
+            }
+        }
+        RootPlan {
+            last_uses,
+            capacity,
+        }
+    }
+}
+
+pub struct RootPlan {
+    pub last_uses: Vec<usize>,
+    pub capacity: usize,
 }

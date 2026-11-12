@@ -24,6 +24,12 @@ pub struct HeapRef {
     generation: u32,
 }
 
+impl HeapRef {
+    pub(crate) fn encoded(self) -> u64 {
+        (u64::from(self.generation) << 32) | u64::from(self.slot)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordLayout {
     heap: u64,
@@ -94,6 +100,11 @@ pub struct RootFrame<'roots> {
 }
 
 impl RecordHeap {
+    pub(crate) fn import_reference(&self, encoded: u64) -> Result<HeapRef, String> {
+        let reference = self.decode_reference(encoded);
+        self.validate(reference)?;
+        Ok(reference)
+    }
     pub fn new(
         account: &ResourceAccount,
         capacity: usize,
@@ -313,6 +324,11 @@ impl RecordHeap {
 }
 
 impl ShadowRoots {
+    pub(crate) fn replace(&mut self, values: &[Option<HeapRef>]) {
+        self.slots[..values.len()].copy_from_slice(values);
+        self.slots[values.len()..self.count.max(values.len())].fill(None);
+        self.count = values.len();
+    }
     pub fn new(heap: &RecordHeap, capacity: usize) -> Result<Self, String> {
         if !(1..=MAX_ROOTS).contains(&capacity) {
             return Err("shadow roots require 1..=64 slots".into());

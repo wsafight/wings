@@ -32,6 +32,8 @@ impl ScalarModule {
     /// Entries must honor the ABI and execution controls without unwinding,
     /// out-of-bounds access, or exceeding the fixed execution stack. Failed
     /// slow paths must return normally without writing candidate output.
+    /// Shadow frames and slots must be valid aligned live storage, with all
+    /// live references published and the previous chain restored on every return.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         let directory = directory
             .canonicalize()
@@ -91,7 +93,16 @@ impl ScalarModule {
     }
 
     pub fn instantiate_in_pool(&self, pool: &crate::StackPool) -> Result<ScalarProcess, String> {
-        let (status, output) = crate::execution::initialize(self.inner.initializer, pool)?;
+        self.instantiate_owned(pool, None)
+    }
+
+    fn instantiate_owned(
+        &self,
+        pool: &crate::StackPool,
+        heap: Option<Box<crate::aot_heap::AotHeap>>,
+    ) -> Result<ScalarProcess, String> {
+        let (status, output, heap) =
+            crate::execution::initialize(self.inner.initializer, pool, heap)?;
         check_status(status)?;
         if !self.inner.manifest.state.accepts(output.state) {
             return Err("initializer returned an invalid scalar state".into());
@@ -100,7 +111,18 @@ impl ScalarModule {
             module: self.clone(),
             state: output.state,
             failed: false,
+            heap,
         })
+    }
+
+    pub fn instantiate_with_heap(
+        &self,
+        pool: &crate::StackPool,
+        account: &crate::ResourceAccount,
+        capacity: usize,
+    ) -> Result<ScalarProcess, String> {
+        let heap = crate::aot_heap::AotHeap::new(account, capacity)?;
+        self.instantiate_owned(pool, Some(heap))
     }
 }
 

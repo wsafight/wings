@@ -73,6 +73,7 @@ fn run(directory: &Path, max_steps: u64) -> Result<(), String> {
                     .ok_or_else(|| "expected a Bool argument".to_owned()),
                 ValueType::Unit if value.is_null() => Ok(0),
                 ValueType::Unit => Err("expected null for Unit".into()),
+                ValueType::Ref => Err("record references are not JSON arguments".into()),
             }?;
         }
         let reply = process.invoke_handler(

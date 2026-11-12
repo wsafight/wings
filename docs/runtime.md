@@ -68,6 +68,8 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 `RootFrame` 按作用域维护显式根，嵌套帧只操作自己的槽；帧 Drop 清除本帧根，不回收业务对象。收集只使用传入的这一张 `ShadowRoots`，调用者必须先汇总全部活跃根；其他根表和宿主保存的未发布 handle 不自动保活。`collect` 先验证根，错误时不改变堆；随后按布局标记引用并回收不可达槽，活对象不移动，回收后旧代次失效。完整工作上限受固定槽数、字段数和根数限定，不承诺停顿目标。
 
+[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径：compiler 按最后使用位置发布 Ref，堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；尚不支持引用状态/消息/回复或后台收集。
+
 这不是语言可用堆、跨进程消息格式或 AOT GC；业务 state、当前消息、候选回复和生成代码 safepoint 的根发布仍待接入。细节、替代方案与验证边界见 [ADR-0018](adr/0018-bounded-record-heap.md)。
 
 ### 隔离机制：语言级封闭 + 段隔离堆
@@ -114,7 +116,7 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 `enable_timer` 可选启动一个计费控制线程，`tick_timed` 在非零单调 deadline 到达时原子请求让出，仍由下一个强制 safepoint 挂起，不重置总预算。arm/disarm 与计时请求在同一控制锁串行，撤销后不把旧 deadline 泄漏到普通 tick；没有 deadline 时不周期轮询，Drop 唤醒并 join。该线程不持有 actor、账户或活栈，不提供迁移，容量及验证限制见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。默认 worker 不创建线程，当前每 worker 一个的形式不作为 M:N 的既定方案。
 
-该切片无语言内 spawn/send/request、真实 I/O 或迁移；可选执行 timer 也不主动通知请求 timeout，没有 tick/poll 时请求结果不更新。记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
+该切片无语言内 spawn/send/request、真实 I/O 或迁移；可选执行 timer 也不主动通知请求 timeout，没有 tick/poll 时请求结果不更新。worker 默认不带堆，临时 AOT 堆只在独立宿主实例 opt-in；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
 
 ### 分层
 

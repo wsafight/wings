@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（受管堆独立原型，尚未接入 AOT）
 - 相关决定：[精确根与非移动 GC](0004-safepoints-and-gc.md)、[三级账户](0014-resource-reservations.md)
+- 后续：[ADR-0025](0025-aot-record-roots.md) 将单 Int 字段临时记录接入内部 IR/AOT，保留独立堆 API；语言及持久业务根仍未开放。
 
 ## 背景与决定
 
