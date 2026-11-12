@@ -17,6 +17,9 @@ mod timer;
 mod wakeup;
 mod worker;
 
+#[cfg(test)]
+mod tests;
+
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution, ScalarTask};
 pub use heap::{
     CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,

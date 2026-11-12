@@ -48,7 +48,7 @@ cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
 cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
 ```
 
-可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
+Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。
 
 此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、完整资源准入或监督。资源账户目前仅有单线程独立原语，未接入全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 

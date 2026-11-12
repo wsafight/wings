@@ -67,6 +67,10 @@ M0 后沿用确定的基线，完整报告各分位结果。需求或硬件改�
 
 ## 工具链与 LSP 验收
 
+Rust 自动化回归入口为 `cargo test --workspace --locked`；优化构建使用 `cargo test --workspace --release --locked`。测试分为公共 API 集成测试与少量私有单测，覆盖源码位置/Unicode、词法语法及错误恢复、语义分析、LSP stdio 与文档同步、IR/清单验证、编译拒绝路径，以及资源预留/转移、精确根、活栈生命周期、mailbox、请求终结和 timer 清理。测试对象数、容量和操作次数均有固定上限；额度拒绝使用逻辑限额，不制造真实 OOM 或非法访存。
+
+VM 宿主执行单测使用仓库内小型可信 Rust ABI 入口，不依赖磁盘动态库，不能据此证明编译器生成了强制检查点。真实 AOT 的检查点、候选输出提交及 debug/release 原栈恢复仍必须运行下面的受限子进程脚本。测试命令已进入既有双平台 CI，但本次新增测试的通过结果须以实际运行记录为准，不沿用历史结果。
+
 已发布标量 AOT 的验证命令为 `cargo build --locked -p wings-compile -p wings-vm`，随后运行 `python3 scripts/verify_scalar_aot.py`；脚本在临时目录构建可信产物、驱动独立 VM 子进程，检查 Counter、标量类型、算术边界、错误输入与清单拒绝。该版本尚不验证执行控制或资源账户。macOS AArch64、Linux x86-64 的 [CI](https://github.com/wsafight/wings/actions/runs/43089909858) 已实际执行并通过该版本检查；后续新增用例不沿用这次结果。
 
 未发布源码增加 ABI v3 执行控制验收：逐个检查点耗尽、提交前失败不写哨兵输出、零预算、取消优先级、旧 ABI 拒绝、每次调用预算重置、跨线程令牌取消及失败后库实例终止。脚本在有 CPU 限制且禁 core dump 的独立子进程内调用 ABI、`execution_control`、`stackful_resume` 与 `owned_tasks` 示例。活栈用例包含逐步让出、48 个跨检查点活跃标量、恰好足够的总预算、两个实例交错、未开始/挂起 Drop、挂起取消、算术失败与重复恢复错误；`owned_tasks` 另覆盖同线程槽位移动、忙时拒绝、跨模块 ID 拒绝、池耗尽不毒化实例、连续调用及未完成任务丢弃/取回时的清理，见 [ADR-0015](adr/0015-owned-scalar-tasks.md)。这些是正确性验证，不是调度或性能测量。
