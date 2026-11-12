@@ -106,6 +106,12 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 ## 调度器：M:N + safepoint 轮询抢占
 
+未发布源码先提供 [ADR-0020](adr/0020-single-worker-mailbox.md) 的宿主 `ScalarWorker`：固定槽位、同 worker generation Pid、有限单向 mailbox 与手动 `tick` 轮转。`spawn` 前计进程数/控制容量，消息入队前计条数与保守控制容量，活栈使用同租户计费池。`send` 当前只接受无回复 handler，参数按模块 ID/schema 验证，满时返回 `mailbox_full`；同一宿主发送者保持 FIFO。
+
+每次 `tick` 至多开始/恢复一个入口的一片，挂起时保留原栈、候选不提交；成功才提交并归还消息/执行预留。受管失败返回退出事件并清理该实例和队列，其他实例可继续。开始前额度不足不丢队首；外部收到错误后可继续驱动其他 actor。`stop` 不经过普通队列，挂起时先正常取消退出，满队列也可清理。宿主可读已提交标量 state 和账目用于诊断，不能取得可变实例。
+
+该切片无语言内 spawn/send、request/reply、计时线程、真实 I/O 或迁移；记录堆/根尚未接入 scalar actor，不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
+
 ### 分层
 
 - 单调度线程先验证语义，再扩展为 M:N。本地队列优先、跨线程工作窃取；线程数遵守 VM 进程的 CPU 配额，不把物理核数当作始终可用的计算量。

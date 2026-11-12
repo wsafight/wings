@@ -112,6 +112,10 @@ impl ScalarTask {
         self.invocation.is_some()
     }
 
+    pub(crate) fn committed_state(&self) -> i64 {
+        self.process.state
+    }
+
     pub fn start(
         &mut self,
         handler: &HandlerId,

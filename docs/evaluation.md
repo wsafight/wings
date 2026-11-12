@@ -81,6 +81,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `accounted_stacks` 另在相同受限子进程验证：VM/tenant 满额时净转移不双计，process 上限不足不激活/不毒化实例，同租户校验，完成/丢弃/取消归还，缓存和 trim 保留承诺，以及最后一个活栈释放时所有账目归零。见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
+独立记录堆、根帧与栈池计费已在 `ca8072b` 通过 macOS AArch64、Linux x86-64 的 [debug/release CI](https://github.com/wsafight/wings/actions/runs/43156013824)，并通过 Rust 1.85 all-target 检查。该证据不覆盖后续 worker 变更。
+
+## 单 worker 标量消息回归
+
+行为脚本构建单向 Add/Set/Fail 与请求 Get 的 Queue 产物，受限子进程运行 `scalar_worker`。检查 FIFO、多实例隔离、轮转、逐片候选提交、满队列拒绝、stale/跨 worker Pid、输入校验不改变队列、预算/算术失败退出、stop 满队列/挂起清理和三级用量回收。它不覆盖语言内 send/spawn、request/timeout、真实 I/O、compiler 根或同业务 BEAM 性能，见 [ADR-0020](adr/0020-single-worker-mailbox.md)。
+
 ## 独立记录堆与根帧回归
 
 `record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。

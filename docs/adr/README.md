@@ -27,6 +27,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0017](0017-scalar-frame-admission.md) | 机器码生成后、写产物前的标量编译帧准入 | 已采纳（M0 有界标量切片） |
 | [0018](0018-bounded-record-heap.md) | 有界不可变记录、精确 mark-sweep 与作用域根帧原语 | 已采纳（独立原型，未接入 AOT） |
 | [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳（单线程接入契约） |
+| [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
 
 ## 维护方式
 

@@ -14,6 +14,7 @@ mod module;
 mod resources;
 mod stack_pool;
 mod wakeup;
+mod worker;
 
 pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution, ScalarTask};
 pub use heap::{
@@ -24,6 +25,7 @@ pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use wakeup::{WorkerNotifier, WorkerParker};
+pub use worker::{Pid, ScalarWorker, WorkerEvent};
 
 pub struct ScalarProcess {
     module: ScalarModule,
