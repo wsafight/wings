@@ -6,14 +6,42 @@ use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarO
 
 use crate::aot_heap::AotHeap;
 use crate::stack_pool::PooledStack;
-use crate::{CancellationToken, HandlerId, ScalarModule, ScalarProcess, StackPool};
+use crate::{CancellationToken, HandlerId, HeapStats, ScalarModule, ScalarProcess, StackPool};
 
 thread_local! {
     static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
 }
 
-type InvocationResult = (u32, ScalarOutput, Option<Box<AotHeap>>);
-type ExecutionCoroutine = Coroutine<ResumeCommand, (), InvocationResult, PooledStack>;
+type InvocationResult = (u32, ScalarOutput, Option<Box<AotHeap>>, Checkpoint);
+type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
+
+#[derive(Clone, Copy)]
+struct Checkpoint {
+    remaining_steps: u64,
+    heap: Option<HeapStats>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionPhase {
+    Ready,
+    Suspended,
+    Complete,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionSnapshot {
+    pub phase: ExecutionPhase,
+    pub max_steps: u64,
+    pub remaining_steps: u64,
+    pub heap: Option<HeapStats>,
+}
+
+impl ExecutionSnapshot {
+    pub fn consumed_steps(&self) -> u64 {
+        self.max_steps.saturating_sub(self.remaining_steps)
+    }
+}
 
 pub(crate) fn default_stack_pool() -> Result<StackPool, String> {
     DEFAULT_STACK_POOL.with(|slot| {
@@ -29,7 +57,7 @@ pub(crate) fn initialize(
     entry: ScalarEntry,
     pool: &StackPool,
     mut heap: Option<Box<AotHeap>>,
-) -> Result<InvocationResult, String> {
+) -> Result<(u32, ScalarOutput, Option<Box<AotHeap>>), String> {
     let mut coroutine = new_coroutine(
         entry,
         0,
@@ -41,8 +69,8 @@ pub(crate) fn initialize(
         &mut heap,
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
-        CoroutineResult::Return(result) => Ok(result),
-        CoroutineResult::Yield(()) => {
+        CoroutineResult::Return((status, output, heap, _)) => Ok((status, output, heap)),
+        CoroutineResult::Yield(_) => {
             if !matches!(
                 coroutine.resume(ResumeCommand::Cancel),
                 CoroutineResult::Return(_)
@@ -83,16 +111,19 @@ enum ResumeCommand {
 pub struct ScalarExecution<'process> {
     process: &'process mut ScalarProcess,
     invocation: Option<Invocation>,
+    last: Option<ExecutionSnapshot>,
 }
 
 pub struct ScalarTask {
     invocation: Option<Invocation>,
     process: ScalarProcess,
+    last: Option<ExecutionSnapshot>,
 }
 
 struct Invocation {
     handler: usize,
     coroutine: Option<ExecutionCoroutine>,
+    snapshot: ExecutionSnapshot,
 }
 
 impl ScalarProcess {
@@ -132,6 +163,7 @@ impl ScalarProcess {
         Ok(ScalarExecution {
             process: self,
             invocation: Some(invocation),
+            last: None,
         })
     }
 
@@ -157,6 +189,7 @@ impl ScalarProcess {
         Ok(ScalarExecution {
             process: self,
             invocation: Some(invocation),
+            last: None,
         })
     }
 }
@@ -166,6 +199,7 @@ impl ScalarTask {
         Self {
             invocation: None,
             process,
+            last: None,
         }
     }
 
@@ -175,6 +209,20 @@ impl ScalarTask {
 
     pub fn is_active(&self) -> bool {
         self.invocation.is_some()
+    }
+
+    pub fn snapshot(&self) -> Option<ExecutionSnapshot> {
+        self.invocation
+            .as_ref()
+            .map(|active| active.snapshot)
+            .or(self.last)
+    }
+
+    pub fn heap_stats(&self) -> Option<HeapStats> {
+        match self.invocation.as_ref() {
+            Some(active) => active.snapshot.heap,
+            None => self.process.heap_stats(),
+        }
     }
 
     pub(crate) fn committed_state(&self) -> i64 {
@@ -207,7 +255,12 @@ impl ScalarTask {
     }
 
     pub fn resume(&mut self, max_slice_steps: u64) -> Result<ExecutionStatus, String> {
-        resume_invocation(&mut self.process, &mut self.invocation, max_slice_steps)
+        resume_invocation(
+            &mut self.process,
+            &mut self.invocation,
+            &mut self.last,
+            max_slice_steps,
+        )
     }
 
     pub fn into_process(mut self) -> ScalarProcess {
@@ -237,6 +290,12 @@ impl Invocation {
         {
             return Err("AOT heap execution requires its process-accounted stack pool".into());
         }
+        let snapshot = ExecutionSnapshot {
+            phase: ExecutionPhase::Ready,
+            max_steps,
+            remaining_steps: max_steps,
+            heap: process.heap_stats(),
+        };
         let coroutine = new_coroutine(
             process.module.inner.entries[handler],
             process.state,
@@ -250,6 +309,7 @@ impl Invocation {
         Ok(Self {
             handler,
             coroutine: Some(coroutine),
+            snapshot,
         })
     }
 }
@@ -277,7 +337,11 @@ fn new_coroutine(
     let coroutine = Coroutine::with_stack(stack, move |yielder, command| {
         let mut output = ScalarOutput::default();
         let ResumeCommand::Run(slice_remaining) = command else {
-            return (STATUS_CANCELLED, output, heap);
+            let checkpoint = Checkpoint {
+                remaining_steps: max_steps,
+                heap: heap.as_deref().map(AotHeap::stats),
+            };
+            return (STATUS_CANCELLED, output, heap, checkpoint);
         };
         let mut context = ScalarContext {
             cancellation: Arc::as_ptr(&cancellation.flag),
@@ -285,7 +349,7 @@ fn new_coroutine(
             yield_request: Arc::as_ptr(&preemption.flag),
             slice_remaining,
             slow_path: Some(suspend_scalar),
-            data: (yielder as *const Yielder<ResumeCommand, ()>)
+            data: (yielder as *const Yielder<ResumeCommand, Checkpoint>)
                 .cast_mut()
                 .cast(),
             stack_limit,
@@ -303,14 +367,31 @@ fn new_coroutine(
         } else {
             wings_abi::STATUS_INVALID_ROOT
         };
-        (status, output, heap)
+        let checkpoint = Checkpoint {
+            remaining_steps: context.remaining_steps,
+            heap: heap.as_deref().map(AotHeap::stats),
+        };
+        (status, output, heap, checkpoint)
     });
     Ok(coroutine)
 }
 
 impl ScalarExecution<'_> {
+    pub fn snapshot(&self) -> ExecutionSnapshot {
+        self.invocation
+            .as_ref()
+            .map(|active| active.snapshot)
+            .or(self.last)
+            .expect("started execution snapshot")
+    }
+
     pub fn resume(&mut self, max_slice_steps: u64) -> Result<ExecutionStatus, String> {
-        resume_invocation(self.process, &mut self.invocation, max_slice_steps)
+        resume_invocation(
+            self.process,
+            &mut self.invocation,
+            &mut self.last,
+            max_slice_steps,
+        )
     }
 }
 
@@ -325,6 +406,7 @@ impl Drop for ScalarExecution<'_> {
 fn resume_invocation(
     process: &mut ScalarProcess,
     invocation: &mut Option<Invocation>,
+    last: &mut Option<ExecutionSnapshot>,
     max_slice_steps: u64,
 ) -> Result<ExecutionStatus, String> {
     let active = invocation
@@ -335,15 +417,30 @@ fn resume_invocation(
     }
     let coroutine = active.coroutine.as_mut().expect("active coroutine");
     match coroutine.resume(ResumeCommand::Run(max_slice_steps)) {
-        CoroutineResult::Yield(()) => Ok(ExecutionStatus::Suspended),
-        CoroutineResult::Return((status, output, heap)) => {
+        CoroutineResult::Yield(checkpoint) => {
+            active.snapshot.phase = ExecutionPhase::Suspended;
+            active.snapshot.remaining_steps = checkpoint.remaining_steps;
+            active.snapshot.heap = checkpoint.heap;
+            Ok(ExecutionStatus::Suspended)
+        }
+        CoroutineResult::Return((status, output, heap, checkpoint)) => {
             let handler = active.handler;
+            let mut snapshot = active.snapshot;
+            snapshot.remaining_steps = checkpoint.remaining_steps;
+            snapshot.heap = checkpoint.heap;
             active.coroutine.take();
             invocation.take();
             process.heap = heap;
-            process
+            let result = process
                 .finish_invocation(handler, status, output)
-                .map(ExecutionStatus::Complete)
+                .map(ExecutionStatus::Complete);
+            snapshot.phase = if result.is_ok() {
+                ExecutionPhase::Complete
+            } else {
+                ExecutionPhase::Failed
+            };
+            *last = Some(snapshot);
+            result
         }
     }
 }
@@ -366,9 +463,13 @@ impl Drop for Invocation {
 
 unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
     let context = unsafe { &mut *context };
-    let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, ()>>() };
+    let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
     unsafe { &*context.yield_request }.swap(0, Ordering::SeqCst);
-    match yielder.suspend(()) {
+    let checkpoint = Checkpoint {
+        remaining_steps: context.remaining_steps,
+        heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
+    };
+    match yielder.suspend(checkpoint) {
         ResumeCommand::Run(steps) => {
             context.slice_remaining = steps;
             STATUS_OK

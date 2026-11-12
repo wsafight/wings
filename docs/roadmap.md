@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+宿主诊断先按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 暴露单 worker 最近安全点的预算/堆统计；跨线程、故障历史与完整可试用诊断仍在 MVP 门槛内。
+
 M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 RecordInt 持久状态；不改变 MVP 门槛，引用消息、业务控制流、语言消息副作用、真实 I/O、M:N 及双平台 BEAM 对照仍须完成。
 
 宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
@@ -62,7 +64,7 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 [ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。ADR-0031 补充标量循环中的计时请求与有限轮转回归，但仍不覆盖 runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
 
-[ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。尚无语言级监督、link/monitor、GC/预算等完整诊断，不跳过 M0/M1 或性能门禁。
+[ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。[ADR-0032](adr/0032-safe-point-diagnostics.md) 补充最近安全点 GC/预算快照；尚无语言级监督、link/monitor 或跨线程/故障历史诊断，不跳过 M0/M1 或性能门禁。
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，但引用消息根和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 

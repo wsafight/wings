@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+宿主 `ScalarWorker::snapshot` / `ScalarSupervisor::snapshot` 可查询排队、当前入口、已提交标量状态、进程用量及最近安全点预算/GC 统计；不推进执行或暴露记录 handle。`ScalarTask` / `ScalarExecution` 保留最近入口的只读执行快照。挂起统计不是后台实时采样，边界见 [ADR-0032](docs/adr/0032-safe-point-diagnostics.md)；验证命令仍为 workspace 测试及 debug/release AOT 脚本。
+
 未发布源码支持 `if flag { expression } else { expression }`，只执行选中臂，条件为 Bool、两臂为同类型标量；臂内暂不支持语句或引用结果。示例为 `examples/branches.wings`，实际路径预算和根边界见 [ADR-0029](docs/adr/0029-scalar-conditional-expressions.md)。
 
 条件可使用标量 `==`/`!=` 或有符号 Int 的 `<`/`<=`/`>`/`>=`；比较不转换类型或比较记录 handle。示例为 `examples/comparisons.wings`，契约见 [ADR-0030](docs/adr/0030-scalar-comparisons.md)。

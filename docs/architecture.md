@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0032](adr/0032-safe-point-diagnostics.md) 规定宿主诊断只传递开始/让出/返回边界的值快照，不保存悬挂 context 或跨线程读取 actor；不改变 ABI v6 与现有协程所有权。
+
 当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v6 保留 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；参数与回复仍限定标量。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
 
 宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。

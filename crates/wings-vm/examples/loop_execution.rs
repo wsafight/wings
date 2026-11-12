@@ -2,8 +2,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use wings_vm::{
-    CancellationToken, ExecutionStatus, PreemptionToken, RequestOutcome, ResourceAccount,
-    Resources, ScalarModule, ScalarWorker, StackPool, WorkerEvent,
+    CancellationToken, ExecutionPhase, ExecutionStatus, PreemptionToken, ProcessPhase,
+    RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarWorker, StackPool, WorkerEvent,
 };
 
 fn limits() -> Resources {
@@ -36,11 +36,24 @@ fn main() {
         )
         .unwrap();
     let mut completed = false;
+    let mut previous = execution.snapshot();
+    assert_eq!(previous.phase, ExecutionPhase::Ready);
+    assert_eq!(previous.heap.unwrap().allocated, 0);
     for _ in 0..1024 {
-        match execution.resume(1).unwrap() {
+        let result = execution.resume(1).unwrap();
+        let snapshot = execution.snapshot();
+        assert!(snapshot.remaining_steps < previous.remaining_steps);
+        assert!(snapshot.heap.unwrap().collections >= previous.heap.unwrap().collections);
+        let used = vm.used();
+        assert_eq!(execution.snapshot(), snapshot);
+        assert_eq!(vm.used(), used);
+        previous = snapshot;
+        match result {
             ExecutionStatus::Suspended => {}
             ExecutionStatus::Complete(reply) => {
                 assert_eq!(reply, Some(30));
+                assert_eq!(snapshot.phase, ExecutionPhase::Complete);
+                assert!(snapshot.heap.unwrap().collections >= 10);
                 completed = true;
                 break;
             }
@@ -70,6 +83,7 @@ fn main() {
         if cancel {
             cancellation.cancel();
             assert!(execution.resume(1).unwrap_err().contains("cancelled"));
+            assert_eq!(execution.snapshot().phase, ExecutionPhase::Failed);
         }
         drop(execution);
         assert!(
@@ -82,6 +96,53 @@ fn main() {
         assert_eq!(vm.used(), baseline);
     }
     drop((bound, pool));
+    assert_eq!(vm.used(), Resources::default());
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let pid = worker.spawn_with_heap(&module, limits(), 1, 2).unwrap();
+    let pending = worker
+        .request(
+            pid,
+            &module.handler("Heap").unwrap(),
+            &[60],
+            2048,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let mut previous_steps = 0;
+    let mut collections = 0;
+    let mut delivered = false;
+    for _ in 0..2048 {
+        let event = worker.tick(1).unwrap();
+        let snapshot = worker.snapshot(pid).unwrap();
+        let execution = snapshot.execution.unwrap();
+        assert!(execution.consumed_steps() > previous_steps);
+        assert!(snapshot.heap.unwrap().collections >= collections);
+        assert_eq!(snapshot.heap, execution.heap);
+        assert_eq!(snapshot.resources, worker.resources(pid).unwrap());
+        let used = vm.used();
+        assert_eq!(worker.snapshot(pid).unwrap(), snapshot);
+        assert_eq!(vm.used(), used);
+        previous_steps = execution.consumed_steps();
+        collections = snapshot.heap.unwrap().collections;
+        match event {
+            WorkerEvent::Suspended(_) => assert_eq!(snapshot.committed_state, Some(0)),
+            WorkerEvent::Delivered(_) => {
+                assert_eq!(snapshot.committed_state, Some(60));
+                assert_eq!(snapshot.phase, ProcessPhase::Idle);
+                delivered = true;
+                break;
+            }
+            event => panic!("unexpected event {event:?}"),
+        }
+    }
+    assert!(delivered && collections >= 20);
+    assert_eq!(
+        worker.take_reply(pending).unwrap(),
+        Some(RequestOutcome::Reply(60))
+    );
+    worker.stop(pid).unwrap();
+    assert!(worker.snapshot(pid).is_err());
+    drop(worker);
     assert_eq!(vm.used(), Resources::default());
     let mut worker = ScalarWorker::new(&tenant, 2).unwrap();
     let baseline = vm.used();
@@ -104,11 +165,18 @@ fn main() {
     let mut long_done = false;
     for tick in 0..2048 {
         match worker.tick(1).unwrap() {
-            WorkerEvent::Suspended(_) => {}
+            WorkerEvent::Suspended(pid) => {
+                let snapshot = worker.snapshot(pid).unwrap();
+                assert_eq!(snapshot.phase, ProcessPhase::Suspended);
+                assert_eq!(snapshot.execution.unwrap().phase, ExecutionPhase::Suspended);
+                assert_eq!(snapshot.committed_state, Some(0));
+                assert!(snapshot.active_handler.is_some());
+            }
             WorkerEvent::Delivered(pid) if pid == second => {
                 assert!(tick < 8);
                 assert!(!long_done);
                 quick_done = true;
+                assert_eq!(worker.snapshot(pid).unwrap().phase, ProcessPhase::Idle);
             }
             WorkerEvent::Delivered(pid) if pid == first => {
                 assert!(quick_done);

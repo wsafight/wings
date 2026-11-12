@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use crate::timer::DeadlineTimer;
 use crate::{
-    CancellationToken, ExecutionStatus, HandlerId, PreemptionToken, Reservation, ResourceAccount,
-    ResourceLevel, Resources, ScalarModule, ScalarTask, StackPool,
+    CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, PreemptionToken,
+    Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarTask, StackPool,
 };
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +41,26 @@ pub enum WorkerEvent {
     Suspended(Pid),
     Delivered(Pid),
     Exited { pid: Pid, reason: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessPhase {
+    Idle,
+    Runnable,
+    Suspended,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessSnapshot<'module> {
+    pub phase: ProcessPhase,
+    pub queued: usize,
+    pub mailbox_capacity: usize,
+    pub active_handler: Option<&'module str>,
+    pub state_type: wings_abi::ValueType,
+    pub committed_state: Option<i64>,
+    pub execution: Option<ExecutionSnapshot>,
+    pub heap: Option<HeapStats>,
+    pub resources: Resources,
 }
 
 pub struct ScalarWorker {
@@ -455,6 +475,32 @@ impl ScalarWorker {
 
     pub fn resources(&self, pid: Pid) -> Result<Resources, String> {
         self.actor(pid).map(|actor| actor.account.used())
+    }
+
+    pub fn snapshot(&self, pid: Pid) -> Result<ProcessSnapshot<'_>, String> {
+        let actor = self.actor(pid)?;
+        let state_type = actor.task.module().manifest().state;
+        Ok(ProcessSnapshot {
+            phase: if actor.active.is_some() {
+                ProcessPhase::Suspended
+            } else if actor.mailbox.count != 0 {
+                ProcessPhase::Runnable
+            } else {
+                ProcessPhase::Idle
+            },
+            queued: actor.mailbox.count,
+            mailbox_capacity: actor.mailbox.slots.len(),
+            active_handler: actor
+                .active
+                .as_ref()
+                .map(|active| active.message.handler.schema().name.as_str()),
+            state_type,
+            committed_state: (state_type != wings_abi::ValueType::Ref)
+                .then(|| actor.task.committed_state()),
+            execution: actor.task.snapshot(),
+            heap: actor.task.heap_stats(),
+            resources: actor.account.used(),
+        })
     }
 
     pub fn committed_state(&self, pid: Pid) -> Result<i64, String> {

@@ -23,7 +23,10 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
-pub use execution::{ExecutionStatus, PreemptionToken, ScalarExecution, ScalarTask};
+pub use execution::{
+    ExecutionPhase, ExecutionSnapshot, ExecutionStatus, PreemptionToken, ScalarExecution,
+    ScalarTask,
+};
 pub use heap::{
     CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,
     RootFrame, ShadowRoots,
@@ -33,7 +36,9 @@ pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};
-pub use worker::{Pid, RequestId, RequestOutcome, ScalarWorker, WorkerEvent};
+pub use worker::{
+    Pid, ProcessPhase, ProcessSnapshot, RequestId, RequestOutcome, ScalarWorker, WorkerEvent,
+};
 
 pub struct ScalarProcess {
     module: ScalarModule,

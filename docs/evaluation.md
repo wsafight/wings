@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0032](adr/0032-safe-point-diagnostics.md) 的诊断回归检查最近安全点预算单调、GC 统计、已提交状态隐藏及只读查询的计费守恒；必须包含逐片真实 AOT 循环。该快照不是吞吐/内存测量结果，Linux x86-64 仍须独立验证。
+
 持久记录状态按 [ADR-0027](adr/0027-persistent-record-state.md) 验证跨调用 GC、已提交根/候选根、最后检查点、无堆拒绝、失败不提交、worker 隔离与三级清理。新增用例须分别执行双平台 debug/release，不能复用临时记录的既有结果。
 
 带堆监督按 [ADR-0028](adr/0028-supervised-record-heaps.md) 验证首次与重建准入失败、全新状态、旧请求终结、强度上限、sibling 与挂起 stop/Drop 清理；不使用旧标量监督结果代替新切片验证。
