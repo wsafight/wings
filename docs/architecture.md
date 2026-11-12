@@ -84,6 +84,8 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不改变 ABI v3，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
+`ScalarSupervisor` 独占宿主 worker，固定子项及重启历史，按策略有界重建失败实例；每次重启重新执行 initializer、生成新 Pid，不保存失败状态、不重放消息，也不改变 ABI 或语言范围。当前仅 one-for-one 宿主接口，边界见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
+
 当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer 与每个 handler 的实际编译帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链，只适用于当前无递归、无业务函数调用的子集；不是完整 256 KiB 栈成本或动态剩余栈检查，不据此开放函数或业务堆。
 
 语言、IR、调度与资源契约共用，目标 ABI、对象格式、上下文切换和 OS I/O 由平台层处理。汇编行数少不代表实现正确或容易维护。

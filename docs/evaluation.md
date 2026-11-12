@@ -95,6 +95,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `worker_timer` 使用 400 个活跃标量的 Timer 产物验证可选 deadline 让出：先拒绝未启用、零时长和不可表示时长，再验证容量准入、原栈恢复/提交、总预算与挂起清理。短 deadline 的有限观察只证明原子请求可到达强制检查点，不是抢占延迟、服务尾延迟或 BEAM 性能结果；空闲线程无轮询，Drop 应唤醒并 join，不等待原 deadline，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
+`scalar_supervisor` 在受限子进程运行同一 Queue 产物，验证失败前提交的状态不会进入重启实例、候选状态不提交、旧消息不重放、旧请求 Failed、其他子项继续执行、滚动窗口达到强度上限后不再重启，以及挂起 stop 和资源归零。Rust 单元回归另外验证精确窗口边界（不靠 sleep）、策略和构造拒绝、历史计费、stale/跨 supervisor ID、initializer 重建失败及 timer Drop。只覆盖宿主 one-for-one，不代表语言级监督、OTP oracle 或性能验收完成，见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
+
 ## 独立记录堆与根帧回归
 
 `record_heap` 行为示例检查布局、字段 schema、堆身份、stale handle、不可变记录图、精确保活、不移动、槽位复用、作用域及嵌套根、无效根导致零回收、容量拒绝和三级账目归零。与其他 VM 示例一样，在脚本的 CPU/墙钟限制、禁 core dump 子进程内以 debug/release 执行；对象数和根数均固定有界，不做真实 OOM。此结果不覆盖 compiler 根发布、AOT 中途 GC 或完整业务根集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。

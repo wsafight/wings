@@ -52,6 +52,8 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 [ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。这是第 5 项的有限前置，不覆盖循环、runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
 
+[ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。尚无语言级监督、link/monitor、GC/预算等完整诊断，不跳过 M0/M1 或性能门禁。
+
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表，容量在构造前经过三级准入。它没有 compiler 根发布、消息/状态根集成，不视为完整 GC、业务语言堆或 M0 精确根验收完成。
 
 BEAM 对照先固化 [v1 最小协议与 oracle](beam-workloads.md)：已在本机检查有界 Counter 的 i64、FIFO 和失败退出，代表负载组合与采样要求单独列明。未来多 actor、超时、过载及 Wings 等价端尚待实现，不因协议落盘而称 BEAM 基线全部完成。

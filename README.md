@@ -64,6 +64,8 @@ LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳
 
 worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出，仍在强制 safepoint 挂起、原线程恢复。默认不创建计时线程，未验证真实服务尾延迟或 M:N 扩展成本，见 [ADR-0022](docs/adr/0022-worker-deadline-preemption.md)。
 
+`ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
+
 源码还有独立 `RecordHeap`/`ShadowRoots` 切片，用三级容量准入验证不可变定长记录、精确非移动回收和作用域根帧；尚未接入语言或 AOT，不把它称为 compiler 根链已经完成，见 [ADR-0018](docs/adr/0018-bounded-record-heap.md)。
 
 MVP 的待办和验收顺序见[路线图](docs/roadmap.md#mvp-范围与开发顺序)：先完成活栈、精确根和资源边界，再推进消息、调度、恢复与双平台 BEAM 对照，不以示例运行成功代替可试用验收。

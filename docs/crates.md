@@ -69,6 +69,8 @@
 
 内部 `timer` 可选用标准库线程、Mutex/Condvar 给 worker 请求原子让出；线程没有 actor/账户所有权，启动前预留控制和请求栈容量，不新增依赖。它不是 OS I/O reactor 或共享 M:N timer，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
+内部 `supervision` 在单 worker 外维护固定子项槽与有界重启历史，`ScalarSupervisor` 不暴露可变 worker；没有新增 crate 或依赖，也不引入语言级监督或 OTP 兼容承诺，见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
+
 `stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
 `wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集的独立原型。它只依赖已有资源账户和标准库；预留后按固定容量申请存储，不新增 crate 或前端依赖。尚未进入 `wings-abi` 或生成代码，见 [ADR-0018](adr/0018-bounded-record-heap.md)。

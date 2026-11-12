@@ -30,6 +30,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
 | [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳（宿主请求切片） |
 | [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
+| [0023](0023-bounded-host-supervision.md) | 宿主 one-for-one 恢复、有限重启窗口与新实例身份 | 已采纳（单 worker 恢复切片） |
 
 ## 维护方式
 

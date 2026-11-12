@@ -15,6 +15,7 @@ use crate::module::ModuleData;
 use crate::*;
 
 mod primitives;
+mod supervision;
 
 fn limits(bytes: u64) -> Resources {
     Resources {

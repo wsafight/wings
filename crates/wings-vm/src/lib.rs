@@ -13,6 +13,7 @@ mod heap;
 mod module;
 mod resources;
 mod stack_pool;
+mod supervision;
 mod timer;
 mod wakeup;
 mod worker;
@@ -28,6 +29,7 @@ pub use heap::{
 pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};
+pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};
 pub use worker::{Pid, RequestId, RequestOutcome, ScalarWorker, WorkerEvent};
 
