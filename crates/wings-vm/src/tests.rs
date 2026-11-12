@@ -14,6 +14,7 @@ use wings_artifact::{FORMAT_VERSION, Handler, Manifest};
 use crate::module::ModuleData;
 use crate::*;
 
+mod persistent_state;
 mod primitives;
 mod stack_boundary;
 mod supervision;

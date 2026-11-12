@@ -168,17 +168,41 @@ impl ScalarProcess {
             return Err(error);
         }
         let handler = &self.module.inner.manifest.handlers[index];
-        if !self.module.inner.manifest.state.accepts(output.state)
-            || !handler
-                .reply
-                .unwrap_or(ValueType::Unit)
-                .accepts(output.reply)
+        if !handler
+            .reply
+            .unwrap_or(ValueType::Unit)
+            .accepts(output.reply)
         {
             self.failed = true;
             return Err("entry returned an invalid scalar state or reply".into());
         }
+        if let Err(error) = commit_state(
+            self.module.inner.manifest.state,
+            &mut self.heap,
+            output.state,
+        ) {
+            self.failed = true;
+            return Err(error);
+        }
         self.state = output.state;
         Ok(handler.reply.map(|_| output.reply))
+    }
+}
+
+fn commit_state(
+    ty: ValueType,
+    heap: &mut Option<Box<aot_heap::AotHeap>>,
+    value: i64,
+) -> Result<(), String> {
+    if ty == ValueType::Ref {
+        heap.as_mut()
+            .ok_or("record state requires an accounted heap")?
+            .commit(value)
+            .map_err(|error| format!("entry returned an invalid record state: {error}"))
+    } else if ty.accepts(value) {
+        Ok(())
+    } else {
+        Err("entry returned an invalid scalar state".into())
     }
 }
 

@@ -75,13 +75,25 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
 }
 
 #[test]
-fn rejects_record_types_at_every_external_boundary() {
+fn accepts_record_state_but_rejects_reference_messages_and_replies() {
+    checked(
+        "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
+    );
+    assert_error(
+        "process P { state n: RecordInt = 0 }",
+        "T005",
+        "expected RecordInt",
+    );
+    assert_error(
+        "process P { state n: RecordInt = record_int(0); on Put { n = 1 } }",
+        "T005",
+        "expected RecordInt",
+    );
     for source in [
-        "process P { state n: RecordInt = record_int(0) }",
         "process P { state n: Int = 0; on Get(value: RecordInt) {} }",
         "process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }",
     ] {
-        assert_error(source, "T011", "only supported in local");
+        assert_error(source, "T011", "not supported in message");
     }
     checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
 }

@@ -5,6 +5,7 @@
 - 补充：[ADR-0004](0004-safepoints-and-gc.md)、[ADR-0018](0018-bounded-record-heap.md)
 - 替代：[ADR-0024](0024-scalar-stack-boundary.md) 的 v4 context 布局；保留栈准入与正常返回契约
 - 后续：[ADR-0026](0026-language-temporary-records.md) 将临时记录接入源码与显式 worker/CLI 堆，修正同步堆实例的同账户栈计费；ABI v5 不变。
+- 状态限制由 [ADR-0027](0027-persistent-record-state.md) 替代：ABI v6 开放 RecordInt 状态并增加独立持久根，消息/回复仍只允许标量。
 
 ## 背景
 

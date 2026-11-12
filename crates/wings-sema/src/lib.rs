@@ -123,7 +123,6 @@ pub fn analyze(text: &str) -> Analysis {
         let mut state_scope = HashMap::new();
         for state in &process.states {
             let declared = checker.declared_type(&state.ty);
-            checker.external_type(&declared, state.ty.span);
             let actual = checker.expression(&state.default, &HashMap::new());
             checker.require(&actual, &declared, state.default.span);
             checker.bind(
@@ -212,7 +211,11 @@ struct Checker {
 impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
         if *ty == Type::RecordInt {
-            self.error("T011", "RecordInt is only supported in local bindings, not state, message fields or replies", span);
+            self.error(
+                "T011",
+                "RecordInt is not supported in message fields or replies",
+                span,
+            );
         }
     }
     fn error(&mut self, code: &'static str, message: impl Into<String>, span: Span) {
@@ -233,7 +236,7 @@ impl Checker {
                 self.error(
                     "T002",
                     format!(
-                        "unknown type '{}'; supported types are Int, Bool, Unit and local RecordInt",
+                        "unknown type '{}'; supported types are Int, Bool, Unit and RecordInt",
                         name.text
                     ),
                     name.span,

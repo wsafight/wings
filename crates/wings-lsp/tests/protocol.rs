@@ -28,6 +28,27 @@ fn server() -> Server {
 }
 
 #[test]
+fn record_state_shares_types_definitions_and_diagnostics() {
+    let mut server = server();
+    let text = "process P { state saved: RecordInt = record_int(7); on Get -> Int { collect(); read_int(saved) } }";
+    let diagnostics = open(&mut server, URI, 1, text);
+    assert!(
+        diagnostics[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let offset = text.rfind("saved").unwrap() as u32;
+    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
+    assert_eq!(hover["result"]["contents"]["value"], "saved: RecordInt");
+    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
+    assert_eq!(
+        definition["result"]["range"]["start"]["character"],
+        text.find("saved").unwrap()
+    );
+}
+
+#[test]
 fn record_locals_share_types_definitions_and_builtin_completion() {
     let mut server = server();
     let text = "process P { state n: Int = 0; on Get -> Int { let saved = record_int(7); read_int(saved) } }";

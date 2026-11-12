@@ -70,7 +70,7 @@ fn optional_slow_path_has_the_nullable_function_pointer_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 5);
+    assert_eq!(SCALAR_ABI_VERSION, 6);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);

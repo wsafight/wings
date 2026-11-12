@@ -101,12 +101,13 @@ impl ScalarModule {
         pool: &crate::StackPool,
         heap: Option<Box<crate::aot_heap::AotHeap>>,
     ) -> Result<ScalarProcess, String> {
-        let (status, output, heap) =
+        if self.inner.manifest.state == wings_abi::ValueType::Ref && heap.is_none() {
+            return Err("record state requires an explicitly configured accounted heap".into());
+        }
+        let (status, output, mut heap) =
             crate::execution::initialize(self.inner.initializer, pool, heap)?;
         check_status(status)?;
-        if !self.inner.manifest.state.accepts(output.state) {
-            return Err("initializer returned an invalid scalar state".into());
-        }
+        crate::commit_state(self.inner.manifest.state, &mut heap, output.state)?;
         Ok(ScalarProcess {
             module: self.clone(),
             state: output.state,

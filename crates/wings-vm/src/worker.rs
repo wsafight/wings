@@ -458,7 +458,11 @@ impl ScalarWorker {
     }
 
     pub fn committed_state(&self, pid: Pid) -> Result<i64, String> {
-        self.actor(pid).map(|actor| actor.task.committed_state())
+        let actor = self.actor(pid)?;
+        if actor.task.module().manifest().state == wings_abi::ValueType::Ref {
+            return Err("record state is not exposed as a scalar diagnostic".into());
+        }
+        Ok(actor.task.committed_state())
     }
 
     pub fn process_count(&self) -> usize {

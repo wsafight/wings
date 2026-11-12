@@ -57,15 +57,13 @@ pub struct Program {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
-        if self.state == ValueType::Ref
-            || self.handlers.iter().any(|handler| {
-                handler.reply == Some(ValueType::Ref)
-                    || handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| *ty == ValueType::Ref)
-            })
-        {
+        if self.handlers.iter().any(|handler| {
+            handler.reply == Some(ValueType::Ref)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::Ref)
+        }) {
             return Err("record references cannot cross scalar IR boundaries".into());
         }
         if self.handlers.len() > MAX_HANDLERS {
@@ -153,6 +151,11 @@ impl Function {
                 }
             }
         }
+        for output in [self.state, self.reply] {
+            if let Some(last) = last_uses.get_mut(output) {
+                *last = self.instructions.len();
+            }
+        }
         let mut active = Vec::new();
         let mut capacity = 0;
         for (index, instruction) in self.instructions.iter().enumerate() {
@@ -162,6 +165,8 @@ impl Function {
                 active.push(index);
             }
         }
+        active.retain(|register: &usize| last_uses[*register] == self.instructions.len());
+        capacity = capacity.max(active.len());
         RootPlan {
             last_uses,
             capacity,

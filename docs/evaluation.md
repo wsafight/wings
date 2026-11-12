@@ -1,5 +1,7 @@
 # 评测与验收
 
+持久记录状态按 [ADR-0027](adr/0027-persistent-record-state.md) 验证跨调用 GC、已提交根/候选根、最后检查点、无堆拒绝、失败不提交、worker 隔离与三级清理。新增用例须分别执行双平台 debug/release，不能复用临时记录的既有结果。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 用作辅助对照。所有实验公开版本、编译参数、CPU/内存限制、数据生成器和原始结果。
@@ -112,6 +114,12 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 `examples/records.wings` 经共享前端检查、AOT 编译及 CLI `--heap-records` 执行，校验 GC 保活、候选提交、缺少堆配置、堆满/算术失败、initializer 内建、CLI 数值/重复/未知选项拒绝。`language_records` 在受限 OS 子进程验证两个带堆 worker actor 的请求/回复、逐步交错、堆满退出不影响 sibling、挂起 stop 与三级清理。Rust 回归覆盖调用类型/数量/遮蔽、畸形及节点限额、引用边界、LSP 局部类型/跳转/补全、初始化失败回滚，以及堆实例不能绕过计费池。仍由既有 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 和 `python3 scripts/verify_scalar_aot.py` 驱动，release 使用原有 profile 参数。此切片不覆盖引用状态/消息、循环或完整 MVP，见 [ADR-0026](adr/0026-language-temporary-records.md)。
 
 语言临时记录切片在 2026-11-13 本机 macOS AArch64 通过 workspace 测试、check/clippy/fmt、Rust 1.85 all-target 检查及 debug/release 行为脚本；BEAM oracle 另通过 11 个行为及 23 个拒绝输入用例，不含 Wings 性能测量。Linux x86-64 仍待本分支独立验证，不引用历史 CI 作为新切片证据。
+
+## 持久记录状态回归
+
+`examples/record-state.wings` 通过 CLI 验证初始/替换状态、GC 后读取、无堆拒绝、单槽替换堆满及失败无成功输出；`persistent_records` 验证 128 次二槽复用、逐步恢复、最后检查点 Drop、worker 多实例请求交错、失败隔离、标量诊断拒绝及三级清理。脚本的独立受限 `--check-record-roots` 子进程在所有慢路径（含最终提交检查点）及内建前主动收集，验证 initializer 与只用于候选输出的引用均被 compiler 发布，成功返回链为空。该强制收集是测试宿主，不是新增后台 GC API。
+
+执行命令沿用 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 及 `python3 scripts/verify_scalar_aot.py`，release 使用 `--release` 和 `WINGS_PROFILE=release`。2026-11-13 本机 macOS AArch64 通过 debug/release、workspace 测试、check/clippy/fmt 与 Rust 1.85 all-target 检查；Linux x86-64 待独立验证。本切片不包含 BEAM 性能测量，契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 ## 标量编译帧准入回归
 

@@ -333,6 +333,14 @@ impl ShadowRoots {
         if !(1..=MAX_ROOTS).contains(&capacity) {
             return Err("shadow roots require 1..=64 slots".into());
         }
+        Self::allocate(heap, capacity)
+    }
+
+    pub(crate) fn with_state_root(heap: &RecordHeap) -> Result<Self, String> {
+        Self::allocate(heap, MAX_ROOTS + 1)
+    }
+
+    fn allocate(heap: &RecordHeap, capacity: usize) -> Result<Self, String> {
         let bytes = std::mem::size_of::<Self>() + capacity * std::mem::size_of::<Option<HeapRef>>();
         let charge = heap.account.reserve(Resources {
             bytes: bytes as u64,

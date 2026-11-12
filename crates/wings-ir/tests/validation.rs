@@ -79,14 +79,74 @@ fn rejects_record_forging_type_confusion_and_boundary_references() {
             .push(instruction(ty, operation));
         rejects(&program, "operand, type or forward reference");
     }
-    for boundary in 0..3 {
+    for boundary in 1..3 {
         let mut program = valid_program();
         match boundary {
-            0 => program.state = ValueType::Ref,
             1 => program.handlers[0].parameters[0].1 = ValueType::Ref,
             _ => program.handlers[0].reply = Some(ValueType::Ref),
         }
         rejects(&program, "cannot cross scalar IR boundaries");
+    }
+}
+
+#[test]
+fn persistent_state_and_initializer_outputs_stay_live_through_final_checkpoint() {
+    let mut program = valid_program();
+    program.state = ValueType::Ref;
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Ref, Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    program.handlers[0].function.state = 2;
+    program.handlers[0].function.reply = 1;
+    program.validate().unwrap();
+    let plan = program.initializer.root_plan();
+    assert_eq!(plan.last_uses[1], 3);
+    assert_eq!(plan.capacity, 1);
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.last_uses[0], 0);
+    assert_eq!(plan.last_uses[2], 4);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn returned_reference_counts_toward_root_limit_even_without_later_operand_use() {
+    for temporary in [63, 64] {
+        let mut program = valid_program();
+        let function = &mut program.initializer;
+        function.instructions = vec![instruction(ValueType::Int, Operation::Constant(7))];
+        for _ in 0..=temporary {
+            function
+                .instructions
+                .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+        }
+        function.state = 1;
+        for reference in 2..=temporary + 1 {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::ReadInt(reference)));
+        }
+        function.reply = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Constant(0)));
+        assert_eq!(function.root_plan().capacity, temporary + 1);
+        program.state = ValueType::Ref;
+        program.handlers.clear();
+        if temporary == 63 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
     }
 }
 

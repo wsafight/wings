@@ -71,7 +71,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 5
+    assert manifest["abi"] == 6
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -162,12 +162,108 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v5 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v6 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def example(name, *arguments):
     options = ["--release"] if PROFILE == "release" else []
     return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
+
+
+def verify_persistent_roots(directory):
+    import ctypes
+
+    class Output(ctypes.Structure):
+        _fields_ = [("state", ctypes.c_int64), ("reply", ctypes.c_int64)]
+
+    class Frame(ctypes.Structure):
+        pass
+
+    Frame._fields_ = [("previous", ctypes.POINTER(Frame)), ("slots", ctypes.POINTER(ctypes.c_uint64)), ("count", ctypes.c_size_t)]
+
+    class Context(ctypes.Structure):
+        _fields_ = [
+            ("cancellation", ctypes.POINTER(ctypes.c_uint32)), ("remaining_steps", ctypes.c_uint64),
+            ("yield_request", ctypes.POINTER(ctypes.c_uint32)), ("slice_remaining", ctypes.c_uint64),
+            ("slow_path", ctypes.c_void_p), ("data", ctypes.c_void_p), ("stack_limit", ctypes.c_size_t),
+            ("roots", ctypes.POINTER(Frame)), ("heap_call", ctypes.c_void_p), ("heap_data", ctypes.c_void_p),
+        ]
+
+    records = {}
+    committed = None
+    sequence = 0
+    errors = []
+    observations = []
+
+    def collect(current):
+        roots = set()
+        frame = current.roots
+        depth = 0
+        count = 0
+        while frame:
+            depth += 1
+            count += frame.contents.count
+            assert depth <= 64 and count <= 64
+            roots.update(frame.contents.slots[index] for index in range(frame.contents.count))
+            frame = frame.contents.previous
+        assert roots <= records.keys(), (roots, records)
+        for reference in list(records):
+            if reference not in roots and reference != committed:
+                del records[reference]
+        return roots
+
+    heap_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64))
+
+    @heap_type
+    def heap_call(pointer, operation, argument, result):
+        nonlocal sequence
+        try:
+            collect(pointer.contents)
+            if operation == 0:
+                sequence += 1
+                records[sequence] = argument
+                result[0] = sequence
+            elif operation == 1:
+                result[0] = records[argument]
+            else:
+                assert operation == 2
+                result[0] = 0
+            return 0
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
+    slow_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context))
+
+    @slow_type
+    def slow_path(pointer):
+        try:
+            observations.append((pointer.contents.remaining_steps, collect(pointer.contents)))
+            pointer.contents.slice_remaining = 1
+            return 0
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
+    library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    library = ctypes.CDLL(str(directory / library_name))
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["abi"] == 6 and manifest["state"] == "Ref"
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Replace")
+    flag = ctypes.c_uint32(0)
+    arguments = (ctypes.c_int64 * 1)(19)
+    for entry, state, expected in [(library.wings_scalar_init, 0, 7), (getattr(library, f"wings_scalar_handler_{index}"), 1, 19)]:
+        entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+        entry.restype = ctypes.c_uint32
+        context = Context(ctypes.pointer(flag), 128, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+        output = Output(71, 91)
+        observations.clear()
+        assert entry(state, arguments, ctypes.byref(output), ctypes.byref(context)) == 0, errors
+        assert not errors and not context.roots
+        assert records[output.state] == expected
+        assert observations[-1][1] == {output.state}, observations
+        committed = output.state
+    print("Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
 
 
 def main():
@@ -291,6 +387,19 @@ def main():
         assert "callback" in invoke(initializer_artifact, [], expected=1).stderr
         assert command([VM, "run", "--trusted", initializer_artifact, "--heap-records", 1], json.dumps(message("Get")) + "\n").stdout == '{"reply":7}\n'
         example("language_records", language_records)
+        record_state = parent / "record-state"
+        command([COMPILER, "build", ROOT / "examples/record-state.wings", "-o", record_state])
+        state_run = [VM, "run", "--trusted", record_state, "--heap-records", 2]
+        messages = [message("Get"), message("Replace", 17), message("Get"), message("Set", 23), message("Get")]
+        result = command(state_run, "".join(json.dumps(item) + "\n" for item in messages))
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": 7}, {"accepted": True}, {"reply": 17}, {"reply": 23}, {"reply": 23}]
+        assert "accounted heap" in invoke(record_state, [], expected=1).stderr
+        result = command(state_run, json.dumps(message("Fail")) + "\n", expected=1)
+        assert not result.stdout and "division by zero" in result.stderr
+        result = command([VM, "run", "--trusted", record_state, "--heap-records", 1], json.dumps(message("Set", 1)) + "\n", expected=1)
+        assert not result.stdout and "heap exhausted" in result.stderr
+        example("persistent_records", record_state)
+        command([sys.executable, Path(__file__), "--check-record-roots", record_state])
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
@@ -352,7 +461,7 @@ def main():
         assert not invoke(flag, [message("Set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -387,5 +496,7 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--check-control":
         verify_control_abi(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-roots":
+        verify_persistent_roots(Path(sys.argv[2]))
     else:
         main()

@@ -73,7 +73,7 @@
 
 `stack_pool` 通过现有 `resources` 实现 tenant 总容量预留和 active slot 到 process 的净转移；不新增依赖，也不改变 context ABI。未计费宿主探测路径不作为调度器准入方案，见 [ADR-0019](adr/0019-accounted-stack-pools.md)。
 
-`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。内部 `aot_heap` 通过 ABI v5 接入 compiler shadow frame；前端/编译器共享局部 RecordInt 及受限内建类型检查，再降低为已有 IR。VM CLI 显式配置堆，worker 可用 `spawn_with_heap`，不增加 crate 或 VM 前端依赖。内部 IR fixture 与源码端到端验证分开，保持 VM/LSP 依赖隔离。范围见 [ADR-0025](adr/0025-aot-record-roots.md) 与 [ADR-0026](adr/0026-language-temporary-records.md)。
+`wings-vm` 的 `heap` 模块提供定长记录、堆绑定 handle、显式根帧与精确非移动收集，见 [ADR-0018](adr/0018-bounded-record-heap.md)。内部 `aot_heap` 通过 ABI v6 接入 compiler shadow frame 和宿主持久状态根；前端/编译器共享局部/state RecordInt 及受限内建类型检查，再降低为已有 IR。VM CLI 显式配置堆，worker 可用 `spawn_with_heap`，不增加 crate 或 VM 前端依赖。内部 IR fixture 与源码端到端验证分开，保持 VM/LSP 依赖隔离。范围见 [ADR-0025](adr/0025-aot-record-roots.md)、[ADR-0026](adr/0026-language-temporary-records.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 `wings-codegen::build_with_frame_limit` 在已有后端生成流程中检查机器帧，并由编译驱动库转发；只允许降低 64 KiB 上限，入口超限时不写目录、不链接，不添加 runtime 或平台依赖，见 [ADR-0017](adr/0017-scalar-frame-admission.md)。
 

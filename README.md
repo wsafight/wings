@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。可信本机 AOT 原型可编译运行 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布源码另有单 worker mailbox、异步请求和强制检查点活栈恢复；语言临时 RecordInt 已接入 compiler 精确根、计费堆及 GC，尚无引用状态/消息或循环，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。可信本机 AOT 原型可编译运行 Counter；macOS AArch64 与 Linux x86-64 已通过同一套历史 CI 原生执行验证。未发布源码另有单 worker mailbox、异步请求和强制检查点活栈恢复；语言 RecordInt 临时值及持久状态已接入精确根、计费堆及 GC，尚无引用消息或循环，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
@@ -50,11 +50,11 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 
 Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。
 
-此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、完整资源准入或监督。资源账户目前仅有单线程独立原语，未接入全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+此 CLI 路径只验证直线 handler 的原生执行与状态提交，不驱动宿主 mailbox 或监督。资源账户已接入堆、栈及有限宿主 worker，但未覆盖全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
-未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v5 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2–v4 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查的余量与限制见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)，当前根链扩展见 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
+未发布源码另有执行控制：每条 IR 指令及输出提交前强制检查原子取消/让出标志和预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的总上限（默认 1,000,000）。库接口 `start_controlled` 返回独占实例的 `ScalarExecution`，可按步数时间片在同线程让出、保留原栈恢复；取消、总预算或栈空间耗尽会终止，不提交该次状态与回复。同步调用、initializer 与挂起调用统一使用固定 256 KiB 可用栈；薄入口在业务帧前检查剩余空间，worker 初始化栈也计入进程额度，池满或执行前准入失败显式拒绝。Drop 通过正常取消返回清理，不跨受管 ABI unwind。这不是完整调度器、GC 或三级资源账本；源码 ABI v6 只装载匹配源码编译器产物，不兼容已发布 `0.0.2` 的 v1 及旧源码 v2–v5 产物，须重新编译。原栈恢复见 [ADR-0011](docs/adr/0011-scalar-stackful-resume.md)，剩余栈检查见 [ADR-0024](docs/adr/0024-scalar-stack-boundary.md)，根链与持久状态见 [ADR-0025](docs/adr/0025-aot-record-roots.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)。
 
 原栈分配现由自研 `StackPool` 管理：默认每线程最多 64 个活跃槽位、缓存 2 个已完成栈，耗尽明确失败；可显式传入池并读取容量统计、调用 `trim` 回收缓存页。完成调用立即归还槽位，挂起栈不能复用。此优化主要约束容量和缓存，不消除同时挂起栈的物理成本。实验与限制见[栈分配实验](docs/evaluation.md#原生栈分配实验)。
 
@@ -66,7 +66,7 @@ worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出
 
 `ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md)。
 
-语言局部 `RecordInt` 与 `record_int(value)`、`read_int(record)`、`collect()` 可编译执行，compiler 只发布仍活跃的引用。状态、参数和回复仍是标量，记录不可变、不支持字段赋值。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置，不带堆时调用记录内建明确失败。堆实例的同步及显式执行均保持同 process 计费栈池，见 [ADR-0026](docs/adr/0026-language-temporary-records.md)。底层独立堆和 compiler 根分别见 [ADR-0018](docs/adr/0018-bounded-record-heap.md) 与 [ADR-0025](docs/adr/0025-aot-record-roots.md)。
+语言局部与 state 均可用 `RecordInt`，受限内建为 `record_int(value)`、`read_int(record)`、`collect()`；记录不可变，不支持字段赋值，参数和回复仍只允许标量。compiler 发布活跃引用及候选状态，宿主根独立保活已提交状态。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置。引用状态无堆时在初始化前拒绝，临时内建无堆时受管失败；同步及显式执行均保持同 process 计费栈池。见 [ADR-0026](docs/adr/0026-language-temporary-records.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)，可运行示例为 `examples/records.wings` 与 `examples/record-state.wings`。
 
 ```sh
 cargo run -p wings-compile -- build examples/records.wings -o target/records-aot

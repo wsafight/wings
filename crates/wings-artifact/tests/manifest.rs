@@ -118,7 +118,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
         rejects(&manifest, "unsupported artifact format");
         assert!(manifest.encode().is_err());
     }
-    for version in [0, 1, 2, 3, 4, SCALAR_ABI_VERSION + 1, u32::MAX] {
+    for version in [0, 1, 2, 3, 4, 5, SCALAR_ABI_VERSION + 1, u32::MAX] {
         let mut manifest = manifest();
         manifest.abi = version;
         rejects(&manifest, "scalar ABI version");
@@ -126,11 +126,14 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn rejects_record_references_in_all_external_positions() {
-    for boundary in 0..3 {
+fn accepts_record_state_but_rejects_reference_messages_and_replies() {
+    let mut with_state = manifest();
+    with_state.state = ValueType::Ref;
+    with_state.validate().unwrap();
+    with_state.encode().unwrap();
+    for boundary in 1..3 {
         let mut manifest = manifest();
         match boundary {
-            0 => manifest.state = ValueType::Ref,
             1 => manifest.handlers[0]
                 .parameters
                 .push(("reference".into(), ValueType::Ref)),

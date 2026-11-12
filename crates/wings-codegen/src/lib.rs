@@ -367,7 +367,8 @@ fn compile_body(
             live.push(index);
         }
     }
-    publish_roots(&mut builder, pointer_type, roots, &[], &registers);
+    live.retain(|register: &usize| plan.last_uses[*register] == function.instructions.len());
+    publish_roots(&mut builder, pointer_type, roots, &live, &registers);
     poll_control(
         &mut builder,
         pointer_type,

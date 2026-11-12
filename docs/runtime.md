@@ -1,5 +1,7 @@
 # 运行时
 
+有界记录状态切片遵循 [ADR-0027](adr/0027-persistent-record-state.md)：已提交状态作为独立宿主根保活至 handler 正常返回，候选由 compiler 根保活，状态与回复校验后才替换根；失败不提前释放旧状态。堆、根及执行栈仍属于同一 process 账户。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 一个 VM 实例对应一个 OS 进程，内部微进程由 runtime 调度，共享该地址空间。
@@ -68,11 +70,11 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 `RootFrame` 按作用域维护显式根，嵌套帧只操作自己的槽；帧 Drop 清除本帧根，不回收业务对象。收集只使用传入的这一张 `ShadowRoots`，调用者必须先汇总全部活跃根；其他根表和宿主保存的未发布 handle 不自动保活。`collect` 先验证根，错误时不改变堆；随后按布局标记引用并回收不可达槽，活对象不移动，回收后旧代次失效。完整工作上限受固定槽数、字段数和根数限定，不承诺停顿目标。
 
-[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径：compiler 按最后使用位置发布 Ref，堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；尚不支持引用状态/消息/回复或后台收集。
+[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 65 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；尚不支持引用消息/回复或后台收集。
 
 [ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；消息/request 只接受标量，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
 
-这不是语言可用堆、跨进程消息格式或 AOT GC；业务 state、当前消息、候选回复和生成代码 safepoint 的根发布仍待接入。细节、替代方案与验证边界见 [ADR-0018](adr/0018-bounded-record-heap.md)。
+独立原语不自动接入业务根；当前 AOT 路径已覆盖 RecordInt 局部/状态及 safepoint 根，仍缺引用消息/回复和通用值布局，不是完整业务 GC。原语边界见 [ADR-0018](adr/0018-bounded-record-heap.md)，集成契约见 ADR-0025–0027。
 
 ### 隔离机制：语言级封闭 + 段隔离堆
 

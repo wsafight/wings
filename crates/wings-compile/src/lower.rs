@@ -153,6 +153,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "Int" => Ok(ValueType::Int),
         "Bool" => Ok(ValueType::Bool),
         "Unit" => Ok(ValueType::Unit),
+        "RecordInt" => Ok(ValueType::Ref),
         _ => Err(format!("unsupported scalar type {name}")),
     }
 }
@@ -160,6 +161,20 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_persistent_state_without_exposing_reference_messages() {
+        let program = lower("process P { state n: RecordInt = record_int(7); on Set(value: Int) -> Int { n = record_int(value); collect(); read_int(n) } on Get -> Int { collect(); read_int(n) } }").unwrap();
+        assert_eq!(program.state, ValueType::Ref);
+        assert_eq!(program.initializer.root_plan().last_uses[1], 3);
+        let function = &program.handlers[0].function;
+        assert_eq!(function.instructions[0].ty, ValueType::Ref);
+        assert_eq!(
+            function.root_plan().last_uses[function.state],
+            function.instructions.len()
+        );
+        program.validate().unwrap();
+    }
 
     #[test]
     fn lowers_temporary_records_in_source_evaluation_order() {

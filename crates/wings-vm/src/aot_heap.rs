@@ -6,8 +6,8 @@ use wings_abi::{
 };
 
 use crate::{
-    FieldType, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation, ResourceAccount,
-    Resources, ShadowRoots, StackPool,
+    FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation,
+    ResourceAccount, Resources, ShadowRoots, StackPool,
 };
 
 pub(crate) struct AotHeap {
@@ -15,6 +15,7 @@ pub(crate) struct AotHeap {
     heap: RecordHeap,
     roots: ShadowRoots,
     layout: RecordLayout,
+    committed: Option<HeapRef>,
     _metadata: Reservation,
 }
 
@@ -28,7 +29,7 @@ impl AotHeap {
             ..Resources::default()
         })?;
         let layout = heap.register_layout(&[FieldType::Int])?;
-        let roots = ShadowRoots::new(&heap, MAX_SHADOW_ROOTS)?;
+        let roots = ShadowRoots::with_state_root(&heap)?;
         let pointer = unsafe { alloc(Layout::new::<Self>()) }.cast::<Self>();
         if pointer.is_null() {
             return Err("AOT heap control allocation failed".into());
@@ -39,6 +40,7 @@ impl AotHeap {
                 heap,
                 roots,
                 layout,
+                committed: None,
                 _metadata: metadata,
             })
         };
@@ -49,8 +51,17 @@ impl AotHeap {
         self.heap.stats()
     }
 
+    pub(crate) fn commit(&mut self, encoded: i64) -> Result<(), String> {
+        let reference = self.heap.import_reference(encoded as u64)?;
+        if !matches!(self.heap.get(reference, 0)?, RecordValue::Int(_)) {
+            return Err("record state requires an Int field".into());
+        }
+        self.committed = Some(reference);
+        Ok(())
+    }
+
     unsafe fn collect(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
-        let mut references = [None; MAX_SHADOW_ROOTS];
+        let mut references = [None; MAX_SHADOW_ROOTS + 1];
         let mut count = 0;
         let mut depth = 0;
         while !frame.is_null() {
@@ -70,6 +81,11 @@ impl AotHeap {
             }
             depth += 1;
             frame = current.previous;
+        }
+        if let Some(committed) = self.committed {
+            self.heap.get(committed, 0)?;
+            references[count] = Some(committed);
+            count += 1;
         }
         self.roots.replace(&references[..count]);
         self.heap.collect(&self.roots)?;
@@ -140,6 +156,49 @@ mod tests {
         let tenant = vm.tenant(limits).unwrap();
         let account = tenant.process(limits).unwrap();
         (vm, AotHeap::new(&account, capacity).unwrap())
+    }
+
+    #[test]
+    fn committed_root_is_independent_from_sixty_four_compiler_slots() {
+        let (vm, mut heap) = fixture(2);
+        let committed = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(7)])
+            .unwrap();
+        let candidate = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .unwrap();
+        heap.commit(committed.encoded() as i64).unwrap();
+        let slots = [candidate.encoded(); MAX_SHADOW_ROOTS];
+        let frame = ShadowFrame {
+            previous: std::ptr::null(),
+            slots: slots.as_ptr(),
+            count: slots.len(),
+        };
+        unsafe { heap.collect(&frame) }.unwrap();
+        assert_eq!(heap.stats().allocated, 2);
+        let invalid_slots = [0];
+        let invalid = ShadowFrame {
+            previous: &frame,
+            slots: invalid_slots.as_ptr(),
+            count: 1,
+        };
+        let before = heap.stats();
+        assert!(unsafe { heap.collect(&invalid) }.is_err());
+        assert_eq!(heap.stats(), before);
+        assert_eq!(heap.heap.get(committed, 0).unwrap(), RecordValue::Int(7));
+        heap.commit(candidate.encoded() as i64).unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 1);
+        assert!(heap.heap.get(committed, 0).is_err());
+        assert!(heap.commit(committed.encoded() as i64).is_err());
+        assert_eq!(heap.committed, Some(candidate));
+        assert!(heap.commit(0).is_err());
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.heap.get(candidate, 0).unwrap(), RecordValue::Int(9));
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]

@@ -53,15 +53,13 @@ impl Manifest {
         if !valid_name(&self.process) || self.handlers.len() > 128 {
             return Err("invalid process name or handler count".into());
         }
-        if self.state == ValueType::Ref
-            || self.handlers.iter().any(|handler| {
-                handler.reply == Some(ValueType::Ref)
-                    || handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| *ty == ValueType::Ref)
-            })
-        {
+        if self.handlers.iter().any(|handler| {
+            handler.reply == Some(ValueType::Ref)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::Ref)
+        }) {
             return Err("record references cannot cross scalar artifact boundaries".into());
         }
         let mut names = HashSet::new();

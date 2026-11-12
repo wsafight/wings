@@ -1,0 +1,25 @@
+process RecordState {
+  state current: RecordInt = record_int(7)
+
+  on Get -> Int {
+    collect()
+    read_int(current)
+  }
+
+  on Set(value: Int) -> Int {
+    current = record_int(value)
+    collect()
+    read_int(current)
+  }
+
+  on Replace(value: Int) {
+    current = record_int(value)
+    collect()
+  }
+
+  on Fail -> Int {
+    current = record_int(99)
+    collect()
+    1 / 0
+  }
+}

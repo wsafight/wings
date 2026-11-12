@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（M0/M1 有界语言切片）
 - 补充：[ADR-0025](0025-aot-record-roots.md)、[ADR-0020](0020-single-worker-mailbox.md)
+- 后续：[ADR-0027](0027-persistent-record-state.md) 开放持久 RecordInt 状态，替代局部限制并升至 ABI v6；消息与回复限制保留。
 
 ## 决定
 
