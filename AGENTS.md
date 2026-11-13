@@ -4,13 +4,15 @@
 
 ## 项目现状
 
+- ADR-0066 将 Scheduler 可配置 mailbox 上限从 64 扩至 256，其他默认/显式容量不变；创建前按实际固定槽数三级准入，全局结果/语言 pending 仍各最多 256。100 槽满队列 AOT 验证拒绝、健康 actor 与取消清理，仅补 hot-queue 前置，不等于开环/BEAM 等价准入或性能门禁通过。
+
 - ADR-0065 新增独立 v3 正确性协议：两个真实宿主线程/BEAM 发送进程，各 16 请求窗口，完整 Bytes 内持久核对各发送者到每目标序号；独立模型验证合法交错而不强求跨发送者全序。只覆盖 1..100 actor、安全加法集合的闭环，不替代 v2 大容量、并发故障、开环/超载或 BEAM 吞吐/内存双门禁；语法草案仍待审。
 
 - ADR-0064 将 SchedulerSupervisor 创建/查询/停止改为固定空槽链和完整身份校验的槽索引，失败创建不摘链、成功重启保持稳定 child ID；poll 仍扫描固定容量。原 CPU/墙钟和 actor 阶段 3 秒限制不变，不将仿真回归或索引改造称为性能/内存门禁通过。
 
 - ADR-0063 增加 10000×256 B、1000×4 KiB、100×64 KiB 多 actor Counter 的有界闭环正确性对照及 Scheduler 已提交 Bytes 长度/32 B 前缀副本。真实三端仍须显式 `--compare-beam`；只有同发送者到同目标 FIFO，不保证跨 actor 全序。完整 Bytes 不是完整状态导出，仍无开环、双发送者或 BEAM 性能/整机内存门禁结论。
 
-- ADR-0062 将 Scheduler 改为固定 intrusive 就绪队列、本地活栈 FIFO 和空槽链，容量上限 16384 actor；宿主结果与语言 pending 仍各最多 256，mailbox 仍最多 64。首次派发按 slot 分布，返回后固定编号迁移，不是自适应窃取；每轮最多认领一个 handler 并恢复一个时间片。`scheduler_sparse` 的 1000/10000 标量探测不替代完整 Bytes 同业务、开环或 BEAM 双门禁。
+- ADR-0062 将 Scheduler 改为固定 intrusive 就绪队列、本地活栈 FIFO 和空槽链，容量上限 16384 actor；宿主结果与语言 pending 仍各最多 256，mailbox 上限后由 ADR-0066 扩至 256。首次派发按 slot 分布，返回后固定编号迁移，不是自适应窃取；每轮最多认领一个 handler 并恢复一个时间片。`scheduler_sparse` 的 1000/10000 标量探测不替代完整 Bytes 同业务、开环或 BEAM 双门禁。
 
 - ADR-0061 将 Scheduler worker 的业务栈改为按需 guarded mapping，冷借入前完整 process/tenant/VM 准入，缓存净转移计费且最多两个；活栈仍原线程独占至正常返回。公开固定池不变，按需模式统计已映射容量而非潜在上限，均非 RSS。后续容量见 ADR-0062，语法草案待审，BEAM 双目标与 MVP 不因空闲预留减少而完成。
 

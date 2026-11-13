@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 的 `scheduler_large_mailboxes` 检查 64/100/256 槽排满、额外 send/request 拒绝、三级计费回滚、全局结果容量、健康 actor 推进及停止后一次终结/清理。完整 AOT 增加 `scheduler_overload`：真实 4 KiB Bytes、强制检查点 Hold、100 个排队请求与健康 actor，沿原 CPU 20 秒/墙钟 30 秒/禁 core。它不是固定速率开环/等价 BEAM 准入或尾延迟实验。
+
 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 的 `verify_senders_counter.py --compare-beam` 执行两个真实宿主线程/BEAM 进程的 Counter：各 16 条窗口、每条流至多 128 条，覆盖同目标竞争、多目标与空/非均衡流，三种完整 Bytes 状态。独立有界前缀模型检查每目标合法 FIFO 交错和实际回复/终值，不要求两端选同一交错；另拒绝伪造历史及真实 AOT 跳号/重复序号。默认完整 AOT 仍只跑 Wings/模型；CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒不变。此处不覆盖任意交错会溢出的输入、并发故障或开环性能。
 
 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 增加监督满表拒绝/任意停止顺序/多轮槽复用/外来身份/失败创建与重启后槽恢复回归。重新运行 ADR-0063 代表容量用例，保留 actor 阶段 3 秒而不缩小规模；Linux TCG 仅记功能证据，不将耗时差异用于 BEAM 性能判断。

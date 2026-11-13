@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 补 hot-queue 所需的 mailbox 100 准入前置，Scheduler 可配置上限 256，保留固定槽计费/拒绝/活栈与取消清理。尚需 BEAM 等价有限准入、开环采样及热点/公平性双门禁，不能因可排满 100 条就宣称性能或 MVP 达标。
+
 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 补齐安全加法 Counter 的两个真实发送者、各自 FIFO 与合法交错正确性；不是跨发送者全序，也不覆盖并发失败/过载/超时。闭环功能通过仍不能跳过完整业务值/资源账本、开环/热点/公平性、最新原生双平台及同负载 BEAM 吞吐/整机内存门禁。
 
 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 消除监督批量创建/查询/停止的容量扫描，针对多 actor Linux 隔离仿真的 3 秒失败补充回归；poll 仍为固定容量扫描。M0/MVP、原生双平台和同业务 BEAM 双目标门槛不变。

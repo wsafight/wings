@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0066](docs/adr/0066-bounded-scheduler-mailbox-capacity.md) 将 Scheduler mailbox 可配置上限扩至 256，固定容量按实际槽数预先计费；100 槽满队列的真实 Bytes AOT 检查显式拒绝、健康 actor 推进和取消清理。全局结果/语言 pending 上限不变；这只是热点协议前置，不是开环/BEAM 性能结果。
+
 [ADR-0065](docs/adr/0065-two-sender-counter-fifo.md) 增加两个真实发送者的闭环 Counter 对照：完整 Bytes 内核对各自序号，独立模型验证合法交错，不规定跨发送者全序。构建后 `python3 scripts/verify_senders_counter.py --compare-beam` 显式运行 OTP；默认完整 AOT 只跑 Wings/模型，仍不是开环或 BEAM 性能/内存结果。
 
 [ADR-0064](docs/adr/0064-indexed-supervisor-slots.md) 用固定空槽链和带身份校验的槽索引，消除监督创建/查询/停止的容量扫描，保留原初始化/计费/重启语义；poll 仍扫描固定容量。原 CPU/墙钟/阶段 deadline 不变，不将功能回归当成 BEAM 性能结果。

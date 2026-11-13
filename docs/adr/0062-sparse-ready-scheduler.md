@@ -4,6 +4,7 @@
 - 状态：已采纳（稀疏派发切片；macOS 功能已验证，Linux 与完整门禁另记）
 - 部分替代：[ADR-0054](0054-bounded-multi-worker-scheduler.md) 的全 registry 轮转扫描与 256 actor 上限
 - 扩展：[ADR-0061](0061-on-demand-scheduler-stacks.md) 的按需计费栈
+- 后续：[ADR-0066](0066-bounded-scheduler-mailbox-capacity.md) 将 mailbox 参数上限扩至 256，保留本决策的就绪/活栈/空槽队列。
 
 ## 决定与理由
 

@@ -352,6 +352,139 @@ fn scheduler_pins_live_stack_bounds_mailbox_and_stops_without_starving_other_act
 }
 
 #[test]
+fn scheduler_large_mailboxes_bound_queued_messages_and_release_full_queues_on_stop() {
+    for capacity in [64, 100, 256] {
+        let limits = Resources {
+            messages: 512,
+            requests: 512,
+            ..quota()
+        };
+        let vm = ResourceAccount::vm(Resources {
+            bytes: limits.bytes * 2,
+            ..limits
+        });
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                capacity: 2,
+                requests: 256,
+                slice_steps: 1,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let handle = scheduler.handle();
+        let module = spinning_module();
+        let baseline = vm.used();
+        for invalid in [0, 257, usize::MAX] {
+            assert!(handle.spawn(&module, limits, invalid).is_err());
+            assert_eq!(vm.used(), baseline);
+        }
+        assert!(
+            handle
+                .spawn(&module, Resources { bytes: 1, ..limits }, capacity)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        for ancestor in [&vm, &tenant] {
+            let blocked = ancestor
+                .reserve(Resources {
+                    bytes: ancestor.limit().bytes - ancestor.used().bytes,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let baseline = vm.used();
+            assert!(handle.spawn(&module, limits, capacity).is_err());
+            assert_eq!(vm.used(), baseline);
+            drop(blocked);
+        }
+        let busy = handle.spawn(&module, limits, capacity).unwrap();
+        let healthy = handle.spawn(&module, limits, 1).unwrap();
+        handle
+            .send(busy, &module.handler("Spin").unwrap(), &[], u64::MAX)
+            .unwrap();
+        wait_until(|| handle.snapshot(busy).unwrap().execution.is_some());
+        let mut pending = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            pending.push(
+                handle
+                    .request(
+                        busy,
+                        &module.handler("Get").unwrap(),
+                        &[],
+                        32,
+                        Duration::from_secs(5),
+                    )
+                    .unwrap(),
+            );
+        }
+        let snapshot = handle.snapshot(busy).unwrap();
+        assert_eq!(snapshot.queued, capacity);
+        assert_eq!(snapshot.resources.messages, capacity as u64 + 1);
+        assert_eq!(snapshot.resources.requests, capacity as u64);
+        let baseline = vm.used();
+        assert_eq!(
+            handle
+                .send(busy, &module.handler("Add").unwrap(), &[1], 32)
+                .unwrap_err(),
+            "mailbox_full"
+        );
+        assert_eq!(
+            handle
+                .request(
+                    busy,
+                    &module.handler("Get").unwrap(),
+                    &[],
+                    32,
+                    Duration::from_secs(5)
+                )
+                .err()
+                .unwrap(),
+            "mailbox_full"
+        );
+        assert_eq!(vm.used(), baseline);
+        if capacity == 256 {
+            assert_eq!(
+                handle
+                    .request(
+                        healthy,
+                        &module.handler("Get").unwrap(),
+                        &[],
+                        32,
+                        Duration::from_secs(5)
+                    )
+                    .err()
+                    .unwrap(),
+                "ingress_requests_full"
+            );
+            assert_eq!(vm.used(), baseline);
+        }
+        handle
+            .send(healthy, &module.handler("Add").unwrap(), &[7], 32)
+            .unwrap();
+        wait_until(|| handle.snapshot(healthy).unwrap().committed_state == Some(7));
+        handle.stop(busy).unwrap();
+        for mut request in pending {
+            assert_eq!(
+                request.wait(Duration::from_secs(5)).unwrap(),
+                Some(RequestOutcome::Failed)
+            );
+            assert!(request.try_take().is_err());
+        }
+        wait_until(|| handle.snapshot(busy).is_err());
+        assert_eq!(vm.used().requests, 0);
+        assert!(
+            handle
+                .send(busy, &module.handler("Add").unwrap(), &[1], 32)
+                .is_err()
+        );
+        drop((scheduler, handle, module, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
 fn scheduler_start_admission_failure_restores_front_message_and_other_actors_progress() {
     let (vm, tenant, scheduler) = fixture(2, 3);
     let handle = scheduler.handle();

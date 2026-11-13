@@ -57,6 +57,96 @@ fn module() -> ScalarModule {
 }
 
 #[test]
+fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 4,
+        messages: 512,
+        requests: 4,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 1,
+            capacity: 1,
+            requests: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = module();
+    let handler = module.handler("Drop").unwrap();
+    for capacity in [100, 256] {
+        let pid = handle.spawn(&module, limits, capacity).unwrap();
+        let mut state = handle.shared.lock();
+        let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+        let baseline = actor.account.used();
+        for sequence in 1..=capacity {
+            let message = envelope(
+                actor,
+                &handler,
+                &[],
+                sequence as u64,
+                0,
+                ListPayload::default(),
+                false,
+                Reply::None,
+            )
+            .unwrap();
+            actor.mailbox.push(message).unwrap();
+        }
+        let first = actor.mailbox.pop();
+        actor.starting = true;
+        let baseline_full = actor.account.used();
+        assert!(
+            envelope(
+                actor,
+                &handler,
+                &[],
+                999,
+                0,
+                ListPayload::default(),
+                false,
+                Reply::None
+            )
+            .is_err()
+        );
+        assert_eq!(actor.account.used(), baseline_full);
+        actor.mailbox.restore(first);
+        actor.starting = false;
+        for sequence in 1..=capacity / 2 {
+            assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
+        }
+        for sequence in capacity + 1..=capacity + capacity / 2 {
+            let message = envelope(
+                actor,
+                &handler,
+                &[],
+                sequence as u64,
+                0,
+                ListPayload::default(),
+                false,
+                Reply::None,
+            )
+            .unwrap();
+            actor.mailbox.push(message).unwrap();
+        }
+        for sequence in capacity / 2 + 1..=capacity + capacity / 2 {
+            assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
+        }
+        assert_eq!(actor.mailbox.count, 0);
+        assert_eq!(actor.account.used(), baseline);
+        drop(state);
+        handle.stop(pid).unwrap();
+    }
+    drop((scheduler, handle, module, handler, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_generation() {
     let limits = Resources {
         bytes: 32 << 20,

@@ -72,10 +72,20 @@ Linux 同配置隔离仿真重新交叉构建全部 release 工具/示例，29 �
 
 所有业务仍为 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 3 秒，完整 AOT CPU 20 秒/墙钟 30 秒不变。依赖隔离/禁 unwind feature、Markdown 相对链接/围栏和 diff whitespace 检查通过。此处无开环、吞吐、尾延迟或整机内存结果。
 
+## mailbox 100/256 槽准入：ADR-0066
+
+基于 `ba11647`，按 [ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 将 Scheduler mailbox 参数上限从 64 扩至 256，默认/原显式容量及 ScalarWorker 不变。原 hot-queue 要求 100 槽不改；只补准入前置，没有 BEAM 等价有限准入层或开环性能结果。
+
+workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 462 项、四个桥接合计各 6 项通过。新增 64/100/256 满队列、0/257/极大配置拒绝、process/tenant/VM 额度失败回滚、额外 send/request 不变账目、全局 256 结果槽、健康 actor 推进、满队列停止、已消费终态不能再取及最终归零。内部直接验证 100/256 环形 FIFO 回环与 starting 保留容量/队首恢复。真实 `scheduler_overload` 用完整 4 KiB Bytes、强制检查点 Hold 和 100 排队请求验证拒绝/健康 actor/取消清理；所有 AOT 仍受原 CPU 20 秒/墙钟 30 秒/禁 core。
+
+本机完整 debug/release AOT 首次通过；两种构建 v3 显式三端均通过 21/8/17/47，v2 均通过 18/17/49，v1 均通过 45/14/28。Linux 同配置隔离仿真 29 个 release harness 共 468 项通过；首次完整 AOT 在旧 v2 大容量 Bytes 用例触发原 3 秒阶段 deadline，保留原代码/规模/限制第二次完整通过，包含新 100 槽 Bytes 满队列和旧全部回归。没有将超时当预期业务失败，也不以新增满队列专项通过代替完整套件；原生门禁及该大容量路径的耗时余量仍待验证。
+
+依赖隔离、禁 unwind feature、Markdown 链接/围栏及 diff whitespace 通过。Linux TCG 未安装 OTP、未执行原生 debug/clippy/MSRV/doc-tests，测试后已停止实例；功能结果仍不替代最新原生双平台、真实 Linux BEAM 或吞吐/整机内存门禁。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 已由 ADR-0065 补充，仍不是开环；mailbox 100 的 hot-queue 协议当前仍超出实现上限 64，不更改协议绕过。
+- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 已由 ADR-0065 补充，仍不是开环；ADR-0066 已补 mailbox 100 的 Wings 前置，但仍缺 BEAM 等价有限准入与完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 

@@ -61,7 +61,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0051](0051-bounded-int-list-messages.md) | ABI v12、有界列表序列信封、目标重建与入口根 | 已采纳（列表消息切片） |
 | [0052](0052-cross-thread-module-leases.md) | 线程安全只读代码租约、并行独立 worker 与末持有者清理 | 已采纳（多 worker 前置切片） |
 | [0053](0053-detached-process-images.md) | 无活栈独占进程镜像、线程转交与同账户重绑定 | 已采纳（迁移前置切片） |
-| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳；结果表/栈预留/扫描容量由 0060–0062 部分替代 |
+| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳；结果表/栈/扫描/容量由 0060–0062、0066 部分替代 |
 | [0055](0055-multi-worker-exit-diagnostics.md) | 多 worker 最近失败的固定按值诊断，不延长业务资源租约 | 已采纳（有界诊断切片） |
 | [0056](0056-multi-worker-supervision.md) | 独立终态票据与多 worker 有界 one-for-one 宿主重启 | 已采纳；创建/查询/停止扫描由 0064 替代 |
 | [0057](0057-accounted-immutable-bytes.md) | ABI v13、计费不可变字节叶节点与有界构造/复制 | 已采纳（业务值集成切片） |
@@ -73,6 +73,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0063](0063-multi-actor-byte-counter.md) | 多 actor 完整 Bytes Counter 与无租约提交状态副本 | 已采纳（有界正确性切片） |
 | [0064](0064-indexed-supervisor-slots.md) | 固定监督空槽链、稳定身份索引与复用拒绝 | 已采纳；部分替代 0056 的扫描 |
 | [0065](0065-two-sender-counter-fifo.md) | 两个真实发送者的各自 FIFO 与合法提交交错 | 已采纳（有界正确性切片） |
+| [0066](0066-bounded-scheduler-mailbox-capacity.md) | mailbox 256 槽上限与热点 100 槽准入/清理 | 已采纳；部分替代 0054 的容量 |
 
 ## 维护方式
 

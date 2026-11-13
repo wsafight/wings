@@ -24,6 +24,7 @@ mod tests;
 
 const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
+const MAX_MAILBOX: usize = 256;
 const THREAD_STACK: usize = 2 << 20;
 const INVOCATION_BYTES: u64 = 4096;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
@@ -360,8 +361,8 @@ impl SchedulerHandle {
         pool: Option<&StackPool>,
         termination: Option<supervisor::ExitPublisher>,
     ) -> Result<SchedulerPid, String> {
-        if !(1..=64).contains(&mailbox) {
-            return Err("mailbox requires 1..=64 slots".into());
+        if !(1..=MAX_MAILBOX).contains(&mailbox) {
+            return Err("scheduler mailbox requires 1..=256 slots".into());
         }
         module.validate_vm(&self.shared.tenant)?;
         let pid = {

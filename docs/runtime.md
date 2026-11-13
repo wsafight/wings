@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 允许 Scheduler mailbox 配置 1..256，0/257/极大值在创建资源前拒绝；同模块 spawn/监督重启保留已配置容量。满队列沿原 `mailbox_full` 显式失败，不改变 state/队列或票据；当前执行 handler 不算排队数，starting 暂保留原容量。满队列仍能 stop，排队请求选择唯一终态并释放，ScalarWorker 上限不变。
+
 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 对同发送者到同目标 FIFO 增加双发送者正确性对照，不保证跨发送者全序。每发送者独立 16 条闭环窗口，总共最多 32 请求；业务状态验证序号连续并与计数器一起提交。现有请求的锁内准入/入队仍为线性化点，测试不提供新的全局完成事件流，也不将安全加法用例称为并发故障/超时验收。
 
 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 保留监督 child 的原始 Pid 身份并添加私有槽索引；查询/停止完整核对身份，复用槽不接受旧 child，重启不改变稳定 ID。创建成功才占用空槽，创建失败保持可用；主动 stop、禁用/超限/失败重启归还槽，成功重启不归还。独立终态/清理顺序与有界 poll 不变。
