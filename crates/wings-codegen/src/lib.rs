@@ -255,6 +255,10 @@ fn compile_body(
                 | Operation::HeadInt(_)
                 | Operation::TailInts(_)
                 | Operation::IsEmptyInts(_)
+                | Operation::FillBytes(_, _)
+                | Operation::BytesLen(_)
+                | Operation::ByteAt(_, _)
+                | Operation::ReplaceByte(_)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -316,7 +320,7 @@ fn compile_body(
     };
     let heap_output = uses_heap.then(|| {
         let slot =
-            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
         builder.ins().stack_addr(pointer_type, slot, 0)
     });
     let effect_arguments = function
@@ -671,6 +675,52 @@ fn compile_body(
                         result
                     }
                 }
+            }
+            Operation::FillBytes(_, _)
+            | Operation::BytesLen(_)
+            | Operation::ByteAt(_, _)
+            | Operation::ReplaceByte(_) => {
+                let output = heap_output.expect("heap operation scratch");
+                let (operation, arguments) = match instruction.operation {
+                    Operation::FillBytes(length, value) => (
+                        wings_abi::HEAP_FILL_BYTES,
+                        [Some(length), Some(value), None],
+                    ),
+                    Operation::BytesLen(value) => {
+                        (wings_abi::HEAP_BYTES_LEN, [Some(value), None, None])
+                    }
+                    Operation::ByteAt(value, index) => {
+                        (wings_abi::HEAP_BYTE_AT, [Some(value), Some(index), None])
+                    }
+                    Operation::ReplaceByte([value, index, byte]) => (
+                        wings_abi::HEAP_REPLACE_BYTE,
+                        [Some(value), Some(index), Some(byte)],
+                    ),
+                    _ => unreachable!(),
+                };
+                for (index, argument) in arguments.into_iter().enumerate() {
+                    let value = argument
+                        .map(|register| registers[register])
+                        .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), value, output, (index * 8) as i32);
+                }
+                let argument = if pointer_type == types::I64 {
+                    output
+                } else {
+                    builder.ins().uextend(types::I64, output)
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    operation,
+                    argument,
+                    output,
+                    exit,
+                )
             }
             Operation::RecordInt(operand) | Operation::ReadInt(operand) => {
                 let operation = if matches!(instruction.operation, Operation::RecordInt(_)) {

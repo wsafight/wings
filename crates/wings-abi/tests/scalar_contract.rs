@@ -90,7 +90,7 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 12);
+    assert_eq!(SCALAR_ABI_VERSION, 13);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
@@ -104,7 +104,26 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(wings_abi::STATUS_SEND_REJECTED, 10);
     assert_eq!(wings_abi::STATUS_SPAWN_REJECTED, 11);
     assert_eq!(wings_abi::STATUS_REQUEST_REJECTED, 12);
+    assert_eq!(wings_abi::STATUS_INVALID_BYTES, 13);
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
+}
+
+#[test]
+fn bytes_have_no_scalar_encoding_and_operations_extend_without_layout_changes() {
+    assert!(ValueType::BytesRef.is_reference());
+    assert!(!ValueType::BytesRef.is_capability());
+    for value in [0, 1, -1, i64::MIN, i64::MAX] {
+        assert!(!ValueType::BytesRef.accepts(value));
+    }
+    assert_eq!(
+        [
+            wings_abi::HEAP_FILL_BYTES,
+            wings_abi::HEAP_BYTES_LEN,
+            wings_abi::HEAP_BYTE_AT,
+            wings_abi::HEAP_REPLACE_BYTE
+        ],
+        [8, 9, 10, 11]
+    );
 }
 
 #[test]

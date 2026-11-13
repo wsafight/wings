@@ -64,6 +64,23 @@ fn manifest() -> Manifest {
     }
 }
 
+#[test]
+fn bytes_state_round_trips_but_message_and_reply_handles_are_rejected() {
+    let mut manifest = manifest();
+    manifest.state = ValueType::BytesRef;
+    manifest.validate().unwrap();
+    let value: Value = serde_json::from_slice(&manifest.encode().unwrap()).unwrap();
+    assert_eq!(
+        Directory::new().read_json(&value).unwrap().state,
+        ValueType::BytesRef
+    );
+    manifest.handlers[0].parameters[0].1 = ValueType::BytesRef;
+    rejects(&manifest, "Bytes message parameters");
+    manifest.handlers[0].parameters[0].1 = ValueType::Int;
+    manifest.handlers[0].reply = Some(ValueType::BytesRef);
+    rejects(&manifest, "references cannot cross");
+}
+
 fn rejects(manifest: &Manifest, message: &str) {
     let error = manifest.validate().unwrap_err();
     assert!(error.contains(message), "unexpected error: {error}");

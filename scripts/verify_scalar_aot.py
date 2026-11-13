@@ -206,7 +206,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 12
+    assert manifest["abi"] == 13
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -297,7 +297,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v12 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v13 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -311,7 +311,7 @@ def example(name, *arguments):
     return cargo_example("wings-vm", name, "--trusted", *arguments)
 
 
-def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False, list_messages=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False, list_messages=False, byte_buffers=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -398,6 +398,31 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                     return 9
                 else:
                     result[0] = node[1 if operation == 5 else 2]
+            elif operation in [8, 9, 10, 11]:
+                values = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
+                if operation == 8:
+                    length, value = values[:2]
+                    if not 0 <= length <= 65536 or not 0 <= value <= 255:
+                        return 13
+                    data = bytes([value]) * length
+                else:
+                    data = records[values[0]]
+                    assert isinstance(data, bytes)
+                    if operation == 9:
+                        result[0] = len(data)
+                        return 0
+                    index = values[1]
+                    if not 0 <= index < len(data):
+                        return 13
+                    if operation == 10:
+                        result[0] = data[index]
+                        return 0
+                    if not 0 <= values[2] <= 255:
+                        return 13
+                    data = data[:index] + bytes([values[2]]) + data[index + 1:]
+                sequence += 1
+                records[sequence] = data
+                result[0] = sequence
             else:
                 assert operation == 2
                 result[0] = 0
@@ -487,9 +512,11 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 12 and manifest["state"] == ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref"))
+    assert manifest["abi"] == 13 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
+    elif byte_buffers:
+        name = "Fill"
     elif lists:
         name = "Build"
     elif record_loops or functions:
@@ -506,7 +533,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
     handler = getattr(library, f"wings_scalar_handler_{index}")
-    if record_branches or record_loops or functions or lists or self_send or local_processes or requests or record_messages:
+    if record_branches or record_loops or functions or lists or self_send or local_processes or requests or record_messages or byte_buffers:
         def execute(entry, values):
             arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
             entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
@@ -523,6 +550,40 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return output
 
         output = execute(library.wings_scalar_init, [])
+        if byte_buffers:
+            assert records[output.state] == b""
+            committed = output.state
+            for name, values, expected_state, expected_reply in [
+                ("Fill", [65536, 3], bytes([3]) * 65536, 65536),
+                ("Set", [65535, 255], bytes([3]) * 65535 + bytes([255]), 1023),
+                ("Branch", [0], bytes([3]) * 65535 + bytes([255]), 6),
+                ("Branch", [1], bytes([3]) * 65535 + bytes([255]), 10),
+                ("Read", [65535], bytes([3]) * 65535 + bytes([255]), 255),
+                ("Loop", [7], bytes([7]) + bytes(511), 7),
+                ("Length", [], bytes([7]) + bytes(511), 512),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert (records[output.state], output.reply) == (expected_state, expected_reply), (name, output.reply)
+                committed = output.state
+            assert max(frame_depths) >= 2, frame_depths
+            for name, values, expected_status in [
+                ("Fill", [-1, 0], 13), ("Fill", [65537, 0], 13),
+                ("Fill", [1, 256], 13), ("Set", [512, 0], 13), ("Fail", [], 2),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                entry = getattr(library, f"wings_scalar_handler_{index}")
+                entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+                entry.restype = ctypes.c_uint32
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                rejected = Output(71, 91)
+                arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+                assert entry(committed, arguments, ctypes.byref(rejected), ctypes.byref(context)) == expected_status, (name, errors)
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert records[committed] == bytes([7]) + bytes(511)
+                assert not errors and not context.roots, errors
+            print("Compiler roots verified: byte source liveness, fn/branch/loop roots, immutable state and failed candidate unlinking")
+            return
         if list_messages:
             committed = output.state
             for name, values, expected_reply in [
@@ -945,6 +1006,10 @@ def main():
         scheduler = parent / "scheduler"
         command([COMPILER, "build", ROOT / "examples/scheduler.wings", "-o", scheduler])
         example("multi_worker", scheduler, loops)
+        byte_buffers = parent / "bytes"
+        command([COMPILER, "build", ROOT / "examples/bytes.wings", "-o", byte_buffers])
+        example("byte_buffers", byte_buffers)
+        command([sys.executable, Path(__file__), "--check-byte-roots", byte_buffers])
         result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
         result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("Heap", 30)) + "\n")
@@ -1144,6 +1209,8 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), functions=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-roots":
         verify_persistent_roots(Path(sys.argv[2]), lists=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-byte-roots":
+        verify_persistent_roots(Path(sys.argv[2]), byte_buffers=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-message-roots":
         verify_persistent_roots(Path(sys.argv[2]), record_messages=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-message-roots":

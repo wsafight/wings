@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 在 `byte_buffers` 受限 AOT 覆盖 0/256/4096/65536 字节、旧值不变、fn/条件/循环、小堆 GC、非法参数、低预算与 512 组最大状态暂停后取消/Drop 清理，另验证跨 worker 迁移及监督重建为空。`--check-byte-roots` 用独立字节堆在每个 compiler 检查点和 heap 回调前收集，核对源引用、候选出口及失败解链。单测检查三级预留失败、跨堆发布拒绝、传递根、回收与字节额度 GC 重试；子进程 CPU 20 秒/墙钟 30 秒/禁 core 不变。这只是固定业务字节的表示基础，不是 BEAM 等价负载或内存排名。
+
 [ADR-0056](adr/0056-multi-worker-supervision.md) 增加并发八个 child 失败的独立终态检查、全新 state/代次、有限强度、Never、主动停止、重启额度/initializer 失败回滚；真实 `multi_worker` AOT 验证持久列表失败后以全新空列表恢复、旧请求失败、第二次失败达到强度上限。固定 poll 不保证自动恢复延迟，未补齐语言监督、故障历史或性能门禁。
 
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 在 scheduler 单测及 `multi_worker` AOT 中覆盖退出后旧 Pid、失败 owner、handler、结构化故障、旧提交 state 和预算/GC。单测另验证引用 state 脱敏、成功/stop/关闭保留缓存和所有业务资源归零后仍能持有诊断副本；AOT 失败循环不提交候选且其他 actor 继续运行。仍无跨 worker 可靠监督/故障历史或性能结果。

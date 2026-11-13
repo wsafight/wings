@@ -614,7 +614,10 @@ impl ScalarWorker {
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| !ty.is_reference() && !ty.accepts(*value))
+                .any(|(value, (_, ty))| {
+                    *ty == wings_abi::ValueType::BytesRef
+                        || (!ty.is_reference() && !ty.accepts(*value))
+                })
         {
             return Err("handler argument count or scalar type mismatch".into());
         }

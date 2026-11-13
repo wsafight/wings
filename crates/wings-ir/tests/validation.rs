@@ -8,6 +8,37 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
     Instruction { ty, operation }
 }
 
+#[test]
+fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(4)),
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::BytesRef, Operation::ReplaceByte([3, 2, 1])),
+        instruction(ValueType::Int, Operation::ByteAt(4, 2)),
+        instruction(ValueType::Int, Operation::BytesLen(3)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 5;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&3) && roots.at[5].contains(&4));
+    for operation in [
+        Operation::FillBytes(3, 2),
+        Operation::ReplaceByte([3, 3, 1]),
+        Operation::ReplaceByte([3, 1, 9]),
+    ] {
+        let mut bad = program.clone();
+        bad.handlers[0].function.instructions[4].operation = operation;
+        assert!(bad.validate().is_err());
+    }
+    program.handlers[0].parameters[0].1 = ValueType::BytesRef;
+    assert!(program.validate().is_err());
+}
+
 fn valid_program() -> Program {
     Program {
         name: "Counter".into(),

@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 增加不可变 `Bytes`，可作 state、局部、fn 参数/结果、条件表达式与 state while 的值。`fill_bytes(length: Int, value: Int) -> Bytes` 构造 0..=65536 字节，`bytes_len(Bytes) -> Int` 取长度，`byte_at(Bytes, Int) -> Int` 读字节，`replace_byte(Bytes, Int, Int) -> Bytes` 复制替换一个字节。字节必须为 0..=255，索引必须非负且小于长度；不合法时受管失败，不修改旧对象或提交候选。没有字符串字面量或隐式 UTF-8，也不允许 Bytes 消息参数/回复。示例见 [`examples/bytes.wings`](../examples/bytes.wings)，执行须配置计费堆。
+
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 的多 worker 调度不改变源码拼写或 ABI v12。`examples/scheduler.wings` 在固定 worker 间以现有 spawn/send/request 复制 RecordInt/IntList，异步完成更新持久列表状态；迁移仅在 handler 返回后，仍无同步 call/await/receive 或引用回复。类型小写等语法调整留待独立草案审核，不在本切片改动。
 
 [ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息由 [ADR-0051](adr/0051-bounded-int-list-messages.md) 扩展：一条消息全部列表合计最多 64 个整数，逐节点检查预算与取消；引用回复、外部宿主/JSON/ingress 原 handle 或段编码仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings`。
@@ -30,11 +32,11 @@ process 内可按 [ADR-0042](adr/0042-managed-function-frames.md) 声明有显�
 
 持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；RecordInt 可作语言消息字段，回复仍禁止，复制边界见 ADR-0049。执行必须显式配置计费堆，不接受外部 handle。
 
-条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量、RecordInt 及 IntList，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
+条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量、RecordInt、IntList 及 Bytes，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
 
 标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
 
-handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量、RecordInt 与 IntList state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
+handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量、RecordInt、IntList 与 Bytes state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -167,7 +169,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v12 不兼容已发布 `0.0.2` 及旧源码 v2–v11 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽或非法字节参数属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v13 不兼容已发布 `0.0.2` 及旧源码 v2–v12 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 推进第 4 项的实际字节状态：0..=64 KiB 不可变 Bytes、精确叶节点 GC、原账户数据预留、分块构造/复制、取消清理与迁移/监督回归。ABI v13，旧产物重编译，语法大小写不变。字符串、通用记录、Bytes 消息/引用回复、全部资源账本及原生双平台/同业务 BEAM 双目标仍待完成，不改变 M0/MVP 验收门槛。
+
 [ADR-0056](adr/0056-multi-worker-supervision.md) 接入第 6 项的宿主有界 one-for-one 恢复：独立终态交接、全新实例、有限滚动强度与失败回滚。依赖宿主 poll，不覆盖语言监督、link/monitor 或可靠日志；原生最新双平台、完整资源/业务值和同负载 BEAM 双目标仍待验收，MVP 状态不变。
 
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 补第 6 项的跨 worker 最近失败定位，不保留旧堆/栈/账户，也不把可覆盖缓存当可靠恢复事件。有界终态交接与宿主恢复由 ADR-0056 独立接入；该切片不改变 MVP 验收门槛。

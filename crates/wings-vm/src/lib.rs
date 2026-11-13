@@ -221,9 +221,10 @@ impl ScalarProcess {
                 .iter()
                 .zip(&schema.parameters)
                 .any(|(value, (_, ty))| {
-                    !ty.accepts(*value)
-                        && !ty.is_reference()
-                        && !(system && *ty == ValueType::RequestId && *value > 0)
+                    *ty == ValueType::BytesRef
+                        || (!ty.accepts(*value)
+                            && !ty.is_reference()
+                            && !(system && *ty == ValueType::RequestId && *value > 0))
                 })
         {
             return Err("handler argument count or scalar type mismatch".into());
@@ -292,6 +293,9 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_HEAP_EXHAUSTED => Err("managed record heap exhausted".into()),
         STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
         wings_abi::STATUS_EMPTY_LIST => Err("managed empty IntList access".into()),
+        wings_abi::STATUS_INVALID_BYTES => {
+            Err("managed invalid byte buffer length, value or index".into())
+        }
         wings_abi::STATUS_SEND_REJECTED => {
             Err("managed send rejected by identity, mailbox or quota".into())
         }

@@ -1,0 +1,215 @@
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use wings_vm::{
+    CancellationToken, ExecutionFault, ExecutionStatus, PreemptionToken, RequestOutcome,
+    ResourceAccount, Resources, RestartPolicy, ScalarModule, SchedulerConfig,
+    SchedulerRestartStatus, SchedulerSupervisor, StackPool,
+};
+
+fn limits() -> Resources {
+    Resources {
+        bytes: 32 << 20,
+        processes: 8,
+        messages: 16,
+        requests: 16,
+    }
+}
+
+fn main() {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    assert!(arguments.len() == 2 && arguments[0] == "--trusted");
+    let vm = ResourceAccount::vm(limits());
+    let module = unsafe { ScalarModule::load_accounted(Path::new(&arguments[1]), &vm) }.unwrap();
+    let tenant = vm.tenant_accounted(limits()).unwrap();
+    let account = tenant.process_accounted(limits()).unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let baseline = vm.used();
+    let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
+    for length in [0, 256, 4096, 65536] {
+        assert_eq!(
+            process.invoke("Fill", &[length, 255]).unwrap(),
+            Some(length)
+        );
+        assert_eq!(process.invoke("Length", &[]).unwrap(), Some(length));
+        if length != 0 {
+            assert_eq!(
+                process.invoke("Set", &[length - 1, 17]).unwrap(),
+                Some(255 * 256 + 17)
+            );
+            assert_eq!(process.invoke("Read", &[length - 1]).unwrap(), Some(17));
+            assert_eq!(process.invoke("Branch", &[1]).unwrap(), Some(262));
+            assert_eq!(process.invoke("Branch", &[0]).unwrap(), Some(510));
+        }
+    }
+    assert_eq!(process.invoke("Loop", &[20]).unwrap(), Some(20));
+    drop(process);
+    assert_eq!(vm.used(), baseline);
+    let mut observed_unpublished_bytes = false;
+    for boundary in 0..256 {
+        for cancel in [false, true] {
+            let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
+            let cancellation = CancellationToken::default();
+            let mut execution = process
+                .start_controlled(
+                    "Fill",
+                    &[65536, 7],
+                    4096,
+                    &cancellation,
+                    &PreemptionToken::default(),
+                )
+                .unwrap();
+            for _ in 0..boundary {
+                assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
+            }
+            observed_unpublished_bytes |=
+                account.used().bytes > 65536 && execution.snapshot().heap.unwrap().allocated == 1;
+            if cancel {
+                cancellation.cancel();
+                assert!(execution.resume(1).is_err());
+                assert_eq!(execution.snapshot().fault, Some(ExecutionFault::Cancelled));
+            }
+            drop(execution);
+            drop(process);
+            assert_eq!(vm.used(), baseline);
+        }
+    }
+    assert!(observed_unpublished_bytes);
+    for (handler, arguments) in [
+        ("Fill", vec![-1, 0]),
+        ("Fill", vec![65537, 0]),
+        ("Fill", vec![1, 256]),
+        ("Set", vec![-1, 3]),
+        ("Set", vec![4, 3]),
+        ("Set", vec![0, -1]),
+        ("Read", vec![4]),
+    ] {
+        let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
+        process.invoke("Fill", &[4, 8]).unwrap();
+        let mut execution = process
+            .start_controlled(
+                handler,
+                &arguments,
+                4096,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+            )
+            .unwrap();
+        assert!(execution.resume(4096).is_err());
+        assert_eq!(
+            execution.snapshot().fault,
+            Some(ExecutionFault::InvalidBytes)
+        );
+        drop(execution);
+        drop(process);
+        assert_eq!(vm.used(), baseline);
+    }
+    for budget in [0, 4, 64, 128, 255] {
+        let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
+        process.invoke("Fill", &[65536, 9]).unwrap();
+        let mut execution = process
+            .start_controlled(
+                "Set",
+                &[128, 7],
+                budget,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+            )
+            .unwrap();
+        assert!(execution.resume(4096).is_err());
+        assert_eq!(
+            execution.snapshot().fault,
+            Some(ExecutionFault::BudgetExhausted)
+        );
+        drop(execution);
+        drop(process);
+        assert_eq!(vm.used(), baseline);
+    }
+    drop((bound, pool, account));
+    let mut supervisor = SchedulerSupervisor::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 2,
+            requests: 4,
+            slice_steps: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = supervisor.handle();
+    let child = supervisor
+        .spawn_with_heap(
+            &module,
+            limits(),
+            4,
+            4,
+            RestartPolicy::OnFailure {
+                max_restarts: 1,
+                within: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+    let pid = supervisor.current_pid(child).unwrap();
+    let timeout = Duration::from_secs(5);
+    let mut fill = handle
+        .request(
+            pid,
+            &module.handler("Fill").unwrap(),
+            &[65536, 9],
+            4096,
+            timeout,
+        )
+        .unwrap();
+    assert_eq!(
+        fill.wait(timeout).unwrap(),
+        Some(RequestOutcome::Reply(65536))
+    );
+    for _ in 0..4 {
+        let mut read = handle
+            .request(
+                pid,
+                &module.handler("Read").unwrap(),
+                &[65535],
+                4096,
+                timeout,
+            )
+            .unwrap();
+        assert_eq!(read.wait(timeout).unwrap(), Some(RequestOutcome::Reply(9)));
+    }
+    assert_eq!(handle.snapshot(pid).unwrap().migrations, 4);
+    let mut failed = handle
+        .request(pid, &module.handler("Fail").unwrap(), &[], 4096, timeout)
+        .unwrap();
+    assert_eq!(failed.wait(timeout).unwrap(), Some(RequestOutcome::Failed));
+    let deadline = Instant::now() + timeout;
+    let event = loop {
+        if let Some(event) = supervisor.poll() {
+            break event;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    let SchedulerRestartStatus::Restarted(replacement) = event.restart else {
+        panic!("missing replacement")
+    };
+    let mut length = handle
+        .request(
+            replacement,
+            &module.handler("Length").unwrap(),
+            &[],
+            4096,
+            timeout,
+        )
+        .unwrap();
+    assert_eq!(
+        length.wait(timeout).unwrap(),
+        Some(RequestOutcome::Reply(0))
+    );
+    drop((length, fill, failed, handle, supervisor, module, tenant));
+    assert_eq!(vm.used(), Resources::default());
+    println!(
+        "Byte buffers verified: accounted immutable 0..64 KiB values, chunked copying, roots/GC, cancellation, migration and fresh supervised heaps"
+    );
+}

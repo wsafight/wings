@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- 2026-11-13 增量：当前源码 ABI v13，已有有界 IntList 语言消息、线程安全只读代码租约、固定多 worker 调度及宿主 poll 驱动监督（ADR-0051–0056）；Bytes 按 ADR-0057 支持 0..=64 KiB 不可变计费 state/局部/fn 值、分块复制及精确 GC，尚不支持 Bytes 消息/引用回复或字符串。下述早期切片说明不替代各新增 ADR；完整资源账本、原生最新双平台与同业务 BEAM 双目标仍待验收。语法大小写草案待审，不提前迁移类型拼写。
+
 - 项目名为 Wings，对外称 Wings VM，定位是微进程虚拟机；核心目标是在相同业务负载下，性能高于 BEAM、内存占用低于 BEAM。
 - VM 用 Rust 实现，独立运行；执行引擎包与命令叫 `wings-vm`，编译工具叫 `wings-compile`，语言服务器叫 `wings-lsp`。`wings-lang` 是业务语言名，不是聚合 crate。名称尚未完成重名与商标核查。
 - 当前处于 M0：已有前端、LSP 和可信本机 AOT 原型；语言支持局部/持久 RecordInt/IntList、精确引用条件合流/state while、有界非递归 fn 受管调用帧及受限内建，已有 RecordInt 语言消息复制，仍无列表消息/引用回复、递归/动态派发或通用业务值。未发布源码使用 ABI v11，每层薄入口在业务帧前检查剩余栈；compiler 发布跨帧精确活跃根及候选状态，循环外活跃根延长至回边，宿主持久根保活已提交状态，opt-in 计费堆接入非移动 GC，堆实例同步/显式执行均使用同 process 计费栈池。另有强制原子取消/让出检查、总预算、同线程活栈恢复及有限宿主 worker/mailbox/request/监督和语言自发送/同模块创建与发送（局部 Pid）/整数异步请求与系统完成事件（局部 RequestId）；worker/supervisor 可显式 spawn_with_heap，新实例不保留旧状态。worker 计费 OS 等待可重查就绪/deadline，宿主有单 actor 单入口的有界跨线程标量 ingress，仍无完整 reactor；可选计时线程只请求原子让出，不访问 actor。CLI --heap-records 显式开堆，不是网络 VM。已发布 `0.0.2` 仍是 v1。同步、初始化与活栈调用统一使用禁用 unwind 的 corosensei guarded stack，丢弃挂起调用必须先正常取消返回。完整受管执行、通用消息根、M:N、通用业务值与基准尚未完成，不把切片称为完整 VM 或 MVP。

@@ -42,6 +42,10 @@ pub enum Operation {
     HeadInt(Register),
     TailInts(Register),
     IsEmptyInts(Register),
+    FillBytes(Register, Register),
+    BytesLen(Register),
+    ByteAt(Register, Register),
+    ReplaceByte([Register; 3]),
     SendSelf {
         handler: usize,
         arguments: Vec<Register>,
@@ -180,6 +184,14 @@ impl Program {
             })
         {
             return Err("Pid is only supported as a local value".into());
+        }
+        if self.handlers.iter().any(|handler| {
+            handler
+                .parameters
+                .iter()
+                .any(|(_, ty)| *ty == ValueType::BytesRef)
+        }) {
+            return Err("Bytes message parameters are not supported".into());
         }
         if self
             .handlers
@@ -408,6 +420,26 @@ impl Function {
                 Operation::IsEmptyInts(value) => {
                     instruction.ty == ValueType::Bool
                         && types.get(value) == Some(&ValueType::ListRef)
+                }
+                Operation::FillBytes(length, value) => {
+                    instruction.ty == ValueType::BytesRef
+                        && types.get(length) == Some(&ValueType::Int)
+                        && types.get(value) == Some(&ValueType::Int)
+                }
+                Operation::BytesLen(value) => {
+                    instruction.ty == ValueType::Int
+                        && types.get(value) == Some(&ValueType::BytesRef)
+                }
+                Operation::ByteAt(value, index) => {
+                    instruction.ty == ValueType::Int
+                        && types.get(value) == Some(&ValueType::BytesRef)
+                        && types.get(index) == Some(&ValueType::Int)
+                }
+                Operation::ReplaceByte([value, index, byte]) => {
+                    instruction.ty == ValueType::BytesRef
+                        && types.get(value) == Some(&ValueType::BytesRef)
+                        && types.get(index) == Some(&ValueType::Int)
+                        && types.get(byte) == Some(&ValueType::Int)
                 }
                 Operation::SendSelf { ref arguments, .. } => {
                     instruction.ty == ValueType::Unit
@@ -645,15 +677,19 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::If(value)
         | Operation::Else(value)
         | Operation::EndIf(value) => ([Some(value), None], &[]),
-        Operation::HeadInt(value) | Operation::TailInts(value) | Operation::IsEmptyInts(value) => {
-            ([Some(value), None], &[])
-        }
+        Operation::HeadInt(value)
+        | Operation::TailInts(value)
+        | Operation::IsEmptyInts(value)
+        | Operation::BytesLen(value) => ([Some(value), None], &[]),
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
             ([Some(value), None], &[])
         }
         Operation::Binary(_, left, right)
         | Operation::Compare(_, left, right)
+        | Operation::FillBytes(left, right)
+        | Operation::ByteAt(left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),
+        Operation::ReplaceByte(ref arguments) => ([None, None], arguments.as_slice()),
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
         Operation::Call { ref arguments, .. } => ([None, None], arguments),
         Operation::Send {

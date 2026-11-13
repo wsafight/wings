@@ -68,6 +68,14 @@ impl Manifest {
             return Err("Pid/RequestId state is not supported".into());
         }
         if self.handlers.iter().any(|handler| {
+            handler
+                .parameters
+                .iter()
+                .any(|(_, ty)| *ty == ValueType::BytesRef)
+        }) {
+            return Err("Bytes message parameters are not supported".into());
+        }
+        if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_capability)
                 || handler.parameters.iter().any(|(_, ty)| {
                     *ty == ValueType::Pid

@@ -8,6 +8,8 @@ const MAX_RECORDS: usize = 1024;
 const MAX_LAYOUTS: usize = 128;
 const MAX_ROOTS: usize = 64;
 const WORK_CHUNK: usize = 16;
+const BYTES_LAYOUT: u16 = u16::MAX;
+pub(crate) const MAX_BYTES: usize = 65536;
 static NEXT_HEAP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,12 +84,20 @@ pub struct RecordHeap {
     slots: Box<[Slot]>,
     schemas: Box<[Schema]>,
     worklist: Box<[usize]>,
+    buffers: Box<[Option<ByteBuffer>]>,
+    buffer_bytes: u64,
     layout_count: usize,
     collections: u64,
     allocated: usize,
     retired: usize,
     account: ResourceAccount,
     charge: Reservation,
+}
+
+pub(crate) struct ByteBuffer {
+    pub(crate) data: Vec<u8>,
+    heap: u64,
+    _charge: Reservation,
 }
 
 pub struct ShadowRoots {
@@ -136,7 +146,10 @@ impl RecordHeap {
             return Err("record heap requires 1..=1024 records and 1..=128 layouts".into());
         }
         let bytes = std::mem::size_of::<Self>()
-            + capacity * (std::mem::size_of::<Slot>() + std::mem::size_of::<usize>())
+            + capacity
+                * (std::mem::size_of::<Slot>()
+                    + std::mem::size_of::<usize>()
+                    + std::mem::size_of::<Option<ByteBuffer>>())
             + layout_capacity * std::mem::size_of::<Schema>();
         let charge = account.reserve(Resources {
             bytes: bytes as u64,
@@ -161,11 +174,21 @@ impl RecordHeap {
             },
         )?;
         let worklist = allocate_array(capacity, 0)?;
+        let mut buffers = Vec::new();
+        buffers
+            .try_reserve_exact(capacity)
+            .map_err(|error| error.to_string())?;
+        if buffers.capacity() != capacity {
+            return Err("allocator changed fixed buffer table capacity".into());
+        }
+        buffers.resize_with(capacity, || None);
         Ok(Self {
             identity,
             slots,
             schemas,
             worklist,
+            buffers: buffers.into_boxed_slice(),
+            buffer_bytes: 0,
             layout_count: 0,
             collections: 0,
             allocated: 0,
@@ -264,6 +287,9 @@ impl RecordHeap {
 
     pub fn get(&self, reference: HeapRef, field: usize) -> Result<RecordValue, String> {
         let slot = self.validate(reference)?;
+        if slot.layout == BYTES_LAYOUT {
+            return Err("byte buffer is not a record".into());
+        }
         let schema = &self.schemas[usize::from(slot.layout)];
         if field >= schema.count {
             return Err("record field index out of bounds".into());
@@ -293,7 +319,7 @@ impl RecordHeap {
             retired: self.retired,
             layouts: self.layout_count,
             collections: self.collections,
-            charged_bytes: self.charge.amount().bytes,
+            charged_bytes: self.charge.amount().bytes + self.buffer_bytes,
         }
     }
 
@@ -357,6 +383,9 @@ impl RecordHeap {
                     }
                     collection.pending -= 1;
                     let slot = self.slots[self.worklist[collection.pending]];
+                    if slot.layout == BYTES_LAYOUT {
+                        continue;
+                    }
                     let schema = self.schemas[usize::from(slot.layout)];
                     for (ty, value) in schema.fields[..schema.count].iter().zip(slot.fields) {
                         if *ty == FieldType::Ref {
@@ -371,11 +400,15 @@ impl RecordHeap {
             }
             CollectionPhase::Sweep => {
                 let end = (collection.cursor + WORK_CHUNK).min(self.slots.len());
-                for slot in &mut self.slots[collection.cursor..end] {
+                for (index, slot) in self.slots[collection.cursor..end].iter_mut().enumerate() {
                     if slot.occupied && slot.marked {
                         collection.retained += 1;
                         slot.marked = false;
                     } else if slot.occupied {
+                        if let Some(buffer) = self.buffers[collection.cursor + index].take() {
+                            self.buffer_bytes -= buffer._charge.amount().bytes;
+                            drop(buffer);
+                        }
                         slot.occupied = false;
                         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
                         self.allocated -= 1;
@@ -404,6 +437,76 @@ impl RecordHeap {
             self.worklist[*pending] = index;
             *pending += 1;
         }
+    }
+
+    pub(crate) fn prepare_bytes(&self, length: usize) -> Result<ByteBuffer, String> {
+        if length > MAX_BYTES {
+            return Err("byte buffer exceeds 65536 bytes".into());
+        }
+        let charge = self.account.reserve(Resources {
+            bytes: length as u64,
+            ..Resources::default()
+        })?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(length)
+            .map_err(|error| error.to_string())?;
+        if data.capacity() != length {
+            return Err("allocator changed byte buffer capacity".into());
+        }
+        Ok(ByteBuffer {
+            data,
+            heap: self.identity,
+            _charge: charge,
+        })
+    }
+
+    pub(crate) fn bytes(&self, reference: HeapRef) -> Result<&[u8], String> {
+        let slot = self.validate(reference)?;
+        if slot.layout != BYTES_LAYOUT {
+            return Err("expected a byte buffer".into());
+        }
+        Ok(&self.buffers[reference.slot as usize]
+            .as_ref()
+            .expect("occupied byte buffer")
+            .data)
+    }
+
+    pub(crate) fn allocate_bytes_chunk(
+        &mut self,
+        buffer: &mut Option<ByteBuffer>,
+        cursor: &mut usize,
+    ) -> Result<Option<HeapRef>, String> {
+        let data = buffer.as_ref().ok_or("missing byte buffer")?;
+        if data.heap != self.identity {
+            return Err("byte buffer belongs to a different heap".into());
+        }
+        if data.data.len() as u64 != data._charge.amount().bytes {
+            return Err("incomplete byte buffer".into());
+        }
+        let end = (*cursor + WORK_CHUNK).min(self.slots.len());
+        let Some(offset) = self.slots[*cursor..end]
+            .iter()
+            .position(|slot| !slot.occupied && slot.generation != 0)
+        else {
+            *cursor = end;
+            return if end == self.slots.len() {
+                Err("record heap capacity exhausted".into())
+            } else {
+                Ok(None)
+            };
+        };
+        let index = *cursor + offset;
+        let slot = &mut self.slots[index];
+        slot.layout = BYTES_LAYOUT;
+        slot.occupied = true;
+        self.buffer_bytes += data._charge.amount().bytes;
+        self.buffers[index] = buffer.take();
+        self.allocated += 1;
+        Ok(Some(HeapRef {
+            heap: self.identity,
+            slot: index as u32,
+            generation: slot.generation,
+        }))
     }
 
     fn schema(&self, layout: RecordLayout) -> Result<&Schema, String> {
@@ -554,6 +657,121 @@ fn next_identity() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_leaf_ownership_transitive_roots_gc_and_generation_are_accounted() {
+        let (vm, mut heap, mut roots, _) = fixture();
+        roots.replace(&[]);
+        heap.collect(&roots).unwrap();
+        let baseline = vm.used();
+        let mut buffer = heap.prepare_bytes(MAX_BYTES).unwrap();
+        buffer.data.resize(MAX_BYTES, 255);
+        assert_eq!(vm.used().bytes, baseline.bytes + MAX_BYTES as u64);
+        let mut pending = Some(buffer);
+        let bytes = heap
+            .allocate_bytes_chunk(&mut pending, &mut 0)
+            .unwrap()
+            .unwrap();
+        assert!(pending.is_none());
+        assert_eq!(
+            heap.stats().charged_bytes,
+            baseline.bytes - roots.charged_bytes() + MAX_BYTES as u64
+        );
+        assert!(heap.get(bytes, 0).is_err());
+        let linked = heap
+            .register_layout(&[FieldType::Int, FieldType::Ref])
+            .unwrap();
+        let parent = heap
+            .allocate(linked, &[RecordValue::Int(1), RecordValue::Ref(bytes)])
+            .unwrap();
+        roots.replace(&[Some(parent)]);
+        assert_eq!(heap.collect(&roots).unwrap().retained, 2);
+        assert_eq!(heap.bytes(bytes).unwrap(), vec![255; MAX_BYTES]);
+        assert!(heap.bytes(parent).is_err());
+        roots.replace(&[]);
+        heap.collect(&roots).unwrap();
+        assert!(heap.bytes(bytes).is_err());
+        assert_eq!(vm.used(), baseline);
+        let mut empty = Some(heap.prepare_bytes(0).unwrap());
+        let current = heap
+            .allocate_bytes_chunk(&mut empty, &mut 0)
+            .unwrap()
+            .unwrap();
+        assert_ne!(current, bytes);
+        assert!(heap.bytes(current).unwrap().is_empty());
+        assert!(heap.prepare_bytes(MAX_BYTES + 1).is_err());
+        drop((heap, roots));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn byte_reservation_rejection_at_each_level_and_unpublished_drop_roll_back() {
+        for level in 0..3 {
+            let limits = Resources {
+                bytes: 1 << 20,
+                ..Resources::default()
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant(limits).unwrap();
+            let account = tenant.process(limits).unwrap();
+            let mut heap = RecordHeap::new(&account, 1, 1).unwrap();
+            let levels = [&vm, &tenant, &account];
+            let before = levels.map(|account| account.used());
+            let guard = levels[level]
+                .reserve(Resources {
+                    bytes: limits.bytes - before[level].bytes - 1,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let full = levels.map(|account| account.used());
+            assert!(heap.prepare_bytes(2).is_err());
+            assert_eq!(levels.map(|account| account.used()), full);
+            drop(guard);
+            let mut pending = heap.prepare_bytes(16).unwrap();
+            pending.data.extend_from_slice(&[1; 8]);
+            assert!(
+                heap.allocate_bytes_chunk(&mut Some(pending), &mut 0)
+                    .is_err()
+            );
+            assert_eq!(levels.map(|account| account.used()), before);
+            assert_eq!(heap.stats().allocated, 0);
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn byte_builder_cannot_transfer_its_original_heap_or_account_charge() {
+        let limit = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limit);
+        let tenant = vm.tenant(limit).unwrap();
+        let source_account = tenant.process(limit).unwrap();
+        let target_account = tenant.process(limit).unwrap();
+        let mut source = RecordHeap::new(&source_account, 1, 1).unwrap();
+        let mut target = RecordHeap::new(&target_account, 1, 1).unwrap();
+        let baseline = vm.used();
+        let target_before = target_account.used();
+        let mut data = source.prepare_bytes(16).unwrap();
+        data.data.resize(16, 7);
+        let mut pending = Some(data);
+        assert!(target.allocate_bytes_chunk(&mut pending, &mut 0).is_err());
+        assert!(pending.is_some());
+        assert_eq!(target_account.used(), target_before);
+        assert_eq!(target.stats().allocated, 0);
+        assert_eq!(vm.used().bytes, baseline.bytes + 16);
+        let reference = source
+            .allocate_bytes_chunk(&mut pending, &mut 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source.bytes(reference).unwrap(), [7; 16]);
+        assert!(pending.is_none());
+        drop(source);
+        drop(target);
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     fn fixture() -> (ResourceAccount, RecordHeap, ShadowRoots, HeapRef) {
         let limit = Resources {

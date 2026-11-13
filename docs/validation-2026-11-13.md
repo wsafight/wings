@@ -87,3 +87,13 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 隔离 Linux 从 `7805470` 重新构建全部 release 工具/示例与独立测试，26 个 harness 共 429 项通过；完整受限 release AOT 通过，包含真实 Linux 动态库的列表状态失败重建与强度上限。未放宽既有 CPU/墙钟上限，本次未执行 Linux debug/native clippy/MSRV/doc-tests。
 
 终态在旧 actor 资源清理后发布，监督依赖宿主 poll；它不是语言监督、持久恢复、可靠故障日志或完整 M4。MVP 原生双平台与同业务 BEAM 双目标仍待验收。
+
+### 计费不可变字节值增量：ADR-0057
+
+基于 `36ac6ec`，macOS debug/release workspace 各 440 项测试通过（新增 13 项）；两种构建的 TCP 示例各 2 项测试、完整受限 AOT、check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check 和依赖隔离检查通过。文档相对链接、代码围栏及 diff whitespace 检查通过。本次两种完整 AOT 首次均通过，已有 TCP 偶发失败记录不删除。
+
+ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独立数据票据向原进程计费；源根在每个复制块存活，失败/取消释放未发布 builder。单测覆盖三级拒绝回滚、跨堆发布拒绝、传递根与代次、GC 后数据额度恢复及存活旧值阻止新副本超额；`byte_buffers` 验证空/最大 state、fn/条件/回边、小堆 GC、512 组最大值暂停后取消/Drop、低预算、跨 worker 迁移和监督重建为空。
+
+独立 `--check-byte-roots` 用 Python 字节模型在 compiler 检查点/heap 回调前收集，检查跨 fn、分支、循环的源/候选根及非法参数/算术失败不写输出、正常解链。每业务子进程继续使用 CPU 20 秒、墙钟 30 秒、禁 core，无放宽限制。
+
+本段只记录 macOS 本机结果；Linux 本增量另行验证。Bytes 不等于字符串、通用记录或引用消息/回复，逻辑字节不是 RSS，原生最新双平台与同负载 BEAM 性能/整机内存门禁仍未完成，M0/MVP 状态不变。

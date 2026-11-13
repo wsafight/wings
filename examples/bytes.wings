@@ -1,0 +1,31 @@
+process ByteState {
+  fn changed(value: Bytes, index: Int, byte: Int) -> Bytes { replace_byte(value, index, byte) }
+
+  state data: Bytes = fill_bytes(0, 0)
+
+  on Fill(length: Int, byte: Int) -> Int { data = fill_bytes(length, byte); bytes_len(data) }
+  on Set(index: Int, byte: Int) -> Int {
+    let old = data
+    let next = changed(data, index, byte)
+    collect()
+    data = next
+    byte_at(old, index) * 256 + byte_at(data, index)
+  }
+  on Read(index: Int) -> Int { collect(); byte_at(data, index) }
+  on Length -> Int { collect(); bytes_len(data) }
+  on Branch(flag: Bool) -> Int {
+    let selected = if flag { changed(data, 0, 7) } else { data }
+    collect()
+    byte_at(selected, 0) + byte_at(data, 0)
+  }
+  on Loop(limit: Int) -> Int {
+    data = fill_bytes(512, 0)
+    while byte_at(data, 0) < limit {
+      let next = changed(data, 0, byte_at(data, 0) + 1)
+      collect()
+      data = next
+    }
+    byte_at(data, 0)
+  }
+  on Fail -> Int { data = fill_bytes(4096, 99); 1 / 0 }
+}

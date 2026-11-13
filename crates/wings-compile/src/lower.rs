@@ -303,6 +303,25 @@ impl Lowerer<'_> {
                         self.push(ValueType::Int, Operation::ReadInt(value))
                     }
                     "collect" => self.push(ValueType::Unit, Operation::Collect),
+                    "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" => {
+                        let values = arguments
+                            .iter()
+                            .map(|argument| self.expression(argument))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let (ty, operation) = match callee.text.as_str() {
+                            "fill_bytes" => (
+                                ValueType::BytesRef,
+                                Operation::FillBytes(values[0], values[1]),
+                            ),
+                            "bytes_len" => (ValueType::Int, Operation::BytesLen(values[0])),
+                            "byte_at" => (ValueType::Int, Operation::ByteAt(values[0], values[1])),
+                            _ => (
+                                ValueType::BytesRef,
+                                Operation::ReplaceByte([values[0], values[1], values[2]]),
+                            ),
+                        };
+                        self.push(ty, operation)
+                    }
                     "empty_ints" => self.push(ValueType::ListRef, Operation::EmptyInts),
                     "prepend_int" => {
                         let value = self.expression(&arguments[0])?;
@@ -386,6 +405,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "Unit" => Ok(ValueType::Unit),
         "RecordInt" => Ok(ValueType::Ref),
         "IntList" => Ok(ValueType::ListRef),
+        "Bytes" => Ok(ValueType::BytesRef),
         "Pid" => Ok(ValueType::Pid),
         "RequestId" => Ok(ValueType::RequestId),
         _ => Err(format!("unsupported scalar type {name}")),
@@ -395,6 +415,26 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_values_lower_as_references_with_last_use_roots() {
+        let program = lower("process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 5) } state data: Bytes = fill_bytes(4, 0); on Read -> Int { let next = changed(data); collect(); bytes_len(next) + byte_at(data, 0) } }").unwrap();
+        assert_eq!(program.state, ValueType::BytesRef);
+        let function = &program.handlers[0].function;
+        let collection = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::Collect))
+            .unwrap();
+        assert_eq!(function.root_plan().at[collection].len(), 2);
+        assert!(
+            program.functions[0]
+                .function
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.operation, Operation::ReplaceByte(_)))
+        );
+    }
 
     #[test]
     fn managed_functions_evaluate_arguments_once_and_do_not_expand_call_graph() {

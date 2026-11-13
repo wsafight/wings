@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无 Bytes 消息、引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
+
+[ADR-0057](docs/adr/0057-accounted-immutable-bytes.md) 增加 `Bytes`、`fill_bytes`、`bytes_len`、`byte_at` 与复制替换的 `replace_byte`；每块最多 256 字节，检查预算/取消，未发布 buffer 也向原进程三级计费。精确 GC 支持字节叶节点，失败不修改旧 state；ABI 升至 v13，旧产物须重编译。`examples/bytes.wings` 覆盖 state、fn、条件和循环，完整验证仍用下列 workspace 与受限 AOT 命令；不是字符串/通用记录或 BEAM 性能结果。类型大小写不变，语法草案仍待评审。
 
 [ADR-0056](docs/adr/0056-multi-worker-supervision.md) 增加 `SchedulerSupervisor`：每个子进程有独立、固定终态票据，旧业务资源清理后才可由宿主 `poll` 消费。受管失败按有限滚动窗口 one-for-one 重启为全新 state/堆与 Pid；Never、强度超限或初始化/额度失败明确终结，不重放旧 mailbox，也不自动监督语言创建的后代。没有后台监督线程，服务宿主必须驱动 `poll`。
 

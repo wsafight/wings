@@ -11,6 +11,7 @@ pub enum Type {
     Unit,
     RecordInt,
     IntList,
+    Bytes,
     Pid,
     RequestId,
     Function {
@@ -32,6 +33,7 @@ impl std::fmt::Display for Type {
             Self::Unit => formatter.write_str("Unit"),
             Self::RecordInt => formatter.write_str("RecordInt"),
             Self::IntList => formatter.write_str("IntList"),
+            Self::Bytes => formatter.write_str("Bytes"),
             Self::Pid => formatter.write_str("Pid"),
             Self::RequestId => formatter.write_str("RequestId"),
             Self::Function { parameters, result } => {
@@ -171,6 +173,10 @@ pub fn analyze(text: &str) -> Analysis {
                     | "head_int"
                     | "tail_ints"
                     | "is_empty_ints"
+                    | "fill_bytes"
+                    | "bytes_len"
+                    | "byte_at"
+                    | "replace_byte"
                     | "send_self"
                     | "self_pid"
                     | "spawn_self"
@@ -363,7 +369,7 @@ impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
         if matches!(
             ty,
-            Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+            Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
         ) {
             self.error(
                 "T011",
@@ -386,6 +392,7 @@ impl Checker {
             "Unit" => Type::Unit,
             "RecordInt" => Type::RecordInt,
             "IntList" => Type::IntList,
+            "Bytes" => Type::Bytes,
             "Pid" => Type::Pid,
             "RequestId" => Type::RequestId,
             "" => Type::Unknown,
@@ -393,7 +400,7 @@ impl Checker {
                 self.error(
                     "T002",
                     format!(
-                        "unknown type '{}'; supported types are Int, Bool, Unit, RecordInt and IntList",
+                        "unknown type '{}'; supported types are Int, Bool, Unit, RecordInt, IntList, Bytes, Pid and RequestId",
                         name.text
                     ),
                     name.span,
@@ -745,6 +752,10 @@ impl Checker {
                     "head_int" => (vec![Type::IntList], Type::Int),
                     "tail_ints" => (vec![Type::IntList], Type::IntList),
                     "is_empty_ints" => (vec![Type::IntList], Type::Bool),
+                    "fill_bytes" => (vec![Type::Int, Type::Int], Type::Bytes),
+                    "bytes_len" => (vec![Type::Bytes], Type::Int),
+                    "byte_at" => (vec![Type::Bytes, Type::Int], Type::Int),
+                    "replace_byte" => (vec![Type::Bytes, Type::Int, Type::Int], Type::Bytes),
                     _ => {
                         self.error(
                             "T012",
@@ -799,10 +810,10 @@ impl Checker {
                     self.require(&right_type, &left_type, right.span);
                     if matches!(
                         left_type,
-                        Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+                        Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
                     ) || matches!(
                         right_type,
-                        Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+                        Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
                     ) {
                         self.error(
                             "T015",

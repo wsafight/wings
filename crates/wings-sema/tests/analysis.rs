@@ -11,6 +11,27 @@ fn checked(text: &str) -> Analysis {
     analysis
 }
 
+#[test]
+fn bytes_are_typed_immutable_roots_but_not_message_fields_or_replies() {
+    checked(
+        "process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 255) } state data: Bytes = fill_bytes(4, 0); on Set(value: Int) -> Int { let old = data; data = if true { changed(old) } else { fill_bytes(value, 7) }; collect(); bytes_len(data) + byte_at(old, 0) } }",
+    );
+    for text in [
+        "process P { state data: Bytes = fill_bytes(1, 0); on Store(value: Bytes) {} }",
+        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bytes { data } }",
+        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bool { data == data } }",
+        "process P { state data: Bytes = empty_ints(); on Read -> Int { bytes_len(data) } }",
+        "process P { state data: Bytes = fill_bytes(1, true); on Read -> Int { byte_at(1, 0) } }",
+        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Int { replace_byte(data, 1) } }",
+        "process P { fn fill_bytes(value: Int) -> Int { value } state data: Int = 0; on Read -> Int { data } }",
+    ] {
+        assert!(
+            !analyze(text).diagnostics.is_empty(),
+            "unexpected acceptance: {text}"
+        );
+    }
+}
+
 fn handler(body: &str) -> String {
     format!("process P {{ state count: Int = 0; on Get(value: Int) -> Int {{ {body} }} }}")
 }

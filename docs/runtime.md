@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；消息/回复、字符串和完整业务值仍未完成。
+
 [ADR-0056](adr/0056-multi-worker-supervision.md) 的 SchedulerSupervisor 通过固定子表与每实例唯一终态票据实现宿主 one-for-one 恢复。poll 一次至多消费一个退出，受管失败且滚动窗口仍准入时创建全新 state/堆和 Pid，旧请求已终结、旧消息不重放。并发失败不能互相覆盖终态；stop/关闭不重启，初始化/资源拒绝或强度超限不自动重试。host handle 的结果租约仍可延长旧账户，但票据不持有业务资源。需显式 poll，不提供语言 supervision/link/monitor。
 
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 的 SchedulerHandle::last_exit 返回跨 worker 最近失败的按值副本。记录旧 Pid、owner 编号、handler、ABI 故障和执行/预算/GC 快照；已提交引用 state 不暴露 handle，清理前账目不表示资源未归还。正常成功、主动 stop、关闭和未开始的准入失败不覆盖。关闭后仍可读取，不持有旧业务资源；固定单槽可能覆盖，不能替代可靠监督事件或故障历史。

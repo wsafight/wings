@@ -6,6 +6,46 @@ use wings_lsp::{Server, run};
 const URI: &str = "file:///test.wings";
 const VALID: &str = "process P { state n: Int = 0; on Get -> Int { n } }";
 
+#[test]
+fn bytes_hover_and_builtins_share_frontend_types_without_execution() {
+    let mut server = server();
+    let text =
+        "process P { state data: Bytes = fill_bytes(4, 0); on Read -> Int { bytes_len(data) } }";
+    assert!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let offset = text.rfind("data").unwrap();
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset as u32)["result"]["contents"]["value"],
+        "data: Bytes"
+    );
+    let completion = query(
+        &mut server,
+        "textDocument/completion",
+        URI,
+        0,
+        offset as u32,
+    );
+    for label in [
+        "Bytes",
+        "fill_bytes",
+        "bytes_len",
+        "byte_at",
+        "replace_byte",
+    ] {
+        assert!(
+            completion["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+}
+
 fn request(id: Value, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
