@@ -121,3 +121,21 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 Linux 本增量另行验证；当前隔离 Linux 未安装 OTP，不以 Wings/模型模式代替真实 BEAM 对照。多 actor/开环、公平性/过载、资源账本闭环及原生最新双平台性能/整机内存双门禁仍未完成，MVP 状态不变。
 
 隔离 Linux 从 `f5caedd` 重新交叉构建全部 release 工具/示例与测试，27 个 harness 共 451 项通过（workspace 447、TCP 2、Counter 桥接 2）；完整受限 release AOT 首次通过，内含真实 Linux `.so` 的 45 组 Wings/独立 Python 业务和 28 组 JSON/14 组桥接拒绝。仍为 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，Counter 和其他 AOT 的 CPU/墙钟限制均未放宽。未执行 Linux OTP、debug/native clippy/MSRV/doc-tests；不将仿真或模型通过写成真实 Linux BEAM 对照、最新原生 CI 或性能通过。
+
+### 调度实例共享宿主结果表增量：ADR-0060
+
+基于 `3b95446`，macOS 26.6.2 AArch64、Rust 1.99.1 的 debug/release workspace 各 450 项测试通过；两种构建 TCP/Counter 桥接示例各 2 项、check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离和文档链接/围栏检查通过。新增回归覆盖跨 actor 混合类型共享上限、拒绝无副作用、消费后复用、关闭后结果、原 process 请求计费、三级拒绝及取消双端租约。并发八个子进程失败用例将声明的请求总容量从 4 改为 8，保留全部并发失败和独立终态断言，未降低覆盖。
+
+release 同一个真实标量 Counter，2 worker、64 宿主结果槽、每 actor mailbox 1、VM/tenant 各 1 GiB 上限，每组单次冷启动，记录如下逻辑预留（B）：
+
+| actor 数 | 修改前空表 | 修改后空表 | 修改前填满 | 修改后填满 | 修改前 actor 增量 | 修改后 actor 增量 |
+|---|---|---|---|---|---|---|
+| 16 | 16059720 | 16065200 | 16368328 | 16091952 | 308608 | 26752 |
+| 64 | 43076040 | 43080368 | 44310472 | 43187376 | 1234432 | 107008 |
+| 256 | 151141320 | 151141040 | 156079048 | 151569072 | 4937728 | 428032 |
+
+每 actor 空闲控制增量从 19288 B 降为 1672 B；256 actor 填满总预留减少 4509976 B。空表仍包含按最大 actor 数逐 worker 预留的栈池，未移除该主要成本。所有组退出回到各自空表、最终预留归零。此数字不是 RSS、物理内存或 BEAM 对照，不包含 Bytes 业务状态，不外推为 1000/10000 actor 密度。完整 AOT 加入 `scheduler_density`，仅断言空闲控制增量不超过每 actor 4096 B 及完整清理，保留容量探测的边界。
+
+完整 debug AOT 首次在既有 TCP invalid 场景读取合法请求回复时遇到 ConnectionResetError，未改 TCP、断言或截止时间，第二次完整通过；完整 release 首次通过。两种构建另行执行真实 Wings/OTP 29/独立 Python 的 45 业务、28 JSON 拒绝和 14 桥接拒绝对照，均通过。Counter 业务子进程仍为 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，其他 AOT 子进程 CPU 20 秒/墙钟 30 秒/禁 core；密度退出 deadline 3 秒，不放宽历史限制。
+
+Linux 本增量另行验证。`config.requests` 现为全实例宿主结果总槽数，语言 pending 表仍独立；不把共享表锁、固定 registry 扫描、逐 worker 全容量栈池或 256 actor 上限当最终可扩展方案。多 actor/开环、完整业务值/资源计费、原生最新双平台与同负载 BEAM 吞吐/整机内存门禁仍未完成，MVP 状态不变；待审语法草案不在本提交范围。

@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 结果总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；不将其称为 RSS 或 BEAM 内存结果，逐 worker 全容量栈池和 256 actor 限制仍在。
+
 [ADR-0059](docs/adr/0059-byte-state-counter-equivalence.md) 将完整 256 B/4 KiB/64 KiB Bytes state、32 条异步请求窗口及失败退出接到 Wings Counter。`python3 scripts/verify_counter_equivalence.py --compare-beam` 用真实 OTP 29 与独立 Python checked 模型核对结果、FIFO、旧提交状态和清理；不带该选项只运行 Wings/模型，不宣称执行了 BEAM。先构建 compiler/VM 示例，边界与命令见[同协议工作负载](docs/beam-workloads.md)。未提供吞吐、尾延迟或整机内存比较。
 
 [ADR-0058](docs/adr/0058-byte-i64-big-endian-access.md) 补充 `read_i64_be` 和 `replace_i64_be`，支持 Bytes 内连续八字节的 signed big-endian 读写、未对齐 offset 及完整 i64 范围；写操作仍复制完整对象、计费并分块检查。当前 ABI v14，旧产物须重编译，为后续 BEAM 固定字节状态对照补齐编码基础，不代表该业务或性能门禁已经通过。

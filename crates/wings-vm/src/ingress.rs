@@ -32,7 +32,7 @@ struct Shared {
     message_bytes: u64,
     account: ResourceAccount,
     notifier: WorkerNotifier,
-    replies: Option<Arc<ReplyTable>>,
+    replies: Option<(ValueType, Arc<ReplyTable>)>,
     _wait_charge: Arc<Reservation>,
     _charge: Reservation,
 }
@@ -64,7 +64,7 @@ impl IngressSender {
         arguments: &[i64],
         timeout: Duration,
     ) -> Result<(IngressRequest, IngressWake), String> {
-        let replies = self
+        let (reply_type, replies) = self
             .shared
             .replies
             .as_ref()
@@ -73,7 +73,7 @@ impl IngressSender {
             .checked_add(timeout)
             .ok_or("ingress request deadline overflow")?;
         self.validate_arguments(arguments)?;
-        let (request, publisher) = replies.start(deadline)?;
+        let (request, publisher) = replies.start(deadline, &self.shared.account, *reply_type)?;
         let wake = self.publish(arguments, Some(publisher), || self.shared.notifier.notify())?;
         Ok((request, wake))
     }
@@ -189,7 +189,7 @@ impl IngressReceiver {
         slots.resize_with(capacity, || None);
         let replies = schema
             .reply
-            .map(|ty| ReplyTable::new(account, capacity, ty))
+            .map(|ty| ReplyTable::new(account, capacity).map(|table| (ty, table)))
             .transpose()?;
         let mut parameters = [ValueType::Unit; MAX_ARGUMENTS];
         for (target, (_, ty)) in parameters.iter_mut().zip(&schema.parameters) {

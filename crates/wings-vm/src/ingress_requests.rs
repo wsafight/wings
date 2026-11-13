@@ -7,6 +7,7 @@ use crate::{RequestOutcome, Reservation, ResourceAccount, Resources};
 
 pub struct IngressRequest {
     table: Arc<ReplyTable>,
+    reply_type: ValueType,
     slot: usize,
     generation: u64,
     active: bool,
@@ -21,7 +22,6 @@ pub(crate) struct ReplyPublisher {
 pub(crate) struct ReplyTable {
     slots: Mutex<Box<[ReplySlot]>>,
     changed: Condvar,
-    reply_type: ValueType,
     account: ResourceAccount,
     _charge: Reservation,
 }
@@ -40,11 +40,7 @@ struct Pending {
 }
 
 impl ReplyTable {
-    pub(crate) fn new(
-        account: &ResourceAccount,
-        capacity: usize,
-        reply_type: ValueType,
-    ) -> Result<Arc<Self>, String> {
+    pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Arc<Self>, String> {
         let charge = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>() + capacity * std::mem::size_of::<ReplySlot>() + 128)
                 as u64,
@@ -61,7 +57,6 @@ impl ReplyTable {
         Ok(Arc::new(Self {
             slots: Mutex::new(slots.into_boxed_slice()),
             changed: Condvar::new(),
-            reply_type,
             account: account.clone(),
             _charge: charge,
         }))
@@ -70,8 +65,20 @@ impl ReplyTable {
     pub(crate) fn start(
         self: &Arc<Self>,
         deadline: Instant,
+        account: &ResourceAccount,
+        reply_type: ValueType,
     ) -> Result<(IngressRequest, ReplyPublisher), String> {
-        let charge = self.account.reserve(Resources {
+        if !(self.account.same(account) || account.is_child_of(&self.account))
+            || !matches!(
+                reply_type,
+                ValueType::Int | ValueType::Bool | ValueType::Unit
+            )
+        {
+            return Err(
+                "result table requires its owner or direct child and a scalar reply".into(),
+            );
+        }
+        let charge = account.reserve(Resources {
             requests: 1,
             ..Resources::default()
         })?;
@@ -95,6 +102,7 @@ impl ReplyTable {
         Ok((
             IngressRequest {
                 table: self.clone(),
+                reply_type,
                 slot: index,
                 generation,
                 active: true,
@@ -150,7 +158,7 @@ fn retire(slot: &mut ReplySlot) -> Option<Reservation> {
 
 impl IngressRequest {
     pub fn reply_type(&self) -> ValueType {
-        self.table.reply_type
+        self.reply_type
     }
 
     pub fn try_take(&mut self) -> Result<Option<RequestOutcome>, String> {
@@ -283,6 +291,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_results_charge_original_process_and_reject_foreign_paths_and_types() {
+        let limits = Resources {
+            bytes: 1 << 20,
+            requests: 4,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let first = tenant.process_accounted(limits).unwrap();
+        let second = tenant.process_accounted(limits).unwrap();
+        let other_tenant = vm.tenant_accounted(limits).unwrap();
+        let foreign = other_tenant.process_accounted(limits).unwrap();
+        let table = ReplyTable::new(&tenant, 2).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let baseline = vm.used();
+        assert!(table.start(deadline, &foreign, ValueType::Int).is_err());
+        assert!(table.start(deadline, &first, ValueType::BytesRef).is_err());
+        assert_eq!(vm.used(), baseline);
+        let (mut one, publisher_one) = table.start(deadline, &first, ValueType::Bool).unwrap();
+        let (mut two, publisher_two) = table.start(deadline, &second, ValueType::Int).unwrap();
+        assert_eq!(first.used().requests, 1);
+        assert_eq!(second.used().requests, 1);
+        let full = vm.used();
+        assert!(table.start(deadline, &first, ValueType::Unit).is_err());
+        assert_eq!(vm.used(), full);
+        one.cancel().unwrap();
+        assert_eq!(one.try_take().unwrap(), Some(RequestOutcome::Cancelled));
+        assert_eq!(first.used().requests, 1);
+        assert!(table.start(deadline, &second, ValueType::Unit).is_err());
+        drop(publisher_one);
+        assert_eq!(first.used().requests, 0);
+        publisher_two.complete(7);
+        assert_eq!(two.try_take().unwrap(), Some(RequestOutcome::Reply(7)));
+        assert_eq!(second.used().requests, 0);
+        drop((
+            one,
+            two,
+            table,
+            first,
+            second,
+            foreign,
+            tenant,
+            other_tenant,
+        ));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn shared_results_respect_each_tier_request_admission_without_partial_slots() {
+        for level in 0..3 {
+            let limits = Resources {
+                bytes: 1 << 20,
+                requests: 1,
+                ..Resources::default()
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant_accounted(limits).unwrap();
+            let account = tenant.process_accounted(limits).unwrap();
+            let levels = [&vm, &tenant, &account];
+            let table = ReplyTable::new(&tenant, 1).unwrap();
+            let guard = levels[level]
+                .reserve(Resources {
+                    requests: 1,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let baseline = levels.map(ResourceAccount::used);
+            let deadline = Instant::now() + Duration::from_secs(60);
+            assert!(table.start(deadline, &account, ValueType::Int).is_err());
+            assert_eq!(levels.map(ResourceAccount::used), baseline);
+            drop(guard);
+            let (mut result, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
+            publisher.complete(3);
+            assert_eq!(result.try_take().unwrap(), Some(RequestOutcome::Reply(3)));
+            assert_eq!(account.used().requests, 0);
+            drop((result, table, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
     fn retired_generation_never_wraps_and_old_publisher_cannot_finish_reused_slot() {
         let limits = Resources {
             bytes: 8192,
@@ -290,21 +379,21 @@ mod tests {
             ..Resources::default()
         };
         let account = ResourceAccount::vm(limits);
-        let table = ReplyTable::new(&account, 1, ValueType::Int).unwrap();
+        let table = ReplyTable::new(&account, 1).unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
-        let (mut first, old) = table.start(deadline).unwrap();
+        let (mut first, old) = table.start(deadline, &account, ValueType::Int).unwrap();
         table.finish(old.slot, old.generation, RequestOutcome::Reply(1));
         assert_eq!(first.try_take().unwrap(), Some(RequestOutcome::Reply(1)));
-        let (mut second, publisher) = table.start(deadline).unwrap();
+        let (mut second, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
         drop(old);
         assert_eq!(second.try_take().unwrap(), None);
         publisher.complete(2);
         assert_eq!(second.try_take().unwrap(), Some(RequestOutcome::Reply(2)));
         table.slots.lock().unwrap()[0].generation = u64::MAX;
-        let (mut last, publisher) = table.start(deadline).unwrap();
+        let (mut last, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
         publisher.complete(3);
         assert_eq!(last.try_take().unwrap(), Some(RequestOutcome::Reply(3)));
-        assert!(table.start(deadline).is_err());
+        assert!(table.start(deadline, &account, ValueType::Int).is_err());
         drop((first, second, last, table));
         assert_eq!(account.used(), Resources::default());
     }

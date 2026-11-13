@@ -108,6 +108,7 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     tenant: ResourceAccount,
+    replies: Arc<ReplyTable>,
     config: SchedulerConfig,
     identity: u64,
     _charge: Reservation,
@@ -141,7 +142,6 @@ struct Actor {
     capability: i64,
     heap_records: Option<usize>,
     mailbox: Mailbox,
-    replies: [Arc<ReplyTable>; 3],
     _charge: Reservation,
     termination: Option<supervisor::ExitPublisher>,
 }
@@ -238,6 +238,7 @@ impl Scheduler {
             }),
             changed: Condvar::new(),
             tenant: tenant.clone(),
+            replies: ReplyTable::new(tenant, config.requests)?,
             config,
             identity,
             _charge: charge,
@@ -364,23 +365,6 @@ impl SchedulerHandle {
                 ..Resources::default()
             })?;
             let slots = storage(mailbox, || None)?;
-            let replies = [
-                ReplyTable::new(
-                    &account,
-                    self.shared.config.requests,
-                    wings_abi::ValueType::Int,
-                )?,
-                ReplyTable::new(
-                    &account,
-                    self.shared.config.requests,
-                    wings_abi::ValueType::Bool,
-                )?,
-                ReplyTable::new(
-                    &account,
-                    self.shared.config.requests,
-                    wings_abi::ValueType::Unit,
-                )?,
-            ];
             let temporary;
             let pool = if let Some(pool) = pool {
                 pool
@@ -420,7 +404,6 @@ impl SchedulerHandle {
                     head: 0,
                     count: 0,
                 },
-                replies,
                 _charge: charge,
                 termination,
             })
@@ -489,9 +472,11 @@ impl SchedulerHandle {
         let actor = state.actor_mut(self.shared.identity, pid)?;
         validate(actor, handler, arguments, false, 0, &ListPayload::default())?;
         let reply = match handler.schema().reply {
-            Some(wings_abi::ValueType::Int) => 0,
-            Some(wings_abi::ValueType::Bool) => 1,
-            Some(wings_abi::ValueType::Unit) => 2,
+            Some(
+                ty @ (wings_abi::ValueType::Int
+                | wings_abi::ValueType::Bool
+                | wings_abi::ValueType::Unit),
+            ) => ty,
             _ => return Err("request requires a scalar reply".into()),
         };
         let mut message = envelope(
@@ -504,7 +489,7 @@ impl SchedulerHandle {
             false,
             Reply::None,
         )?;
-        let (request, publisher) = actor.replies[reply].start(deadline)?;
+        let (request, publisher) = self.shared.replies.start(deadline, &actor.account, reply)?;
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
         drop(state);

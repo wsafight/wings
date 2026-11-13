@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0060 将 Scheduler 宿主 Int/Bool/Unit 请求结果改为实例共享的 `config.requests` 总槽数，不再逐 actor/类型预留；语言 pending 表仍独立。每个请求票据仍向原目标 process 三级计费，最后结果 handle 可保留表控制租约但不保留 actor/模块。`scheduler_density` 只测逻辑预留，逐 worker 全容量栈池、256 actor 上限与 BEAM 双目标仍待推进。
+
 - ADR-0059 接入固定字节 Counter 的 Wings/BEAM 正确性测试和单 worker 已提交 Bytes 的固定前缀副本诊断；默认 AOT 只跑 Wings/独立模型，真实 OTP 对照须显式 `--compare-beam`。不把逻辑状态/账目清理或有界闭环测试当作性能、RSS、多 actor/开环或 MVP 完成。
 
 - 2026-11-13 增量：当前源码 ABI v14，已有有界 IntList 语言消息、线程安全只读代码租约、固定多 worker 调度及宿主 poll 驱动监督（ADR-0051–0056）；Bytes 按 ADR-0057 支持 0..=64 KiB 不可变计费 state/局部/fn 值、分块复制及精确 GC，ADR-0058 增加 signed i64 大端读写，尚不支持 Bytes 消息/引用回复或字符串。下述早期切片说明不替代各新增 ADR；完整资源账本、原生最新双平台与同业务 BEAM 双目标仍待验收。语法大小写草案待审，不提前迁移类型拼写。

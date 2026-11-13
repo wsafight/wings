@@ -682,13 +682,120 @@ fn supervisor_fixture(capacity: usize) -> (ResourceAccount, ResourceAccount, Sch
         SchedulerConfig {
             workers: 2,
             capacity,
-            requests: 4,
+            requests: capacity.max(4),
             slice_steps: 1,
             ..SchedulerConfig::default()
         },
     )
     .unwrap();
     (vm, tenant, supervisor)
+}
+
+#[test]
+fn scheduler_shared_reply_capacity_spans_actors_and_preserves_mixed_types_after_close() {
+    let vm = ResourceAccount::vm(quota());
+    let tenant = vm.tenant_accounted(quota()).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 3,
+            requests: 3,
+            slice_steps: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let integers = module();
+    let mut booleans = module();
+    Arc::get_mut(&mut booleans.inner).unwrap().manifest.handlers[1].reply = Some(ValueType::Bool);
+    let first = handle.spawn(&integers, quota(), 4).unwrap();
+    let second = handle.spawn(&booleans, quota(), 4).unwrap();
+    let unused = handle.spawn(&integers, quota(), 4).unwrap();
+    let mut int_result = handle
+        .request(
+            first,
+            &integers.handler("Bump").unwrap(),
+            &[7],
+            32,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let mut bool_result = handle
+        .request(
+            second,
+            &booleans.handler("Bump").unwrap(),
+            &[1],
+            32,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let mut unit_result = handle
+        .request(
+            second,
+            &booleans.handler("Ack").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    wait_until(|| {
+        handle.snapshot(first).unwrap().committed_state == Some(7)
+            && handle.snapshot(second).unwrap().committed_state == Some(1)
+            && handle.snapshot(second).unwrap().owner.is_none()
+            && handle.snapshot(second).unwrap().queued == 0
+    });
+    assert_eq!(int_result.reply_type(), ValueType::Int);
+    assert_eq!(bool_result.reply_type(), ValueType::Bool);
+    assert_eq!(unit_result.reply_type(), ValueType::Unit);
+    assert_eq!(handle.snapshot(first).unwrap().resources.requests, 1);
+    assert_eq!(handle.snapshot(second).unwrap().resources.requests, 2);
+    assert_eq!(handle.snapshot(unused).unwrap().resources.requests, 0);
+    let baseline = vm.used();
+    assert_eq!(
+        handle
+            .request(
+                unused,
+                &integers.handler("Get").unwrap(),
+                &[],
+                32,
+                Duration::from_secs(60)
+            )
+            .err()
+            .unwrap(),
+        "ingress_requests_full"
+    );
+    assert_eq!(vm.used(), baseline);
+    assert_eq!(
+        int_result.try_take().unwrap(),
+        Some(RequestOutcome::Reply(7))
+    );
+    let replacement = handle
+        .request(
+            unused,
+            &integers.handler("Bump").unwrap(),
+            &[9],
+            32,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    assert_eq!(reply(replacement), RequestOutcome::Reply(9));
+    drop((scheduler, handle, integers, booleans, tenant));
+    assert_eq!(vm.used().requests, 2);
+    assert_eq!(vm.used().processes, 0);
+    assert_eq!(
+        bool_result.try_take().unwrap(),
+        Some(RequestOutcome::Reply(1))
+    );
+    assert_eq!(
+        unit_result.try_take().unwrap(),
+        Some(RequestOutcome::Reply(0))
+    );
+    assert_eq!(vm.used().requests, 0);
+    assert!(vm.used().bytes > 0);
+    drop((int_result, bool_result, unit_result));
+    assert_eq!(vm.used(), Resources::default());
 }
 
 fn supervisor_event(supervisor: &mut SchedulerSupervisor) -> SchedulerSupervisorEvent {

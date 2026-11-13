@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 让 Scheduler 在 tenant 启动准入时创建唯一宿主 ReplyTable，固定容量 `config.requests`，不再逐 actor 创建三类型表。Int/Bool/Unit 共用槽、handle 按请求保留类型，schema 校验不变；语言 pending 表独立。每槽的请求票据向目标 process 的原三级路径预留，表只接受原账户或直属子账户。结果不持 Shared/actor/模块，关闭后可消费终态，表控制计费直到最后结果 handle 释放。ABI/语法与线程执行权不变，完整业务计费和大规模调度仍待完成。
+
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 增加测试宿主 `beam_counter`，以现有 AOT/Bytes/单 worker 执行固定字节 Counter，不扩展受管 ABI 或服务协议。`ByteStateSnapshot` 只复制已提交 Bytes 的长度/最多 32 B 前缀，无引用或资源租约；宿主读取只在无活跃调用时允许，失败诊断在 actor 清理前复制旧提交根，不读取候选或悬挂栈。多 worker 快照不变，外部诊断授权/脱敏另行设计。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 用独立固定终态票据接入 SchedulerSupervisor，不依赖可覆盖的最近失败缓存。actor 发布端位于最后释放字段，旧镜像/mailbox/控制票据先清理，终态才可消费；票据及重启历史在 tenant 准入。poll 在锁外初始化新实例，沿用已有有限滚动窗口，不增加后台线程或业务 ABI。

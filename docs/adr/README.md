@@ -61,12 +61,13 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0051](0051-bounded-int-list-messages.md) | ABI v12、有界列表序列信封、目标重建与入口根 | 已采纳（列表消息切片） |
 | [0052](0052-cross-thread-module-leases.md) | 线程安全只读代码租约、并行独立 worker 与末持有者清理 | 已采纳（多 worker 前置切片） |
 | [0053](0053-detached-process-images.md) | 无活栈独占进程镜像、线程转交与同账户重绑定 | 已采纳（迁移前置切片） |
-| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳（有界 M:N 集成切片） |
+| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳；宿主结果表由 0060 部分替代 |
 | [0055](0055-multi-worker-exit-diagnostics.md) | 多 worker 最近失败的固定按值诊断，不延长业务资源租约 | 已采纳（有界诊断切片） |
 | [0056](0056-multi-worker-supervision.md) | 独立终态票据与多 worker 有界 one-for-one 宿主重启 | 已采纳（宿主监督集成切片） |
 | [0057](0057-accounted-immutable-bytes.md) | ABI v13、计费不可变字节叶节点与有界构造/复制 | 已采纳（业务值集成切片） |
 | [0058](0058-byte-i64-big-endian-access.md) | ABI v14、固定八字节 signed big-endian 读取与不可变替换 | 已采纳（状态编码切片） |
 | [0059](0059-byte-state-counter-equivalence.md) | 固定字节 Counter、有限请求窗口与 Wings/BEAM 正确性对照 | 已采纳（同协议正确性切片） |
+| [0060](0060-shared-scheduler-reply-table.md) | 调度实例共享宿主结果容量、逐目标请求计费与空闲 actor 元数据回归 | 已采纳；部分替代 0054 的宿主结果表 |
 
 ## 维护方式
 

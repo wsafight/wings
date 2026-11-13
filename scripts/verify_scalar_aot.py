@@ -827,6 +827,16 @@ def main():
         parent = Path(temporary)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
+        for count in (16, 64, 256):
+            density = json.loads(example("scheduler_density", counter, count).stdout)
+            assert density["actors"] == count and density["workers"] == 2
+            assert density["requests"] == 64
+            assert density["metric"] == "logical_reservation_not_rss"
+            assert 0 < density["actor_bytes"] <= count * 4096
+            assert density["populated_bytes"] == density["empty_bytes"] + density["actor_bytes"]
+            assert density["retired_bytes"] == density["empty_bytes"]
+            assert density["resources_released"] is True
+        print("Scheduler idle actor reservations verified: shared reply capacity, bounded metadata and cleanup; not RSS")
         messages = [message("Get"), message("Inc", 3), message("Inc", 4), message("Reset"), message("Set", 12), message("Get"), message("Confirm")]
         actual = [json.loads(line) for line in invoke(counter, messages).stdout.splitlines()]
         assert actual == [{"reply": 0}, {"reply": 3}, {"reply": 7}, {"accepted": True}, {"accepted": True}, {"reply": 12}, {"reply": None}]

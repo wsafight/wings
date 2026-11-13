@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。仍有逐 worker 全 actor 容量栈池、固定 registry 扫描及 256 actor 上限，尚不能承载代表性 1000/10000 actor 负载，不据此宣布 M:N、M0 或 MVP 完成。
+
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 接入 Wings/BEAM v1 的同协议正确性对照：真实固定字节 state、有限异步请求窗口、FIFO、checked i64、失败退出与清理，不再用标量/列表替代业务。独立模型与真实 OTP 结果另行核对，未完成多 actor/开环、热点/公平性、原生双平台最新 CI 或同负载性能/整机内存门禁，MVP 状态不变。
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 为固定字节 state 增加完整 i64 大端读写，避免业务以多次整对象单字节复制模拟一次更新。ABI v14，沿原根/预算/额度契约；后续仍需真正的异步窗口、失败退出、BEAM 同协议及双平台性能/内存验证，不提前提高里程碑状态。
