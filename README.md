@@ -30,7 +30,9 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
-[ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 结果总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；不将其称为 RSS 或 BEAM 内存结果，逐 worker 全容量栈池和 256 actor 限制仍在。
+[ADR-0061](docs/adr/0061-on-demand-scheduler-stacks.md) 将 Scheduler worker 的业务栈改为按需 guarded mapping，映射前完整三级准入，活栈原线程保留至正常返回，最多缓存两个已返回栈。沿用完整受限 AOT 与 `scheduler_density` 回归，不缩小单栈、不更改 ABI/语法，不把逻辑预留减少称为 RSS 或 BEAM 内存结果；256 actor 上限与代表性多 actor/开环门禁仍待推进。
+
+[ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 结果总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；后续栈安排见 ADR-0061。
 
 [ADR-0059](docs/adr/0059-byte-state-counter-equivalence.md) 将完整 256 B/4 KiB/64 KiB Bytes state、32 条异步请求窗口及失败退出接到 Wings Counter。`python3 scripts/verify_counter_equivalence.py --compare-beam` 用真实 OTP 29 与独立 Python checked 模型核对结果、FIFO、旧提交状态和清理；不带该选项只运行 Wings/模型，不宣称执行了 BEAM。先构建 compiler/VM 示例，边界与命令见[同协议工作负载](docs/beam-workloads.md)。未提供吞吐、尾延迟或整机内存比较。
 

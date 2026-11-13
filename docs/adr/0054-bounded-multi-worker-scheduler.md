@@ -4,6 +4,7 @@
 - 状态：已采纳（有界 M:N 集成切片；macOS 功能已验证，Linux 与完整门禁另记）
 - 扩展：[ADR-0020](0020-single-worker-mailbox.md)、[ADR-0040](0040-language-request-events.md)、[ADR-0053](0053-detached-process-images.md)
 - 部分替代：[ADR-0060](0060-shared-scheduler-reply-table.md) 将逐 actor 三类型宿主结果表改为实例共享总容量；下文保留原切片背景，当前容量和计费契约以新决策为准。
+- 部分替代：[ADR-0061](0061-on-demand-scheduler-stacks.md) 将 worker 全容量预建栈改为按需映射及借入前三级准入，固定活栈与迁移契约保留。
 
 ## 决定与理由
 

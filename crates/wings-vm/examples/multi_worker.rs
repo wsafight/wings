@@ -109,6 +109,40 @@ fn main() {
         }
         assert_eq!(handle.snapshot(busy).unwrap().owner, owner);
         handle.stop(busy).unwrap();
+        let paused: Vec<_> = (0..3)
+            .map(|_| {
+                let pid = handle.spawn(&loops, limits(), 1).unwrap();
+                handle
+                    .send(pid, &loops.handler("Forever").unwrap(), &[], u64::MAX)
+                    .unwrap();
+                pid
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while paused
+            .iter()
+            .any(|pid| handle.snapshot(*pid).unwrap().execution.is_none())
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let owners: Vec<_> = paused
+            .iter()
+            .map(|pid| handle.snapshot(*pid).unwrap().owner)
+            .collect();
+        assert!(owners.iter().all(Option::is_some));
+        assert_eq!(
+            reply(
+                handle
+                    .request(parents[0], &read, &[], 4096, Duration::from_secs(5))
+                    .unwrap()
+            ),
+            6
+        );
+        for (pid, owner) in paused.iter().zip(owners) {
+            assert_eq!(handle.snapshot(*pid).unwrap().owner, owner);
+            handle.stop(*pid).unwrap();
+        }
         assert_eq!(handle.last_exit(), None);
         let failing = handle.spawn(&loops, limits(), 2).unwrap();
         assert_eq!(

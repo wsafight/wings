@@ -170,6 +170,133 @@ fn stack_transfer_succeeds_when_vm_and_tenant_are_exactly_full() {
     assert_eq!(vm.used(), Resources::default());
 }
 
+#[test]
+fn demand_stacks_admit_only_mapped_slots_and_keep_guarded_live_mappings_exclusive() {
+    let [vm, tenant, process] = accounts();
+    let pool = StackPool::new_on_demand(&tenant, 3, 1).unwrap();
+    let baseline = vm.used();
+    assert_eq!(pool.stats().reserved_bytes, 0);
+    assert_eq!(pool.stats().charged_bytes, baseline.bytes);
+    assert!(baseline.bytes < 4096);
+    assert!(pool.acquire().is_err());
+    let bound = pool.for_process(&process).unwrap();
+    let first = bound.acquire().unwrap();
+    let second = bound.acquire().unwrap();
+    let third = bound.acquire().unwrap();
+    let slot_bytes = pool.stats().usable_bytes_per_stack + pool.stats().guard_bytes_per_stack;
+    assert_eq!(pool.stats().reserved_bytes, 3 * slot_bytes);
+    assert_eq!(process.used().bytes, (3 * slot_bytes) as u64);
+    for stack in [&first, &second, &third] {
+        assert_eq!(stack.base().get() - stack.limit().get(), slot_bytes);
+        assert_eq!(stack.base().get() % corosensei::stack::STACK_ALIGNMENT, 0);
+        assert_eq!(
+            stack.managed_limit() - stack.limit().get(),
+            pool.stats().guard_bytes_per_stack + SLOW_PATH_STACK_BYTES
+        );
+    }
+    assert_ne!(first.base(), second.base());
+    assert_ne!(first.base(), third.base());
+    assert_ne!(second.base(), third.base());
+    let full = vm.used();
+    assert!(bound.acquire().is_err());
+    assert_eq!(vm.used(), full);
+    drop(first);
+    assert_eq!((pool.stats().active, pool.stats().cached), (2, 1));
+    assert_eq!(vm.used(), full);
+    drop(second);
+    assert_eq!(pool.stats().reserved_bytes, 2 * slot_bytes);
+    assert_eq!(process.used().bytes, slot_bytes as u64);
+    pool.trim().unwrap();
+    assert_eq!((pool.stats().active, pool.stats().cached), (1, 0));
+    assert_eq!(pool.stats().reserved_bytes, slot_bytes);
+    assert_eq!(pool.stats().charged_bytes, vm.used().bytes);
+    let live = vm.used();
+    drop((bound, pool));
+    assert_eq!(vm.used(), live);
+    drop(third);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn demand_stack_cold_admission_checks_all_tiers_without_consuming_slots() {
+    for level in 0..3 {
+        let [vm, tenant, process] = accounts();
+        let pool = StackPool::new_on_demand(&tenant, 2, 0).unwrap();
+        let bound = pool.for_process(&process).unwrap();
+        let levels = [&vm, &tenant, &process];
+        let guard = levels[level]
+            .reserve(Resources {
+                bytes: levels[level].limit().bytes - levels[level].used().bytes,
+                ..Resources::default()
+            })
+            .unwrap();
+        let baseline = levels.map(ResourceAccount::used);
+        let stats = pool.stats();
+        assert!(bound.acquire().is_err());
+        assert_eq!(levels.map(ResourceAccount::used), baseline);
+        assert_eq!(pool.stats(), stats);
+        drop(guard);
+        let stack = bound.acquire().unwrap();
+        assert_eq!(pool.stats().active, 1);
+        drop(stack);
+        assert_eq!(pool.stats().reserved_bytes, 0);
+        assert_eq!(process.used(), Resources::default());
+        drop((bound, pool));
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
+fn demand_stack_cache_reuses_net_charge_at_full_ancestors_and_rejects_low_process() {
+    let [vm, tenant, process] = accounts();
+    let pool = StackPool::new_on_demand(&tenant, 2, 1).unwrap();
+    let bound = pool.for_process(&process).unwrap();
+    let stack = bound.acquire().unwrap();
+    let address = stack.base();
+    drop(stack);
+    let cached = pool.stats();
+    let low = tenant.process(limits(1)).unwrap();
+    let denied = pool.for_process(&low).unwrap();
+    let baseline = vm.used();
+    assert!(denied.acquire().is_err());
+    assert_eq!(pool.stats(), cached);
+    assert_eq!(vm.used(), baseline);
+    let filler = tenant
+        .reserve(Resources {
+            bytes: tenant.limit().bytes - tenant.used().bytes,
+            ..Resources::default()
+        })
+        .unwrap();
+    let full = vm.used();
+    let stack = bound.acquire().unwrap();
+    assert_eq!(stack.base(), address);
+    assert_eq!(vm.used(), full);
+    assert!(bound.acquire().is_err());
+    assert_eq!(pool.stats().active, 1);
+    assert_eq!(vm.used(), full);
+    drop(stack);
+    assert_eq!(process.used(), Resources::default());
+    assert_eq!(vm.used(), full);
+    pool.trim().unwrap();
+    assert_eq!(pool.stats().reserved_bytes, 0);
+    drop((filler, bound, denied, pool));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn demand_stack_configuration_and_cache_control_admission_roll_back() {
+    let [vm, tenant, process] = accounts();
+    for (capacity, cached) in [(0, 0), (2049, 0), (usize::MAX, 0), (1, 2)] {
+        assert!(StackPool::new_on_demand(&tenant, capacity, cached).is_err());
+        assert_eq!(vm.used(), Resources::default());
+    }
+    assert!(StackPool::new_on_demand(&vm, 1, 0).is_err());
+    assert!(StackPool::new_on_demand(&process, 1, 0).is_err());
+    let low = vm.tenant(limits(1)).unwrap();
+    assert!(StackPool::new_on_demand(&low, 1, 0).is_err());
+    assert_eq!(vm.used(), Resources::default());
+}
+
 fn preemption_requested(token: &PreemptionToken) -> bool {
     let module = super::module();
     let pool = StackPool::new(1, 0).unwrap();

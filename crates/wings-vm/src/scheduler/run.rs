@@ -33,7 +33,7 @@ pub(super) fn worker(
     let _exit = WorkerExit(shared.clone());
     let preemption = PreemptionToken::default();
     let setup = (|| {
-        let pool = StackPool::new_accounted(
+        let pool = StackPool::new_on_demand(
             &shared.tenant,
             shared.config.capacity,
             2.min(shared.config.capacity),

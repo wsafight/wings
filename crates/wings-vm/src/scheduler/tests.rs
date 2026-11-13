@@ -166,6 +166,99 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
 }
 
 #[test]
+fn cold_stack_process_denial_preserves_fifo_until_quota_is_released() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 4,
+        messages: 16,
+        requests: 4,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 2,
+            requests: 4,
+            slice_steps: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = crate::tests::module();
+    let blocked = handle
+        .spawn(
+            &module,
+            Resources {
+                bytes: 8 << 20,
+                ..limits
+            },
+            2,
+        )
+        .unwrap();
+    let healthy = handle.spawn(&module, limits, 1).unwrap();
+    let account = handle
+        .shared
+        .lock()
+        .actor(handle.shared.identity, blocked)
+        .unwrap()
+        .account
+        .clone();
+    let guard = account
+        .reserve(Resources {
+            bytes: account.limit().bytes
+                - account.used().bytes
+                - (2 * std::mem::size_of::<Envelope>()) as u64
+                - INVOCATION_BYTES,
+            ..Resources::default()
+        })
+        .unwrap();
+    let bump = module.handler("Bump").unwrap();
+    let mut first = handle
+        .request(blocked, &bump, &[7], 32, Duration::from_secs(5))
+        .unwrap();
+    let mut second = handle
+        .request(blocked, &bump, &[9], 32, Duration::from_secs(5))
+        .unwrap();
+    for expected in 1..=4 {
+        let mut request = handle
+            .request(healthy, &bump, &[1], 32, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            request.wait(Duration::from_secs(5)).unwrap(),
+            Some(RequestOutcome::Reply(expected))
+        );
+        let snapshot = handle.snapshot(blocked).unwrap();
+        assert_eq!(snapshot.committed_state, Some(0));
+        assert_eq!(snapshot.resources.messages, 2);
+        assert_eq!(snapshot.migrations, 0);
+        assert_eq!(first.try_take().unwrap(), None);
+        assert_eq!(second.try_take().unwrap(), None);
+        assert_eq!(
+            handle
+                .request(blocked, &bump, &[1], 32, Duration::from_secs(5))
+                .err()
+                .unwrap(),
+            "mailbox_full"
+        );
+    }
+    drop(guard);
+    assert_eq!(
+        first.wait(Duration::from_secs(5)).unwrap(),
+        Some(RequestOutcome::Reply(7))
+    );
+    assert_eq!(
+        second.wait(Duration::from_secs(5)).unwrap(),
+        Some(RequestOutcome::Reply(16))
+    );
+    assert_eq!(handle.snapshot(blocked).unwrap().committed_state, Some(16));
+    drop((first, second, account, handle, scheduler, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_phase() {
     let limits = Resources {
         bytes: 32 << 20,

@@ -832,6 +832,7 @@ def main():
             assert density["actors"] == count and density["workers"] == 2
             assert density["requests"] == 64
             assert density["metric"] == "logical_reservation_not_rss"
+            assert 0 < density["empty_bytes"] <= 12 << 20
             assert 0 < density["actor_bytes"] <= count * 4096
             assert density["populated_bytes"] == density["empty_bytes"] + density["actor_bytes"]
             assert density["retired_bytes"] == density["empty_bytes"]

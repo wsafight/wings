@@ -1,6 +1,8 @@
 # 评测与验收
 
-[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 增加多 actor 混合回复共享容量、满表拒绝账目不变、消费后复用、关闭后结果及三级请求准入测试。完整受限 AOT 的 `scheduler_density` 使用 2 worker、64 宿主结果槽、mailbox 1 和 16/64/256 空闲 Counter，验证每 actor 控制增量不超过 4096 B、退出回到空表和最终零预留。该指标仅为逻辑计费，保留逐 worker 全容量栈池，不是 RSS/BEAM 密度或吞吐门禁；真实业务对照与原 CPU/墙钟限制不变。
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 的按需栈验证包含冷借入前三级准入、失败无半槽、缓存净转移、祖先额度满时复用与冷借入的不同结果、活栈独占及最终清理；完整 AOT 增加同时挂起三个 actor（超过两个缓存上限），原 owner 不变且其他 actor 可推进，继续覆盖语言 spawn/GC、迁移和监督。密度探测沿用相同 actor/worker/队列/请求容量，增加空表不超过 12 MiB 的回归，报告空表/填满逻辑预留；单测另报当前已映射栈，不把空闲预留减少当 RSS、BEAM 对照或性能门禁通过。
+
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 增加多 actor 混合回复共享容量、满表拒绝账目不变、消费后复用、关闭后结果及三级请求准入测试。完整受限 AOT 的 `scheduler_density` 使用 2 worker、64 宿主结果槽、mailbox 1 和 16/64/256 空闲 Counter，验证每 actor 控制增量不超过 4096 B、退出回到空表和最终零预留。该指标仅为逻辑计费；原逐 worker 全容量栈安排由 ADR-0061 替代，不是 RSS/BEAM 密度或吞吐门禁，真实业务对照与原 CPU/墙钟限制不变。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 的 `verify_counter_equivalence.py --compare-beam` 执行真实 Wings/OTP 29 和独立 Python 模型：三种固定字节 state、最多 256 请求、32 条窗口、跨窗口 FIFO、i64 两端、溢出优先、候选失败不提交及故障队尾终结。宿主检查实际 Delivered 次序、回复前 state 提交、退出诊断旧字节和最终账目归零；JSON/二进制桥接分别验证边界。完整受限 AOT 默认执行 Wings/模型，不依赖未安装的 OTP，不能把该模式称 BEAM 对照。业务子进程 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，编译沿原限制。这不是开环、多 actor 或性能采样。
 

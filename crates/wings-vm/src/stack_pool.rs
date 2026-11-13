@@ -2,13 +2,16 @@ use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use corosensei::stack::{STACK_ALIGNMENT, Stack, StackPointer};
+use corosensei::stack::{DefaultStack, STACK_ALIGNMENT, Stack, StackPointer};
 
 use crate::{Reservation, ResourceAccount, ResourceLevel, Resources};
 
 pub const EXECUTION_STACK_BYTES: usize = 256 * 1024;
 pub(crate) const SLOW_PATH_STACK_BYTES: usize = 64 * 1024;
 const MAX_POOL_SLOTS: usize = 2048;
+
+mod demand;
+use demand::DemandState;
 
 #[derive(Clone)]
 pub struct StackPool {
@@ -30,13 +33,14 @@ pub struct StackPoolStats {
 }
 
 struct PoolInner {
-    mapping: NonNull<u8>,
+    mapping: Option<NonNull<u8>>,
     mapping_bytes: usize,
     slot_bytes: usize,
     page_bytes: usize,
     capacity: usize,
     max_cached: usize,
     state: RefCell<PoolState>,
+    demand: Option<RefCell<DemandState>>,
     accounting: Option<PoolAccounting>,
 }
 
@@ -58,6 +62,7 @@ pub(crate) struct PooledStack {
     pool: Rc<PoolInner>,
     index: usize,
     charge: Option<Reservation>,
+    mapping: Option<DefaultStack>,
 }
 
 impl PooledStack {
@@ -197,7 +202,7 @@ impl StackPool {
         };
         Ok(Self {
             inner: Rc::new(PoolInner {
-                mapping,
+                mapping: Some(mapping),
                 mapping_bytes,
                 slot_bytes,
                 page_bytes,
@@ -211,12 +216,16 @@ impl StackPool {
                     charges,
                 }),
                 accounting,
+                demand: None,
             }),
             process: None,
         })
     }
 
     pub fn stats(&self) -> StackPoolStats {
+        if let Some(state) = &self.inner.demand {
+            return self.demand_stats(&state.borrow());
+        }
         let state = self.inner.state.borrow();
         StackPoolStats {
             capacity: self.inner.capacity,
@@ -236,6 +245,10 @@ impl StackPool {
     }
 
     pub fn trim(&self) -> Result<(), String> {
+        if let Some(state) = &self.inner.demand {
+            state.borrow_mut().cached.clear();
+            return Ok(());
+        }
         let mut state = self.inner.state.borrow_mut();
         while let Some(index) = state.cached.pop() {
             if let Err(error) = self.inner.reset(index) {
@@ -249,6 +262,9 @@ impl StackPool {
     }
 
     pub(crate) fn acquire(&self) -> Result<PooledStack, String> {
+        if self.inner.demand.is_some() {
+            return self.acquire_demand();
+        }
         let mut state = self.inner.state.borrow_mut();
         let index = state
             .cached
@@ -306,13 +322,19 @@ impl StackPool {
             pool: self.inner.clone(),
             index,
             charge,
+            mapping: None,
         })
     }
 }
 
 impl PoolInner {
     fn slot(&self, index: usize) -> *mut u8 {
-        unsafe { self.mapping.as_ptr().add(index * self.slot_bytes) }
+        unsafe {
+            self.mapping
+                .expect("fixed pool mapping")
+                .as_ptr()
+                .add(index * self.slot_bytes)
+        }
     }
 
     fn reset(&self, index: usize) -> Result<(), String> {
@@ -342,23 +364,35 @@ impl PoolInner {
 
 impl Drop for PoolInner {
     fn drop(&mut self) {
-        unsafe { libc::munmap(self.mapping.as_ptr().cast(), self.mapping_bytes) };
+        if let Some(mapping) = self.mapping {
+            unsafe { libc::munmap(mapping.as_ptr().cast(), self.mapping_bytes) };
+        }
     }
 }
 
 unsafe impl Stack for PooledStack {
     fn base(&self) -> StackPointer {
+        if let Some(mapping) = &self.mapping {
+            return mapping.base();
+        }
         StackPointer::new(unsafe { self.pool.slot(self.index).add(self.pool.slot_bytes) } as usize)
             .expect("nonzero stack base")
     }
 
     fn limit(&self) -> StackPointer {
+        if let Some(mapping) = &self.mapping {
+            return mapping.limit();
+        }
         StackPointer::new(self.pool.slot(self.index) as usize).expect("nonzero stack limit")
     }
 }
 
 impl Drop for PooledStack {
     fn drop(&mut self) {
+        if self.pool.demand.is_some() {
+            self.release_demand();
+            return;
+        }
         let mut state = self.pool.state.borrow_mut();
         if let Some(mut charge) = self.charge.take() {
             charge

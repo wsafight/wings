@@ -141,3 +141,23 @@ release 同一个真实标量 Counter，2 worker、64 宿主结果槽、每 acto
 Linux 本增量另行验证。`config.requests` 现为全实例宿主结果总槽数，语言 pending 表仍独立；不把共享表锁、固定 registry 扫描、逐 worker 全容量栈池或 256 actor 上限当最终可扩展方案。多 actor/开环、完整业务值/资源计费、原生最新双平台与同负载 BEAM 吞吐/整机内存门禁仍未完成，MVP 状态不变；待审语法草案不在本提交范围。
 
 隔离 Linux 从 `596fb8b` 重新交叉构建 release 全部工具/示例与测试，27 个 harness 共 454 项通过（workspace 450、TCP 2、Counter 桥接 2）；完整受限 release AOT 首次通过，包含 16/64/256 actor 密度清理、跨 worker 业务及 45 组 Wings/独立模型 Counter。环境仍为 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，业务 CPU/墙钟限制不变；未执行 Linux OTP、debug/native clippy/MSRV/doc-tests，不将仿真结果当原生 CI、BEAM 比较或性能证据。
+
+### 调度 worker 按需原生栈增量：ADR-0061
+
+基于 `dc420b4`，macOS 26.6.2 AArch64、Rust 1.99.1 的 debug/release workspace 各 457 项测试通过（新增 7 项），两种构建 TCP/Counter 桥接示例各 2 项通过。workspace check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离与文档链接/围栏检查通过。固定池全部已有测试保留，ABI v14 和语法不变。
+
+按需模式借入前向原三级账户预留完整 256 KiB 加平台 guard，再调用 corosensei 0.3.3 DefaultStack；无新依赖。单测验证空池无业务映射、三级拒绝/注入映射失败无半槽、独占地址/guard/容量、缓存命中满祖先净转移、process 拒绝不取缓存、trim 不动活栈及池先 Drop 的生命周期。Scheduler 检查暂时拒绝后保留两条 FIFO 请求、健康 actor 继续推进、释放 process 额度后结果依次为 7/16；启动回滚保留构造前拒绝，另以 4.5 MiB tenant 触发 worker 启动后的拒绝并核对归零。完整 AOT 新增同时三个永久循环的暂停/取消，超过两个缓存槽也不降低活栈容量，其他 actor 仍能回复；1/2/3 worker 均核对 owner 不变。
+
+相同 release Counter、2 worker、64 宿主结果槽、mailbox 1、VM/tenant 各 1 GiB 上限，每组单次冷启动的逻辑预留如下（B）；修改前取 ADR-0060 修改后的实测：
+
+| actor 数 | 修改前空表 | 修改后空表 | 修改前填满 | 修改后填满 | actor 增量（前后相同） |
+|---|---|---|---|---|---|
+| 16 | 16065200 | 7151632 | 16091952 | 7178384 | 26752 |
+| 64 | 43080368 | 7425040 | 43187376 | 7532048 | 107008 |
+| 256 | 151141040 | 8518672 | 151569072 | 8946704 | 428032 |
+
+256 actor 填满总预留减少 142622368 B，每 actor 控制增量仍为 1672 B。退出回到各自空表，最终预留归零；空表仍包含 worker/计时线程栈、固定调度/请求控制及计费模块。此处没有执行全部 actor 的 handler，没有业务 Bytes、RSS 或 BEAM 性能测量；按需映射仍对全部同时挂起活栈付费。完整受限 AOT 增加空表不超过 12 MiB 的回归，原每 actor 4096 B 控制上限不变，不能外推为 1000/10000 actor 或业务总内存承诺。
+
+最终代码的完整 debug/release AOT 均首次通过，包含语言 spawn/消息/GC、活栈恢复、迁移和监督；真实 Wings/OTP 29/独立 Python 两种构建各通过 45 业务、28 JSON 拒绝及 14 桥接拒绝。本增量未放宽既有 CPU 20 秒/墙钟 30 秒/禁 core，Counter 业务仍为 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒。此前 TCP 偶发记录仍保留，不因本次通过宣称稳定性门禁已过。
+
+Linux 本增量另行验证。当前仍限制 256 actor，有固定全 registry 扫描及编号迁移；通用业务值、完整资源账本、代表性多 actor/开环、原生最新双平台及同负载 BEAM 吞吐/整机内存双门禁未完成，MVP 状态不变。待审语法草案不包含在提交中。

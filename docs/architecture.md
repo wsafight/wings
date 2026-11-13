@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 规定 Scheduler worker 的业务栈按需创建：池构造只准入控制和至多两个缓存槽，冷借入在映射前向原 process/tenant/VM 预留完整栈加 guard；复用缓存净转移票据，归还时有界缓存或先解除映射再归还额度。活跃/挂起栈保持原 worker 独占至正常返回，默认固定池不变。不再按空闲 actor 上限预映射所有栈，但不承诺冷借入一定成功，也不将逻辑预留变化称为物理内存结果。
+
 [ADR-0060](adr/0060-shared-scheduler-reply-table.md) 让 Scheduler 在 tenant 启动准入时创建唯一宿主 ReplyTable，固定容量 `config.requests`，不再逐 actor 创建三类型表。Int/Bool/Unit 共用槽、handle 按请求保留类型，schema 校验不变；语言 pending 表独立。每槽的请求票据向目标 process 的原三级路径预留，表只接受原账户或直属子账户。结果不持 Shared/actor/模块，关闭后可消费终态，表控制计费直到最后结果 handle 释放。ABI/语法与线程执行权不变，完整业务计费和大规模调度仍待完成。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 增加测试宿主 `beam_counter`，以现有 AOT/Bytes/单 worker 执行固定字节 Counter，不扩展受管 ABI 或服务协议。`ByteStateSnapshot` 只复制已提交 Bytes 的长度/最多 32 B 前缀，无引用或资源租约；宿主读取只在无活跃调用时允许，失败诊断在 actor 清理前复制旧提交根，不读取候选或悬挂栈。多 worker 快照不变，外部诊断授权/脱敏另行设计。

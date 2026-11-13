@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 为 Scheduler worker 采用按需栈池，最大活栈数仍由 actor 容量限制，冷栈在映射前按完整容量和 guard 三级准入；缓存命中只净转移账户。启动拒绝不弹走队头、不提交 state、不退出 actor，其他可准入 actor 继续运行；拒绝可持续至资源释放或 stop/关闭，未承诺饿死工作最终准入。正常返回才可缓存最多两个栈，超额映射释放，缓存只向 tenant 计费，trim 不碰活栈。
+
 [ADR-0060](adr/0060-shared-scheduler-reply-table.md) 将 `SchedulerConfig.requests` 的宿主结果容量解释为全实例 Int/Bool/Unit 共用的总槽数，语言 pending 另有同大小表，不合并这两类容量；普通固定入口 ingress 不变。每次宿主 request 先按原目标 process 计费，实例表满返回 `ingress_requests_full`，队列/准入失败不留半槽或票据。超时/取消不撤回消息，caller/publisher 都结束才复用槽；退出释放业务资源，未消费结果仅延长原票据/共享控制表租约，不保留 actor 或模块。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 为单 worker 增加固定按值 `ByteStateSnapshot`（长度/最多 32 B 前缀），不返回 handle 或保留堆/账户。`byte_state_snapshot(pid)` 在 active invocation 时拒绝，非 Bytes 返回 None；失败 ExitSnapshot 在清理前复制已提交 Bytes，退出后仍可持有副本。前缀可含业务数据，仅可信宿主显式读取，不是完整导出或持久快照。固定 Counter 测试先提交整批最多 32 个请求再 tick，按 Delivered 顺序消费；失败终结该批队尾且不重放，业务契约不变。

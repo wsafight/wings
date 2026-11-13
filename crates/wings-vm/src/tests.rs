@@ -174,7 +174,7 @@ unsafe extern "C" fn invalid_output(
     STATUS_OK
 }
 
-fn module() -> ScalarModule {
+pub(crate) fn module() -> ScalarModule {
     let handlers = [
         (
             "Add",

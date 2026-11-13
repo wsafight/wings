@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（M0 原型）；未发布源码已实现，macOS 本机验证通过，Linux 等待本分支 CI
 - 替代：[ADR-0011](0011-scalar-stackful-resume.md) 的每调用独立 `DefaultStack` 分配策略；ABI v3、原栈恢复和取消语义保留
+- 扩展：[ADR-0061](0061-on-demand-scheduler-stacks.md) 为 Scheduler 提供按需映射模式，复用 DefaultStack guard 和析构及最多两个正常返回栈的缓存；本记录的公开固定池仍保留。
 
 ## 依据与决定
 

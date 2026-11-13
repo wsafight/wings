@@ -434,22 +434,61 @@ fn scheduler_configuration_and_startup_admission_roll_back() {
         assert!(Scheduler::new(&tenant, config).is_err());
         assert_eq!(vm.used(), baseline);
     }
-    let small = vm.tenant_accounted(limits(6 << 20)).unwrap();
-    let baseline = vm.used();
-    assert!(
-        Scheduler::new(
-            &small,
-            SchedulerConfig {
-                workers: 2,
-                capacity: 16,
-                requests: 4,
-                ..SchedulerConfig::default()
-            }
-        )
-        .is_err()
+    for bytes in [4 << 20, 9 << 19] {
+        let small = vm.tenant_accounted(limits(bytes)).unwrap();
+        let baseline = vm.used();
+        assert!(
+            Scheduler::new(
+                &small,
+                SchedulerConfig {
+                    workers: 2,
+                    capacity: 16,
+                    requests: 4,
+                    ..SchedulerConfig::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+    }
+    drop(tenant);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_idle_capacity_does_not_premap_all_execution_stacks() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(16 << 20)).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 256,
+            requests: 4,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    assert!(vm.used().bytes < 12 << 20);
+    let handle = scheduler.handle();
+    let module = module();
+    let pid = handle.spawn(&module, quota(), 1).unwrap();
+    assert_eq!(
+        reply(
+            handle
+                .request(
+                    pid,
+                    &module.handler("Bump").unwrap(),
+                    &[7],
+                    32,
+                    Duration::from_secs(5)
+                )
+                .unwrap()
+        ),
+        RequestOutcome::Reply(7)
     );
-    assert_eq!(vm.used(), baseline);
-    drop((small, tenant));
+    assert!(vm.used().bytes < 12 << 20);
+    drop((handle, scheduler, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
 

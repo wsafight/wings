@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。仍有逐 worker 全 actor 容量栈池、固定 registry 扫描及 256 actor 上限，尚不能承载代表性 1000/10000 actor 负载，不据此宣布 M:N、M0 或 MVP 完成。
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 消除逐 worker 全 actor 容量的空闲栈映射，保留完整单栈/guard 及借入前三级准入、活栈线程固定和最多两个已返回栈的缓存。冷启动准入失败仍保留原 FIFO，额度释放后重试；未降低同时活栈上限。256 actor 限制、固定 registry 扫描、负载自适应公平性与代表性多 actor/开环尚未完成，逻辑预留减少不替代 BEAM 吞吐/整机内存门禁。
+
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。该切片后的逐 worker 全容量栈池另由 ADR-0061 改进；固定 registry 扫描及 256 actor 上限仍不能承载代表性 1000/10000 actor 负载，不据此宣布 M:N、M0 或 MVP 完成。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 接入 Wings/BEAM v1 的同协议正确性对照：真实固定字节 state、有限异步请求窗口、FIFO、checked i64、失败退出与清理，不再用标量/列表替代业务。独立模型与真实 OTP 结果另行核对，未完成多 actor/开环、热点/公平性、原生双平台最新 CI 或同负载性能/整机内存门禁，MVP 状态不变。
 
