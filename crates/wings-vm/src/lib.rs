@@ -34,8 +34,8 @@ pub use execution::{
     ScalarExecution, ScalarTask,
 };
 pub use heap::{
-    CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,
-    RootFrame, ShadowRoots,
+    ByteStateSnapshot, CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout,
+    RecordValue, RootFrame, ShadowRoots,
 };
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;

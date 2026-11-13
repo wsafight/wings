@@ -1027,6 +1027,9 @@ def main():
         command([COMPILER, "build", ROOT / "examples/bytes.wings", "-o", byte_buffers])
         example("byte_buffers", byte_buffers)
         command([sys.executable, Path(__file__), "--check-byte-roots", byte_buffers])
+        counter_bytes = parent / "beam-counter"
+        command([COMPILER, "build", ROOT / "examples/beam-counter.wings", "-o", counter_bytes])
+        command([sys.executable, ROOT / "scripts/verify_counter_equivalence.py", "--artifact", counter_bytes])
         result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
         result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("Heap", 30)) + "\n")

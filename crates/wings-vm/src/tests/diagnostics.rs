@@ -1,5 +1,170 @@
 use super::*;
 
+unsafe extern "C" fn byte_initialize(
+    _state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe { byte_candidate(0, [5].as_ptr(), output, context) }
+}
+
+unsafe extern "C" fn byte_candidate(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let value = unsafe { *arguments };
+    let scratch = [40, value, 0];
+    let mut reference = 0;
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_FILL_BYTES,
+            scratch.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status != STATUS_OK {
+        return status;
+    }
+    if value == 99 {
+        return STATUS_DIVISION_BY_ZERO;
+    }
+    unsafe {
+        *output = ScalarOutput {
+            state: reference as i64,
+            reply: value,
+        }
+    };
+    STATUS_OK
+}
+
+#[test]
+fn byte_state_diagnostics_copy_only_committed_data_without_resource_leases() {
+    let [vm, tenant, _] = accounts();
+    let mut module = module();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::BytesRef;
+    data.initializer = byte_initialize;
+    data.entries[1] = byte_candidate;
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let pid = worker
+        .spawn_with_heap(&module, limits(8 << 20), 2, 4)
+        .unwrap();
+    let baseline = vm.used();
+    let first = worker.byte_state_snapshot(pid).unwrap().unwrap();
+    assert_eq!(
+        first,
+        ByteStateSnapshot {
+            length: 40,
+            prefix: [5; 32]
+        }
+    );
+    assert_eq!(vm.used(), baseline);
+    let handler = module.handler("Bump").unwrap();
+    for value in [7, 99] {
+        let request = worker
+            .request(pid, &handler, &[value], 128, Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
+        assert!(worker.byte_state_snapshot(pid).is_err());
+        let event = worker.tick(128).unwrap();
+        if value == 7 {
+            assert_eq!(event, WorkerEvent::Delivered(pid));
+            assert_eq!(
+                worker.take_reply(request).unwrap(),
+                Some(RequestOutcome::Reply(7))
+            );
+            assert_eq!(
+                worker.byte_state_snapshot(pid).unwrap().unwrap().prefix,
+                [7; 32]
+            );
+        } else {
+            assert!(matches!(event, WorkerEvent::Exited { pid: actual, .. } if actual == pid));
+            assert_eq!(
+                worker.take_reply(request).unwrap(),
+                Some(RequestOutcome::Failed)
+            );
+        }
+    }
+    let exit = *worker.last_exit().unwrap();
+    assert_eq!(
+        exit.byte_state,
+        Some(ByteStateSnapshot {
+            length: 40,
+            prefix: [7; 32]
+        })
+    );
+    assert_eq!(exit.committed_state, None);
+    assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
+    assert_eq!(first.prefix, [5; 32]);
+    assert!(worker.byte_state_snapshot(pid).is_err());
+    drop((worker, module, handler, tenant));
+    assert_eq!(vm.used(), Resources::default());
+    assert_eq!(exit.byte_state.unwrap().prefix, [7; 32]);
+}
+
+#[test]
+fn byte_state_diagnostics_reject_other_types_and_zero_pad_short_buffers() {
+    let [vm, tenant, account] = accounts();
+    let module = module();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let pid = worker.spawn(&module, limits(8 << 20), 1).unwrap();
+    assert_eq!(worker.byte_state_snapshot(pid).unwrap(), None);
+    worker.stop(pid).unwrap();
+    let mut heap = crate::aot_heap::AotHeap::new(&account, 2).unwrap();
+    assert_eq!(heap.byte_state_snapshot(), None);
+    let flag = std::sync::atomic::AtomicU32::new(0);
+    let mut context = ScalarContext {
+        cancellation: &flag,
+        remaining_steps: 128,
+        yield_request: &flag,
+        slice_remaining: 128,
+        slow_path: None,
+        data: std::ptr::null_mut(),
+        stack_limit: 0,
+        roots: std::ptr::null(),
+        heap_call: Some(crate::aot_heap::heap_call),
+        heap_data: std::ptr::from_mut(heap.as_mut()).cast(),
+        effect_call: None,
+    };
+    for length in [0i64, 3] {
+        let scratch = [length, 255, 0];
+        let mut reference = 0;
+        assert_eq!(
+            unsafe {
+                crate::aot_heap::heap_call(
+                    &mut context,
+                    wings_abi::HEAP_FILL_BYTES,
+                    scratch.as_ptr() as usize as u64,
+                    &mut reference,
+                )
+            },
+            STATUS_OK
+        );
+        heap.commit_typed(ValueType::BytesRef, reference as i64)
+            .unwrap();
+        let snapshot = heap.byte_state_snapshot().unwrap();
+        assert_eq!(snapshot.length, length as usize);
+        assert_eq!(
+            &snapshot.prefix[..length as usize],
+            vec![255; length as usize]
+        );
+        assert!(
+            snapshot.prefix[length as usize..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+    }
+    drop((heap, worker));
+    assert_eq!(vm.used(), Resources::default());
+}
+
 #[test]
 fn execution_snapshots_track_ready_suspended_and_completed_without_advancing() {
     let module = module();

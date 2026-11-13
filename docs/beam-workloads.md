@@ -1,15 +1,15 @@
 # BEAM 工作负载协议 v1
 
-本协议是 M0 的独立正确性切片，配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。当前只实现一个有界 Counter 的异步 request/reply、单发送者 FIFO、checked i64 和失败退出 oracle。**不表示 Wings 已实现相同业务，不是性能实验，也不作性能或内存领先声明。** 不修改现有架构、副作用或提交契约。
+本协议是 M0 的独立正确性切片，配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 已接入 Wings/BEAM 两端的固定字节 Counter，验证有界异步 request/reply、单发送者 FIFO、checked i64 和失败退出。**只有显式 `--compare-beam` 才实际运行 BEAM；不是性能实验，也不作性能或内存领先声明。** 不修改副作用或提交契约。
 
 ## 已执行的最小业务
 
-- 一个普通 BEAM actor，初始计数器由输入给出；不冬眠、不重启。一个外部驱动进程发送请求，actor 内没有阻塞业务调用。
+- 一个普通 BEAM actor，或 Wings 单 worker 下一个有计费堆的 actor，初始计数器由输入给出；不冬眠、不重启。一个外部驱动发送请求，actor 内没有阻塞业务调用。
 - 计数器和 delta 均为 `[-2^63, 2^63-1]` 的有符号整数，每次加法单独 checked；不环绕、不饱和，也不让 BEAM 的任意精度整数成为业务结果。BEAM 和 Python 可用宽整数计算临时值，但必须在编码、提交和成功回复之前检查范围。
-- 逻辑 state 恰为 `256 / 4096 / 65536 B`：计数器 `i64 big-endian`、actor ID `u64 big-endian`（固定为 1），其余为零填充。Erlang 使用不可变 binary 保留该完整状态，每次成功构造候选状态；逻辑字节不等于 BEAM 堆大小、复制成本或 RSS。
+- 逻辑 state 恰为 `256 / 4096 / 65536 B`：计数器 `i64 big-endian`、actor ID `u64 big-endian`（固定为 1），其余为零填充。Erlang 使用不可变 binary，Wings 使用不可变 Bytes 保留该完整状态，每次成功构造候选状态；逻辑字节不等于堆大小、复制成本或 RSS。
 - 每个请求和成功回复都有相同的 **32 B 逻辑业务记录**：`sequence:u64, operation:u64, value:i64, reserved:u64`，均为 big-endian，reserved 必须为零。请求 operation 为 1（add）或 2（add 后注入失败），value 为 delta；回复 operation 为 3，value 为提交后的计数器。JSON 和 Erlang tuple、PID、monitor 等信封成本另算，不能称物理消息也是 32 B。
 - 请求 sequence 从 1 连续增长。驱动一次发送最多 32 个请求，再收齐该批回复，才发送下一批；不逐条同步调用。只保证**同一发送者到同一接收者**的 FIFO，不要求跨发送者全序。收集器按实际到达顺序检查 sequence，不能用选择性接收掩盖乱序。
-- 成功路径先选定候选状态，再发布成功回复并以新状态进入下一次循环；失败路径不进入新状态、不成功回复。溢出优先于注入失败判定，actor 以携带失败序号和最后提交值的 `handler_failed` 原因退出，monitor 结束等待；已发但未处理的后续请求不再执行。不捕获失败后继续处理、不重放请求。
+- 成功路径先选定候选状态，再发布成功回复并以新状态进入下一次循环；失败路径不进入新状态、不成功回复。溢出优先于注入失败判定，BEAM actor 以携带失败序号和最后提交值的 `handler_failed` 原因退出，monitor 结束等待；Wings 由 Exited/固定旧提交 Bytes 副本和结构化故障核对相同结果，失败 pending 全部终结。已发但未处理的后续请求不再执行，不捕获失败后继续处理、不重放请求。
 - 候选状态与自动成功回复共同受正常结束条件约束，**不是外部副作用事务**。当前没有 `send/spawn` 业务副作用用例，不验证副作用回滚；未来这些副作用仍在调用点生效，失败不撤回。回复投递失败也不能回滚已提交状态。
 
 ## 输入、输出与运行限制
@@ -63,6 +63,27 @@
 - 同平台同机器的 CPU/内存配额、OTP/ERTS/JIT、堆/GC、Wings 版本、生成器开销和原始输出必须随性能实验冻结。保留 BEAM 正常优化；逻辑相同不代表分配布局相同。分别报告整机 RSS 与平台口径，不能混用 macOS 物理占用与 Linux PSS；当前没有这些性能结果。
 
 ## 独立验证
+
+先构建当前源码工具/示例，再运行 Wings/独立模型或真实三端对照：
+
+```sh
+cargo build --workspace --locked --bins --examples
+cargo test --locked -p wings-vm --example beam_counter
+python3 scripts/verify_counter_equivalence.py
+python3 scripts/verify_counter_equivalence.py --compare-beam
+cargo build --release --workspace --locked --bins --examples
+WINGS_PROFILE=release python3 scripts/verify_counter_equivalence.py --compare-beam
+```
+
+Wings 驱动位于 [`beam_counter.rs`](../crates/wings-vm/examples/beam_counter.rs)，编译源码为 [`beam-counter.wings`](../examples/beam-counter.wings)。脚本默认构建临时可信产物，`--artifact <目录>` 可复用匹配的产物；`--input <文件>` 运行单个有界 JSON，保留业务退出码。JSON 严格拒绝重复键/未知字段、bool 或浮点替代整数及多余输入。真实三端模式要求 OTP 29，缺失或输出不符直接失败，不回退成模型通过。
+
+两端共享 JSON schema；Wings 测试子进程经内部二进制桥接运行：32 B 头 `version:u64/state_bytes:u64/initial:i64/count:u64`，后接最多 256 条 32 B 请求，全部 big-endian；最大 8224 B，校验连续 sequence、operation 1/2、reserved 0 和精确长度后才装载产物。这不是通用网络/CLI 协议，不把四个 Int 参数或请求表的物理成本称为 32 B。
+
+Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目归零只证明逻辑清理，不证明 RSS。
+
+当前套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无多 actor/开环到达、热点、心跳、过载性能或吞吐/整机内存结果。
+
+原 BEAM 独立 oracle 仍可单独运行：
 
 ```sh
 python3 scripts/verify_beam_workload.py

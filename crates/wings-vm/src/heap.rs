@@ -79,6 +79,12 @@ pub struct CollectionStats {
     pub reclaimed: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ByteStateSnapshot {
+    pub length: usize,
+    pub prefix: [u8; 32],
+}
+
 pub struct RecordHeap {
     identity: u64,
     slots: Box<[Slot]>,

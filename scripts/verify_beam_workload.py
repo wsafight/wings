@@ -92,7 +92,7 @@ def reference(workload):
     return 0, {"status": "ok", "committed": committed, "replies": replies}
 
 
-def verify():
+def valid_cases():
     valid = [config(state_bytes=size, requests=[(delta, False) for delta in [5, -2, 7, -9, 0] * 20])
              for size in (256, 4096, 65536)]
     valid.extend([
@@ -105,18 +105,10 @@ def verify():
         config(requests=[(1, False)] * 64 + [(2, True), (100, False)]),
         config(MAX_I64, [(1, True)]),
     ])
-    for workload in valid:
-        code, result = invoke(json.dumps(workload).encode())
-        expected_code, expected = reference(workload)
-        require(code == expected_code, f"exit {code}: {result}")
-        for key, value in expected.items():
-            require(result.get(key) == value, f"{key}: {result} != {expected}")
-        require(result.get("version") == 1, result)
-        require(result.get("state_bytes") == workload["state_bytes"], result)
-        require(result.get("message_bytes") == 32, result)
-        require(result.get("environment", {}).get("otp") == "29", result)
-        require(result["environment"].get("schedulers") == 1, result)
+    return valid
 
+
+def invalid_payloads():
     invalid = [
         {},
         {**config(), "version": 2},
@@ -141,6 +133,24 @@ def verify():
         json.dumps(config()).replace('"version": 1', '"version": 1, "version": 1').encode(),
         b" " * (MAX_INPUT + 1),
     ])
+    return payloads
+
+
+def verify():
+    valid = valid_cases()
+    for workload in valid:
+        code, result = invoke(json.dumps(workload).encode())
+        expected_code, expected = reference(workload)
+        require(code == expected_code, f"exit {code}: {result}")
+        for key, value in expected.items():
+            require(result.get(key) == value, f"{key}: {result} != {expected}")
+        require(result.get("version") == 1, result)
+        require(result.get("state_bytes") == workload["state_bytes"], result)
+        require(result.get("message_bytes") == 32, result)
+        require(result.get("environment", {}).get("otp") == "29", result)
+        require(result["environment"].get("schedulers") == 1, result)
+
+    payloads = invalid_payloads()
     for payload in payloads:
         code, result = invoke(payload)
         require(code == 2 and result.get("status") == "invalid", (code, result))

@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 为单 worker 增加固定按值 `ByteStateSnapshot`（长度/最多 32 B 前缀），不返回 handle 或保留堆/账户。`byte_state_snapshot(pid)` 在 active invocation 时拒绝，非 Bytes 返回 None；失败 ExitSnapshot 在清理前复制已提交 Bytes，退出后仍可持有副本。前缀可含业务数据，仅可信宿主显式读取，不是完整导出或持久快照。固定 Counter 测试先提交整批最多 32 个请求再 tick，按 Delivered 顺序消费；失败终结该批队尾且不重放，业务契约不变。
+
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的八字节读取固定有界、不分配；替换仍沿 Bytes 原账户、精确源根、每块最多 256 字节和取消清理契约，需同时容纳旧/新对象。先验证完整范围，再预留/复制，不从负数或极端 offset 形成越界访问。ABI v14 复用原 scratch/context，未开放原 handle 消息或原生沙箱。
 
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；消息/回复、字符串和完整业务值仍未完成。

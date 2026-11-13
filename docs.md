@@ -16,7 +16,7 @@
 | [激进优化](docs/optimizations.md) | 优化候选、适用条件、风险、实验顺序与回退路径 |
 | [评测与验收](docs/evaluation.md) | BEAM 对照、负载矩阵、指标、正确性与故障注入 |
 | [2026-11-13 验证记录](docs/validation-2026-11-13.md) | macOS 原生与 Linux x86-64 隔离仿真结果及未通过项 |
-| [BEAM 工作负载 v1](docs/beam-workloads.md) | 有界 Counter 正确性 oracle 与后续同业务对照协议 |
+| [BEAM 工作负载 v1](docs/beam-workloads.md) | 固定字节 Counter 的 Wings/BEAM 正确性对照与后续性能协议 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 
 ## 维护

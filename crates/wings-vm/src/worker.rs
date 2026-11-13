@@ -88,6 +88,7 @@ pub struct ExitSnapshot {
     pub execution: ExecutionSnapshot,
     pub state_type: wings_abi::ValueType,
     pub committed_state: Option<i64>,
+    pub byte_state: Option<crate::ByteStateSnapshot>,
     pub queued: usize,
     pub resources_before_cleanup: Resources,
     handler: [u8; 256],
@@ -771,6 +772,7 @@ impl ScalarWorker {
                         state_type,
                         committed_state: (!state_type.is_reference())
                             .then(|| actor.task.committed_state()),
+                        byte_state: actor.task.byte_state_snapshot(),
                         queued: actor.mailbox.count,
                         resources_before_cleanup: actor.account.used(),
                         handler,
@@ -801,6 +803,17 @@ impl ScalarWorker {
 
     pub fn last_exit(&self) -> Option<&ExitSnapshot> {
         self.last_exit.as_ref()
+    }
+
+    pub fn byte_state_snapshot(
+        &self,
+        pid: Pid,
+    ) -> Result<Option<crate::ByteStateSnapshot>, String> {
+        let actor = self.actor(pid)?;
+        if actor.active.is_some() {
+            return Err("byte state snapshot is unavailable during an invocation".into());
+        }
+        Ok(actor.task.byte_state_snapshot())
     }
 
     pub fn snapshot(&self, pid: Pid) -> Result<ProcessSnapshot<'_>, String> {

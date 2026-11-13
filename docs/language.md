@@ -1,5 +1,7 @@
 # wings-lang
 
+[`examples/beam-counter.wings`](../examples/beam-counter.wings) 用现有 Bytes 内建构造固定长度 state，通过 `Configure` 初始化 actor ID/计数器，`Apply` 做 checked 加法、完整候选复制及注入失败；正常返回才提交/自动回复。sequence/operation/reserved 由有界外部测试驱动验证，不新增 `await`、同步 call 或消息类型。它是同协议正确性负载，不是生产入口或性能结果，见 [ADR-0059](adr/0059-byte-state-counter-equivalence.md)。
+
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 增加 `read_i64_be(Bytes, offset: Int) -> Int` 与 `replace_i64_be(Bytes, offset: Int, value: Int) -> Bytes`：按 signed big-endian 二进制补码访问连续八字节，支持完整 i64 范围及未对齐 offset。offset 必须非负且八字节均在对象内，否则 InvalidBytes；替换复制完整对象，不修改旧值。无隐式编码、字符串或可变切片，消息/回复限制不变。
 
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 增加不可变 `Bytes`，可作 state、局部、fn 参数/结果、条件表达式与 state while 的值。`fill_bytes(length: Int, value: Int) -> Bytes` 构造 0..=65536 字节，`bytes_len(Bytes) -> Int` 取长度，`byte_at(Bytes, Int) -> Int` 读字节，`replace_byte(Bytes, Int, Int) -> Bytes` 复制替换一个字节。字节必须为 0..=255，索引必须非负且小于长度；不合法时受管失败，不修改旧对象或提交候选。没有字符串字面量或隐式 UTF-8，也不允许 Bytes 消息参数/回复。示例见 [`examples/bytes.wings`](../examples/bytes.wings)，执行须配置计费堆。

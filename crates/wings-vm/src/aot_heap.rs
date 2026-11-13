@@ -26,6 +26,17 @@ pub(crate) struct AotHeap {
 }
 
 impl AotHeap {
+    pub(crate) fn byte_state_snapshot(&self) -> Option<crate::ByteStateSnapshot> {
+        let bytes = self.heap.bytes(self.committed?).ok()?;
+        let mut prefix = [0; 32];
+        let count = bytes.len().min(prefix.len());
+        prefix[..count].copy_from_slice(&bytes[..count]);
+        Some(crate::ByteStateSnapshot {
+            length: bytes.len(),
+            prefix,
+        })
+    }
+
     pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Box<Self>, String> {
         let mut heap = RecordHeap::new(account, capacity, 3)?;
         let metadata = account.reserve(Resources {

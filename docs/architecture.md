@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 增加测试宿主 `beam_counter`，以现有 AOT/Bytes/单 worker 执行固定字节 Counter，不扩展受管 ABI 或服务协议。`ByteStateSnapshot` 只复制已提交 Bytes 的长度/最多 32 B 前缀，无引用或资源租约；宿主读取只在无活跃调用时允许，失败诊断在 actor 清理前复制旧提交根，不读取候选或悬挂栈。多 worker 快照不变，外部诊断授权/脱敏另行设计。
+
 [ADR-0056](adr/0056-multi-worker-supervision.md) 用独立固定终态票据接入 SchedulerSupervisor，不依赖可覆盖的最近失败缓存。actor 发布端位于最后释放字段，旧镜像/mailbox/控制票据先清理，终态才可消费；票据及重启历史在 tenant 准入。poll 在锁外初始化新实例，沿用已有有限滚动窗口，不增加后台线程或业务 ABI。
 
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 在 Scheduler 的共享计费控制区保存一个按值失败快照。写入与 Pid 退休共用 registry 锁，跨线程读取不持有模块/堆/账户；固定名称缓冲、不解析错误文本。该缓存可覆盖，不能直接作为不丢终态的监督协议。

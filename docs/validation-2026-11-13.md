@@ -109,3 +109,13 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 保留失败：debug 完整 AOT 前两次均在既有 TCP normal 场景的 5 秒启动等待超时；单独受限子进程探测能输出监听地址，未修改 TCP 或限制，第三次完整 debug 通过，完整 release 首次通过。不能据此宣称启动偶发失败已修复或稳定性门禁通过。Linux 本增量另行验证；编码原语不是 Wings/BEAM 同协议业务或性能结果，MVP 剩余门禁不变。
 
 隔离 Linux 从 `86cd40e` 重新交叉构建所有 release 工具/示例及测试，26 个 harness 共 447 项通过（含 TCP 示例 2 项）；完整受限 release AOT 首次通过，覆盖 i64 两端、末尾八字节替换、逐步恢复及独立根模型。环境仍为无宿主挂载的 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB，CPU/墙钟限制未变；未执行 Linux debug/native clippy/MSRV/doc-tests，不将仿真成功写成原生 CI 或性能通过。
+
+### 固定字节 Counter 同协议正确性增量：ADR-0059
+
+基于 `313f56a`，macOS debug/release workspace 各 447 项测试通过（新增两项固定 Bytes 诊断回归）；两种构建 TCP/Counter 桥接示例各 2 项、check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check 和依赖隔离通过。文档链接/围栏与 diff whitespace 检查通过，CI 新增桥接示例单测，但未声称最新远端原生 CI 已运行。
+
+真实 `verify_counter_equivalence.py --compare-beam` 在两种构建均通过：Wings AOT、OTP 29/ERTS 17.1.1 JIT 和独立 Python checked 模型核对 45 组业务、28 组 JSON 拒绝及 Wings 14 组内部桥接拒绝。包含三种完整字节 state、32 请求窗口、i64 两端及溢出优先、失败位置 1/32/33/256、旧提交诊断、FIFO、失败队尾终结及最终账目归零。原 BEAM 单独 oracle 的 11 业务/23 拒绝也通过。固定前缀诊断不导出所有 padding，完整状态复制另由既有字节原语回归支撑；不把有界闭环正确性称为开环性能/内存结果。
+
+完整 debug 受限 AOT 首次通过；release 首次在既有 TCP bounded_read 场景得到 `io_errors=2`，预期 1（业务回复与清理均成功），未改 TCP、断言或限制，第二次完整通过。保留全部历史偶发记录，不宣称稳定性门禁已过。Counter 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，其他 AOT 子进程仍为 CPU 20 秒/墙钟 30 秒。
+
+Linux 本增量另行验证；当前隔离 Linux 未安装 OTP，不以 Wings/模型模式代替真实 BEAM 对照。多 actor/开环、公平性/过载、资源账本闭环及原生最新双平台性能/整机内存双门禁仍未完成，MVP 状态不变。

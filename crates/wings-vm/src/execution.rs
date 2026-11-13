@@ -317,6 +317,13 @@ impl ScalarTask {
         self.process.state
     }
 
+    pub(crate) fn byte_state_snapshot(&self) -> Option<crate::ByteStateSnapshot> {
+        if self.process.module.manifest().state != wings_abi::ValueType::BytesRef {
+            return None;
+        }
+        self.process.heap.as_deref()?.byte_state_snapshot()
+    }
+
     pub fn start(
         &mut self,
         handler: &HandlerId,

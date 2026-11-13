@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 的 `verify_counter_equivalence.py --compare-beam` 执行真实 Wings/OTP 29 和独立 Python 模型：三种固定字节 state、最多 256 请求、32 条窗口、跨窗口 FIFO、i64 两端、溢出优先、候选失败不提交及故障队尾终结。宿主检查实际 Delivered 次序、回复前 state 提交、退出诊断旧字节和最终账目归零；JSON/二进制桥接分别验证边界。完整受限 AOT 默认执行 Wings/模型，不依赖未安装的 OTP，不能把该模式称 BEAM 对照。业务子进程 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，编译沿原限制。这不是开环、多 actor 或性能采样。
+
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的单测覆盖 i64 两端/负数、未对齐/尾部八字节、短 buffer 与极端 offset、源不变、精确 GC、低预算和取消。真实 `byte_buffers` AOT 核对最大 state 的反复更新、逐步恢复和低预算清理，独立根模型验证嵌套函数读写、失败不提交及解链。此处仅验证编码原语，不将其称为 Wings/BEAM 等价业务或性能结果。
 
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 在 `byte_buffers` 受限 AOT 覆盖 0/256/4096/65536 字节、旧值不变、fn/条件/循环、小堆 GC、非法参数、低预算与 512 组最大状态暂停后取消/Drop 清理，另验证跨 worker 迁移及监督重建为空。`--check-byte-roots` 用独立字节堆在每个 compiler 检查点和 heap 回调前收集，核对源引用、候选出口及失败解链。单测检查三级预留失败、跨堆发布拒绝、传递根、回收与字节额度 GC 重试；子进程 CPU 20 秒/墙钟 30 秒/禁 core 不变。这只是固定业务字节的表示基础，不是 BEAM 等价负载或内存排名。
