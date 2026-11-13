@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+`ScalarModule::load_accounted(directory, vm)` 在解析/装载前预留 VM 级模块逻辑预算，同模块实例共享一次预留；Library 随最后代码租约交还，挂起调用先正常取消。heap CLI 使用该路径，旧 `load_trusted` 工具入口不计费，限制见 [ADR-0044](docs/adr/0044-native-module-leases.md)。这不是热更新或精确 RSS 计量。
+
 受管 GC 每 16 个节点/根检查预算、取消与让出，暂停后从原 phase 继续；总预算包含 GC 工作单位，堆统计不扫描全堆。示例 `examples/chunked-gc.wings`，限制见 [ADR-0043](docs/adr/0043-chunked-runtime-gc.md)；尚无块耗时或同业务性能达标结果。
 
 宿主 `ScalarWorker::enable_wait()` 为私有 OS 等待端预留 4096 字节控制预算；`wait(max_wait)` 重查 mailbox、挂起入口及请求 deadline，不执行 handler，就绪时立即返回。它不提供跨线程 inbox 或完整 I/O reactor，边界见 [ADR-0041](docs/adr/0041-worker-deadline-parking.md)。

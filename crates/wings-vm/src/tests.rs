@@ -228,7 +228,9 @@ fn module() -> ScalarModule {
             manifest,
             initializer: initialize,
             entries: handlers.into_iter().map(|(_, _, _, entry)| entry).collect(),
+            _library: None,
         }),
+        lease: None,
     }
 }
 

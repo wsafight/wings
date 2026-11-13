@@ -1,5 +1,7 @@
 # 运行时
 
+代码租约与模块 VM 级准入按 [ADR-0044](adr/0044-native-module-leases.md) 实现：clone/HandlerId/实例共享一次预留，跨 VM 计费执行拒绝；最后一个活栈先正常取消返回，再交还 Library 和预算。旧可信非计费工具入口保留，不将该兼容路径称为完整三级准入。
+
 受管 GC 按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 分为清旧标记、根、传递遍历与清扫，每块最多 16 个节点/根并扣一个 runtime 工作单位。原栈暂停保留 phase/cursor，不重做；取消/预算失败正常返回，清扫中止也保留活根，下一轮先清旧标记。heap_stats 使用实时计数，无全堆诊断扫描；同 actor 收集期间无其他入口执行，不是并发 GC。
 
 worker 的 `enable_wait` / `wait` 只在无就绪入口时进行有界 OS 等待，返回后重查 deadline/完成事件，不执行业务。私有 FD 的固定控制预留与 worker 同寿命，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
@@ -148,7 +150,7 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 `enable_timer` 可选启动一个计费控制线程，`tick_timed` 在非零单调 deadline 到达时原子请求让出，仍由下一个强制 safepoint 挂起，不重置总预算。arm/disarm 与计时请求在同一控制锁串行，撤销后不把旧 deadline 泄漏到普通 tick；没有 deadline 时不周期轮询，Drop 唤醒并 join。该线程不持有 actor、账户或活栈，不提供迁移，容量及验证限制见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。默认 worker 不创建线程，当前每 worker 一个的形式不作为 M:N 的既定方案。
 
-该切片无语言内 spawn/send/request、真实 I/O 或迁移；可选执行 timer 也不主动通知请求 timeout，没有 tick/poll 时请求结果不更新。worker 默认不带堆，临时 AOT 堆只在独立宿主实例 opt-in；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，不含系统 allocator 内部元数据或整个共享模块，完整内存账本仍待补齐。
+该宿主切片后来由 ADR-0038/0039/0040 接入语言自发送、同模块创建/发送和整数异步请求；deadline 由 tick、查询或显式 wait 推进，无自动 I/O reactor。worker 默认不带堆，spawn_with_heap 显式配置计费堆；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，模块另按 ADR-0044 预留，不含系统 allocator/动态装载器内部元数据，完整内存账本仍待补齐。
 
 ### 分层
 

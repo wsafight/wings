@@ -71,6 +71,8 @@ impl ScalarProcess {
     /// slow path without writing output, and fit the fixed execution stack.
     /// Shadow frames must reference valid live stack storage and be unlinked
     /// on every return; local references must never escape their owning heap.
+    /// Code must not register external callbacks, start native background threads,
+    /// or require its library to remain loaded after its last module owner drops.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         unsafe { ScalarModule::load_trusted(directory) }?.instantiate()
     }

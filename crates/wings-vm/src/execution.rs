@@ -386,6 +386,7 @@ impl Invocation {
         pool: &StackPool,
         effects_enabled: bool,
     ) -> Result<Self, String> {
+        process.module.validate_pool(pool)?;
         if process
             .heap
             .as_ref()

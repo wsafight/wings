@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0044](adr/0044-native-module-leases.md) 修复模块永久泄留，增加 VM 级加载预算、代码租约和归属检查；旧不计费工具入口、allocator/动态装载器内部开销仍不在完整资源门禁内，M1 与 MVP 尚未完成。
+
 [ADR-0043](adr/0043-chunked-runtime-gc.md) 接入 16 节点/根的 GC 工作块、runtime 预算/取消和原栈暂停；模块加载、allocator 与其他长操作仍须分别审计，不等于所有 runtime 操作已满足公平性或 M0 完成。
 
 [ADR-0042](adr/0042-managed-function-frames.md) 用非递归受管函数帧替代完全内联，接入逐帧剩余栈检查与跨帧精确根；递归/动态派发、完整业务值、外部 I/O、M:N 和双平台业务/性能门禁仍未完成。

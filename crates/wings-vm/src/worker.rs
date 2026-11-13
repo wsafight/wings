@@ -347,6 +347,7 @@ impl ScalarWorker {
         mailbox_capacity: usize,
         heap_records: Option<usize>,
     ) -> Result<Pid, String> {
+        module.validate_vm(&self.tenant)?;
         if !(1..=MAX_MAILBOX).contains(&mailbox_capacity) {
             return Err("mailbox requires 1..=64 messages".into());
         }

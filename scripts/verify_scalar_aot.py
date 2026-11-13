@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -564,6 +565,22 @@ def main():
         example("stack_pool", counter)
         example("accounted_stacks", counter)
         example("shared_module", counter)
+        library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+        invalid_module_manifest = parent / "module-bad-manifest"
+        invalid_module_manifest.mkdir()
+        (invalid_module_manifest / "manifest.json").write_text("{")
+        shutil.copyfile(counter / library_name, invalid_module_manifest / library_name)
+        invalid_module_library = parent / "module-bad-library"
+        invalid_module_library.mkdir()
+        shutil.copyfile(counter / "manifest.json", invalid_module_library / "manifest.json")
+        (invalid_module_library / library_name).write_text("not a native library")
+        invalid_module_symbol = parent / "module-missing-symbol"
+        invalid_module_symbol.mkdir()
+        shutil.copyfile(counter / "manifest.json", invalid_module_symbol / "manifest.json")
+        symbol_source = parent / "module-empty.c"
+        symbol_source.write_text("int wings_module_fixture(void) { return 0; }\n")
+        command([os.environ.get("CC", "cc"), "-dynamiclib" if os.uname().sysname == "Darwin" else "-shared", "-fPIC", symbol_source, "-o", invalid_module_symbol / library_name])
+        example("module_accounting", counter, invalid_module_manifest, invalid_module_library, invalid_module_symbol)
         example("resource_accounts")
         example("record_heap")
         example("worker_wakeup")

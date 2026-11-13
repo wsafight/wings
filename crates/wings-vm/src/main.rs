@@ -74,7 +74,7 @@ fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<
             let tenant = vm.tenant(limits)?;
             let account = tenant.process(limits)?;
             let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
-            unsafe { ScalarModule::load_trusted(directory) }?
+            unsafe { ScalarModule::load_accounted(directory, &vm) }?
                 .instantiate_with_heap(&pool, &account, capacity)?
         }
     };

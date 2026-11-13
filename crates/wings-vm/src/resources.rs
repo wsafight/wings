@@ -159,6 +159,10 @@ impl ResourceAccount {
     pub(crate) fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.node, &other.node)
     }
+
+    pub(crate) fn same_vm(&self, other: &Self) -> bool {
+        self.root().same(other.root())
+    }
 }
 
 impl Reservation {

@@ -67,6 +67,15 @@ impl PooledStack {
 }
 
 impl StackPool {
+    pub(crate) fn account(&self) -> Option<&ResourceAccount> {
+        self.process.as_ref().or_else(|| {
+            self.inner
+                .accounting
+                .as_ref()
+                .map(|accounting| &accounting.tenant)
+        })
+    }
+
     pub(crate) fn is_for_process(&self, account: &ResourceAccount) -> bool {
         self.process
             .as_ref()

@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（M0 原型）；未发布源码已实现，本机 debug/release 验证通过，双平台 CI 待验收
 - 相关决定：[标量 AOT](0009-scalar-aot-prototype.md)、[活栈恢复](0011-scalar-stackful-resume.md)
+- Library 永久泄留决定由 [ADR-0044](0044-native-module-leases.md) 的最后代码租约与计费加载替代；以下保留原决定。
 
 ## 背景与决定
 
