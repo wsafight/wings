@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+受管 GC 每 16 个节点/根检查预算、取消与让出，暂停后从原 phase 继续；总预算包含 GC 工作单位，堆统计不扫描全堆。示例 `examples/chunked-gc.wings`，限制见 [ADR-0043](docs/adr/0043-chunked-runtime-gc.md)；尚无块耗时或同业务性能达标结果。
+
 宿主 `ScalarWorker::enable_wait()` 为私有 OS 等待端预留 4096 字节控制预算；`wait(max_wait)` 重查 mailbox、挂起入口及请求 deadline，不执行 handler，就绪时立即返回。它不提供跨线程 inbox 或完整 I/O reactor，边界见 [ADR-0041](docs/adr/0041-worker-deadline-parking.md)。
 
 `request(pid, Message, Completed, timeout_ms, args...)` 在调用点准入并返回局部 RequestId，结果异步到达 `on Completed(id: RequestId, status: Int, value: Int)`，status 的 0/1/2/3 表示回复/超时/取消/失败。当前只接受 Int 回复；队满保留预付费完成事件，不覆盖已终结结果。`cancel_request` 不撤回目标消息。示例 `examples/request-events.wings`、`examples/request-roots.wings`，限制见 [ADR-0040](docs/adr/0040-language-request-events.md)。

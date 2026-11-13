@@ -1,5 +1,7 @@
 # wings-lang
 
+`collect()` 及分配触发的 GC 采用 [ADR-0043](adr/0043-chunked-runtime-gc.md) 的固定工作块：每 16 个节点/根扣一个 runtime 步数，并可在原栈暂停、恢复或取消。总预算包含这些工作，不再只计 IR 指令；中止不提交候选 state/自动回复，已发生消息副作用不回滚。
+
 宿主可用 worker `wait` 推进空闲时的 deadline/完成事件准入，不必 sleep 轮询；仍不在 wait 内执行 handler，也无自动外部 I/O 事件泵，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
 
 `request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: Int)`；status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3，仅接受 Int 回复。`cancel_request(id)` 不撤回目标消息，静态/额度/队满契约见 [ADR-0040](adr/0040-language-request-events.md)。

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0043](adr/0043-chunked-runtime-gc.md) 的 core 回归在各 phase 中止后重新收集，核对传递根、16 节点处理上限、generation 退役和计数守恒。受限真实 AOT `chunked_gc` 使用 1024 槽堆逐步执行嵌套 collect，覆盖取消/Drop/预算、32 槽分配触发回收与 hot/cold 轮转；旧 `aot_records` 按实际新步数校验总预算。命令仍为 debug/release AOT 脚本与 workspace 检查；尚无块耗时或性能达标数据。
+
 [ADR-0041](adr/0041-worker-deadline-parking.md) 验证私有等待端的配置/计费、就绪不睡眠、deadline 到期及结果不反复唤醒；OS 等待不等于业务公平性或完整 reactor 验收。
 
 [ADR-0040](adr/0040-language-request-events.md) 要求异步整数请求的正常回复、超时/取消/退出唯一终结、队满完成事件保留、发起方清理及三级预留回滚回归，不能用同步宿主查询代替语言事件执行。

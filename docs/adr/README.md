@@ -50,6 +50,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0040](0040-language-request-events.md) | ABI v10、异步整数请求、完成事件预留与唯一终结 | 已采纳（语言交互切片） |
 | [0041](0041-worker-deadline-parking.md) | 私有计费 OS 等待、就绪重查与请求 deadline | 已采纳（等待集成切片） |
 | [0042](0042-managed-function-frames.md) | 私有受管函数、逐帧栈检查与聚合精确根上界 | 已采纳（调用栈切片） |
+| [0043](0043-chunked-runtime-gc.md) | 固定块 GC、runtime 预算/取消及常量时间堆快照 | 已采纳（runtime 长操作切片） |
 
 ## 维护方式
 

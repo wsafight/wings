@@ -601,6 +601,35 @@ unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
     }
 }
 
+pub(crate) fn runtime_checkpoint(context: &mut ScalarContext, consume: bool) -> Result<(), u32> {
+    if context.cancellation.is_null() || context.yield_request.is_null() {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    }
+    loop {
+        if unsafe { &*context.cancellation }.load(Ordering::SeqCst) != 0 {
+            return Err(STATUS_CANCELLED);
+        }
+        if context.remaining_steps == 0 {
+            return Err(wings_abi::STATUS_BUDGET_EXHAUSTED);
+        }
+        if context.slice_remaining == 0
+            || unsafe { &*context.yield_request }.load(Ordering::SeqCst) != 0
+        {
+            let callback = context.slow_path.ok_or(wings_abi::STATUS_INVALID_CONTROL)?;
+            let status = unsafe { callback(context) };
+            if status != STATUS_OK {
+                return Err(status);
+            }
+            continue;
+        }
+        if consume {
+            context.remaining_steps -= 1;
+            context.slice_remaining -= 1;
+        }
+        return Ok(());
+    }
+}
+
 unsafe extern "C" fn send_self(
     context: *mut ScalarContext,
     request: *const wings_abi::EffectRequest,
@@ -650,6 +679,66 @@ unsafe extern "C" fn send_self(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" fn resume_runtime_chunk(context: *mut ScalarContext) -> u32 {
+        let context = unsafe { &mut *context };
+        unsafe { &*context.yield_request }.store(0, Ordering::SeqCst);
+        context.slice_remaining = 1;
+        STATUS_OK
+    }
+
+    #[test]
+    fn runtime_chunks_recheck_cancellation_budget_and_atomic_yield_before_work() {
+        let cancellation = AtomicU32::new(0);
+        let request = AtomicU32::new(1);
+        let mut context = ScalarContext {
+            cancellation: &cancellation,
+            remaining_steps: 2,
+            yield_request: &request,
+            slice_remaining: 0,
+            slow_path: Some(resume_runtime_chunk),
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: None,
+            heap_data: std::ptr::null_mut(),
+            effect_call: None,
+        };
+        assert_eq!(runtime_checkpoint(&mut context, false), Ok(()));
+        assert_eq!(
+            (
+                context.remaining_steps,
+                context.slice_remaining,
+                request.load(Ordering::SeqCst)
+            ),
+            (2, 1, 0)
+        );
+        assert_eq!(runtime_checkpoint(&mut context, true), Ok(()));
+        assert_eq!((context.remaining_steps, context.slice_remaining), (1, 0));
+        assert_eq!(runtime_checkpoint(&mut context, true), Ok(()));
+        assert_eq!((context.remaining_steps, context.slice_remaining), (0, 0));
+        assert_eq!(
+            runtime_checkpoint(&mut context, true),
+            Err(wings_abi::STATUS_BUDGET_EXHAUSTED)
+        );
+        cancellation.store(1, Ordering::SeqCst);
+        assert_eq!(
+            runtime_checkpoint(&mut context, true),
+            Err(STATUS_CANCELLED)
+        );
+        cancellation.store(0, Ordering::SeqCst);
+        context.remaining_steps = 1;
+        context.slow_path = None;
+        assert_eq!(
+            runtime_checkpoint(&mut context, true),
+            Err(wings_abi::STATUS_INVALID_CONTROL)
+        );
+        context.cancellation = std::ptr::null();
+        assert_eq!(
+            runtime_checkpoint(&mut context, true),
+            Err(wings_abi::STATUS_INVALID_CONTROL)
+        );
+    }
 
     #[test]
     fn faults_classify_raw_abi_statuses_without_parsing_error_text() {

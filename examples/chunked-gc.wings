@@ -1,0 +1,20 @@
+process ChunkedGc {
+  fn refresh(value: RecordInt) -> RecordInt {
+    collect()
+    record_int(read_int(value) + 1)
+  }
+  state value: RecordInt = record_int(7)
+  on Get -> Int { read_int(value) }
+  on Sweep -> Int {
+    let outer = record_int(11)
+    value = refresh(value)
+    collect()
+    read_int(outer) + read_int(value)
+  }
+  on Allocate(limit: Int) -> Int {
+    while read_int(value) < limit {
+      value = record_int(read_int(value) + 1)
+    }
+    read_int(value)
+  }
+}

@@ -96,25 +96,7 @@ impl AotHeap {
         Ok(reference)
     }
 
-    unsafe fn allocate(
-        &mut self,
-        layout: RecordLayout,
-        values: &[RecordValue],
-        frame: *const ShadowFrame,
-    ) -> Result<u64, u32> {
-        match self.heap.allocate(layout, values) {
-            Ok(reference) => Ok(reference.encoded()),
-            Err(_) => {
-                unsafe { self.collect(frame) }.map_err(|_| STATUS_INVALID_ROOT)?;
-                self.heap
-                    .allocate(layout, values)
-                    .map(|reference| reference.encoded())
-                    .map_err(|_| STATUS_HEAP_EXHAUSTED)
-            }
-        }
-    }
-
-    unsafe fn collect(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
+    unsafe fn prepare_roots(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
         let mut references = [None; MAX_SHADOW_ROOTS + 1];
         let mut count = 0;
         let mut depth = 0;
@@ -142,9 +124,66 @@ impl AotHeap {
             count += 1;
         }
         self.roots.replace(&references[..count]);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    unsafe fn collect(&mut self, frame: *const ShadowFrame) -> Result<(), String> {
+        unsafe { self.prepare_roots(frame) }?;
         self.heap.collect(&self.roots)?;
         Ok(())
     }
+}
+
+unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut collection = {
+        let heap = unsafe { &mut *pointer };
+        unsafe { heap.prepare_roots(context.roots) }.map_err(|_| STATUS_INVALID_ROOT)?;
+        heap.heap
+            .begin_collection(&heap.roots)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+    };
+    loop {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let finished = {
+            let heap = unsafe { &mut *pointer };
+            heap.heap
+                .collect_chunk(&heap.roots, &mut collection)
+                .is_some()
+        };
+        if finished {
+            return Ok(());
+        }
+    }
+}
+
+unsafe fn allocate_managed(
+    context: &mut ScalarContext,
+    layout: RecordLayout,
+    values: &[RecordValue],
+) -> Result<u64, u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            if cursor != 0 {
+                crate::execution::runtime_checkpoint(context, false)?;
+            }
+            match unsafe { &mut *pointer }
+                .heap
+                .allocate_chunk(layout, values, &mut cursor)
+            {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
 }
 
 pub(crate) unsafe extern "C" fn heap_call(
@@ -157,31 +196,53 @@ pub(crate) unsafe extern "C" fn heap_call(
     if context.heap_data.is_null() {
         return STATUS_INVALID_CONTROL;
     }
-    let heap = unsafe { &mut *context.heap_data.cast::<AotHeap>() };
+    let pointer = context.heap_data.cast::<AotHeap>();
+    if operation == HEAP_COLLECT {
+        if let Err(status) = unsafe { collect_managed(context) } {
+            return status;
+        }
+        unsafe {
+            *output = 0;
+        }
+        return STATUS_OK;
+    }
+    if matches!(
+        operation,
+        HEAP_RECORD_INT | HEAP_EMPTY_INTS | HEAP_PREPEND_INT
+    ) {
+        let (layout, values, count) = {
+            let heap = unsafe { &*pointer };
+            match operation {
+                HEAP_RECORD_INT => (
+                    heap.layout,
+                    [RecordValue::Int(argument as i64), RecordValue::Unit],
+                    1,
+                ),
+                HEAP_EMPTY_INTS => (heap.empty_list, [RecordValue::Unit; 2], 1),
+                _ => {
+                    let Ok(tail) = heap.list_reference(unsafe { *output }) else {
+                        return STATUS_INVALID_ROOT;
+                    };
+                    (
+                        heap.cons_list,
+                        [RecordValue::Int(argument as i64), RecordValue::Ref(tail)],
+                        2,
+                    )
+                }
+            }
+        };
+        match unsafe { allocate_managed(context, layout, &values[..count]) } {
+            Ok(value) => {
+                unsafe {
+                    *output = value;
+                }
+                return STATUS_OK;
+            }
+            Err(status) => return status,
+        }
+    }
+    let heap = unsafe { &mut *pointer };
     let value = match operation {
-        HEAP_RECORD_INT => {
-            let values = [RecordValue::Int(argument as i64)];
-            match unsafe { heap.allocate(heap.layout, &values, context.roots) } {
-                Ok(encoded) => encoded,
-                Err(status) => return status,
-            }
-        }
-        HEAP_EMPTY_INTS => {
-            match unsafe { heap.allocate(heap.empty_list, &[RecordValue::Unit], context.roots) } {
-                Ok(encoded) => encoded,
-                Err(status) => return status,
-            }
-        }
-        HEAP_PREPEND_INT => {
-            let Ok(tail) = heap.list_reference(unsafe { *output }) else {
-                return STATUS_INVALID_ROOT;
-            };
-            let values = [RecordValue::Int(argument as i64), RecordValue::Ref(tail)];
-            match unsafe { heap.allocate(heap.cons_list, &values, context.roots) } {
-                Ok(encoded) => encoded,
-                Err(status) => return status,
-            }
-        }
         HEAP_HEAD_INT | HEAP_TAIL_INTS | HEAP_IS_EMPTY_INTS => {
             let Ok(reference) = heap.list_reference(argument) else {
                 return STATUS_INVALID_ROOT;
@@ -221,12 +282,6 @@ pub(crate) unsafe extern "C" fn heap_call(
                 return STATUS_INVALID_ROOT;
             };
             value as u64
-        }
-        HEAP_COLLECT => {
-            if unsafe { heap.collect(context.roots) }.is_err() {
-                return STATUS_INVALID_ROOT;
-            }
-            0
         }
         _ => return STATUS_INVALID_CONTROL,
     };

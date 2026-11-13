@@ -155,12 +155,13 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
         assert!(process.failed);
         assert_eq!(process.state, committed);
         let heap = process.heap.as_mut().unwrap();
+        let flag = std::sync::atomic::AtomicU32::new(0);
         let mut context = ScalarContext {
             effect_call: None,
-            cancellation: std::ptr::null(),
-            remaining_steps: 0,
-            yield_request: std::ptr::null(),
-            slice_remaining: 0,
+            cancellation: &flag,
+            remaining_steps: 128,
+            yield_request: &flag,
+            slice_remaining: 128,
             slow_path: None,
             data: std::ptr::null_mut(),
             stack_limit: 0,

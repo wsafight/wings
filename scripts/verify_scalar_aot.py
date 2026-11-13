@@ -726,6 +726,9 @@ def main():
         managed_stack = parent / "managed-stack"
         command([COMPILER, "build", managed_stack_source, "-o", managed_stack])
         example("managed_stack", managed_stack)
+        chunked_gc = parent / "chunked-gc"
+        command([COMPILER, "build", ROOT / "examples/chunked-gc.wings", "-o", chunked_gc])
+        example("chunked_gc", chunked_gc)
         lists = parent / "lists"
         command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
         example("int_lists", lists)

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0043](adr/0043-chunked-runtime-gc.md) 接入 16 节点/根的 GC 工作块、runtime 预算/取消和原栈暂停；模块加载、allocator 与其他长操作仍须分别审计，不等于所有 runtime 操作已满足公平性或 M0 完成。
+
 [ADR-0042](adr/0042-managed-function-frames.md) 用非递归受管函数帧替代完全内联，接入逐帧剩余栈检查与跨帧精确根；递归/动态派发、完整业务值、外部 I/O、M:N 和双平台业务/性能门禁仍未完成。
 
 [ADR-0041](adr/0041-worker-deadline-parking.md) 将私有 OS 等待接到单 worker 空闲检查与请求 deadline；外部有界 inbox、I/O reactor 和 M:N 仍未实现，不降低 MVP 门槛。

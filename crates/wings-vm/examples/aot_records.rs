@@ -108,16 +108,21 @@ fn main() {
             &bound,
         )
         .expect("second task");
-    for _ in 0..12 {
-        assert_eq!(task.resume(1), Ok(ExecutionStatus::Suspended));
-        assert_eq!(other.resume(1), Ok(ExecutionStatus::Suspended));
+    let mut completed_steps = None;
+    for steps in 1..1024 {
+        let result = task.resume(1).unwrap();
+        assert_eq!(other.resume(1).unwrap(), result);
+        if result == ExecutionStatus::Complete(Some(22)) {
+            completed_steps = Some(steps);
+            break;
+        }
     }
-    assert_eq!(task.resume(1), Ok(ExecutionStatus::Complete(Some(22))));
-    assert_eq!(other.resume(1), Ok(ExecutionStatus::Complete(Some(22))));
+    let completed_steps = completed_steps.expect("bounded GC completion");
+    assert!(completed_steps > 13);
     drop((task, other));
     drop((actor, sibling));
     assert_eq!(vm.used(), baseline);
-    for budget in 0..13 {
+    for budget in 0..completed_steps {
         let mut actor = process(&module, &bound, &account, 2);
         assert!(
             actor
