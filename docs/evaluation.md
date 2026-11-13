@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0065](adr/0065-two-sender-counter-fifo.md) 的 `verify_senders_counter.py --compare-beam` 执行两个真实宿主线程/BEAM 进程的 Counter：各 16 条窗口、每条流至多 128 条，覆盖同目标竞争、多目标与空/非均衡流，三种完整 Bytes 状态。独立有界前缀模型检查每目标合法 FIFO 交错和实际回复/终值，不要求两端选同一交错；另拒绝伪造历史及真实 AOT 跳号/重复序号。默认完整 AOT 仍只跑 Wings/模型；CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒不变。此处不覆盖任意交错会溢出的输入、并发故障或开环性能。
+
 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 增加监督满表拒绝/任意停止顺序/多轮槽复用/外来身份/失败创建与重启后槽恢复回归。重新运行 ADR-0063 代表容量用例，保留 actor 阶段 3 秒而不缩小规模；Linux TCG 仅记功能证据，不将耗时差异用于 BEAM 性能判断。
 
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 的 `verify_multi_counter.py --compare-beam` 用真实 Wings Scheduler/OTP 29/独立 Python 模型验证多 actor Bytes Counter：10000×256 B、1000×4 KiB、100×64 KiB 均保留完整状态，每目标不同 ID，100 个活跃目标、最多 256 请求及总窗口 32。另覆盖单目标、空输入、跨窗口 FIFO、并发目标失败、溢出优先、旧提交状态和清理。Wings 读取长度/32 B 前缀，不声称完整 padding 导出；默认完整 AOT 只运行 Wings/模型。业务 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒不变，仍是单发送者闭环，不替代开环、超时/过载或性能/整机内存采样。
@@ -98,7 +100,7 @@ M0 确定 Erlang/OTP 版本、JIT 状态、调度器数量、堆与 GC 配置，
 
 ## 负载矩阵与基线
 
-可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1/v2](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；多 actor 正确性见 ADR-0063。Linux OTP oracle 尚待执行，开环性能采样尚未接入，不能当作性能达标。
+可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1/v2/v3](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；多 actor 正确性见 ADR-0063，双发送者合法交错见 ADR-0065。Linux OTP oracle 尚待执行，开环性能采样尚未接入，不能当作性能达标。
 
 - **内存维度**：逻辑 state 为 `0B/256B/4KiB/64KiB`，编码大小另报；mailbox 深度为 `0/1/100`，消息 payload 为 `32B/1KiB/64KiB`，活跃比例为 `0%/1%/10%/100%`。选代表性交叉组合并公开选择原因，不只挑 tiny state。
 - **行为维度**：Idle、冬眠、正常计算、被抢占挂起、request/回复、超时/取消、热点收件人、spawn 风暴和关系 fan-out；空闲会话与同时执行的进程分开报告。

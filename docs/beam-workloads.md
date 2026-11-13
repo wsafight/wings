@@ -1,4 +1,4 @@
-# BEAM 工作负载协议 v1
+# BEAM 工作负载协议 v1/v2/v3
 
 本协议是 M0 的独立正确性切片，配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 已接入 Wings/BEAM 两端的固定字节 Counter，验证有界异步 request/reply、单发送者 FIFO、checked i64 和失败退出。**只有显式 `--compare-beam` 才实际运行 BEAM；不是性能实验，也不作性能或内存领先声明。** 不修改副作用或提交契约。
 
@@ -57,6 +57,31 @@ WINGS_PROFILE=release python3 scripts/verify_multi_counter.py --compare-beam
 
 默认完整受限 AOT 接入 Wings/Python；`--artifact <目录>` 复用匹配产物。该套件是闭环正确性，不生成吞吐、尾延迟或整机内存结果，仍未覆盖两个真实发送者和热点/过载性能。
 
+## 双发送者正确性协议 v3
+
+[ADR-0065](adr/0065-two-sender-counter-fifo.md) 新增独立的双发送者驱动，v1/v2 不变。Wings 两个真实宿主线程直接经 SchedulerHandle 发送，BEAM 两个真实进程直接向 actor 发送，不经单代理代发。两个发送者在业务前释放开始闸门，各自最多 16 个在途请求、每条流至多 128、总计 256。此处是竞争下的各自 FIFO，不规定跨发送者/actor 的全序，也不是开环生成器。
+
+JSON 为 `{version:3, actors, state_bytes, initial, streams:[[{actor,delta}], [{actor,delta}]]}`。actor 1..100，state 仍为 256/4096/65536 B；仅接收对所有交错都安全的 checked i64 加法集合，按目标分别检查 `initial + 全部负 delta` 与 `initial + 全部正 delta` 均在 i64 范围内。浮点/bool 替代整数、未知/重复字段、缺字段、超长流和不安全交错均拒绝。失败/溢出沿 v1/v2 验证，不将本协议称为并发故障对照。
+
+完整 Bytes 的前 32 B 为 counter:i64 BE、actor ID:u64 BE、sender1 已提交序号:i64 BE、sender2 已提交序号:i64 BE，余下零填充。每发送者到每目标独立从 1 连续计数，Apply 在构造候选前核对下一个序号，序号/计数器共同正常提交。每条逻辑请求/回复仍是 32 B，sender/actor 在信封；Wings 可信桥接为 48 B 头 `version/state_bytes/initial/actors/count1/count2`，后接两条流各自的 32 B `actor/sequence/delta/reserved`，精确长度/路由/序号/安全集合全部验证后才装载产物。
+
+每端输出不要求相同回复值：独立 Python 前缀动态规划逐目标验证存在保留两流 FIFO 的合法处理历史，每一步的实际回复必须等于 checked 提交值，最终值核对实际 Bytes。Wings 用唯一结果 handle 消费且业务状态检查序号；BEAM 各发送者先按实际到达顺序核对目标序号，再向父进程汇总。没有用排序掩盖同目标乱序。模型附合法不同交错及伪造历史拒绝回归；真实 AOT 另验证跳号/重复起始序号失败。
+
+Wings 固定 2 worker、共享 32 结果槽、每 actor mailbox 32、堆四槽，VM/tenant 256 MiB、process 4 MiB。BEAM 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 1024 +Q 1024`，业务 actor/发送者均设 `max_heap_size=262144` words；收齐两个发送者完成与 DOWN、全部 actor 停止与 DOWN 后输出。Wings 副本只检查长度/前 32 B，不导出余下 padding；BEAM 检查完整零填充。驱动输入/线程/结果属于有界外部测试成本，不宣称全部受管计费或 OS 内存硬隔离。
+
+业务子进程 CPU 5 秒/墙钟 10 秒/禁 core、共享 actor 阶段 3 秒、输入 64 KiB/输出 1 MiB、编译及 AOT 原限制不变。仅经 Python 限制器执行，不裸跑 escript：
+
+```sh
+cargo build --workspace --locked --bins --examples
+cargo test --locked -p wings-vm --example beam_senders_counter
+python3 scripts/verify_senders_counter.py
+python3 scripts/verify_senders_counter.py --compare-beam
+cargo build --release --workspace --locked --bins --examples
+WINGS_PROFILE=release python3 scripts/verify_senders_counter.py --compare-beam
+```
+
+`--artifact <目录>` 复用匹配产物；默认完整受限 AOT 只跑 Wings/独立模型，真实 BEAM 仍须显式启用。未安装 OTP 29 不回退成模型通过。并发故障/过载/超时、开环、热点和公平性仍待验证，没有吞吐、尾延迟或整机内存结论。
+
 ## 后续代表性负载冻结条件（开环尚未实现）
 
 这些是未来同业务对照的固定小集合，不展开整个笛卡尔积，不由当前脚本接受参数或执行。普通 Idle 与活跃场景都保持 32 B 逻辑请求/成功回复；逻辑 state 仍包含计数器与 actor ID。actor ID 为 `1..N`，活动集合取前 `A` 个；其余保留状态但不处理业务消息，不冬眠。更大 actor 数、其他 payload、冬眠与 M:N 另立协议版本。
@@ -75,10 +100,10 @@ WINGS_PROFILE=release python3 scripts/verify_multi_counter.py --compare-beam
 
 未来每行先做固定负载，再做同一行的有界饱和扫描；每点预热 30s、采样 60s、独立重复 5 次。饱和扫描从该行固定速率开始逐次翻倍，最多 8 点，出现拒绝或尾延迟超标即停止提高；未找到饱和点就明确报告扫描不充分。非 fairness 请求 deadline 固定 100ms，固定负载候选要求 p99 ≤20ms、p999 ≤50ms；拒绝和超时均计入总请求数、单独报告，不能靠删样达标。分位按 nearest-rank，少于 10000 个样本的分组不报 p999，须报样本数和最大值。fairness 的受限饱和方案另行冻结，不把心跳降频当作通过。
 
-以下验收必须在未来相应实现接入后补齐，当前全部为**未验证**：
+以下性能场景验收仍为**未验证**；v1/v2/v3 的有界正确性证据不能替代它们：
 
 - `spawn`：父/子/租户/实例额度在创建前准入，失败不产生半创建对象；有限批量创建与退出后计费守恒，不能无限 spawn 测宿主 OOM。
-- `request/reply`：关联 ID、pending 表准入、至少两个发送者的各自 FIFO、成功状态先于回复；不要求跨发送者顺序。普通单向 `send` 单列，不能以 request 代替全部消息行为。
+- `request/reply`：关联 ID、pending 表准入、至少两个发送者的各自 FIFO、成功状态先于回复；不要求跨发送者顺序。v3 已补安全加法闭环下的双发送者，未覆盖本节开环与拒绝；普通单向 `send` 单列，不能以 request 代替全部消息行为。
 - `timeout/cancel`：每个 ID 只终结一次，回复/超时竞争及迟到回复明确可观测；超时不撤回已发生的远端副作用，不自动重试造成重复业务。
 - `overload/exit`：有限 mailbox 满时显式拒绝且不提交；满队列仍能终止，故障退出完成 pending 清理、monitor 通知与额度归还；失败前的外部副作用不回滚。当前 escript 的 32 条窗口是流控，不是已实现 overload 验收。
 - 同平台同机器的 CPU/内存配额、OTP/ERTS/JIT、堆/GC、Wings 版本、生成器开销和原始输出必须随性能实验冻结。保留 BEAM 正常优化；逻辑相同不代表分配布局相同。分别报告整机 RSS 与平台口径，不能混用 macOS 物理占用与 Linux PSS；当前没有这些性能结果。

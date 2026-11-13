@@ -60,10 +60,22 @@ Linux 同配置 QEMU TCG x86-64 重新构建全部 release 工具/示例及 28 �
 
 依赖隔离与禁 unwind feature、文档链接/围栏和 diff whitespace 检查通过。隔离 Linux 未安装 OTP，也未运行原生 debug/clippy/MSRV/doc-tests，不是最新原生 CI 或 Linux BEAM 证据。实例测试后已停止。没有吞吐、尾延迟或整机内存结果。
 
+## 双发送者 FIFO 与合法交错：ADR-0065
+
+基于 `7b9a035`，新增 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 的独立 v3 Counter 正确性协议，未更改 v1/v2、ABI v14 或语言类型大小写。两个真实宿主线程/BEAM 进程直接发送、各 16 条窗口，完整 Bytes 保存各发送者到每目标已提交序号；独立前缀模型检验合法交错，不强求两端回复值逐条相等。只接受所有交错均安全的加法集合，并发失败/溢出仍未由 v3 覆盖。
+
+本机环境沿本页前段；workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过。debug/release workspace 各 460 项、四个桥接示例各合计 6 项通过。完整 debug/release AOT 首次通过；两种构建显式真实 OTP 29/ERTS 17.1.1 JIT 三端均通过 21 组业务、8 组伪造历史拒绝、17 个桥接与 47 个 JSON 拒绝，另有真实 AOT 跳号/起始序号错误和成功后重复序号失败检查。两种构建 v2 三端均继续通过 18/17/49，v1 均通过 45/14/28。
+
+业务涵盖三种完整 state、单目标两流各 128 请求、100 目标、空/非均衡流、跨 16 条窗口、负 delta 与 i64 两端安全集合。模型另接受两种不同合法交错，拒绝非法回复、交换序号、错误终值、重复键式结果及非整数结果；不是仅用交换律核对总和。Wings 最后检查实际长度/计数器/ID/两流已提交序号及逻辑归零，不把固定前缀称为完整 padding 导出。
+
+Linux 同配置隔离仿真重新交叉构建全部 release 工具/示例，29 个 harness 共 466 项通过（workspace 460、四个桥接合计 6）；完整受限 release AOT 首次通过，包含新双发送者、旧三种大容量 Bytes、全部迁移/活栈/GC/监督回归。Linux 未安装 OTP，未执行原生 debug/clippy/MSRV/doc-tests，本结果不替代最新原生 CI 或 Linux BEAM 对照；测试结束已停止实例。
+
+所有业务仍为 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 3 秒，完整 AOT CPU 20 秒/墙钟 30 秒不变。依赖隔离/禁 unwind feature、Markdown 相对链接/围栏和 diff whitespace 检查通过。此处无开环、吞吐、尾延迟或整机内存结果。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 两个发送者 FIFO、开环到达、热点/公平性、过载/超时及端到端诊断。多 actor 的上述仿真超时已由 ADR-0064 解决，仍不代替原生验证；mailbox 100 的 hot-queue 协议当前仍超出实现上限 64，不更改协议绕过。
+- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 已由 ADR-0065 补充，仍不是开环；mailbox 100 的 hot-queue 协议当前仍超出实现上限 64，不更改协议绕过。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 

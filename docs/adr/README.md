@@ -72,6 +72,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0062](0062-sparse-ready-scheduler.md) | 固定就绪/活栈 FIFO、空槽链及 16384 actor 容量 | 已采纳；部分替代 0054 的扫描与容量 |
 | [0063](0063-multi-actor-byte-counter.md) | 多 actor 完整 Bytes Counter 与无租约提交状态副本 | 已采纳（有界正确性切片） |
 | [0064](0064-indexed-supervisor-slots.md) | 固定监督空槽链、稳定身份索引与复用拒绝 | 已采纳；部分替代 0056 的扫描 |
+| [0065](0065-two-sender-counter-fifo.md) | 两个真实发送者的各自 FIFO 与合法提交交错 | 已采纳（有界正确性切片） |
 
 ## 维护方式
 

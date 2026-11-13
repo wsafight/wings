@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0065](docs/adr/0065-two-sender-counter-fifo.md) 增加两个真实发送者的闭环 Counter 对照：完整 Bytes 内核对各自序号，独立模型验证合法交错，不规定跨发送者全序。构建后 `python3 scripts/verify_senders_counter.py --compare-beam` 显式运行 OTP；默认完整 AOT 只跑 Wings/模型，仍不是开环或 BEAM 性能/内存结果。
+
 [ADR-0064](docs/adr/0064-indexed-supervisor-slots.md) 用固定空槽链和带身份校验的槽索引，消除监督创建/查询/停止的容量扫描，保留原初始化/计费/重启语义；poll 仍扫描固定容量。原 CPU/墙钟/阶段 deadline 不变，不将功能回归当成 BEAM 性能结果。
 
 [ADR-0063](docs/adr/0063-multi-actor-byte-counter.md) 已将多 actor 固定 Bytes Counter 接入有界正确性测试，覆盖三种状态与代表性 actor 数；显式 `--compare-beam` 才运行真实 OTP。仍不是开环性能实验、整机内存结果或 MVP 完成，运行方式见 [BEAM 工作负载](docs/beam-workloads.md)。

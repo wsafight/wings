@@ -17,7 +17,7 @@
 | [评测与验收](docs/evaluation.md) | BEAM 对照、负载矩阵、指标、正确性与故障注入 |
 | [2026-11-13 验证记录](docs/validation-2026-11-13.md) | macOS 原生与 Linux x86-64 隔离仿真结果及未通过项 |
 | [2026-11-14 验证记录](docs/validation-2026-11-14.md) | 大容量稀疏派发、真实 AOT 与平台边界和剩余门禁 |
-| [BEAM 工作负载 v1](docs/beam-workloads.md) | 固定字节 Counter 的 Wings/BEAM 正确性对照与后续性能协议 |
+| [BEAM 工作负载 v1/v2/v3](docs/beam-workloads.md) | 单/多 actor、双发送者 Counter 正确性与后续性能协议 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 
 ## 维护

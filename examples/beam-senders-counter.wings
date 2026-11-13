@@ -1,0 +1,18 @@
+process BeamSendersCounter {
+  state data: Bytes = fill_bytes(256, 0)
+
+  on Configure(length: Int, initial: Int, identity: Int) -> Int {
+    let empty = fill_bytes(length, 0)
+    let identified = replace_i64_be(empty, 8, identity)
+    data = replace_i64_be(identified, 0, initial)
+    read_i64_be(data, 0)
+  }
+
+  on Apply(sender: Int, sequence: Int, delta: Int, reserved: Int) -> Int {
+    let offset = if sender == 1 { 16 } else { 24 }
+    let checked = if sequence == read_i64_be(data, offset) + 1 { delta } else { 1 / 0 }
+    let counter = replace_i64_be(data, 0, read_i64_be(data, 0) + checked)
+    data = replace_i64_be(counter, offset, sequence)
+    read_i64_be(data, 0)
+  }
+}

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0065](adr/0065-two-sender-counter-fifo.md) 的双发送者宿主示例让两个真实线程直接经 SchedulerHandle 投递，BEAM 用两个真实进程；没有代发串行代理。业务 Bytes 保存每目标各发送者的已提交序号，独立模型验证合法交错。此为测试协议，不改变 ABI v14、调度/资源实现或语言语法。
+
 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 用固定空槽链和带完整身份校验的 child 槽索引，消除监督创建/查询/停止的容量扫描。可失败准入/初始化完成后才摘链，成功重启保留稳定身份和监督槽；最终终结归还槽。构造前按新固定元数据三级路径计费，不新增动态哈希表；poll 仍按容量扫描。
 
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 将已提交 Bytes 的定长副本诊断扩至 Scheduler。初始化及 handler 返回后在 detached image 上复制长度/最多 32 B 前缀，锁内只发布副本；owner 存在时拒绝读取，不访问挂起栈/候选。普通快照不暴露前缀，显式接口仅供可信宿主；退出副本不保留资源租约。测试宿主接入多 actor Counter，不改变 ABI v14 或语言语法。
