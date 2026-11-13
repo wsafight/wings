@@ -10,11 +10,11 @@ use wings_abi::{
 use crate::message_values::{ListPayload, MAX_LIST_ELEMENTS};
 use crate::{
     FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation,
-    ResourceAccount, Resources, ShadowRoots, StackPool,
+    ResourceAccount, Resources, ShadowRoots,
 };
 
 pub(crate) struct AotHeap {
-    pub(crate) pool: Option<StackPool>,
+    pub(crate) account: ResourceAccount,
     heap: RecordHeap,
     roots: ShadowRoots,
     layout: RecordLayout,
@@ -44,7 +44,7 @@ impl AotHeap {
         }
         unsafe {
             pointer.write(Self {
-                pool: None,
+                account: account.clone(),
                 heap,
                 roots,
                 layout,

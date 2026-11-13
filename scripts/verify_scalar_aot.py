@@ -979,6 +979,7 @@ def main():
         lists = parent / "lists"
         command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
         example("int_lists", lists)
+        example("detached_process", lists)
         command([sys.executable, Path(__file__), "--check-list-roots", lists])
         self_send = parent / "self-send"
         self_send_roots = parent / "self-send-roots"

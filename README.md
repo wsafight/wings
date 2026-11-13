@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0053](docs/adr/0053-detached-process-images.md) 增加宿主 `ScalarProcess::detach` / `DetachedProcess::attach`：无活栈时消费进程并独占转交 state/堆，目标线程绑定同 process 账户的本地池，不重跑 initializer。镜像不可 Clone、不含协程或执行接口；worker/mailbox/Pid 和活栈仍不迁移，不是 M:N。`detached_process` 验证 IntList 状态跨线程转交与取消后失败保留。
+
 [ADR-0052](docs/adr/0052-cross-thread-module-leases.md) 使只读 `ScalarModule`/`HandlerId` 可跨线程共享，计费模块使用 Arc 租约；四个线程各建独立 worker，退出后由最后代码所有者归还预算。`parallel_modules` 是并行宿主回归，不是 M:N 调度器；actor、堆、栈池和挂起活栈仍在各自原线程。
 
 按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 堆模式使用计费子账户；旧账户构造入口及 VM 根 bootstrap 仍是未计费工具路径，不代表完整资源隔离。

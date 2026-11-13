@@ -10,6 +10,7 @@ use wings_abi::{
 use wings_artifact::Manifest;
 
 mod aot_heap;
+mod detached;
 mod execution;
 mod heap;
 mod ingress;
@@ -26,6 +27,7 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
+pub use detached::DetachedProcess;
 pub use execution::{
     ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, PreemptionToken,
     ScalarExecution, ScalarTask,
@@ -51,6 +53,7 @@ pub struct ScalarProcess {
     state: i64,
     failed: bool,
     heap: Option<Box<aot_heap::AotHeap>>,
+    pool: Option<StackPool>,
 }
 
 #[derive(Clone, Default)]

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0053](adr/0053-detached-process-images.md) 提供无活栈进程镜像的独占线程转交，验证原 state/堆/额度在目标同账户栈池继续执行；不携带 worker Pid/mailbox/request，不转交挂起活栈，M:N 唯一执行权与路由验收仍未完成。
+
 [ADR-0052](adr/0052-cross-thread-module-leases.md) 去除计费模块 Rc 租约的原线程限制，只读模块/handler 自动 Send/Sync，可供不同线程创建的独立 worker 共享；尚无跨 worker actor 唯一执行权转移、迁移或 M:N，不提前改变第 5 项验收状态。
 
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 接入 ABI v12 的有界 IntList 消息、源遍历检查与目标重建根：每消息合计最多 64 个整数元素，不是任意业务图或引用回复。该切片须独立执行各平台回归，旧 Linux 记录不覆盖此变更；M:N、完整业务值及同业务 BEAM 双目标仍未验收。

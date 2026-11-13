@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0053](adr/0053-detached-process-images.md) 将原线程栈池绑定从 AotHeap 移到 ScalarProcess，堆仅保留线程安全的原账户；DetachedProcess 独占持有无活栈模块/state/堆，自动 Send，无 unsafe trait。目标 attach 验证 VM 与原 process 账户后才取走镜像，失败可重试。同步执行绑定新池，业务堆及精确根不复制、额度不转移；尚未接入 worker 调度或活栈迁移。
+
 [ADR-0052](adr/0052-cross-thread-module-leases.md) 使模块代码与预算租约同属一个 Arc<ModuleData>，由同一末持有者先释放 Library 再归还预算，避免分离 Arc 的并发析构窗口。ScalarModule/HandlerId 自动 Send/Sync，不增加 unsafe trait 实现。不同线程创建独立 worker 并共享只读代码，最终卸载可发生于最后持有者线程；可信模块不得依赖装载线程 TLS 或可变 native 全局。actor、栈池与挂起执行仍不能跨线程转交，不等于 M:N。
 
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 升至 ABI v12，EffectRequest 增加 u64 list_mask，56→64 字节，context 仍为 88 字节。语言消息用固定 64 整数序列及规范段描述复制 IntList，逐节点扣 runtime 预算；源协程持根遍历、目标独立堆重建并更新入口根，不共享源 handle。Message/actor 控制区按实际大小计费，固定执行槽预留另有结构大小回归。

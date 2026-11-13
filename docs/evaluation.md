@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0053](adr/0053-detached-process-images.md) 的 `detached_process` 在受限 AOT 中先建立持久 IntList，释放源池后在三个新线程依次绑定同账户目标池，collect 后读取/追加并核对状态连续；不重跑 initializer。错账户/未计费池、重复 attach、取消后的失败镜像及未 attach 即跨线程 Drop 均检查资源清理。内部回归另覆盖标量 state、attach 后池满不毒化进程和原堆账户保留；原执行类型仍非 Send/Sync。这是宿主无活栈转交，不是调度器迁移或性能结果。
+
 [ADR-0052](adr/0052-cross-thread-module-leases.md) 的 `parallel_modules` 在受限真实 AOT 子进程启动四个固定 2 MiB 栈的线程，各自创建计费 tenant/worker/actor。主线程在启动前丢弃模块，四个独立 Counter 单步执行 16 次请求，验证状态隔离、同模块 handler 身份及跨 VM 拒绝；worker 退出后只剩模块和验证线程预留，最后 handler 转至新线程释放、归还线程预留后归零。线程控制/栈预留只是验证宿主的逻辑预算，不当作 RSS、生产 worker 池、迁移或性能数据。
 
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 的 `list_messages` 由受限 AOT 脚本验证跨 actor/self、整数异步请求、多列表混合 RecordInt/Bool、空列表、共享尾独立复制、总元素 64 成功/65 拒绝、源失败不撤回及目标堆满。三个入口各 160 个单步 stop/Drop 边界及预建 64 元素列表后的 320 个复制边界核对资源归零，后者检查确实覆盖源遍历和目标中途重建。`--check-list-message-roots` 在 heap/slow/effect 前强制 GC，核对最后使用的整个源列表及混合 mask。内部测试验证逐节点预算/取消、重建期间强制 GC、整数极值、全部 64 个空列表入口根、规范段/schema、stale/布局和 mask 拒绝；宿主/JSON/ingress 不接受原 handle 或段编码。没有列表性能或完整 MVP 结论。

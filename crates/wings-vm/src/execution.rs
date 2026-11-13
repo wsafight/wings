@@ -209,7 +209,7 @@ impl ScalarProcess {
         cancellation: &CancellationToken,
         preemption: &PreemptionToken,
     ) -> Result<ScalarExecution<'_>, String> {
-        let pool = match self.heap.as_ref().and_then(|heap| heap.pool.as_ref()) {
+        let pool = match self.pool.as_ref() {
             Some(pool) => pool.clone(),
             None => default_stack_pool()?,
         };
@@ -411,8 +411,7 @@ impl Invocation {
         if process
             .heap
             .as_ref()
-            .and_then(|heap| heap.pool.as_ref())
-            .is_some_and(|owner| !owner.shares_process(pool))
+            .is_some_and(|heap| !pool.is_for_process(&heap.account))
         {
             return Err("AOT heap execution requires its process-accounted stack pool".into());
         }

@@ -360,6 +360,75 @@ fn module_sharing_does_not_make_actor_execution_or_stack_pools_send_sync() {
 }
 
 #[test]
+fn detached_scalar_state_moves_once_and_preserves_committed_state() {
+    let module = module();
+    let mut process = module.instantiate().unwrap();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let pool = StackPool::new(1, 0).unwrap();
+    let mut restored = image.attach(&pool).unwrap();
+    assert!(image.attach(&pool).is_err());
+    assert_eq!(restored.invoke("Get", &[]).unwrap(), Some(7));
+    let mut image = restored.detach();
+    let value = std::thread::spawn(move || {
+        let pool = StackPool::new(1, 0).unwrap();
+        let mut process = image.attach(&pool).unwrap();
+        process.invoke("Bump", &[5]).unwrap()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(value, Some(12));
+}
+
+#[test]
+fn detached_heap_rejects_other_accounts_without_losing_ownership_or_budget() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(8 << 20)).unwrap();
+    let account = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let other = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = module();
+    let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let baseline = vm.used();
+    let wrong = pool.for_process(&other).unwrap();
+    let unaccounted = StackPool::new(1, 0).unwrap();
+    assert!(image.attach(&wrong).is_err());
+    assert!(image.attach(&pool).is_err());
+    assert!(image.attach(&unaccounted).is_err());
+    assert_eq!(vm.used(), baseline);
+    let stack = bound.acquire().unwrap();
+    let busy_baseline = vm.used();
+    let mut process = image.attach(&bound).unwrap();
+    assert!(image.attach(&bound).is_err());
+    assert!(
+        process
+            .invoke("Get", &[])
+            .unwrap_err()
+            .contains("exhausted")
+    );
+    assert_eq!(vm.used(), busy_baseline);
+    assert!(!process.failed);
+    drop(stack);
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+    let mut image = process.detach();
+    drop((bound, wrong, unaccounted, pool));
+    let process = std::thread::spawn(move || {
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let mut process = image.attach(&bound).unwrap();
+        assert_eq!(process.invoke("Bump", &[11]).unwrap(), Some(18));
+        process.detach()
+    })
+    .join()
+    .unwrap();
+    drop((process, other));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn record_message_masks_must_match_schema_without_poisoning_the_process() {
     let mut module = module();
     Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[0].parameters = vec![
