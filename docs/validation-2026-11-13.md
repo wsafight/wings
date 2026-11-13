@@ -119,3 +119,5 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 完整 debug 受限 AOT 首次通过；release 首次在既有 TCP bounded_read 场景得到 `io_errors=2`，预期 1（业务回复与清理均成功），未改 TCP、断言或限制，第二次完整通过。保留全部历史偶发记录，不宣称稳定性门禁已过。Counter 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，其他 AOT 子进程仍为 CPU 20 秒/墙钟 30 秒。
 
 Linux 本增量另行验证；当前隔离 Linux 未安装 OTP，不以 Wings/模型模式代替真实 BEAM 对照。多 actor/开环、公平性/过载、资源账本闭环及原生最新双平台性能/整机内存双门禁仍未完成，MVP 状态不变。
+
+隔离 Linux 从 `f5caedd` 重新交叉构建全部 release 工具/示例与测试，27 个 harness 共 451 项通过（workspace 447、TCP 2、Counter 桥接 2）；完整受限 release AOT 首次通过，内含真实 Linux `.so` 的 45 组 Wings/独立 Python 业务和 28 组 JSON/14 组桥接拒绝。仍为 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，Counter 和其他 AOT 的 CPU/墙钟限制均未放宽。未执行 Linux OTP、debug/native clippy/MSRV/doc-tests；不将仿真或模型通过写成真实 Linux BEAM 对照、最新原生 CI 或性能通过。
