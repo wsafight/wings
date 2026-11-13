@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0068](adr/0068-bounded-open-loop-counter.md) 仅新增测试宿主的计划时刻开环：外部 100ms deadline 不取消远端业务，超时 pending 保留到实际结果，拒绝不重试。未改变 runtime 请求/状态提交契约；长时公平性、超时竞争与完整资源账本仍待验收。
+
 [ADR-0067](adr/0067-beam-bounded-admission.md) 的 BEAM 测试 gate 对已接受尚未开始的业务消息计数，满时显式拒绝；开始只允许绑定 actor 归还，关闭后不再接收/开始。占槽与 `!` 间若发生退出，该请求仍算已接受，宿主依据 DOWN 完成 pending，不自动重试；旧 gate 不指向新实例。这是可信对照驱动，不是 VM 内置或公共 SDK。
 
 [ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 允许 Scheduler mailbox 配置 1..256，0/257/极大值在创建资源前拒绝；同模块 spawn/监督重启保留已配置容量。满队列沿原 `mailbox_full` 显式失败，不改变 state/队列或票据；当前执行 handler 不算排队数，starting 暂保留原容量。满队列仍能 stop，排队请求选择唯一终态并释放，ScalarWorker 上限不变。

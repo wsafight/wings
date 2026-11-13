@@ -1052,6 +1052,7 @@ def main():
         multi_counter = parent / "beam-multi-counter"
         command([COMPILER, "build", ROOT / "examples/beam-multi-counter.wings", "-o", multi_counter])
         command([sys.executable, ROOT / "scripts/verify_multi_counter.py", "--artifact", multi_counter])
+        command([sys.executable, ROOT / "scripts/verify_open_loop.py", "--artifact", multi_counter])
         senders_counter = parent / "beam-senders-counter"
         command([COMPILER, "build", ROOT / "examples/beam-senders-counter.wings", "-o", senders_counter])
         command([sys.executable, ROOT / "scripts/verify_senders_counter.py", "--artifact", senders_counter])

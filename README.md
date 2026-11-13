@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0068](docs/adr/0068-bounded-open-loop-counter.md) 接入四组代表负载的短时计划开环与逐条迟发/拒绝/超时记账。构建后 `python3 scripts/verify_open_loop.py --compare-beam` 核对 Wings/BEAM/独立模型；这是有界 `smoke`，不是 30s/60s/五次重复、fairness、整机内存或性能验收。
+
 [ADR-0067](docs/adr/0067-beam-bounded-admission.md) 为 BEAM 测试端补发送前有限准入、开始时归还和终态关闭。`python3 scripts/verify_admission_counter.py --compare-beam` 核对 1/100/256 满队列拒绝、健康 Bytes actor 与停止清理；默认完整 AOT 只跑 Wings/模型。这不等于开环、吞吐或整机内存验收。
 
 [ADR-0066](docs/adr/0066-bounded-scheduler-mailbox-capacity.md) 将 Scheduler mailbox 可配置上限扩至 256，固定容量按实际槽数预先计费；100 槽满队列的真实 Bytes AOT 检查显式拒绝、健康 actor 推进和取消清理。全局结果/语言 pending 上限不变；这只是热点协议前置，不是开环/BEAM 性能结果。

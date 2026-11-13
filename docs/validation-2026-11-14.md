@@ -92,10 +92,22 @@ Linux 同配置隔离仿真重新交叉构建全部 release 工具/示例、29 �
 
 业务保持 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 3 秒，AOT 原 CPU 20 秒/墙钟 30 秒不变；依赖隔离、禁 unwind feature、Markdown 链接/围栏与 diff whitespace 检查通过。无开环、计划时刻延迟、吞吐或整机内存结果；gate 的未来集成成本必须计入 BEAM 测量。
 
+## 短时计划开环：ADR-0068
+
+基于 `24f337d`，新增 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 的 v5 `smoke`：同一单调 t0 的计划时刻、四组完整 Bytes/binary 代表负载、前 100 活动 actor、一个真实直接发送者及 BEAM CAS gate。每条到达均保留计划/实际发送/观察时刻、拒绝或外部 100ms 超时、迟到实际值；最终收齐接受请求并核对每目标 FIFO/提交/停止。最多 256 未收到真实结果的 pending，超时不释放、拒绝不重试，最多 10000 原始样本。无 ABI 或语法改动，待审语法草案不纳入提交。
+
+本机 check、all-targets clippy `-D warnings`、fmt 和 Rust 1.85.0 all-targets check 通过；debug/release workspace 各 462、五个示例桥接/生成器单测各合计 9 项，合计各 471 项通过。新 Rust 单测核对严格参数边界、精确计划/热点连续轮转及 deadline 边界；独立 Python 模型覆盖超时 pending 保留、拒绝不执行、精确 100ms/迟到分类及 19 个伪造历史拒绝。两种构建最终完整受限 AOT 均通过，v5 Wings/BEAM/Python 显式三端各通过四组固定速率 100ms、两组高压到达和 10 个配置拒绝；v1/v2/v3/v4 两种构建三端亦全部通过，保留原 45/14/28、18/17/49、21/8/17/47 及全部 gate 场景。
+
+Linux 沿原 2 vCPU/4 GiB/QEMU TCG 隔离环境重新交叉构建 release 工具/示例，30 个 harness 共 471 项通过。第一次完整 AOT 在新 dense-64k 的 10ms×1000000/s 用例没有在原阶段内收齐；原实现另一次完整参数专项仍失败，增加诊断后确认内部实际结果票据为 `TimedOut`，发生在业务段约 2.88 秒，接近初始化后剩余阶段边界。没有放宽 CPU 5 秒/墙钟 10 秒/总阶段 3 秒，没有删去 10000 到达或缩小状态/actor。
+
+检查发现宿主每次到达最多全扫 256 个带锁结果票据；改为固定游标轮转、每轮最多探测 32 个，BEAM 同样每轮最多收集 32 条。修改只限制驱动每轮工作，不改 runtime 执行或减少原始样本，不承诺两端相同采样成本。最终原参数 Linux v5 专项及重新执行的完整 release AOT 均通过；本机亦重新执行完整 debug/release 回归与三端对照。保留原失败日志 `/tmp/wings-open-loop-linux-aot.log`、`/tmp/wings-open-loop-linux-probe.log` 和诊断日志，最终为 `/tmp/wings-open-loop-linux-aot-final.log`；不能把失败尝试改称成功。实例测试后已停止；Linux 未安装 OTP、未跑原生 debug/clippy/MSRV/doc-tests，不是最新原生双平台门禁。
+
+本机 v5 原始 JSON 保留于 `target/open-loop-smoke-debug` 和 `target/open-loop-smoke-release`，包含所有拒绝和迟到，不据短时比例推断持续吞吐或领先。所有正确性/AOT 原资源限制不变；依赖隔离、禁 unwind feature、84 份 Markdown 路径/围栏、Python 语法和 diff whitespace 检查通过。没有长时预热/采样/重复、饱和扫描、分位达标或整机内存结果，MVP 仍未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 与有限准入/关闭分别由 ADR-0065/0067 补充，仍缺开环集成及完整性能验收。
+- 并发失败、长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环分别由 ADR-0065/0067/0068 补充，仍缺完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 
