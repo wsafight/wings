@@ -55,6 +55,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0045](0045-concurrent-resource-admission.md) | VM 级并发多维准入、净转移与跨线程归还 | 已采纳（资源并发切片） |
 | [0046](0046-bounded-cross-thread-ingress.md) | 固定跨线程入口、计费消息与 OS 通知租约 | 已采纳（外部事件前置切片） |
 | [0047](0047-cross-thread-ingress-requests.md) | 固定外部请求结果表、超时/取消与双端租约 | 已采纳（外部请求切片） |
+| [0048](0048-bounded-loopback-service.md) | 有限 loopback TCP、绝对 I/O 截止时间与服务清理 | 已采纳（真实 I/O 验证切片） |
 
 ## 维护方式
 

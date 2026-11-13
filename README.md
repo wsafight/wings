@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。
+
 `ScalarWorker::open_request_ingress` 可将单个外部入口绑定为 Int/Bool/Unit 请求协议；发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位。超时/取消不撤回已接收消息；示例 `worker_ingress_requests`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。仍不提供网络服务或语言阻塞请求。
 
 宿主可在配置等待后用 `ScalarWorker::open_ingress` 注册单 actor 单入口的固定跨线程队列，发送端只传 Int/Bool/Unit，并以原票据转入 mailbox；关闭后旧 sender 拒绝，最后 sender 释放前保留控制与通知预算。示例 `worker_ingress`，契约见 [ADR-0046](docs/adr/0046-bounded-cross-thread-ingress.md)。这不是网络服务、引用消息或 M:N。
@@ -92,7 +94,7 @@ LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳
 
 `ScalarModule` 可装载一次并反复实例化，共享只读清单和入口数组，各实例独立执行初始化、保存状态与失败标记。宿主可预解析模块绑定的 `HandlerId`，直接调用时不再按字符串查找；外部 JSON 协议不变。独立实例自身没有 mailbox，worker 中的语言创建/发送另见 ADR-0039；模块共享契约见 [ADR-0013](docs/adr/0013-shared-scalar-modules.md)。
 
-宿主可用 `ScalarTask` 按值保存实例和未完成调用，在同线程内移动而无需自引用；忙时拒绝新调用，正常结束才提交并释放栈，见 [ADR-0015](docs/adr/0015-owned-scalar-tasks.md)。`ScalarWorker` 在此基础上提供有限进程表、generation Pid、mailbox、固定 pending 表的异步请求及手动轮转时间片；process、消息、请求和活栈经过三级准入。超时/取消不撤回已接受消息，迟到回复不能覆盖复用请求槽位。该切片新增语言自发送及同模块创建/发送及异步整数请求事件，尚无真实 I/O，不是 M:N 调度器，见 [ADR-0020](docs/adr/0020-single-worker-mailbox.md) 与 [ADR-0021](docs/adr/0021-bounded-requests.md)。
+宿主可用 `ScalarTask` 按值保存实例和未完成调用，在同线程内移动而无需自引用；忙时拒绝新调用，正常结束才提交并释放栈，见 [ADR-0015](docs/adr/0015-owned-scalar-tasks.md)。`ScalarWorker` 在此基础上提供有限进程表、generation Pid、mailbox、固定 pending 表的异步请求及手动轮转时间片；process、消息、请求和活栈经过三级准入。超时/取消不撤回已接受消息，迟到回复不能覆盖复用请求槽位。该切片新增语言自发送及同模块创建/发送及异步整数请求事件；ADR-0048 另有受限 loopback I/O 示例，仍不是 M:N 调度器，见 [ADR-0020](docs/adr/0020-single-worker-mailbox.md) 与 [ADR-0021](docs/adr/0021-bounded-requests.md)。
 
 worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出，仍在强制 safepoint 挂起、原线程恢复。默认不创建计时线程，未验证真实服务尾延迟或 M:N 扩展成本，见 [ADR-0022](docs/adr/0022-worker-deadline-preemption.md)。
 

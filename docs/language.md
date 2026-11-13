@@ -1,5 +1,7 @@
 # wings-lang
 
+`examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。
+
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 仅扩展宿主标量请求入口，保留无 `->` 的单向消息与 `-> Unit` 的请求确认区别；外部线程可以等待结果，业务 handler 仍不支持阻塞 receive/await/call。
 
 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit；ADR-0047 增加宿主请求模式，均不增加语言语法或引用消息能力。

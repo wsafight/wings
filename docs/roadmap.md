@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 为外部有界入口增加 Int/Bool/Unit 请求结果与双端清理，尚无真实网络适配器、通用业务值或 M:N；后续仍须完成同业务服务与双平台性能门禁。
+[ADR-0048](adr/0048-bounded-loopback-service.md) 增加真实 loopback TCP Counter 验证示例，有界连接/帧/截止时间及预算清理；单适配线程、Int state 尚不等价于 BEAM 状态/到达负载。外部 I/O 已从原语推进至可运行示例，完整服务公平性、M:N 和双平台性能/内存仍未验收。
+
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 为外部有界入口增加 Int/Bool/Unit 请求结果与双端清理；受限适配器由 ADR-0048 验证，通用业务值、M:N 与同业务服务的双平台性能门禁仍须完成。
 
 [ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，有界入口由 ADR-0046 接入，仍无 actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
 
@@ -84,7 +86,7 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 下一步继续 M0 执行/根边界与 BEAM 基线测试；语言扩展只接入完成契约和验证的必要切片，不同时铺开可选语法、平台或热更新。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
 
-OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd；[ADR-0041](adr/0041-worker-deadline-parking.md) 已接入 worker 就绪重查和请求 deadline，ADR-0046 增加外部有界标量 ingress，尚无真实服务 I/O。各平台须验证最新源码，不替代完整 M0 与 BEAM 负载冻结门槛。
+OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd；[ADR-0041](adr/0041-worker-deadline-parking.md) 已接入 worker 就绪重查和请求 deadline，ADR-0046/0047 增加外部有界标量 ingress/结果，ADR-0048 验证有限 loopback I/O。各平台须验证最新源码，不替代完整 M0 与 BEAM 负载冻结门槛。
 
 ## MVP 范围与开发顺序
 

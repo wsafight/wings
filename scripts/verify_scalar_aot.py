@@ -2,10 +2,14 @@ import json
 import os
 from pathlib import Path
 import resource
+import select
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +48,132 @@ def invoke(directory, messages, expected=0):
 
 def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
+
+
+def verify_tcp_service(directory):
+    executable = ROOT / f"target/{PROFILE}/examples/tcp_counter"
+
+    def frame(sequence, value, operation=1, reserved=0):
+        return struct.pack(">QQqQ", sequence, operation, value, reserved)
+
+    def reply(connection):
+        received = bytearray()
+        while len(received) < 32:
+            block = connection.recv(32 - len(received))
+            assert block, "service closed before completing the reply"
+            received.extend(block)
+        return struct.unpack(">QQqQ", received)
+
+    def require_closed(connection):
+        try:
+            assert connection.recv(1) == b""
+        except ConnectionResetError:
+            pass
+
+    def scenario(connections, frames, exercise, expected):
+        child = subprocess.Popen(
+            [str(executable), "--trusted", str(directory), str(connections), str(frames)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            preexec_fn=limit_child, cwd=ROOT,
+        )
+        try:
+            assert select.select([child.stdout], [], [], 5)[0], "TCP service did not start"
+            ready = json.loads(child.stdout.readline())
+            host, port = ready["listening"].split(":")
+            assert host == "127.0.0.1"
+
+            def connect():
+                connection = socket.create_connection((host, int(port)), timeout=2)
+                connection.settimeout(2)
+                return connection
+
+            exercise(connect)
+            output, errors = child.communicate(timeout=5)
+            assert child.returncode == 0 and not errors, (child.returncode, output, errors)
+            report = json.loads(output)
+            assert report["resources_released"] is True
+            assert report["wake_errors"] == 0
+            assert 0 <= report["max_socket_buffer"] <= 65536
+            if report["connections"]:
+                assert report["max_socket_buffer"] > 0
+            for key, value in expected.items():
+                assert report[key] == value, (key, report, value)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+
+    def normal(connect):
+        with connect() as connection:
+            payload = frame(1, 3)
+            connection.sendall(payload[:3])
+            connection.sendall(payload[3:])
+            assert reply(connection) == (1, 3, 3, 0)
+            connection.sendall(frame(2, 1) + frame(3, 5) + frame(4, -1))
+            assert [reply(connection) for _ in range(3)] == [
+                (2, 3, 4, 0), (3, 3, 9, 0), (4, 3, 8, 0),
+            ]
+
+    scenario(1, 4, normal, {"connections": 1, "published": 4, "replies": 4,
+                          "committed": 8, "failed": 0, "rejected": 0, "io_errors": 0})
+
+    def failing(connect, overflow):
+        with connect() as connection:
+            first = 2**63 - 1 if overflow else 7
+            connection.sendall(frame(1, first) + frame(2, 1, 1 if overflow else 2) + frame(3, 99))
+            assert reply(connection) == (1, 3, first, 0)
+            assert reply(connection) == (2, 4, 3, 0)
+            assert reply(connection) == (3, 4, 4, 0)
+
+    for overflow in [False, True]:
+        scenario(1, 3, lambda connect: failing(connect, overflow), {
+            "published": 2, "replies": 1, "failed": 1, "rejected": 1,
+            "committed": 2**63 - 1 if overflow else 7, "timed_out": 0,
+        })
+
+    def invalid(connect):
+        for payload in [frame(0, 1), frame(1, 1, 9), frame(1, 1, reserved=1)]:
+            with connect() as connection:
+                connection.sendall(payload)
+                require_closed(connection)
+        with connect() as connection:
+            connection.sendall(frame(9, 4))
+            assert reply(connection) == (9, 3, 4, 0)
+
+    scenario(4, 1, invalid, {"connections": 4, "invalid": 3, "published": 1,
+                           "replies": 1, "committed": 4})
+
+    def bounded_read(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 1)[:5])
+        with connect() as connection:
+            connection.sendall(frame(1, 1)[:8])
+            time.sleep(0.15)
+            require_closed(connection)
+        with connect() as connection:
+            connection.sendall(frame(3, 9))
+            assert reply(connection) == (3, 3, 9, 0)
+
+    scenario(3, 1, bounded_read, {"connections": 3, "io_errors": 1,
+                                "published": 1, "committed": 9})
+
+    def frame_limit(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 2))
+            assert reply(connection) == (1, 3, 2, 0)
+            require_closed(connection)
+
+    scenario(1, 1, frame_limit, {"connections": 1, "published": 1, "committed": 2})
+    def disconnected(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 6))
+            connection.shutdown(socket.SHUT_WR)
+
+    scenario(1, 2, disconnected, {"connections": 1, "published": 1,
+                                 "replies": 1, "committed": 6})
+    scenario(1, 1, lambda connect: None, {"connections": 0, "published": 0, "committed": 0})
+    for arguments in [(0, 1), (9, 1), (1, 0), (1, 65)]:
+        command([executable, "--trusted", directory, *arguments], expected=1)
 
 
 def verify_control_abi(directory):
@@ -602,6 +732,10 @@ def main():
         example("scalar_worker", worker_artifact)
         example("worker_ingress", worker_artifact)
         example("worker_ingress_requests", worker_artifact)
+        tcp_artifact = parent / "tcp-counter"
+        command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
+        verify_tcp_service(tcp_artifact)
+        command([ROOT / f"target/{PROFILE}/examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)
         timer_source = parent / "timer.wings"

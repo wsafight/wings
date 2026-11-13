@@ -1,0 +1,9 @@
+process TcpCounter {
+  state count: Int = 0
+
+  on Apply(delta: Int, fail: Bool) -> Int {
+    let next = count + delta
+    count = next
+    if fail { 1 / 0 } else { count }
+  }
+}

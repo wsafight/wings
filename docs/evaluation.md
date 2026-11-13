@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0048](adr/0048-bounded-loopback-service.md) 通过 `python3 scripts/verify_scalar_aot.py` 在 CPU/core/墙钟受限 OS 子进程启动真实 `tcp_counter`。Python 以临时 loopback socket 验证分片/流水线 FIFO、正常提交、checked overflow/候选失败、退出后拒绝、非法协议/模块、短帧/EOF、断连不回滚、读/accept 超时与连接/帧上限，核对服务退出时账面资源归零及 socket 收发缓冲均不超过 64 KiB；示例单测另检查缓冲配置及部分帧不刷新读 deadline。没有连接吞吐、state 大小等价或内存领先结论。
+
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 的 `cargo test --locked -p wings-vm ingress` 覆盖固定结果槽背压、三级拒绝回滚、完成/超时/取消/Drop 竞争、迟到回复、代次退休、Bool/Unit 与关闭后租约。受限 AOT 脚本另运行 `worker_ingress_requests`：四个生产者、16 个请求，核对实际生成代码提交后的整数/布尔/Unit 回复、失败、挂起清理和最终归零；不是服务或性能数据。
 
 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的 ingress 回归覆盖配置/参数/额度拒绝、固定 FIFO、满 mailbox 保留、并发发布、关闭/槽位复用、挂起/失败退出和最后 sender 租约。私有通知失败 fixture 核对已接收但唤醒失败的结果，不关闭宿主 FD 制造错误。`cargo test --locked -p wings-vm ingress` 检查线程/账本边界，AOT 脚本在受限子进程运行 `worker_ingress` 验证生成代码的跨线程投递、等待与取消清理；两平台须分别执行，不将这些正确性用例当实际服务或吞吐结果。

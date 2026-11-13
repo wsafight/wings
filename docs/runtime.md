@@ -1,5 +1,7 @@
 # 运行时
 
+真实 I/O 验证示例 `tcp_counter` 只绑定临时 IPv4 loopback 端口，单适配线程、最多八连接/每连接 64 帧、固定 32 B 收发，绝对读写 deadline 不随部分传输刷新；请求超时不重试，断连不回滚 state。线程、listener 和连接逻辑预算先准入，Drop 停止并 join，详见 [ADR-0048](adr/0048-bounded-loopback-service.md)；kernel/allocator 的全部内部开销仍非精确计量。
+
 宿主可用 `open_request_ingress` 配置固定标量回复入口；`IngressSender::request` 返回唯一结果 handle 与已接收通知状态。结果 `try_take` 或外部线程 `wait` 只终结一次；超时/取消/丢弃不撤回消息，结果槽在调用者结束且消息完成后才回收。请求预算、代次、失败/关闭与双端租约见 [ADR-0047](adr/0047-cross-thread-ingress-requests.md)；不等于语言同步 call 或完整 I/O。
 
 宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的标量单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 成功表示已接收，`IngressWake::WakeFailed` 也已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
@@ -196,7 +198,7 @@ Linux 通过 `epoll` + `eventfd` 管理 I/O 等待与 worker 唤醒，macOS 使�
 
 未发布源码的 `WorkerParker::new` 建立独占等待端，`notifier` 返回可克隆、Send/Sync 的 `WorkerNotifier`。`wait(Duration)` 返回通知提示或超时，零超时轮询；等待端可移交线程但不能共享并发等待。Linux eventfd 计数与 macOS 用户事件都可合并，`true` 不对应某个消息或消息数。
 
-集成时先发布队列内容，再 `notify`；等待端先检查队列，无工作才等待，每次返回都重查队列和终止标志。提前通知保留提示，不用通知次数维护业务计数。描述符由共享所有权维持，任一 handle 先释放不会使另一个使用已关闭或复用的 FD。EINTR 后只等待原截止时间的剩余部分，无法表示的超时明确拒绝。仍未接入 worker、三级 FD 计费、计时线程或真实 I/O，见 [ADR-0016](adr/0016-worker-wakeup.md)。
+集成时先发布队列内容，再 `notify`；等待端先检查队列，无工作才等待，每次返回都重查队列和终止标志。提前通知保留提示，不用通知次数维护业务计数。描述符由共享所有权维持，任一 handle 先释放不会使另一个使用已关闭或复用的 FD。EINTR 后只等待原截止时间的剩余部分，无法表示的超时明确拒绝。底层协议见 [ADR-0016](adr/0016-worker-wakeup.md)；worker/通知逻辑预算由 ADR-0041/0046 接入，可选计时线程见 ADR-0022，有限真实 I/O 见 ADR-0048，仍不构成完整 reactor 或物理内存隔离。
 
 ### 对比
 

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0048](adr/0048-bounded-loopback-service.md) 的 loopback TCP Counter 由一个有预算的外部适配线程接收固定帧，经有界请求入口交给原 worker；native I/O 不进入业务线程。线程/连接数、缓冲及等待有明确上限，错误先停止并 join，再释放 VM；该示例不是通用 reactor 或可部署的网络执行引擎。
+
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 在固定外部入口上增加标量请求模式：结果表无模块/actor 引用，调用者与消息发布者共同持有有界槽位和资源票据；worker 提交 state 后才发布回复。外部 Condvar 等待不进入受管 handler，不修改 ABI 或 M:N 执行权。
 
 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 让外部线程通过固定计费 ingress 发布标量单向消息，并通知原线程 worker；HandlerId、actor 和活栈不跨线程。ring 与 OS 通知预算跟随最后 handle，不由 worker 提前释放。多 worker 执行权、引用消息和真实服务 I/O 仍须独立完成。
