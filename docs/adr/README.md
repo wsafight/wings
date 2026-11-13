@@ -59,6 +59,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0049](0049-record-message-copies.md) | ABI v11、RecordInt 语言消息按值复制与目标入口根 | 已采纳（引用消息切片） |
 | [0050](0050-account-node-admission.md) | 子账户控制节点预留、父路径计费与末持有者释放 | 已采纳（资源元数据切片） |
 | [0051](0051-bounded-int-list-messages.md) | ABI v12、有界列表序列信封、目标重建与入口根 | 已采纳（列表消息切片） |
+| [0052](0052-cross-thread-module-leases.md) | 线程安全只读代码租约、并行独立 worker 与末持有者清理 | 已采纳（多 worker 前置切片） |
 
 ## 维护方式
 

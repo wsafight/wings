@@ -767,6 +767,7 @@ def main():
         example("stack_pool", counter)
         example("accounted_stacks", counter)
         example("shared_module", counter)
+        example("parallel_modules", counter)
         library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
         invalid_module_manifest = parent / "module-bad-manifest"
         invalid_module_manifest.mkdir()

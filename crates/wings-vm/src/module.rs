@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use libloading::Library;
@@ -13,7 +12,6 @@ use crate::{Reservation, ResourceAccount, ResourceLevel, Resources, ScalarProces
 #[derive(Clone)]
 pub struct ScalarModule {
     pub(crate) inner: Arc<ModuleData>,
-    pub(crate) lease: Option<Rc<ModuleLease>>,
 }
 
 pub(crate) struct ModuleData {
@@ -21,6 +19,7 @@ pub(crate) struct ModuleData {
     pub initializer: ScalarEntry,
     pub entries: Box<[ScalarEntry]>,
     pub _library: Option<Library>,
+    pub lease: Option<ModuleLease>,
 }
 
 pub(crate) struct ModuleLease {
@@ -44,6 +43,9 @@ impl ScalarModule {
     /// live references published and the previous chain restored on every return.
     /// Code must not retain external callbacks, start background native threads,
     /// or run native destructors after its last module owner is dropped.
+    /// Different processes may call entries concurrently on different threads.
+    /// Code must not depend on loading-thread TLS or mutable native globals,
+    /// and the library must permit final unloading on any owner thread.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         unsafe { Self::load(directory, None) }
     }
@@ -76,10 +78,10 @@ impl ScalarModule {
                     bytes,
                     ..Resources::default()
                 })?;
-                Ok::<_, String>(Rc::new(ModuleLease {
+                Ok::<_, String>(ModuleLease {
                     vm: vm.clone(),
                     _charge: charge,
-                }))
+                })
             })
             .transpose()?;
         let manifest = Manifest::read(&directory)?;
@@ -106,13 +108,14 @@ impl ScalarModule {
                 initializer,
                 entries: entries.into_boxed_slice(),
                 _library: Some(library),
+                lease,
             }),
-            lease,
         })
     }
 
     pub(crate) fn validate_vm(&self, account: &ResourceAccount) -> Result<(), String> {
         if self
+            .inner
             .lease
             .as_ref()
             .is_some_and(|lease| !lease.vm.same_vm(account))
@@ -195,5 +198,73 @@ impl ScalarModule {
 impl HandlerId {
     pub fn schema(&self) -> &Handler {
         &self.module.inner.manifest.handlers[self.index]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_data_and_charge_share_one_last_owner_even_across_threads() {
+        let vm = ResourceAccount::vm(Resources {
+            bytes: 4096,
+            ..Resources::default()
+        });
+        let charge = vm
+            .reserve(Resources {
+                bytes: 1024,
+                ..Resources::default()
+            })
+            .unwrap();
+        unsafe extern "C" fn entry(
+            _state: i64,
+            _arguments: *const i64,
+            _output: *mut wings_abi::ScalarOutput,
+            _context: *mut wings_abi::ScalarContext,
+        ) -> u32 {
+            wings_abi::STATUS_OK
+        }
+        let module = ScalarModule {
+            inner: Arc::new(ModuleData {
+                manifest: Manifest {
+                    format: wings_artifact::FORMAT_VERSION,
+                    abi: wings_abi::SCALAR_ABI_VERSION,
+                    target: wings_abi::host_target().unwrap().into(),
+                    process: "Lease".into(),
+                    state: wings_abi::ValueType::Int,
+                    handlers: vec![],
+                },
+                initializer: entry,
+                entries: Box::new([]),
+                _library: None,
+                lease: Some(ModuleLease {
+                    vm: vm.clone(),
+                    _charge: charge,
+                }),
+            }),
+        };
+        let data = module.inner.clone();
+        let weak = Arc::downgrade(&module.inner);
+        let barrier = Arc::new(std::sync::Barrier::new(5));
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let module = module.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                drop(module);
+            }));
+        }
+        drop(module);
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(vm.used().bytes, 1024);
+        assert_eq!(weak.strong_count(), 1);
+        std::thread::spawn(move || drop(data)).join().unwrap();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(vm.used(), Resources::default());
     }
 }

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0052](adr/0052-cross-thread-module-leases.md) 使模块代码与预算租约同属一个 Arc<ModuleData>，由同一末持有者先释放 Library 再归还预算，避免分离 Arc 的并发析构窗口。ScalarModule/HandlerId 自动 Send/Sync，不增加 unsafe trait 实现。不同线程创建独立 worker 并共享只读代码，最终卸载可发生于最后持有者线程；可信模块不得依赖装载线程 TLS 或可变 native 全局。actor、栈池与挂起执行仍不能跨线程转交，不等于 M:N。
+
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 升至 ABI v12，EffectRequest 增加 u64 list_mask，56→64 字节，context 仍为 88 字节。语言消息用固定 64 整数序列及规范段描述复制 IntList，逐节点扣 runtime 预算；源协程持根遍历、目标独立堆重建并更新入口根，不共享源 handle。Message/actor 控制区按实际大小计费，固定执行槽预留另有结构大小回归。
 
 [ADR-0050](adr/0050-account-node-admission.md) 将子账户节点的逻辑存储纳入父路径准入，内部票据仅引用父级，无自循环。worker 创建计费进程账户；actor 退出后，跨线程入口/结果仍可延长节点及祖先租约。旧工具构造器和根 bootstrap 不计费，未完成全部分配门禁。

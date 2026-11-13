@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0052](docs/adr/0052-cross-thread-module-leases.md) 使只读 `ScalarModule`/`HandlerId` 可跨线程共享，计费模块使用 Arc 租约；四个线程各建独立 worker，退出后由最后代码所有者归还预算。`parallel_modules` 是并行宿主回归，不是 M:N 调度器；actor、堆、栈池和挂起活栈仍在各自原线程。
+
 按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 堆模式使用计费子账户；旧账户构造入口及 VM 根 bootstrap 仍是未计费工具路径，不代表完整资源隔离。
 
 ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，引用回复仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。

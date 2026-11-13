@@ -78,6 +78,9 @@ impl ScalarProcess {
     /// on every return; local references must never escape their owning heap.
     /// Code must not register external callbacks, start native background threads,
     /// or require its library to remain loaded after its last module owner drops.
+    /// Shared module entries must allow concurrent calls by distinct processes
+    /// and final unloading on any owner thread, without loading-thread TLS
+    /// dependencies or mutable native globals.
     pub unsafe fn load_trusted(directory: &Path) -> Result<Self, String> {
         unsafe { ScalarModule::load_trusted(directory) }?.instantiate()
     }

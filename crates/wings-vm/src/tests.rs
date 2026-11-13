@@ -231,8 +231,8 @@ fn module() -> ScalarModule {
             initializer: initialize,
             entries: handlers.into_iter().map(|(_, _, _, entry)| entry).collect(),
             _library: None,
+            lease: None,
         }),
-        lease: None,
     }
 }
 
@@ -314,6 +314,49 @@ fn invalid_arguments_and_names_do_not_poison_a_process() {
     }
     assert_eq!(process.invoke("Unit", &[0]).unwrap(), None);
     assert_eq!(process.invoke("Ack", &[]).unwrap(), Some(0));
+}
+
+#[test]
+fn immutable_modules_and_handler_ids_are_send_sync_without_unsafe_impls() {
+    fn assert_send_sync<Value: Send + Sync>() {}
+    assert_send_sync::<ScalarModule>();
+    assert_send_sync::<HandlerId>();
+    assert_send_sync::<crate::module::ModuleData>();
+    assert_send_sync::<crate::module::ModuleLease>();
+    let module = module();
+    let handler = module.handler("Add").unwrap();
+    let other = handler.clone();
+    let module = std::thread::spawn(move || {
+        assert!(Arc::ptr_eq(&module.inner, &handler.module.inner));
+        module
+    })
+    .join()
+    .unwrap();
+    assert!(Arc::ptr_eq(&module.inner, &other.module.inner));
+}
+
+#[test]
+fn module_sharing_does_not_make_actor_execution_or_stack_pools_send_sync() {
+    trait AmbiguousIfSend<Marker> {
+        fn check() {}
+    }
+    impl<Value: ?Sized> AmbiguousIfSend<()> for Value {}
+    impl<Value: ?Sized + Send> AmbiguousIfSend<u8> for Value {}
+    trait AmbiguousIfSync<Marker> {
+        fn check() {}
+    }
+    impl<Value: ?Sized> AmbiguousIfSync<()> for Value {}
+    impl<Value: ?Sized + Sync> AmbiguousIfSync<u8> for Value {}
+    let _ = <ScalarWorker as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarWorker as AmbiguousIfSync<_>>::check;
+    let _ = <StackPool as AmbiguousIfSend<_>>::check;
+    let _ = <StackPool as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarProcess as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarProcess as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarTask as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarTask as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarExecution<'static> as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarExecution<'static> as AmbiguousIfSync<_>>::check;
 }
 
 #[test]
