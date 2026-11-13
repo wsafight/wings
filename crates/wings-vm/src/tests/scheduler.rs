@@ -545,3 +545,131 @@ fn scheduler_language_request_deadlines_and_cancellation_keep_terminal_outcome()
     drop((scheduler, handle, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
+
+#[test]
+fn scheduler_exit_diagnostics_keep_old_state_and_survive_cleanup_without_business_leases() {
+    let (vm, tenant, scheduler) = fixture(2, 4);
+    let handle = scheduler.handle();
+    let module = module();
+    assert_eq!(handle.last_exit(), None);
+    let first = handle.spawn(&module, quota(), 8).unwrap();
+    let result = handle
+        .request(
+            first,
+            &module.handler("Bump").unwrap(),
+            &[7],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(result), RequestOutcome::Reply(7));
+    let previous_worker = handle.snapshot(first).unwrap().last_worker.unwrap();
+    let failed = handle
+        .request(
+            first,
+            &module.handler("FailRequest").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(failed), RequestOutcome::Failed);
+    let diagnostic = handle.last_exit().unwrap();
+    assert_eq!(diagnostic.pid, first);
+    assert_eq!(diagnostic.worker, (previous_worker + 1) % 2);
+    assert_eq!(diagnostic.handler(), "FailRequest");
+    assert_eq!(
+        diagnostic.reason,
+        SchedulerExitReason::Managed(ExecutionFault::DivisionByZero)
+    );
+    assert_eq!(diagnostic.committed_state, Some(7));
+    assert!(diagnostic.resources_before_cleanup.bytes > 0);
+    assert_eq!(
+        diagnostic.execution.unwrap().fault,
+        Some(ExecutionFault::DivisionByZero)
+    );
+    assert!(handle.snapshot(first).is_err());
+    let baseline = vm.used();
+    assert_eq!(handle.last_exit(), Some(diagnostic));
+    assert_eq!(vm.used(), baseline);
+    let second = handle.spawn(&module, quota(), 8).unwrap();
+    let result = handle
+        .request(
+            second,
+            &module.handler("Bump").unwrap(),
+            &[3],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(result), RequestOutcome::Reply(3));
+    assert_eq!(handle.last_exit(), Some(diagnostic));
+    let budget = handle
+        .request(
+            second,
+            &module.handler("Bump").unwrap(),
+            &[9],
+            2,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(budget), RequestOutcome::Failed);
+    let budget_exit = handle.last_exit().unwrap();
+    assert_eq!(budget_exit.pid, second);
+    assert_eq!(
+        budget_exit.reason,
+        SchedulerExitReason::Managed(ExecutionFault::BudgetExhausted)
+    );
+    assert_eq!(budget_exit.committed_state, Some(3));
+    assert_eq!(budget_exit.execution.unwrap().remaining_steps, 0);
+    let stopped = handle.spawn(&module, quota(), 8).unwrap();
+    handle.stop(stopped).unwrap();
+    assert_eq!(handle.last_exit(), Some(budget_exit));
+    drop((scheduler, tenant));
+    assert_eq!(handle.last_exit(), Some(budget_exit));
+    drop(handle);
+    assert_eq!(vm.used(), Resources::default());
+    assert_eq!(diagnostic.handler(), "FailRequest");
+}
+
+#[test]
+fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserves_failure() {
+    let (vm, tenant, scheduler) = fixture(2, 3);
+    let handle = scheduler.handle();
+    let mut module = spinning_module();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::Ref;
+    data.initializer = super::persistent_state::record_initializer;
+    let pid = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
+    let failed = handle
+        .request(
+            pid,
+            &module.handler("FailRequest").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(failed), RequestOutcome::Failed);
+    let diagnostic = handle.last_exit().unwrap();
+    assert_eq!(diagnostic.state_type, ValueType::Ref);
+    assert_eq!(diagnostic.committed_state, None);
+    assert!(diagnostic.execution.unwrap().heap.is_some());
+    let busy = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
+    handle
+        .send(busy, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| handle.snapshot(busy).unwrap().execution.is_some());
+    handle.stop(busy).unwrap();
+    wait_until(|| handle.snapshot(busy).is_err());
+    assert_eq!(handle.last_exit(), Some(diagnostic));
+    let busy = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
+    handle
+        .send(busy, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| handle.snapshot(busy).unwrap().execution.is_some());
+    drop((scheduler, tenant));
+    assert_eq!(handle.last_exit(), Some(diagnostic));
+    drop(handle);
+    assert_eq!(vm.used(), Resources::default());
+}

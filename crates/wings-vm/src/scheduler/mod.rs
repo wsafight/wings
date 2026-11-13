@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
 use crate::message_values::ListPayload;
 use crate::{
-    CancellationToken, DetachedProcess, ExecutionSnapshot, HandlerId, IngressRequest, Reservation,
-    ResourceAccount, ResourceLevel, Resources, ScalarModule, StackPool,
+    CancellationToken, DetachedProcess, ExecutionFault, ExecutionSnapshot, HandlerId,
+    IngressRequest, Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule,
+    StackPool,
 };
 
 mod run;
@@ -61,6 +62,32 @@ pub struct SchedulerSnapshot {
     pub resources: Resources,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SchedulerExitReason {
+    Managed(ExecutionFault),
+    ExecutionControl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerExitSnapshot {
+    pub pid: SchedulerPid,
+    pub worker: usize,
+    pub reason: SchedulerExitReason,
+    pub execution: Option<ExecutionSnapshot>,
+    pub state_type: wings_abi::ValueType,
+    pub committed_state: Option<i64>,
+    pub queued: usize,
+    pub resources_before_cleanup: Resources,
+    handler: [u8; 256],
+    handler_len: usize,
+}
+
+impl SchedulerExitSnapshot {
+    pub fn handler(&self) -> &str {
+        std::str::from_utf8(&self.handler[..self.handler_len]).expect("validated handler name")
+    }
+}
+
 pub struct Scheduler {
     handle: SchedulerHandle,
     threads: Vec<JoinHandle<()>>,
@@ -83,6 +110,7 @@ struct Shared {
 
 struct State {
     closed: bool,
+    last_exit: Option<SchedulerExitSnapshot>,
     slots: Box<[Slot]>,
     requests: Box<[RequestSlot]>,
 }
@@ -191,6 +219,7 @@ impl Scheduler {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 closed: false,
+                last_exit: None,
                 slots: storage(config.capacity, || Slot {
                     generation: 1,
                     creating: false,
@@ -503,6 +532,10 @@ impl SchedulerHandle {
             committed_state: actor.committed_state,
             resources: actor.account.used(),
         })
+    }
+
+    pub fn last_exit(&self) -> Option<SchedulerExitSnapshot> {
+        self.shared.lock().last_exit
     }
 }
 

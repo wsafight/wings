@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 在 scheduler 单测及 `multi_worker` AOT 中覆盖退出后旧 Pid、失败 owner、handler、结构化故障、旧提交 state 和预算/GC。单测另验证引用 state 脱敏、成功/stop/关闭保留缓存和所有业务资源归零后仍能持有诊断副本；AOT 失败循环不提交候选且其他 actor 继续运行。仍无跨 worker 可靠监督/故障历史或性能结果。
+
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 增加 `cargo test -p wings-vm scheduler --locked` 和完整受限 AOT 中的 `multi_worker`。以 1/2/3 个 worker 运行更多 actor，检查状态连续、边界迁移、活栈线程固定、RecordInt/IntList 消息和请求完成、GC 及最终清理；内部回归覆盖并发发送、队满、准入回滚、请求超时/取消/目标退出与销毁后结果租约。每业务子进程仍限制 CPU 20 秒、墙钟 30 秒、禁 core。固定线程轮转及逐 worker 全容量栈池的成本尚未测量，不作为吞吐/内存结论。
 
 [ADR-0053](adr/0053-detached-process-images.md) 的 `detached_process` 在受限 AOT 中先建立持久 IntList，释放源池后在三个新线程依次绑定同账户目标池，collect 后读取/追加并核对状态连续；不重跑 initializer。错账户/未计费池、重复 attach、取消后的失败镜像及未 attach 即跨线程 Drop 均检查资源清理。内部回归另覆盖标量 state、attach 后池满不毒化进程和原堆账户保留；原执行类型仍非 Send/Sync。这是宿主无活栈转交，不是调度器迁移或性能结果。

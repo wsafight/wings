@@ -236,10 +236,35 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
         .expect("finishing actor");
     assert_eq!(actor.owner, Some(index));
     let failed = result.is_err() || actor.stopping || closed;
+    let diagnostic = if result.is_err() && !actor.stopping && !closed {
+        let name = &message.handler.schema().name;
+        let mut handler = [0; 256];
+        handler[..name.len()].copy_from_slice(name.as_bytes());
+        Some(SchedulerExitSnapshot {
+            pid,
+            worker: index,
+            reason: snapshot
+                .and_then(|execution| execution.fault)
+                .map(SchedulerExitReason::Managed)
+                .unwrap_or(SchedulerExitReason::ExecutionControl),
+            execution: snapshot,
+            state_type: actor.module.manifest().state,
+            committed_state,
+            queued: actor.mailbox.count,
+            resources_before_cleanup: actor.account.used(),
+            handler,
+            handler_len: name.len(),
+        })
+    } else {
+        None
+    };
     actor.owner = None;
     actor.image = Some(image);
     actor.execution = snapshot;
     actor.committed_state = committed_state;
+    if let Some(diagnostic) = diagnostic {
+        state.last_exit = Some(diagnostic);
+    }
     let outcome = match result {
         Ok(Some(value)) if !failed => RequestOutcome::Reply(value),
         _ => RequestOutcome::Failed,

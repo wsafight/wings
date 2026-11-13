@@ -41,7 +41,10 @@ pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
 pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
-pub use scheduler::{Scheduler, SchedulerConfig, SchedulerHandle, SchedulerPid, SchedulerSnapshot};
+pub use scheduler::{
+    Scheduler, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot, SchedulerHandle,
+    SchedulerPid, SchedulerSnapshot,
+};
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};

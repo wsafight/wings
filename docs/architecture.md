@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 在 Scheduler 的共享计费控制区保存一个按值失败快照。写入与 Pid 退休共用 registry 锁，跨线程读取不持有模块/堆/账户；固定名称缓冲、不解析错误文本。该缓存可覆盖，不能直接作为不丢终态的监督协议。
+
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 将独占镜像接入固定多 worker Scheduler：共享有界 registry 管理稳定 Pid、mailbox 和唯一 owner；本地 ScalarTask 保留所有活栈，只有正常返回后的镜像可迁移到下一 worker。native init/resume 不在 registry 锁内执行，没有 unsafe Send。共享扫描、按编号轮转和每 worker 全容量栈池是正确性基线，非 work stealing 或性能结论；已有 Supervisor 仍只服务单 worker。
 
 [ADR-0053](adr/0053-detached-process-images.md) 将原线程栈池绑定从 AotHeap 移到 ScalarProcess，堆仅保留线程安全的原账户；DetachedProcess 独占持有无活栈模块/state/堆，自动 Send，无 unsafe trait。目标 attach 验证 VM 与原 process 账户后才取走镜像，失败可重试。同步执行绑定新池，业务堆及精确根不复制、额度不转移；调度集成见 ADR-0054，仍不支持活栈迁移。

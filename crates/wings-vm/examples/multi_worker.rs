@@ -2,8 +2,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wings_vm::{
-    IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig,
+    ExecutionFault, IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule,
+    Scheduler, SchedulerConfig, SchedulerExitReason,
 };
 
 fn limits() -> Resources {
@@ -108,6 +108,55 @@ fn main() {
         }
         assert_eq!(handle.snapshot(busy).unwrap().owner, owner);
         handle.stop(busy).unwrap();
+        assert_eq!(handle.last_exit(), None);
+        let failing = handle.spawn(&loops, limits(), 2).unwrap();
+        assert_eq!(
+            reply(
+                handle
+                    .request(
+                        failing,
+                        &loops.handler("Count").unwrap(),
+                        &[10],
+                        4096,
+                        Duration::from_secs(5)
+                    )
+                    .unwrap()
+            ),
+            10
+        );
+        let last_worker = handle.snapshot(failing).unwrap().last_worker.unwrap();
+        let mut failure = handle
+            .request(
+                failing,
+                &loops.handler("Fail").unwrap(),
+                &[20],
+                4096,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            failure.wait(Duration::from_secs(5)).unwrap(),
+            Some(RequestOutcome::Failed)
+        );
+        let diagnostic = handle.last_exit().unwrap();
+        assert_eq!(diagnostic.pid, failing);
+        assert_eq!(diagnostic.handler(), "Fail");
+        assert_eq!(diagnostic.worker, (last_worker + 1) % workers);
+        assert_eq!(diagnostic.committed_state, Some(10));
+        assert_eq!(
+            diagnostic.reason,
+            SchedulerExitReason::Managed(ExecutionFault::DivisionByZero)
+        );
+        assert!(handle.snapshot(failing).is_err());
+        assert_eq!(
+            reply(
+                handle
+                    .request(parents[0], &read, &[], 4096, Duration::from_secs(5))
+                    .unwrap()
+            ),
+            6
+        );
+        assert_eq!(handle.last_exit(), Some(diagnostic));
         drop((handle, scheduler));
     }
     drop((module, loops, tenant));
