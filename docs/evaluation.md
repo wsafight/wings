@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0041](adr/0041-worker-deadline-parking.md) 验证私有等待端的配置/计费、就绪不睡眠、deadline 到期及结果不反复唤醒；OS 等待不等于业务公平性或完整 reactor 验收。
+
 [ADR-0040](adr/0040-language-request-events.md) 要求异步整数请求的正常回复、超时/取消/退出唯一终结、队满完成事件保留、发起方清理及三级预留回滚回归，不能用同步宿主查询代替语言事件执行。
 
 `request_events` 在受限 AOT 子进程验证正常回复、零/挂起超时、取消与目标算术失败、自请求、新状态先提交及各挂起边界 Drop 清理；workspace 可信 fixture 验证满完成 mailbox 保留预付费事件、发起方退出/槽复用、目标 stop/迟到结果、已终结取消不覆盖、过期/伪造取消、pending 饱和及三级字节/消息/请求额度失败回滚。`--check-request-roots` 在 heap/slow/effect 前强制 GC，覆盖 request/cancel 确认值、候选及外层根与拒绝解链。仍用 workspace 检查和 debug/release AOT 脚本，不是性能实验。

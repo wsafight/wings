@@ -21,6 +21,7 @@ mod process_effects;
 mod request_events;
 mod stack_boundary;
 mod supervision;
+mod worker_wait;
 
 fn limits(bytes: u64) -> Resources {
     Resources {

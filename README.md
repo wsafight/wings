@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+宿主 `ScalarWorker::enable_wait()` 为私有 OS 等待端预留 4096 字节控制预算；`wait(max_wait)` 重查 mailbox、挂起入口及请求 deadline，不执行 handler，就绪时立即返回。它不提供跨线程 inbox 或完整 I/O reactor，边界见 [ADR-0041](docs/adr/0041-worker-deadline-parking.md)。
+
 `request(pid, Message, Completed, timeout_ms, args...)` 在调用点准入并返回局部 RequestId，结果异步到达 `on Completed(id: RequestId, status: Int, value: Int)`，status 的 0/1/2/3 表示回复/超时/取消/失败。当前只接受 Int 回复；队满保留预付费完成事件，不覆盖已终结结果。`cancel_request` 不撤回目标消息。示例 `examples/request-events.wings`、`examples/request-roots.wings`，限制见 [ADR-0040](docs/adr/0040-language-request-events.md)。
 
 `self_pid()` 与 `spawn_self()` 返回局部 `Pid`，`send(pid, Message, args...)` 静态检查本模块单向入口；子实例继承资源配置、拥有新状态，父失败不撤回已创建子项。示例 `examples/local-processes.wings`、`examples/local-process-roots.wings`，见 [ADR-0039](docs/adr/0039-local-process-capabilities.md)。Pid 暂不进入 state/消息/回复，无跨 worker 投递或隐式监督；宿主 `pids()` 可无分配迭代现有实例。

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0041](adr/0041-worker-deadline-parking.md) 用 worker 私有计费 parker 集成空闲等待与请求 deadline；不导出跨线程 notifier，也不是完整 reactor。
+
 [ADR-0040](adr/0040-language-request-events.md) 的 ABI v10 扩展固定 EffectRequest，整数请求使用静态完成事件；完成消息预留随 pending 保留、入队时净转移，普通外部入口不能伪造 RequestId。
 
 [ADR-0039](adr/0039-local-process-capabilities.md) 的 ABI v9 以固定 EffectRequest 和结果槽扩展 effect 回调；局部 Pid 能力按 worker/module 校验，同模块创建继承资源上限而非状态，无跨 worker 迁移。
@@ -125,7 +127,7 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 ## 首要运行平台
 
-未发布源码提供独立的 `WorkerParker`/`WorkerNotifier`：Linux 使用 epoll/eventfd，macOS 使用 kqueue 用户事件。等待端独占、通知端可克隆，通知可合并且先通知后等待不会丢失提示；这只是后续 worker 的 OS 等待构件，不是计算抢占或完整 I/O reactor。超时、生命周期与集成边界见 [ADR-0016](adr/0016-worker-wakeup.md)，各后端须分别执行本分支 CI。
+未发布源码提供独立的 `WorkerParker`/`WorkerNotifier`：Linux 使用 epoll/eventfd，macOS 使用 kqueue 用户事件。等待端独占、通知端可克隆，通知可合并且先通知后等待不会丢失提示。单 worker 已通过私有、计费 parker 接入就绪检查与 deadline，不导出 notifier；它不是计算抢占、跨线程 inbox 或完整 I/O reactor。底层超时与生命周期见 [ADR-0016](adr/0016-worker-wakeup.md)，集成边界见 [ADR-0041](adr/0041-worker-deadline-parking.md)，各后端须分别执行本分支 CI。
 
 macOS AArch64（Apple Silicon）与 Linux x86-64 同为首版目标，M0 原型和后续运行时验收均须覆盖两者。Linux AArch64、macOS x86-64 留待 M7 扩展；最低 OS 版本和工具链版本在 M0 冻结。
 

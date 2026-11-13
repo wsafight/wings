@@ -38,7 +38,7 @@ pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, S
 pub use wakeup::{WorkerNotifier, WorkerParker};
 pub use worker::{
     ExitSnapshot, Pid, ProcessPhase, ProcessSnapshot, RequestId, RequestOutcome, ScalarWorker,
-    WorkerEvent,
+    WorkerEvent, WorkerWait,
 };
 
 pub struct ScalarProcess {

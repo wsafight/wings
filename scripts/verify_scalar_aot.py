@@ -702,6 +702,7 @@ def main():
         request_events = parent / "request-events"
         command([COMPILER, "build", ROOT / "examples/request-events.wings", "-o", request_events])
         example("request_events", request_events)
+        example("worker_wait", request_events)
         request_roots = parent / "request-roots"
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])

@@ -46,6 +46,18 @@ pub enum WorkerEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerWait {
+    Ready,
+    Deadline,
+    TimedOut,
+}
+
+struct IdleWait {
+    parker: crate::WorkerParker,
+    _charge: Reservation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessPhase {
     Idle,
     Runnable,
@@ -84,6 +96,7 @@ impl ExitSnapshot {
 }
 
 pub struct ScalarWorker {
+    idle_wait: Option<IdleWait>,
     timer: Option<DeadlineTimer>,
     preemption: PreemptionToken,
     identity: u64,
@@ -202,6 +215,7 @@ impl ScalarWorker {
         })?;
         let pool = StackPool::new_accounted(tenant, capacity, 2.min(capacity))?;
         Ok(Self {
+            idle_wait: None,
             timer: None,
             preemption: PreemptionToken::default(),
             identity,
@@ -221,6 +235,70 @@ impl ScalarWorker {
         }
         self.timer = Some(DeadlineTimer::new(&self.tenant, &self.preemption)?);
         Ok(())
+    }
+
+    pub fn enable_wait(&mut self) -> Result<(), String> {
+        if self.idle_wait.is_some() {
+            return Err("worker wait is already enabled".into());
+        }
+        let charge = self.tenant.reserve(Resources {
+            bytes: 4096,
+            ..Resources::default()
+        })?;
+        let parker =
+            crate::WorkerParker::new().map_err(|error| format!("create worker wait: {error}"))?;
+        self.idle_wait = Some(IdleWait {
+            parker,
+            _charge: charge,
+        });
+        Ok(())
+    }
+
+    pub fn wait(&mut self, max_wait: Duration) -> Result<WorkerWait, String> {
+        let end = Instant::now()
+            .checked_add(max_wait)
+            .ok_or("worker wait deadline overflow")?;
+        if self.idle_wait.is_none() {
+            return Err("worker wait is not enabled".into());
+        }
+        let expired = self.expire_requests();
+        self.flush_completions();
+        if self.has_ready() {
+            return Ok(WorkerWait::Ready);
+        }
+        if expired {
+            return Ok(WorkerWait::Deadline);
+        }
+        let deadline = self
+            .requests
+            .iter()
+            .filter_map(|slot| slot.pending.as_ref())
+            .filter(|pending| pending.outcome.is_none())
+            .map(|pending| pending.deadline)
+            .min()
+            .map_or(end, |deadline| deadline.min(end));
+        self.idle_wait
+            .as_mut()
+            .expect("enabled worker wait")
+            .parker
+            .wait(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|error| format!("worker wait failed: {error}"))?;
+        let expired = self.expire_requests();
+        self.flush_completions();
+        Ok(if self.has_ready() {
+            WorkerWait::Ready
+        } else if expired {
+            WorkerWait::Deadline
+        } else {
+            WorkerWait::TimedOut
+        })
+    }
+
+    fn has_ready(&self) -> bool {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.actor.as_ref())
+            .any(|actor| actor.active.is_some() || actor.mailbox.count != 0)
     }
 
     pub fn tick_timed(
@@ -796,15 +874,18 @@ impl ScalarWorker {
         }
     }
 
-    fn expire_requests(&mut self) {
+    fn expire_requests(&mut self) -> bool {
         let now = Instant::now();
+        let mut expired = false;
         for slot in &mut self.requests {
             if let Some(pending) = &mut slot.pending {
                 if pending.outcome.is_none() && pending.deadline <= now {
                     pending.outcome = Some(RequestOutcome::TimedOut);
+                    expired = true;
                 }
             }
         }
+        expired
     }
 
     fn language_request(
@@ -973,4 +1054,72 @@ fn storage<Value>(
     }
     values.resize_with(capacity, &mut initialize);
     Ok(values.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn pending_without_ready_work_fixture_uses_earliest_deadline_once() {
+        let limit = Resources {
+            bytes: 16 << 20,
+            processes: 4,
+            messages: 4,
+            requests: 4,
+        };
+        let vm = ResourceAccount::vm(limit);
+        let tenant = vm.tenant(limit).unwrap();
+        let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 2).unwrap();
+        worker.enable_wait().unwrap();
+        let early = Instant::now() + Duration::from_millis(2);
+        for (index, deadline) in [early, early + Duration::from_secs(60)]
+            .into_iter()
+            .enumerate()
+        {
+            worker.requests[index].pending = Some(PendingRequest {
+                target: worker.pid(0),
+                deadline,
+                outcome: None,
+                completion: None,
+                _charge: tenant
+                    .reserve(Resources {
+                        requests: 1,
+                        ..Resources::default()
+                    })
+                    .unwrap(),
+            });
+        }
+        assert_eq!(
+            worker.wait(Duration::from_secs(1)).unwrap(),
+            WorkerWait::Deadline
+        );
+        assert!(Instant::now() >= early);
+        assert_eq!(worker.wait(Duration::ZERO).unwrap(), WorkerWait::TimedOut);
+        let request = RequestId {
+            worker: worker.identity,
+            slot: 0,
+            generation: worker.requests[0].generation,
+        };
+        assert_eq!(
+            worker.take_reply(request).unwrap(),
+            Some(RequestOutcome::TimedOut)
+        );
+        assert!(
+            worker.requests[1]
+                .pending
+                .as_ref()
+                .unwrap()
+                .outcome
+                .is_none()
+        );
+        let start = Instant::now();
+        assert_eq!(
+            worker.wait(Duration::from_millis(2)).unwrap(),
+            WorkerWait::TimedOut
+        );
+        assert!(start.elapsed() >= Duration::from_millis(2));
+        drop(worker);
+        assert_eq!(vm.used(), Resources::default());
+    }
 }

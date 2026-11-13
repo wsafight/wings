@@ -1,5 +1,7 @@
 # wings-lang
 
+宿主可用 worker `wait` 推进空闲时的 deadline/完成事件准入，不必 sleep 轮询；仍不在 wait 内执行 handler，也无自动外部 I/O 事件泵，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
+
 `request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: Int)`；status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3，仅接受 Int 回复。`cancel_request(id)` 不撤回目标消息，静态/额度/队满契约见 [ADR-0040](adr/0040-language-request-events.md)。
 
 `self_pid()` / `spawn_self()` 返回局部 Pid，`send(pid, Message, args...)` 向同 worker 同模块的单向入口投递；仅 handler 可调用。Pid 暂不允许 state、消息、回复或比较。创建继承资源配置、不继承状态，细节见 [ADR-0039](adr/0039-local-process-capabilities.md)。

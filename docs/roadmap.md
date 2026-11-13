@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0041](adr/0041-worker-deadline-parking.md) 将私有 OS 等待接到单 worker 空闲检查与请求 deadline；外部有界 inbox、I/O reactor 和 M:N 仍未实现，不降低 MVP 门槛。
+
 [ADR-0040](adr/0040-language-request-events.md) 接入有界异步整数请求事件；一般回复类型、关联 state、自动 OS 事件泵与双平台门禁尚未完成，保留完整 MVP 门槛。
 
 [ADR-0039](adr/0039-local-process-capabilities.md) 接入同 worker 同模块创建与单向发送；Pid 暂不跨 state/消息，异步整数请求另见 ADR-0040，跨 worker 迁移与完整业务值仍未完成，不降低 MVP 门槛。

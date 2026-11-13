@@ -1,6 +1,7 @@
 # ADR-0016：单 waiter 的 OS 通知原语
 
 - 日期：2026-11-12
+- 后续：[ADR-0041](0041-worker-deadline-parking.md) 将私有计费等待端接入单 worker deadline，就绪重查契约保留。
 - 状态：已采纳（M0 实现契约）；平台实现须分别运行 CI
 - 相关决定：[首要平台](0005-platforms-and-benchmarks.md)、[受管抢占](0004-safepoints-and-gc.md)
 

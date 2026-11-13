@@ -1,5 +1,7 @@
 # 运行时
 
+worker 的 `enable_wait` / `wait` 只在无就绪入口时进行有界 OS 等待，返回后重查 deadline/完成事件，不执行业务。私有 FD 的固定控制预留与 worker 同寿命，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
+
 [ADR-0040](adr/0040-language-request-events.md) 将请求结果保留到完成事件实际入队；队满不丢结果，发起方退出清理预留而不撤回对端消息。当前仍由 tick 扫描 deadline，没有自动 OS 事件泵。
 
 [ADR-0039](adr/0039-local-process-capabilities.md) 允许同 worker 同模块创建与投递；新实例独立账户和状态，父失败不撤回已创建子项。固定 actor 能力号不复用，退出失效，无增长能力表或隐式监督关系。
