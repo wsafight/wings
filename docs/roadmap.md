@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，仍无跨线程 inbox、actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
+
 [ADR-0044](adr/0044-native-module-leases.md) 修复模块永久泄留，增加 VM 级加载预算、代码租约和归属检查；旧不计费工具入口、allocator/动态装载器内部开销仍不在完整资源门禁内，M1 与 MVP 尚未完成。
 
 [ADR-0043](adr/0043-chunked-runtime-gc.md) 接入 16 节点/根的 GC 工作块、runtime 预算/取消和原栈暂停；模块加载、allocator 与其他长操作仍须分别审计，不等于所有 runtime 操作已满足公平性或 M0 完成。
@@ -61,7 +63,7 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 `0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0042](adr/0042-managed-function-frames.md) 将源码函数接到真实受管帧。尚无引用消息根、任意引用 phi、递归或动态派发，不等于完整 safepoint/GC 或 M0 验证。
 
-资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户已有单线程原语，附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入；语言业务堆、共享模块、allocator 元数据及跨 worker 同步仍未完整覆盖，不等于 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
+资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)，[ADR-0045](adr/0045-concurrent-resource-admission.md) 增加同 VM 门闩下的跨线程原子准入、净转移和票据归还。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入，[ADR-0044](adr/0044-native-module-leases.md) 增加共享模块租约及 VM 级加载预算；完整业务堆、allocator 元数据和外部 I/O 仍未覆盖，线程安全账本也不等于 M:N 或 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 
 [ADR-0015](adr/0015-owned-scalar-tasks.md) 的 owned 执行槽只是后续进程表的所有权前置，不改变下述 MVP 的阶段顺序或验收门槛。
 

@@ -1,5 +1,5 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resources {
@@ -45,13 +45,14 @@ pub enum ResourceLevel {
 
 #[derive(Clone)]
 pub struct ResourceAccount {
-    node: Rc<AccountNode>,
+    node: Arc<AccountNode>,
 }
 
 struct AccountNode {
     level: ResourceLevel,
     limit: Resources,
-    used: Cell<Resources>,
+    used: [AtomicU64; 4],
+    gate: Arc<Mutex<()>>,
     parent: Option<ResourceAccount>,
 }
 
@@ -82,7 +83,33 @@ impl ResourceAccount {
     }
 
     pub fn used(&self) -> Resources {
-        self.node.used.get()
+        let _guard = self
+            .node
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.read_used()
+    }
+
+    fn read_used(&self) -> Resources {
+        let [bytes, processes, messages, requests] = self
+            .node
+            .used
+            .each_ref()
+            .map(|value| value.load(Ordering::Relaxed));
+        Resources {
+            bytes,
+            processes,
+            messages,
+            requests,
+        }
+    }
+
+    fn write_used(&self, value: Resources) {
+        let values = [value.bytes, value.processes, value.messages, value.requests];
+        for (counter, value) in self.node.used.iter().zip(values) {
+            counter.store(value, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn is_child_of(&self, parent: &Self) -> bool {
@@ -93,13 +120,24 @@ impl ResourceAccount {
     }
 
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
+        let guard = self
+            .node
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for node in self.path().into_iter().flatten() {
-            node.admit(amount)?;
+            if !node.admits(amount) {
+                let level = node.level();
+                drop(guard);
+                return Err(format!("resource_exhausted at {level:?} account"));
+            }
         }
         for node in self.path().into_iter().flatten() {
-            node.node
-                .used
-                .set(node.used().checked_add(amount).expect("admitted resources"));
+            node.write_used(
+                node.read_used()
+                    .checked_add(amount)
+                    .expect("admitted resources"),
+            );
         }
         Ok(Reservation {
             account: self.clone(),
@@ -108,12 +146,17 @@ impl ResourceAccount {
     }
 
     fn create(level: ResourceLevel, limit: Resources, parent: Option<Self>) -> Self {
+        let gate = parent.as_ref().map_or_else(
+            || Arc::new(Mutex::new(())),
+            |parent| parent.node.gate.clone(),
+        );
         Self {
-            node: Rc::new(AccountNode {
+            node: Arc::new(AccountNode {
                 level,
                 limit,
                 parent,
-                used: Cell::new(Resources::default()),
+                used: std::array::from_fn(|_| AtomicU64::new(0)),
+                gate,
             }),
         }
     }
@@ -144,20 +187,14 @@ impl ResourceAccount {
             .expect("account root")
     }
 
-    fn admit(&self, amount: Resources) -> Result<(), String> {
-        if self
-            .used()
+    fn admits(&self, amount: Resources) -> bool {
+        self.read_used()
             .checked_add(amount)
             .is_some_and(|used| used.fits(self.limit()))
-        {
-            Ok(())
-        } else {
-            Err(format!("resource_exhausted at {:?} account", self.level()))
-        }
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.node, &other.node)
+        Arc::ptr_eq(&self.node, &other.node)
     }
 
     pub(crate) fn same_vm(&self, other: &Self) -> bool {
@@ -174,6 +211,12 @@ impl Reservation {
         if !self.account.root().same(target.root()) {
             return Err("resource transfer requires the same VM account".into());
         }
+        let guard = self
+            .account
+            .node
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let source_path = self.account.path();
         let target_path = target.path();
         for node in target_path.into_iter().flatten() {
@@ -181,8 +224,11 @@ impl Reservation {
                 .into_iter()
                 .flatten()
                 .any(|source| node.same(source))
+                && !node.admits(self.amount)
             {
-                node.admit(self.amount)?;
+                let level = node.level();
+                drop(guard);
+                return Err(format!("resource_exhausted at {level:?} account"));
             }
         }
         for node in target_path.into_iter().flatten() {
@@ -191,8 +237,8 @@ impl Reservation {
                 .flatten()
                 .any(|source| node.same(source))
             {
-                node.node.used.set(
-                    node.used()
+                node.write_used(
+                    node.read_used()
                         .checked_add(self.amount)
                         .expect("admitted transfer"),
                 );
@@ -204,9 +250,10 @@ impl Reservation {
                 .flatten()
                 .any(|target| node.same(target))
             {
-                node.node.used.set(node.used().subtract(self.amount));
+                node.write_used(node.read_used().subtract(self.amount));
             }
         }
+        drop(guard);
         self.account = target.clone();
         Ok(())
     }
@@ -214,8 +261,63 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
+        let _guard = self
+            .account
+            .node
+            .gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         for node in self.account.path().into_iter().flatten() {
-            node.node.used.set(node.used().subtract(self.amount));
+            node.write_used(node.read_used().subtract(self.amount));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_gate_recovers_without_losing_admission_or_ticket_cleanup() {
+        let limit = Resources {
+            bytes: 8,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limit);
+        let tenant = vm.tenant(limit).unwrap();
+        let process = tenant.process(limit).unwrap();
+        let mut ticket = process.reserve(limit).unwrap();
+        let gate = vm.node.gate.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = gate.lock().unwrap();
+                panic!("poison internal gate without modifying counters");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(vm.used(), limit);
+        assert!(process.reserve(limit).is_err());
+        ticket.transfer(&tenant).unwrap();
+        assert_eq!(process.used(), Resources::default());
+        assert_eq!(tenant.used(), limit);
+        drop(ticket);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn independent_vm_admission_does_not_share_a_gate() {
+        let limit = Resources {
+            bytes: 8,
+            ..Resources::default()
+        };
+        let first = ResourceAccount::vm(limit);
+        let second = ResourceAccount::vm(limit);
+        let _guard = first.node.gate.lock().unwrap();
+        let ticket = std::thread::spawn(move || second.reserve(limit).unwrap())
+            .join()
+            .unwrap();
+        assert_eq!(ticket.amount(), limit);
+        drop(ticket);
     }
 }

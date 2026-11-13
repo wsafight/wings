@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0045](adr/0045-concurrent-resource-admission.md) 的 `concurrent_resources` 使用最多 8 个工作线程、固定屏障/轮数，检查每维每层争抢额度、并发溢出、满共同祖先跨租户净转移、拒绝保留源所有权、跨线程 Drop 与四维快照一致。内部 fixture 另检查独立 VM 不共锁和门闩中毒恢复；旧确定性独立模型保留。命令为 `cargo test -p wings-vm --test concurrent_resources --test resources --locked` 与 workspace/AOT 检查；没有争用性能结果，不能当作 M:N 验收。
+
 [ADR-0044](adr/0044-native-module-leases.md) 的 `module_accounting` 在受限 AOT 子进程验证级别/额度拒绝、同路径独立加载准入、坏清单/库/缺符号回滚、clone/ID 共享计费、挂起 task/worker/借用入口保活及正常取消清理、跨 VM worker/pool/heap 拒绝。反复加载/销毁恢复 VM 基线，不用账面归零宣称 OS 已解除全部映射。debug/release AOT 脚本覆盖；实际 dyld/ld.so 与 allocator 内存仍须平台实测。
 
 [ADR-0043](adr/0043-chunked-runtime-gc.md) 的 core 回归在各 phase 中止后重新收集，核对传递根、16 节点处理上限、generation 退役和计数守恒。受限真实 AOT `chunked_gc` 使用 1024 槽堆逐步执行嵌套 collect，覆盖取消/Drop/预算、32 槽分配触发回收与 hot/cold 轮转；旧 `aot_records` 按实际新步数校验总预算。命令仍为 debug/release AOT 脚本与 workspace 检查；尚无块耗时或性能达标数据。
@@ -201,12 +203,13 @@ ABI v4 新增业务帧前的剩余栈边界回归：`stack_boundary` 在受限�
 
 ## 独立资源账户回归
 
-未发布源码的 `resource_accounts` 示例验证 [ADR-0014](adr/0014-resource-reservations.md) 单线程原语，不是所有运行时分配的接入验收或完整资源隔离证明：
+未发布源码的 `resource_accounts` 示例保留 [ADR-0014](adr/0014-resource-reservations.md) 的单线程独立模型；[ADR-0045](adr/0045-concurrent-resource-admission.md) 的 `concurrent_resources` 测试补充多线程准入、转移与归还。两者都不是所有运行时分配的接入验收或完整资源隔离证明：
 
 - 定点用例检查合法层级、三级分别拒绝、四维额度、零预留、父 handle 提前释放及 Drop 回收；每个维度分别在 VM、租户、进程层制造 `u64` 加法溢出，拒绝后逐级核对零变化。
 - 固定种子 `0x0014_5eed_cafe_beef` 驱动 4096 步预留、转移和 Drop，固定两个 VM、各两个租户及每租户两个进程，最多 24 张活跃票据；VM 与租户也可直接持有预留，零预留参与序列。
 - 独立模型按票据所有者求和，再从子账户向祖先汇总四维用量；每步比较全部账户、额度与票据金额，核对操作成功与否，失败比较全账本快照且不改变模型所有权，最后逐张释放并确认所有账户归零。
-- 转移定点用例覆盖同账户、共同祖先已满、祖先目标、跨租户与跨 VM 拒绝；固定序列另断言预留和转移的成功、失败及 Drop 均实际发生。未验证跨 worker 原子性、真实分配失败、退出清理接入或 OS OOM。
+- 转移定点用例覆盖同账户、共同祖先已满、祖先目标、跨租户与跨 VM 拒绝；固定序列另断言预留和转移的成功、失败及 Drop 均实际发生。
+- 并发测试以最多八个线程、固定轮数覆盖三级四维争抢和溢出拒绝、满共同祖先净转移、拒绝零变化、唯一票据跨线程 Drop 及四维快照；内部单元测试验证锁中毒恢复和不同 VM 不共用门闩。尚未验证真实分配失败、全部退出清理接入、OS OOM 或争用性能；账本原子性不能代替多 worker 的唯一执行权验收。
 
 专项构建：`cargo build --locked -p wings-vm --example resource_accounts`，产物为 `target/debug/examples/resource_accounts`；加 `--release` 后为 `target/release/examples/resource_accounts`。上面的验证脚本已在禁 core dump、20 秒 CPU 限制、30 秒墙钟超时的独立子进程运行此示例；两个平台的 debug/release 结果须分别记录。此序列分配有固定上限，不是内存耗尽压力测试。
 

@@ -1,5 +1,7 @@
 # 架构设计
 
+资源账户按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 用同 VM 共享门闩串行提交三级四维准入、净转移和归还；只在固定长度计数更新中持锁，不在锁内执行分配/业务/OS 等待或协程切换。账户与票据自动 Send/Sync，actor/活栈仍保持原线程执行权。
+
 原生模块按 [ADR-0044](adr/0044-native-module-leases.md) 持有 Library 代码租约，最后一个模块/ID/实例/活栈所有者销毁后交还装载器引用。`load_accounted` 在解析/装载前向 VM 预留库文件取整大小加 2 MiB 逻辑控制预算，跨 VM 计费 worker/pool 执行前拒绝；不把该预算当实际映射/RSS，也不是热更新。
 
 [ADR-0041](adr/0041-worker-deadline-parking.md) 用 worker 私有计费 parker 集成空闲等待与请求 deadline；不导出跨线程 notifier，也不是完整 reactor。
@@ -112,7 +114,7 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。`spawn` 默认无堆，`spawn_with_heap` 在初始化前建立进程计费堆；`instantiate_with_heap` 要求传入同 process 绑定池，实例的同步调用复用该池，显式传入其他账户或未计费池则执行前拒绝。CLI 可用 `--heap-records`，不改变标量 JSON 消息协议，不将它当作语言内消息或完整受管执行。契约见 [ADR-0020](adr/0020-single-worker-mailbox.md)、[ADR-0021](adr/0021-bounded-requests.md) 与 [ADR-0026](adr/0026-language-temporary-records.md)。
 
-可选执行计时线程只跨线程设置原子让出标志，不访问协程或单线程账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不额外改变当前 ABI，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
+可选执行计时线程只跨线程设置原子让出标志，不访问协程或资源账户；原线程仍在强制 safepoint 正常挂起/恢复。默认关闭，Drop 撤销并 join；不额外改变当前 ABI，不作为完整公平性证明，见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。
 
 `ScalarSupervisor` 独占宿主 worker，固定子项及重启历史，按策略有界重建失败实例；每次重启重新执行 initializer、生成新 Pid，不保存失败状态、不重放消息，也不改变 ABI 或语言范围。当前仅 one-for-one 宿主接口，边界见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
 

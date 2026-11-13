@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（实现契约）
 - 相关决定：[微进程与资源模型](0003-process-and-resource-model.md)
+- 同线程限制由 [ADR-0045](0045-concurrent-resource-admission.md) 的 VM 级串行提交协议替代；以下保留原决定。
 
 ## 决定
 

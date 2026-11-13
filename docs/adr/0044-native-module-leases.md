@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（M1 模块资源切片）
 - 替代：[ADR-0013](0013-shared-scalar-modules.md) 的共享库永久泄留决定
+- 后续：[ADR-0045](0045-concurrent-resource-admission.md) 将资源账户改为线程安全；本决定的模块 Rc 租约和原线程执行限制保持不变。
 
 ## 决定与理由
 

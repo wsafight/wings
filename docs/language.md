@@ -1,5 +1,7 @@
 # wings-lang
 
+宿主资源账本按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 支持跨线程准入和归还，不改变语言语义：业务状态不共享可变数据，actor 与挂起活栈仍在原线程执行，尚无 M:N 迁移。
+
 模块装载寿命由宿主代码租约管理，语言不提供 unload/热更新。heap CLI 和显式 `load_accounted` 使用 [ADR-0044](adr/0044-native-module-leases.md) 的 VM 级模块预算；静态 AOT 不得保留脱离实例的 native 回调或后台线程。
 
 `collect()` 及分配触发的 GC 采用 [ADR-0043](adr/0043-chunked-runtime-gc.md) 的固定工作块：每 16 个节点/根扣一个 runtime 步数，并可在原栈暂停、恢复或取消。总预算包含这些工作，不再只计 IR 指令；中止不提交候选 state/自动回复，已发生消息副作用不回滚。

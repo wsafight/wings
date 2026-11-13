@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+资源账户与预留票据支持跨线程共享/归还，同 VM 的三级四维准入和净转移通过一个门闩串行提交，失败不留半账；见 [ADR-0045](docs/adr/0045-concurrent-resource-admission.md)。actor/活栈仍绑定原线程，这不是 M:N，也没有无锁或吞吐领先结论。
+
 `ScalarModule::load_accounted(directory, vm)` 在解析/装载前预留 VM 级模块逻辑预算，同模块实例共享一次预留；Library 随最后代码租约交还，挂起调用先正常取消。heap CLI 使用该路径，旧 `load_trusted` 工具入口不计费，限制见 [ADR-0044](docs/adr/0044-native-module-leases.md)。这不是热更新或精确 RSS 计量。
 
 受管 GC 每 16 个节点/根检查预算、取消与让出，暂停后从原 phase 继续；总预算包含 GC 工作单位，堆统计不扫描全堆。示例 `examples/chunked-gc.wings`，限制见 [ADR-0043](docs/adr/0043-chunked-runtime-gc.md)；尚无块耗时或同业务性能达标结果。
