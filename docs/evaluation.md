@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0072](adr/0072-scheduler-yield-observation.md) 将请求/真实返回时间接到 Scheduler 每 worker 有界 FIFO，独立 `--observe` 保存原始序号、actor、请求/返回时间、合并/清除/丢样；守恒与时序由 Python 独立核对。原片预算/quantum 不变，零样本的分位为 null，有丢样不称完整；不是长时公平性、CPU 配额、开销或候选 p99<5ms 验收。
+
 [ADR-0071](adr/0071-observed-atomic-yield.md) 补独立请求/真实切回宿主的保守观测原语；仅显式启用，结果包含 safepoint、OS 调度和切栈开销。独立百万次加法 fixture 验证配对与未命中请求，不代表 Scheduler timer 的长时样本、完整丢样统计、候选 p99<5ms 或公平性通过。
 
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 的v7用单worker/单BEAM scheduler核对百万次checked加法与每10ms同刻100个心跳，保存逐条原始样本、每actor最大端到端等待、拒绝/超时和小样本分位；少于10000不报p999。CPU请求未完成期间观察到心跳仅是pending重叠，不是让出延迟；OS单核硬配额、30s/60s公平性长测、独立让出时间戳和双平台门禁仍待验收。

@@ -22,10 +22,33 @@ fn observed_requests_coalesce_and_clear_without_creating_a_yield() {
     token.request();
     assert_eq!(token.observation().unwrap().pending_since, Some(first));
     assert_eq!(token.take_request(), Some(first));
-    assert_eq!(token.observation(), Some(PreemptionObservation::default()));
+    let consumed = token.observation().unwrap();
+    assert_eq!(consumed.pending_since, None);
+    assert_eq!(consumed.last_yield, None);
+    assert_eq!(
+        consumed.counters,
+        PreemptionCounters {
+            requests: 2,
+            coalesced: 1,
+            consumed: 1,
+            ..PreemptionCounters::default()
+        }
+    );
     token.request();
     token.clear();
-    assert_eq!(token.observation(), Some(PreemptionObservation::default()));
+    let cleared = token.observation().unwrap();
+    assert_eq!(cleared.pending_since, None);
+    assert_eq!(cleared.last_yield, None);
+    assert_eq!(
+        cleared.counters,
+        PreemptionCounters {
+            requests: 3,
+            coalesced: 1,
+            consumed: 1,
+            cleared: 1,
+            ..PreemptionCounters::default()
+        }
+    );
     assert_eq!(account.used(), baseline);
     drop((token, account, tenant));
     assert_eq!(vm.used(), Resources::default());

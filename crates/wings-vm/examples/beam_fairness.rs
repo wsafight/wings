@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig,
+    SchedulerConfig, SchedulerHandle, SchedulerPid,
 };
 
 const ACTORS: usize = 101;
@@ -94,7 +94,47 @@ fn collect(
     Ok(())
 }
 
-fn execute(directory: &Path, count: usize) -> Result<Value, String> {
+fn collect_yields(
+    handle: &SchedulerHandle,
+    pids: &[SchedulerPid],
+    start: Instant,
+    samples: &mut Vec<Value>,
+) -> Result<usize, String> {
+    let mut count = 0;
+    for _ in 0..32 {
+        let Some(sample) = handle.take_yield_sample(0)? else {
+            break;
+        };
+        if samples.len() == 4096 {
+            return Err("fairness yield history limit".into());
+        }
+        let identity = pids
+            .iter()
+            .position(|pid| *pid == sample.pid)
+            .ok_or("fairness yield pid")?
+            + 1;
+        samples.push(json!([
+            sample.sequence,
+            identity,
+            sample
+                .observation
+                .requested_at
+                .checked_duration_since(start)
+                .ok_or("fairness yield origin")?
+                .as_nanos() as u64,
+            sample
+                .observation
+                .yielded_at
+                .checked_duration_since(start)
+                .ok_or("fairness yield clock")?
+                .as_nanos() as u64
+        ]));
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, String> {
     let vm = ResourceAccount::vm(limits());
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
@@ -105,14 +145,17 @@ fn execute(directory: &Path, count: usize) -> Result<Value, String> {
             capacity: ACTORS,
             requests: 256,
             slice_steps: 4096,
+            yield_samples: if observe { 64 } else { 0 },
             ..SchedulerConfig::default()
         },
     )?;
     let handle = scheduler.handle();
+    let observation_start = Instant::now();
+    let mut yield_samples = Vec::with_capacity(if observe { 4096 } else { 0 });
     let configure = module.handler("Configure")?;
     let cpu = module.handler("Cpu")?;
     let pulse = module.handler("Pulse")?;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = observation_start + Duration::from_secs(3);
     let mut pids = Vec::with_capacity(ACTORS);
     for identity in 1..=ACTORS {
         remaining(deadline)?;
@@ -149,6 +192,9 @@ fn execute(directory: &Path, count: usize) -> Result<Value, String> {
     let start = Instant::now();
     while next < count || !pending.is_empty() || hot_request.is_some() {
         remaining(deadline)?;
+        if observe {
+            collect_yields(&handle, &pids, observation_start, &mut yield_samples)?;
+        }
         collect(&mut pending, &mut samples, start, &mut cursor)?;
         if let Some(request) = hot_request.as_mut() {
             let request: &mut IngressRequest = request;
@@ -255,7 +301,23 @@ fn execute(directory: &Path, count: usize) -> Result<Value, String> {
             ])
         })
         .collect();
-    drop((handle, scheduler, configure, cpu, pulse, module, tenant));
+    drop(scheduler);
+    remaining(deadline)?;
+    let yield_observation = if observe {
+        while collect_yields(&handle, &pids, observation_start, &mut yield_samples)? != 0 {}
+        let statistics = handle
+            .yield_statistics(0)?
+            .ok_or("missing scheduler yield statistics")?;
+        let counters = statistics.preemption.counters;
+        json!({"capacity": 64, "samples": yield_samples, "requests": counters.requests,
+            "coalesced": counters.coalesced, "consumed": counters.consumed, "cleared": counters.cleared,
+            "confirmed": counters.confirmed, "pending": statistics.preemption.pending_since.is_some(),
+            "retained": statistics.retained, "taken": statistics.taken, "dropped": statistics.dropped,
+            "published": statistics.published, "overflowed": statistics.overflowed})
+    } else {
+        Value::Null
+    };
+    drop((handle, configure, cpu, pulse, module, tenant));
     if vm.used() != Resources::default() {
         return Err("fairness retained resources".into());
     }
@@ -264,19 +326,21 @@ fn execute(directory: &Path, count: usize) -> Result<Value, String> {
         "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": MAX_PENDING,
         "deadline_ns": DEADLINE_NS, "message_bytes": 32, "samples": samples, "hot": hot_samples,
         "committed": committed.to_vec(), "states_verified": true, "resources_released": true,
+        "yield_observation": yield_observation,
         "environment": {"runtime": "wings", "workers": 1, "slice_steps": 4096, "quantum_ns": 1_000_000}}),
     )
 }
 
 fn main() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    let count = if arguments.len() == 3 && arguments[0] == "--trusted" {
+    let observe = arguments.len() == 4 && arguments[3] == "--observe";
+    let count = if (arguments.len() == 3 || observe) && arguments[0] == "--trusted" {
         decode(&arguments[2])
     } else {
         Err("arguments".into())
     };
     let (code, result) = match count {
-        Ok(count) => match execute(Path::new(&arguments[1]), count) {
+        Ok(count) => match execute(Path::new(&arguments[1]), count, observe) {
             Ok(result) => (0, result),
             Err(error) => {
                 eprintln!("{error}");

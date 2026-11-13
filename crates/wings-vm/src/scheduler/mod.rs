@@ -15,10 +15,12 @@ mod ready;
 mod run;
 mod state;
 mod supervisor;
+mod yields;
 pub use supervisor::{
     SchedulerChildId, SchedulerRestartStatus, SchedulerSupervisor, SchedulerSupervisorEvent,
     SchedulerTermination,
 };
+pub use yields::{SchedulerYieldSample, SchedulerYieldStatistics};
 #[cfg(test)]
 mod tests;
 
@@ -37,6 +39,7 @@ pub struct SchedulerConfig {
     pub requests: usize,
     pub slice_steps: u64,
     pub quantum: Duration,
+    pub yield_samples: usize,
 }
 
 impl Default for SchedulerConfig {
@@ -47,6 +50,7 @@ impl Default for SchedulerConfig {
             requests: 64,
             slice_steps: 64,
             quantum: Duration::from_millis(1),
+            yield_samples: 0,
         }
     }
 }
@@ -115,6 +119,7 @@ struct Shared {
     replies: Arc<ReplyTable>,
     config: SchedulerConfig,
     identity: u64,
+    observations: Box<[yields::WorkerObservation]>,
     _charge: Reservation,
 }
 
@@ -213,13 +218,19 @@ impl Scheduler {
             || config.slice_steps == 0
             || config.quantum.is_zero()
             || config.quantum > Duration::from_secs(1)
+            || config.yield_samples > 65536
         {
-            return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots and nonzero bounded slices".into());
+            return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield samples per worker".into());
         }
         let bytes = std::mem::size_of::<Shared>()
             + config.capacity * std::mem::size_of::<Slot>()
             + config.requests * std::mem::size_of::<RequestSlot>()
             + config.workers * std::mem::size_of::<ready::ReadyQueue>()
+            + if config.yield_samples == 0 {
+                0
+            } else {
+                config.workers * std::mem::size_of::<yields::WorkerObservation>()
+            }
             + 256;
         let charge = tenant.reserve(Resources {
             bytes: bytes as u64,
@@ -234,6 +245,21 @@ impl Scheduler {
             ..Resources::default()
         })?;
         let identity = next_identity(&NEXT_SCHEDULER)?;
+        let mut observations = Vec::new();
+        if config.yield_samples != 0 {
+            observations
+                .try_reserve_exact(config.workers)
+                .map_err(|error| error.to_string())?;
+            if observations.capacity() != config.workers {
+                return Err("allocator changed scheduler observer capacity".into());
+            }
+            for _ in 0..config.workers {
+                observations.push(yields::WorkerObservation::new(
+                    tenant,
+                    config.yield_samples,
+                )?);
+            }
+        }
         let mut next_slot = 0;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -263,6 +289,7 @@ impl Scheduler {
             replies: ReplyTable::new(tenant, config.requests)?,
             config,
             identity,
+            observations: observations.into_boxed_slice(),
             _charge: charge,
         });
         let mut scheduler = Self {
@@ -333,6 +360,31 @@ impl Drop for Scheduler {
 }
 
 impl SchedulerHandle {
+    pub fn take_yield_sample(&self, worker: usize) -> Result<Option<SchedulerYieldSample>, String> {
+        if worker >= self.shared.config.workers {
+            return Err("scheduler worker index out of range".into());
+        }
+        Ok(self
+            .shared
+            .observations
+            .get(worker)
+            .and_then(yields::WorkerObservation::take))
+    }
+
+    pub fn yield_statistics(
+        &self,
+        worker: usize,
+    ) -> Result<Option<SchedulerYieldStatistics>, String> {
+        if worker >= self.shared.config.workers {
+            return Err("scheduler worker index out of range".into());
+        }
+        Ok(self
+            .shared
+            .observations
+            .get(worker)
+            .map(yields::WorkerObservation::statistics))
+    }
+
     pub fn spawn(
         &self,
         module: &ScalarModule,

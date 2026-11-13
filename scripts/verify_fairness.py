@@ -22,6 +22,74 @@ def quantiles(values):
             "max_ns": ordered[-1] if count else None}
 
 
+def validate_yields(result):
+    require(integer(result["capacity"], 1) == 64, "yield capacity")
+    require(result["pending"] is False and result["overflowed"] is False, "yield incomplete counters")
+    counters = {key: integer(result[key]) for key in
+                ("requests", "coalesced", "consumed", "cleared", "confirmed", "retained", "taken", "dropped", "published")}
+    require(counters["requests"] == counters["coalesced"] + counters["consumed"] + counters["cleared"], "yield request accounting")
+    require(counters["consumed"] == counters["confirmed"] == counters["published"], "yield confirmation accounting")
+    require(counters["retained"] == 0 and counters["confirmed"] == counters["taken"] + counters["dropped"], "yield queue accounting")
+    samples = result["samples"]
+    require(type(samples) is list and len(samples) == counters["taken"] <= 4096, "yield history size")
+    require(counters["confirmed"] == 0 or bool(samples), "yield first accepted sample missing")
+    previous_sequence = 0
+    previous_yield = 0
+    delays = []
+    by_actor = [[] for _ in range(101)]
+    for sample in samples:
+        require(type(sample) is list and len(sample) == 4, "yield sample shape")
+        sequence, actor, requested, yielded = sample
+        require(previous_sequence < integer(sequence, 1) <= counters["confirmed"], "yield sequence")
+        require(1 <= integer(actor, 1) <= 101, "yield actor")
+        require(previous_yield <= integer(requested) <= integer(yielded) < 3_000_000_000, "yield monotonic clock")
+        previous_sequence = sequence
+        previous_yield = yielded
+        delays.append(yielded - requested)
+        by_actor[actor - 1].append(yielded - requested)
+    require(not samples or samples[0][0] == 1, "yield first sample overwritten")
+    require(counters["dropped"] != 0 or previous_sequence == counters["confirmed"], "yield missing sequence")
+    return {**counters, **quantiles(delays), "per_actor": [
+        {"actor": index + 1, **quantiles(values)} for index, values in enumerate(by_actor)],
+        "complete": counters["dropped"] == 0,
+        "has_data": bool(samples), "fairness_gate_proven": False}
+
+
+def yield_model_tests():
+    result = {"capacity": 64, "pending": False, "overflowed": False, "requests": 5,
+              "coalesced": 1, "consumed": 3, "cleared": 1, "confirmed": 3,
+              "retained": 0, "taken": 2, "dropped": 1, "published": 3,
+              "samples": [[1, 1, 0, 10], [3, 101, 10, 30]]}
+    summary = validate_yields(result)
+    require(summary["max_ns"] == 20 and not summary["complete"], "yield sample loss not disclosed")
+    empty = {key: (False if type(value) is bool else [] if key == "samples" else 64 if key == "capacity" else 0)
+             for key, value in result.items()}
+    summary = validate_yields(empty)
+    require(summary["p50_ns"] is None and summary["p999_ns"] is None and not summary["has_data"], "zero yield fabricated latency")
+    forged = []
+    for key, value in (("pending", True), ("overflowed", True), ("requests", 4), ("consumed", 2),
+                       ("retained", 1), ("taken", 3), ("dropped", 0), ("published", 4), ("confirmed", True)):
+        changed = copy.deepcopy(result)
+        changed[key] = value
+        forged.append(changed)
+    for row, column, value in ((0, 0, 2), (1, 0, 1), (1, 0, 4), (0, 1, 0), (0, 1, 102),
+                               (1, 2, 9), (1, 3, 9), (1, 3, 3_000_000_000), (0, 2, False)):
+        changed = copy.deepcopy(result)
+        changed["samples"][row][column] = value
+        forged.append(changed)
+    changed = copy.deepcopy(result)
+    changed.update({"samples": [], "taken": 0, "dropped": 3})
+    forged.append(changed)
+    for changed in forged:
+        try:
+            validate_yields(changed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("accepted forged scheduler yield observation")
+    print(f"Scheduler yield model: request/queue conservation, zero-data and {len(forged)} forged histories checked")
+
+
 def validate(result, duration, runtime):
     count = duration // 10 * 100
     for key, expected in {"version": 7, "status": "ok", "mode": "smoke", "actors": 101,
@@ -171,6 +239,7 @@ def model_tests():
 
 def verify(artifact, compare_beam, output):
     model_tests()
+    yield_model_tests()
     commands = [("wings", [aot.TARGET / aot.PROFILE / "examples/beam_fairness", "--trusted", artifact])]
     if compare_beam:
         escript = shutil.which("escript")
@@ -190,11 +259,23 @@ def verify(artifact, compare_beam, output):
             print(f"Fairness smoke {runtime} {duration}ms: {summary['CPU_completed']} million-add tasks, "
                   f"{summary['reply']} replies/{summary['timed_out']} timed out/{summary['mailbox_full']} mailbox full/"
                   f"{summary['pending_full']} pending full; not fairness gate")
+        code, result = invoke([*commands[0][1], duration, "--observe"], b"")
+        require(code == 0, f"observed scheduler exit {code}: {result}")
+        validate(result, duration, "wings")
+        summary = validate_yields(result["yield_observation"])
+        if output:
+            (output / f"wings-observed-{duration}.json").write_text(json.dumps(result) + "\n")
+            (output / f"wings-observed-{duration}-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        print(f"Scheduler yield {duration}ms: {summary['samples']} samples/{summary['dropped']} dropped/"
+              f"{summary['cleared']} cleared/{summary['coalesced']} coalesced; no fairness gate")
     for runtime, command in commands:
         invalid = command if runtime == "beam" else [*command[:2], artifact / "missing"]
         for duration in ("0", "1", "20", "030", "100", "-10", "10.0", "false", "18446744073709551616"):
             code, result = invoke([*invalid, duration], b"")
             require(code == 2 and result == {"version": 7, "status": "invalid"}, "invalid duration")
+    for suffix in (("10", "--unknown"), ("10", "--observe", "--observe"), ("030", "--observe")):
+        code, result = invoke([*commands[0][1][:2], artifact / "missing", *suffix], b"")
+        require(code == 2 and result == {"version": 7, "status": "invalid"}, "invalid observed config")
     for budget, expected in ((100, 1), (10000000, 0)):
         result = aot.command([aot.VM, "run", "--trusted", artifact, "--heap-records", 4, "--max-steps", budget],
                              '{"message":"Cpu","args":[1,2,0,0]}\n', expected=expected)

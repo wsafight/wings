@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0072](adr/0072-scheduler-yield-observation.md) 的 `SchedulerConfig::yield_samples` 默认 0，可设每 worker 1..=65536 条固定 FIFO；启动前 tenant/VM 准入失败回滚。`take_yield_sample(worker)` 一次消费副本，`yield_statistics(worker)` 返回请求/合并/消费/清除/确认和保留/取出/丢弃计数；活动查询不保证跨锁快照，停机后核对守恒。样本只含 Pid/时间，不保留业务对象；最后 handle 释放才归还诊断租约。
+
 [ADR-0071](adr/0071-observed-atomic-yield.md) 的 `PreemptionToken::new_observed(account)` 预先计费 4096 B，固定保留首次未消费请求和最近真实让出；克隆/调用租约释放后归还。重复请求合并，disarm 清除不生成样本，步骤/effect/取消/预算返回不伪造原子让出；默认 token 无时钟/诊断锁。它不是完整事件日志或逐 actor 的 Scheduler 指标。
 
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 增加同 worker CPU/突发心跳业务回归，沿用原强制检查点、总预算和原子取消。外部心跳超时不释放实际 pending、不撤回 state 提交；受限测试收齐 CPU/心跳后核对独立 state 及最终归零，不据此声称长时公平性或完整资源账本通过。

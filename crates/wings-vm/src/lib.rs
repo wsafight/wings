@@ -40,12 +40,14 @@ pub use heap::{
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
 pub use module::{HandlerId, ScalarModule};
-pub use preemption::{PreemptionObservation, PreemptionToken, YieldObservation};
+pub use preemption::{
+    PreemptionCounters, PreemptionObservation, PreemptionToken, YieldObservation,
+};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
     SchedulerHandle, SchedulerPid, SchedulerRestartStatus, SchedulerSnapshot, SchedulerSupervisor,
-    SchedulerSupervisorEvent, SchedulerTermination,
+    SchedulerSupervisorEvent, SchedulerTermination, SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};

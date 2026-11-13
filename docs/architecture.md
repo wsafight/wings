@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0072](adr/0072-scheduler-yield-observation.md) 给 Scheduler 增加每 worker 独立、可选预先计费的 token/FIFO，只有真实切回宿主后才附 Pid/worker 发布。默认关闭；诊断锁不跨受管代码，计时线程不访问 actor，受管 ABI v14、强制检查点和执行 owner 不变。固定 FIFO 满丢新样本并计数，不新增无界事件队列。
+
 [ADR-0071](adr/0071-observed-atomic-yield.md) 只扩展宿主控制对象和私有 checkpoint：可选 observer 经账户准入、固定空间、真实协程返回后确认，不改变 ABI v14 或 compiler 检查点。默认不读取时钟或获得诊断锁；启用时诊断锁不跨受管执行/切栈，计时线程仍不访问 actor。
 
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 用六层声明顺序的受管函数执行百万次 checked +1，同 worker 下与 100 个真实 Bytes 心跳 actor 竞争。只增加测试程序，不改语言/ABI；观察 CPU pending 不等于实际运行或让出时间戳，单 worker 数量不代替 OS 单核配额。

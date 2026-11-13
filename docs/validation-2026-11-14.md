@@ -152,6 +152,26 @@ Linux 同配置隔离仿真 release 31 个 harness 共 485 项通过。首次 AO
 
 停止客体后最终 debug/release v1–v6 显式 Wings/BEAM/Python 回归全部通过，v6 仅核对模型/collector/配置，不重跑 90 秒实验。依赖隔离、禁 unwind feature、88 份 Markdown（含待审语法草案）的相对路径/代码围栏、Python 语法与 diff whitespace 检查通过。未 stage 语法草案，未推送或发布；M0/MVP 状态不变。
 
+## Scheduler 有界让出样本：ADR-0072
+
+基于 `b550546`，按 [ADR-0072](adr/0072-scheduler-yield-observation.md) 接入每 worker 可选固定 FIFO，默认 `yield_samples=0`；显式容量 1..=65536，在分配前向 tenant/VM 计费，启动失败释放已创建控制对象。真实 coroutine 返回后附完整 Pid/worker/序号，满则丢新样本并计数，不覆盖旧值。token 另保留 request/合并/消费/清除/确认计数，饱和置 overflow；关闭/步骤/effect/取消/预算不会伪造原子样本。
+
+环境同上。最终 check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 478 项，六个示例合计各 13 项，总计各 491 项。新增 6 项覆盖 FIFO 满/循环复用/缺口/饱和、重复发布去重、token 准入失败回滚、容量 0/1/65536/越界和两个层级的部分启动失败回滚，以及双 worker timer 的完整身份、守恒与停止清理。早期显式 SchedulerConfig 初始化漏新默认字段、旧 observer 清除测试未更新持久计数期望、clippy 的范围索引告警均修正后重跑；未为测试改对象生命期或资源上限。
+
+真实百万次 checked 加法的 v7 增加独立 `--observe`，保留 4096 steps/1ms、101×256 B、mailbox 1、255 冷 pending 加一个热请求、10/30ms 同刻突发，不改变 BEAM/默认运行。最终逐条计时输出及请求/清除/丢样保存在 `target/scheduler-yield-final-{debug,release}`；当前这些短时运行 timer 未触发、样本为零，所有分位为 null，不据此宣称让出延迟或公平性达标。Python 另覆盖有丢样/零样本模型和 19 份伪造历史，不把遗漏首条、假守恒或倒退时钟当完整。
+
+完整 AOT 另接 `scheduler_yield`：原 4 KiB Bytes Hold、双 worker、1ms quantum、无限步骤片、一槽 FIFO，真实 timer 请求/受管检查点切回后才有样本，排满后核对 dropped、Pid/worker、取消与最终归零。这是边界回归，不是 v7 的采样条件。所有业务和 AOT 原限制均不变，没有通过修改公平性工作量/quantum 凑数据；完整长时公平性、开销/丢样、OS CPU 配额与原生双平台门禁继续待验收。
+
+本机最终 debug/release 完整 AOT 均通过，日志 `/tmp/wings-scheduler-yield-final-aot-{debug,release}.log`；两种构建显式 v7 三端和独立观测均通过，日志 `/tmp/wings-scheduler-yield-final-three-{debug,release}.log`。默认 timer 不读诊断时钟或锁，但不可把“默认关闭”解读为本次宿主结构布局零变化；固定元数据仍按实际大小准入。
+
+Linux 同原 2 vCPU/4 GiB QEMU TCG 交叉构建 release，31 个 harness 共 491 项通过。完整 AOT 两次均在旧 v2 多 actor 路径触发原 3 秒 deadline：首次与本机三端回归重叠，停止这些任务后的隔离重跑仍失败；日志 `/tmp/wings-scheduler-yield-linux-aot.log`、`/tmp/wings-scheduler-yield-linux-isolated-aot.log`。不能把本次 Linux 完整 AOT 记为通过，也没有提高限制、缩小业务或删用例。
+
+为区分新改动与既有余量，取上次 `b550546` 验证包的现成 binary，同一客体/同一新编译业务产物、原 CPU 5 秒/墙钟 10 秒/阶段 3 秒比较三组完整大容量输入。10000×256 B 两版均 deadline；1000×4 KiB 旧版 configure 失败、新版通过；100×64 KiB 两版通过。日志 `/tmp/wings-scheduler-yield-linux-comparison.log`；这些是有界诊断，不是性能结果，也未证明仿真之外的根因。大容量启动/配置余量仍须处理，不能用旧版也失败豁免最终完整回归。
+
+同一客体另运行新增真实 AOT `scheduler_yield`、v7 全部 Wings/模型及 `--observe` 和独立观测，均通过，日志 `/tmp/wings-scheduler-yield-linux-targeted.log`。启用观测的 10/30ms 分别保留 13/6 个真实 timer 样本、各 2 个清除、无丢样；它们只是仿真短测。默认 30ms 运行实际有 188 回复、12 超时、100 mailbox_full，全部接受请求仍收齐/state 核对成功，没有删掉失败到达或把其当性能通过。新增专项不替代上面的完整 AOT 失败；客体无 OTP/原生 debug/clippy/MSRV/doc-tests，测试后停止。
+
+本机最终 v1–v6 显式三端 debug/release 全部通过；v6 仍仅模型/collector/配置，不执行 90 秒实验。依赖隔离、禁 unwind feature、89 份 Markdown（含未提交待审草案）相对路径/围栏、Python 语法、fmt/diff whitespace 检查通过。未推送或发布，语法未改；此切片保留 Linux 完整 AOT 未通过状态，MVP 仍未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

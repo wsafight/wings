@@ -21,10 +21,176 @@ fn fixture(workers: usize, capacity: usize) -> (ResourceAccount, ResourceAccount
             requests: 4,
             slice_steps: 1,
             quantum: Duration::from_millis(1),
+            yield_samples: 0,
         },
     )
     .unwrap();
     (vm, tenant, scheduler)
+}
+
+#[test]
+fn scheduler_yield_capacity_and_startup_failures_preserve_accounting() {
+    for capacity in [0, 1, 65536] {
+        let vm = ResourceAccount::vm(quota());
+        let tenant = vm.tenant_accounted(quota()).unwrap();
+        let baseline = vm.used();
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                workers: 1,
+                capacity: 1,
+                requests: 1,
+                yield_samples: capacity,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let handle = scheduler.handle();
+        assert!(handle.take_yield_sample(0).unwrap().is_none());
+        assert_eq!(handle.yield_statistics(0).unwrap().is_some(), capacity != 0);
+        assert!(handle.take_yield_sample(1).is_err());
+        assert!(handle.yield_statistics(1).is_err());
+        drop(scheduler);
+        assert!(vm.used().bytes > baseline.bytes);
+        assert!(handle.take_yield_sample(0).unwrap().is_none());
+        drop(handle);
+        assert_eq!(vm.used(), baseline);
+        for invalid in [65537, usize::MAX] {
+            assert!(
+                Scheduler::new(
+                    &tenant,
+                    SchedulerConfig {
+                        yield_samples: invalid,
+                        ..SchedulerConfig::default()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(vm.used(), baseline);
+        }
+        drop(tenant);
+        assert_eq!(vm.used(), Resources::default());
+    }
+    for level in [ResourceLevel::Tenant, ResourceLevel::Vm] {
+        let vm = ResourceAccount::vm(quota());
+        let tenant = vm.tenant_accounted(quota()).unwrap();
+        let baseline = vm.used();
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                workers: 2,
+                capacity: 1,
+                requests: 1,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let default_bytes = vm.used().bytes - baseline.bytes;
+        drop(scheduler);
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                workers: 2,
+                capacity: 1,
+                requests: 1,
+                yield_samples: 1,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let observed_extra = vm.used().bytes - baseline.bytes - default_bytes;
+        drop(scheduler);
+        let limited = if level == ResourceLevel::Vm {
+            &vm
+        } else {
+            &tenant
+        };
+        for available in [65536, observed_extra - 1] {
+            let fill = limited
+                .reserve(Resources {
+                    bytes: limited.limit().bytes - limited.used().bytes - default_bytes - available,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let before = [vm.used(), tenant.used()];
+            assert!(
+                Scheduler::new(
+                    &tenant,
+                    SchedulerConfig {
+                        workers: 2,
+                        capacity: 1,
+                        requests: 1,
+                        yield_samples: if available == 65536 { 65536 } else { 1 },
+                        ..SchedulerConfig::default()
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!([vm.used(), tenant.used()], before);
+            drop(fill);
+        }
+        drop(tenant);
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
+fn scheduler_timer_yields_have_worker_and_pid_identity_without_losing_cleanup() {
+    let vm = ResourceAccount::vm(quota());
+    let tenant = vm.tenant_accounted(quota()).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 2,
+            requests: 2,
+            yield_samples: 1,
+            slice_steps: u64::MAX,
+            quantum: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = spinning_module();
+    let actors: Vec<_> = (0..2)
+        .map(|_| handle.spawn(&module, quota(), 1).unwrap())
+        .collect();
+    for pid in &actors {
+        handle
+            .send(*pid, &module.handler("Spin").unwrap(), &[], u64::MAX)
+            .unwrap();
+    }
+    for worker in 0..2 {
+        wait_until(|| handle.yield_statistics(worker).unwrap().unwrap().dropped > 0);
+    }
+    for pid in &actors {
+        handle.stop(*pid).unwrap();
+    }
+    drop(scheduler);
+    for (worker, pid) in actors.iter().enumerate() {
+        let sample = handle.take_yield_sample(worker).unwrap().unwrap();
+        assert_eq!(sample.worker, worker);
+        assert_eq!(sample.pid, *pid);
+        assert_eq!(sample.sequence, 1);
+        assert!(sample.observation.yielded_at >= sample.observation.requested_at);
+        assert!(handle.take_yield_sample(worker).unwrap().is_none());
+        let statistics = handle.yield_statistics(worker).unwrap().unwrap();
+        let counters = statistics.preemption.counters;
+        assert!(statistics.dropped >= 1);
+        assert_eq!(statistics.retained, 0);
+        assert_eq!(statistics.taken, 1);
+        assert_eq!(statistics.published, statistics.taken + statistics.dropped);
+        assert_eq!(counters.confirmed, statistics.published);
+        assert_eq!(counters.consumed, counters.confirmed);
+        assert_eq!(
+            counters.requests,
+            counters.coalesced + counters.consumed + counters.cleared
+        );
+        assert!(!counters.overflowed && !statistics.overflowed);
+        assert!(statistics.preemption.pending_since.is_none());
+    }
+    drop((handle, module, tenant));
+    assert_eq!(vm.used(), Resources::default());
 }
 
 fn reply(mut request: IngressRequest) -> RequestOutcome {

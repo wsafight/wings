@@ -165,6 +165,10 @@ WINGS_PROFILE=release python3 scripts/verify_fairness.py --compare-beam --output
 
 [ADR-0071](adr/0071-observed-atomic-yield.md) 另提供 [`observed_yield`](../crates/wings-vm/examples/observed_yield.rs) 独立 fixture，用同一可信产物执行预请求与远端线程请求，并由 `verify_fairness.py` 在原限制内调用。只有真实 coroutine 返回后确认才产生观测；远端请求若在业务结束后才到达则单列未消费、延迟为 null。它不修改 v7 的 Scheduler/BEAM 业务或默认 worker token，也不将两个独立样本当作同 worker fairness 让出统计；该门禁仍待完成。
 
+[ADR-0072](adr/0072-scheduler-yield-observation.md) 增加 Wings 独立 `--trusted <artifact> 10|30 --observe`，由同一 verifier 调用。只启用每 worker 64 条计费 FIFO，不改上述 actor/业务、4096 steps 片或 1ms quantum。另存 `yield_observation.samples:[sequence,actor,requested_ns,yielded_ns]`，时间以 Scheduler 启动后的独立观测起点为零，不冒充心跳 t0；保留配置初始化期间发生的样本。直接驱动每轮最多取 32 条，宿主历史最多 4096 条，超出判失败；FIFO 满拒绝新样本并计 dropped，最终停机收齐后核对请求与队列守恒。输出含每 actor/总样本 nearest-rank 分位，零样本为 null、少于 10000 不报 p999；丢样显式标不完整。短测可能一个 timer 请求也没有，不靠提高 quantum、关闭步骤片或增加热任务工作量凑观测；BEAM 与默认模式不受此诊断影响，尚无长时公平性/性能结论。
+
+实际 timer 边界另由 [`scheduler_yield`](../crates/wings-vm/examples/scheduler_yield.rs) 用原 `mailbox-boundary.wings` 的 Hold 做 AOT 回归：双 worker、1ms quantum、无限步骤片、每 worker 一槽 FIFO，验证真实让出、身份、丢样与取消清理。它不是 v7 业务的采样参数，不参与 BEAM 性能排名。
+
 ## 代表性负载与性能验收冻结条件
 
 这些是同业务对照的固定小集合，不展开整个笛卡尔积。v5执行四组非fairness短时验证，v6接独立长时入口，v7补fairness短时业务；均不自动构成完整性能验收。普通Idle与活跃场景都保持32 B逻辑请求/成功回复；逻辑state仍包含计数器与actor ID。actor ID为`1..N`，活动集合取前`A`个；其余保留状态但不处理业务消息，不冬眠。更大actor数、其他payload、冬眠与M:N另立协议版本。

@@ -32,7 +32,11 @@ pub(super) fn worker(
     ready: mpsc::SyncSender<Result<(), String>>,
 ) {
     let _exit = WorkerExit(shared.clone());
-    let preemption = PreemptionToken::default();
+    let preemption = shared
+        .observations
+        .get(index)
+        .map(|observer| observer.token.clone())
+        .unwrap_or_default();
     let setup = (|| {
         let pool = StackPool::new_on_demand(
             &shared.tenant,
@@ -98,6 +102,9 @@ pub(super) fn worker(
                 Some(()) => {
                     let result = active.task.resume(shared.config.slice_steps);
                     timer.disarm();
+                    if let Some(observer) = shared.observations.get(index) {
+                        observer.record(active.pid, index);
+                    }
                     result
                 }
                 None => Err("scheduler timer failure".into()),

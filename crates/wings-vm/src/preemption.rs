@@ -26,6 +26,17 @@ impl YieldObservation {
 pub struct PreemptionObservation {
     pub pending_since: Option<Instant>,
     pub last_yield: Option<YieldObservation>,
+    pub counters: PreemptionCounters,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PreemptionCounters {
+    pub requests: u64,
+    pub coalesced: u64,
+    pub consumed: u64,
+    pub cleared: u64,
+    pub confirmed: u64,
+    pub overflowed: bool,
 }
 
 struct Observer {
@@ -54,6 +65,10 @@ impl PreemptionToken {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.counters.overflowed |= increment(&mut state.counters.requests);
+            if state.pending_since.is_some() {
+                state.counters.overflowed |= increment(&mut state.counters.coalesced);
+            }
             state.pending_since.get_or_insert_with(Instant::now);
             self.flag.store(1, Ordering::SeqCst);
         } else {
@@ -72,20 +87,32 @@ impl PreemptionToken {
 
     pub(crate) fn clear(&self) {
         if self.observer.is_some() {
-            self.take_request();
+            self.take(false);
         } else {
             self.flag.store(0, Ordering::SeqCst);
         }
     }
 
     pub(crate) fn take_request(&self) -> Option<Instant> {
+        self.take(true)
+    }
+
+    fn take(&self, consumed: bool) -> Option<Instant> {
         if let Some(observer) = &self.observer {
             let mut state = observer
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.flag.swap(0, Ordering::SeqCst);
-            state.pending_since.take()
+            let requested = state.pending_since.take();
+            if requested.is_some() {
+                state.counters.overflowed |= if consumed {
+                    increment(&mut state.counters.consumed)
+                } else {
+                    increment(&mut state.counters.cleared)
+                };
+            }
+            requested
         } else {
             self.flag.swap(0, Ordering::SeqCst);
             None
@@ -95,16 +122,24 @@ impl PreemptionToken {
     pub(crate) fn confirm_yield(&self, requested_at: Instant) {
         if let Some(observer) = &self.observer {
             let yielded_at = Instant::now();
-            observer
+            let mut state = observer
                 .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .last_yield = Some(YieldObservation {
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.counters.overflowed |= increment(&mut state.counters.confirmed);
+            state.last_yield = Some(YieldObservation {
                 requested_at,
                 yielded_at,
             });
         }
     }
+}
+
+fn increment(value: &mut u64) -> bool {
+    let next = value.saturating_add(1);
+    let overflowed = next == *value;
+    *value = next;
+    overflowed
 }
 
 #[cfg(test)]
@@ -114,6 +149,45 @@ mod tests {
     #[test]
     fn fixed_observer_charge_covers_control_and_arc_headers() {
         assert!(std::mem::size_of::<Observer>() + std::mem::size_of::<AtomicU32>() + 64 <= 4096);
+    }
+
+    #[test]
+    fn request_counters_saturate_and_mark_incomplete_evidence() {
+        let vm = ResourceAccount::vm(Resources {
+            bytes: 8192,
+            ..Resources::default()
+        });
+        let token = PreemptionToken::new_observed(&vm).unwrap();
+        token
+            .observer
+            .as_ref()
+            .unwrap()
+            .state
+            .lock()
+            .unwrap()
+            .counters = PreemptionCounters {
+            requests: u64::MAX,
+            coalesced: u64::MAX,
+            consumed: u64::MAX,
+            cleared: u64::MAX,
+            confirmed: u64::MAX,
+            overflowed: false,
+        };
+        token.request();
+        token.request();
+        let requested = token.take_request().unwrap();
+        token.confirm_yield(requested);
+        token.request();
+        token.clear();
+        let counters = token.observation().unwrap().counters;
+        assert!(counters.overflowed);
+        assert_eq!(counters.requests, u64::MAX);
+        assert_eq!(counters.coalesced, u64::MAX);
+        assert_eq!(counters.consumed, u64::MAX);
+        assert_eq!(counters.cleared, u64::MAX);
+        assert_eq!(counters.confirmed, u64::MAX);
+        drop(token);
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]
