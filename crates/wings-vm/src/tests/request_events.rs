@@ -16,6 +16,7 @@ unsafe extern "C" fn identity(
         callback: 0,
         timeout_ms: 0,
         record_mask: 0,
+        list_mask: 0,
     };
     unsafe {
         (*output).state = state;
@@ -44,6 +45,7 @@ unsafe extern "C" fn begin(
         callback: 8,
         timeout_ms: unsafe { *arguments.add(1) },
         record_mask: 0,
+        list_mask: 0,
     };
     let mut id = 0;
     let status = unsafe { ((*context).effect_call.unwrap())(context, &request, &mut id) };
@@ -61,6 +63,7 @@ unsafe extern "C" fn begin(
             callback: 0,
             timeout_ms: 0,
             record_mask: 0,
+            list_mask: 0,
         };
         let status = unsafe { ((*context).effect_call.unwrap())(context, &request, &mut id) };
         if status != STATUS_OK {
@@ -84,6 +87,7 @@ unsafe extern "C" fn begin(
             callback: 0,
             timeout_ms: 0,
             record_mask: 0,
+            list_mask: 0,
         };
         let status = unsafe { ((*context).effect_call.unwrap())(context, &request, &mut id) };
         if status != STATUS_OK {

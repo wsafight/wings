@@ -968,12 +968,9 @@ fn rejects_record_forging_type_confusion_and_boundary_references() {
             .push(instruction(ty, operation));
         rejects(&program, "operand, type or forward reference");
     }
-    for boundary in 1..3 {
+    for ty in [ValueType::Ref, ValueType::ListRef] {
         let mut program = valid_program();
-        match boundary {
-            1 => program.handlers[0].parameters[0].1 = ValueType::ListRef,
-            _ => program.handlers[0].reply = Some(ValueType::Ref),
-        }
+        program.handlers[0].reply = Some(ty);
         rejects(&program, "cannot cross scalar IR boundaries");
     }
 }

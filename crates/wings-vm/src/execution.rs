@@ -5,6 +5,7 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
 
 use crate::aot_heap::AotHeap;
+use crate::message_values::ListPayload;
 use crate::stack_pool::PooledStack;
 use crate::{CancellationToken, HandlerId, HeapStats, ScalarModule, ScalarProcess, StackPool};
 
@@ -32,6 +33,7 @@ pub(crate) struct ProcessEffect {
     pub callback: usize,
     pub timeout_ms: i64,
     pub record_mask: u64,
+    pub lists: ListPayload,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +124,7 @@ pub(crate) fn initialize(
         &mut heap,
         false,
         0,
+        ListPayload::default(),
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
         CoroutineResult::Return((status, output, heap, _)) => Ok((status, output, heap)),
@@ -220,6 +223,7 @@ impl ScalarProcess {
             &pool,
             false,
             0,
+            &ListPayload::default(),
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -248,6 +252,7 @@ impl ScalarProcess {
             pool,
             false,
             0,
+            &ListPayload::default(),
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -328,6 +333,7 @@ impl ScalarTask {
             pool,
             false,
             0,
+            &ListPayload::default(),
         )
     }
 
@@ -342,13 +348,18 @@ impl ScalarTask {
         pool: &StackPool,
         system: bool,
         record_mask: u64,
+        lists: &ListPayload,
     ) -> Result<(), String> {
         if self.is_active() {
             return Err("scalar task already has an active invocation".into());
         }
-        let handler =
-            self.process
-                .validate_handler_payload(handler, arguments, system, record_mask)?;
+        let handler = self.process.validate_handler_payload(
+            handler,
+            arguments,
+            system,
+            record_mask,
+            lists,
+        )?;
         self.invocation = Some(Invocation::new(
             &mut self.process,
             handler,
@@ -359,6 +370,7 @@ impl ScalarTask {
             pool,
             self.effects_enabled,
             record_mask,
+            lists,
         )?);
         Ok(())
     }
@@ -393,6 +405,7 @@ impl Invocation {
         pool: &StackPool,
         effects_enabled: bool,
         record_mask: u64,
+        lists: &ListPayload,
     ) -> Result<Self, String> {
         process.module.validate_pool(pool)?;
         if process
@@ -421,6 +434,7 @@ impl Invocation {
             &mut process.heap,
             effects_enabled,
             record_mask,
+            *lists,
         )?;
         Ok(Self {
             handler,
@@ -444,6 +458,7 @@ fn new_coroutine(
     heap: &mut Option<Box<AotHeap>>,
     effects_enabled: bool,
     record_mask: u64,
+    lists: ListPayload,
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
     let mut owned_arguments = Vec::new();
@@ -484,7 +499,12 @@ fn new_coroutine(
             effect_call: effects_enabled.then_some(send_self as wings_abi::EffectCall),
         };
         let status = match unsafe {
-            crate::aot_heap::import_arguments(&mut context, &mut owned_arguments, record_mask)
+            crate::aot_heap::import_arguments(
+                &mut context,
+                &mut owned_arguments,
+                record_mask,
+                &lists,
+            )
         } {
             Ok(()) => unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) },
             Err(status) => status,
@@ -662,7 +682,7 @@ unsafe extern "C" fn send_self(
     if output.is_null()
         || count > 64
         || (count != 0 && arguments.is_null())
-        || (request.record_mask != 0
+        || ((request.record_mask | request.list_mask) != 0
             && !matches!(
                 request.operation,
                 wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
@@ -675,7 +695,9 @@ unsafe extern "C" fn send_self(
     if count != 0 {
         copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
     }
-    if count < 64 && request.record_mask >> count != 0 {
+    if request.record_mask & request.list_mask != 0
+        || (count < 64 && (request.record_mask | request.list_mask) >> count != 0)
+    {
         return wings_abi::STATUS_INVALID_CONTROL;
     }
     if request.record_mask != 0 {
@@ -691,6 +713,12 @@ unsafe extern "C" fn send_self(
             }
         }
     }
+    let lists = match unsafe {
+        crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask)
+    } {
+        Ok(lists) => lists,
+        Err(status) => return status,
+    };
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
@@ -703,6 +731,7 @@ unsafe extern "C" fn send_self(
             callback: request.callback as usize,
             timeout_ms: request.timeout_ms,
             record_mask: request.record_mask,
+            lists,
         }),
     };
     let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
@@ -725,7 +754,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effect_record_mask_rejects_missing_heap_and_out_of_range_bits_before_yield() {
+    fn fixed_worker_invocation_reservation_covers_owned_payload_and_control() {
+        let maximum = std::mem::size_of::<Invocation>()
+            + std::mem::size_of::<ExecutionCoroutine>()
+            + std::mem::size_of::<Checkpoint>()
+            + std::mem::size_of::<ListPayload>()
+            + 64 * std::mem::size_of::<i64>()
+            + 256;
+        assert!(maximum <= 4096, "invocation control needs {maximum} bytes");
+    }
+
+    #[test]
+    fn effect_reference_masks_reject_overlap_missing_heap_and_invalid_bits_before_yield() {
         let cancelled = AtomicU32::new(0);
         let mut context = ScalarContext {
             cancellation: &cancelled,
@@ -750,6 +790,7 @@ mod tests {
             callback: 0,
             timeout_ms: 0,
             record_mask: 2,
+            list_mask: 0,
         };
         let mut output = 777;
         assert_eq!(
@@ -761,6 +802,23 @@ mod tests {
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_ROOT
         );
+        request.record_mask = 0;
+        request.list_mask = 2;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.list_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_ROOT
+        );
+        request.record_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.list_mask = 0;
         let all_arguments = [1; 64];
         request.arguments = all_arguments.as_ptr();
         request.count = 64;
@@ -776,6 +834,12 @@ mod tests {
             u32::MAX,
         ] {
             request.operation = operation;
+            assert_eq!(
+                unsafe { send_self(&mut context, &request, &mut output) },
+                wings_abi::STATUS_INVALID_CONTROL
+            );
+            request.record_mask = 0;
+            request.list_mask = u64::MAX;
             assert_eq!(
                 unsafe { send_self(&mut context, &request, &mut output) },
                 wings_abi::STATUS_INVALID_CONTROL

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::ingress::IngressReceiver;
 use crate::ingress_requests::ReplyPublisher;
+use crate::message_values::ListPayload;
 use crate::timer::DeadlineTimer;
 use crate::{
     CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, IngressSender,
@@ -165,6 +166,7 @@ struct Message {
     system: bool,
     external: Option<ReplyPublisher>,
     record_mask: u64,
+    lists: ListPayload,
     _charge: Reservation,
 }
 
@@ -557,9 +559,18 @@ impl ScalarWorker {
         max_steps: u64,
         request: Option<RequestId>,
     ) -> Result<(), String> {
-        self.enqueue_payload(pid, handler, arguments, max_steps, request, 0)
+        self.enqueue_payload(
+            pid,
+            handler,
+            arguments,
+            max_steps,
+            request,
+            0,
+            &ListPayload::default(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_payload(
         &mut self,
         pid: Pid,
@@ -568,6 +579,7 @@ impl ScalarWorker {
         max_steps: u64,
         request: Option<RequestId>,
         record_mask: u64,
+        lists: &ListPayload,
     ) -> Result<(), String> {
         let actor = self.actor_mut(pid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
@@ -587,13 +599,22 @@ impl ScalarWorker {
             .fold(0u64, |mask, (index, (_, ty))| {
                 mask | (u64::from(*ty == wings_abi::ValueType::Ref) << index)
             });
+        let list_mask =
+            schema
+                .parameters
+                .iter()
+                .enumerate()
+                .fold(0u64, |mask, (index, (_, ty))| {
+                    mask | (u64::from(*ty == wings_abi::ValueType::ListRef) << index)
+                });
         if record_mask != expected_mask
+            || !lists.valid(arguments, list_mask)
             || arguments.len() != schema.parameters.len()
             || arguments.len() > MAX_ARGUMENTS
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| *ty != wings_abi::ValueType::Ref && !ty.accepts(*value))
+                .any(|(value, (_, ty))| !ty.is_reference() && !ty.accepts(*value))
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
@@ -616,6 +637,7 @@ impl ScalarWorker {
             system: false,
             external: None,
             record_mask,
+            lists: *lists,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -651,6 +673,7 @@ impl ScalarWorker {
                             system: false,
                             external: envelope.reply,
                             record_mask: 0,
+                            lists: ListPayload::default(),
                             _charge: envelope.charge,
                         });
                         actor.mailbox.count += 1;
@@ -677,6 +700,7 @@ impl ScalarWorker {
                     &actor.pool,
                     message.system,
                     message.record_mask,
+                    &message.lists,
                 )?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .take()
@@ -903,6 +927,7 @@ impl ScalarWorker {
                             budget,
                             None,
                             effect.record_mask,
+                            &effect.lists,
                         )
                         .is_ok()
                     });
@@ -1093,6 +1118,7 @@ impl ScalarWorker {
             budget,
             Some(request),
             effect.record_mask,
+            &effect.lists,
         )?;
         self.requests[index].pending = Some(PendingRequest {
             target,
@@ -1152,6 +1178,7 @@ impl ScalarWorker {
                 system: true,
                 external: None,
                 record_mask: 0,
+                lists: ListPayload::default(),
                 _charge: completion.charge,
             };
             let actor = self.actor_mut(owner).expect("completion recipient");

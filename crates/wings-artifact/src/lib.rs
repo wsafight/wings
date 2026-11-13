@@ -76,13 +76,11 @@ impl Manifest {
         }) {
             return Err("Pid cannot cross scalar artifact boundaries; RequestId is only allowed in completion events".into());
         }
-        if self.handlers.iter().any(|handler| {
-            handler.reply.is_some_and(ValueType::is_reference)
-                || handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::ListRef)
-        }) {
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.reply.is_some_and(ValueType::is_reference))
+        {
             return Err("record references cannot cross scalar artifact boundaries".into());
         }
         let mut names = HashSet::new();

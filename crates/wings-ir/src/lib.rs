@@ -181,13 +181,11 @@ impl Program {
         {
             return Err("Pid is only supported as a local value".into());
         }
-        if self.handlers.iter().any(|handler| {
-            handler.reply.is_some_and(ValueType::is_reference)
-                || handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::ListRef)
-        }) {
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.reply.is_some_and(ValueType::is_reference))
+        {
             return Err("record references cannot cross scalar IR boundaries".into());
         }
         if self.handlers.len() > MAX_HANDLERS {
@@ -422,6 +420,7 @@ impl Function {
                                         | ValueType::Bool
                                         | ValueType::Unit
                                         | ValueType::Ref
+                                        | ValueType::ListRef
                                 )
                             })
                         })
@@ -445,6 +444,7 @@ impl Function {
                                         | ValueType::Bool
                                         | ValueType::Unit
                                         | ValueType::Ref
+                                        | ValueType::ListRef
                                 )
                             })
                         })
@@ -470,6 +470,7 @@ impl Function {
                                         | ValueType::Bool
                                         | ValueType::Unit
                                         | ValueType::Ref
+                                        | ValueType::ListRef
                                 )
                             })
                         })

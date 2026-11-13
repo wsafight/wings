@@ -7,6 +7,7 @@ use wings_abi::{
     ShadowFrame,
 };
 
+use crate::message_values::{ListPayload, MAX_LIST_ELEMENTS};
 use crate::{
     FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation,
     ResourceAccount, Resources, ShadowRoots, StackPool,
@@ -166,34 +167,137 @@ impl AotHeap {
             _ => Err(STATUS_INVALID_ROOT),
         }
     }
+
+    fn list_node(&self, encoded: i64) -> Result<Option<(i64, i64)>, u32> {
+        let reference = self
+            .list_reference(encoded as u64)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        if self
+            .heap
+            .has_layout(reference, self.empty_list)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+        {
+            return Ok(None);
+        }
+        let RecordValue::Int(value) = self
+            .heap
+            .get(reference, 0)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+        else {
+            return Err(STATUS_INVALID_ROOT);
+        };
+        let RecordValue::Ref(tail) = self
+            .heap
+            .get(reference, 1)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+        else {
+            return Err(STATUS_INVALID_ROOT);
+        };
+        Ok(Some((value, tail.encoded() as i64)))
+    }
+}
+
+pub(crate) unsafe fn export_lists(
+    context: &mut ScalarContext,
+    arguments: &mut [i64],
+    mask: u64,
+) -> Result<ListPayload, u32> {
+    let mut payload = ListPayload {
+        mask,
+        ..ListPayload::default()
+    };
+    for (index, argument) in arguments.iter_mut().enumerate() {
+        if mask & (1u64 << index) == 0 {
+            continue;
+        }
+        let start = payload.count;
+        let mut current = *argument;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { context.heap_data.cast::<AotHeap>().as_ref() }
+                .ok_or(STATUS_INVALID_ROOT)?;
+            let Some((value, tail)) = heap.list_node(current)? else {
+                break;
+            };
+            if payload.count == MAX_LIST_ELEMENTS {
+                return Err(wings_abi::STATUS_SEND_REJECTED);
+            }
+            payload.values[payload.count] = value;
+            payload.count += 1;
+            current = tail;
+        }
+        *argument = ListPayload::encode(start, payload.count - start);
+    }
+    Ok(payload)
 }
 
 pub(crate) unsafe fn import_arguments(
     context: &mut ScalarContext,
     arguments: &mut [i64],
     mask: u64,
+    lists: &ListPayload,
 ) -> Result<(), u32> {
+    if !lists.valid(arguments, lists.mask)
+        || mask & lists.mask != 0
+        || (arguments.len() < 64 && mask >> arguments.len() != 0)
+    {
+        return Err(STATUS_INVALID_CONTROL);
+    }
     for (index, argument) in arguments.iter_mut().enumerate() {
-        if mask & (1u64 << index) == 0 {
+        let bit = 1u64 << index;
+        if (mask | lists.mask) & bit == 0 {
             continue;
         }
         if context.heap_data.is_null() {
             return Err(STATUS_HEAP_EXHAUSTED);
         }
         crate::execution::runtime_checkpoint(context, true)?;
-        let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.layout;
-        let encoded = unsafe { allocate_managed(context, layout, &[RecordValue::Int(*argument)]) }?;
-        let heap = unsafe { &mut *context.heap_data.cast::<AotHeap>() };
-        let reference = heap
-            .heap
-            .import_reference(encoded)
-            .map_err(|_| STATUS_INVALID_ROOT)?;
-        heap.incoming[index] = Some(reference);
+        let mut encoded = if mask & bit != 0 {
+            let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.layout;
+            unsafe { allocate_managed(context, layout, &[RecordValue::Int(*argument)]) }?
+        } else {
+            let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.empty_list;
+            unsafe { allocate_managed(context, layout, &[RecordValue::Unit]) }?
+        };
+        unsafe { root_incoming(context, index, encoded) }?;
+        if lists.mask & bit != 0 {
+            let (start, length) = ListPayload::segment(*argument);
+            for value in lists.values[start..start + length].iter().rev() {
+                crate::execution::runtime_checkpoint(context, true)?;
+                let heap = unsafe { &*context.heap_data.cast::<AotHeap>() };
+                let tail = heap
+                    .heap
+                    .import_reference(encoded)
+                    .map_err(|_| STATUS_INVALID_ROOT)?;
+                let layout = heap.cons_list;
+                encoded = unsafe {
+                    allocate_managed(
+                        context,
+                        layout,
+                        &[RecordValue::Int(*value), RecordValue::Ref(tail)],
+                    )
+                }?;
+                unsafe { root_incoming(context, index, encoded) }?;
+            }
+        }
         *argument = encoded as i64;
     }
     Ok(())
 }
 
+unsafe fn root_incoming(
+    context: &mut ScalarContext,
+    index: usize,
+    encoded: u64,
+) -> Result<(), u32> {
+    let heap = unsafe { &mut *context.heap_data.cast::<AotHeap>() };
+    let reference = heap
+        .heap
+        .import_reference(encoded)
+        .map_err(|_| STATUS_INVALID_ROOT)?;
+    heap.incoming[index] = Some(reference);
+    Ok(())
+}
 unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
     let pointer = context.heap_data.cast::<AotHeap>();
     let mut collection = {
@@ -364,6 +468,197 @@ mod tests {
         (vm, AotHeap::new(&account, capacity).unwrap())
     }
 
+    fn context(heap: &mut AotHeap, flag: &std::sync::atomic::AtomicU32) -> ScalarContext {
+        ScalarContext {
+            cancellation: flag,
+            remaining_steps: 4096,
+            yield_request: flag,
+            slice_remaining: 1,
+            slow_path: Some(collect_on_resume),
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: None,
+            heap_data: std::ptr::from_mut(heap).cast(),
+            effect_call: None,
+        }
+    }
+
+    unsafe extern "C" fn collect_on_resume(pointer: *mut ScalarContext) -> u32 {
+        let context = unsafe { &mut *pointer };
+        let heap = unsafe { &mut *context.heap_data.cast::<AotHeap>() };
+        if unsafe { heap.collect(context.roots) }.is_err() {
+            return STATUS_INVALID_ROOT;
+        }
+        context.slice_remaining = 1;
+        STATUS_OK
+    }
+
+    unsafe extern "C" fn resume_one_step(pointer: *mut ScalarContext) -> u32 {
+        unsafe { (*pointer).slice_remaining = 1 };
+        STATUS_OK
+    }
+
+    #[test]
+    fn list_exports_poll_each_node_keep_source_roots_and_reject_stale_layouts() {
+        let (vm, mut heap) = fixture(68);
+        let mut tail = heap
+            .heap
+            .allocate(heap.empty_list, &[RecordValue::Unit])
+            .unwrap();
+        for value in 0..65 {
+            tail = heap
+                .heap
+                .allocate(
+                    heap.cons_list,
+                    &[RecordValue::Int(value), RecordValue::Ref(tail)],
+                )
+                .unwrap();
+        }
+        let nodes = [tail.encoded()];
+        let frame = ShadowFrame {
+            previous: std::ptr::null(),
+            slots: nodes.as_ptr(),
+            count: 1,
+        };
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.roots = &frame;
+        let mut arguments = [tail.encoded() as i64];
+        assert!(matches!(
+            unsafe { export_lists(&mut context, &mut arguments, 1) },
+            Err(wings_abi::STATUS_SEND_REJECTED)
+        ));
+        assert_eq!(arguments[0], tail.encoded() as i64);
+        let Some((_, shorter)) = heap.list_node(tail.encoded() as i64).unwrap() else {
+            panic!("expected nonempty list")
+        };
+        let mut arguments = [shorter];
+        context.remaining_steps = 65;
+        let payload = unsafe { export_lists(&mut context, &mut arguments, 1) }.unwrap();
+        assert!(payload.valid(&arguments, 1));
+        assert_eq!(context.remaining_steps, 0);
+        assert_eq!(payload.count, 64);
+        assert_eq!(
+            payload.values,
+            std::array::from_fn(|index| 63 - index as i64)
+        );
+        let mut arguments = [shorter];
+        context.remaining_steps = 2;
+        assert!(matches!(
+            unsafe { export_lists(&mut context, &mut arguments, 1) },
+            Err(wings_abi::STATUS_BUDGET_EXHAUSTED)
+        ));
+        flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            unsafe { export_lists(&mut context, &mut arguments, 1) },
+            Err(wings_abi::STATUS_CANCELLED)
+        ));
+        flag.store(0, std::sync::atomic::Ordering::SeqCst);
+        context.remaining_steps = 4096;
+        let record = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .unwrap();
+        let mut arguments = [record.encoded() as i64];
+        context.slice_remaining = 1;
+        assert!(matches!(
+            unsafe { export_lists(&mut context, &mut arguments, 1) },
+            Err(STATUS_INVALID_ROOT)
+        ));
+        context.roots = std::ptr::null();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        let mut arguments = [shorter];
+        assert!(matches!(
+            unsafe { export_lists(&mut context, &mut arguments, 1) },
+            Err(STATUS_INVALID_ROOT)
+        ));
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn list_imports_root_each_tail_and_prior_mixed_arguments_at_every_checkpoint() {
+        let (vm, mut heap) = fixture(9);
+        for _ in 0..9 {
+            heap.heap
+                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .unwrap();
+        }
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.slice_remaining = 0;
+        let payload = ListPayload {
+            mask: 0b10101,
+            count: 4,
+            values: std::array::from_fn(|index| [i64::MIN, i64::MAX, -7, 9][index % 4]),
+        };
+        let mut arguments = [
+            ListPayload::encode(0, 2),
+            17,
+            ListPayload::encode(2, 2),
+            1,
+            ListPayload::encode(4, 0),
+        ];
+        unsafe { import_arguments(&mut context, &mut arguments, 2, &payload) }.unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.record_value(arguments[1]), Ok(17));
+        assert_eq!(heap.stats().allocated, 8);
+        for (index, expected) in [(0, vec![i64::MIN, i64::MAX]), (2, vec![-7, 9]), (4, vec![])] {
+            let mut current = arguments[index];
+            for value in expected {
+                let Some((actual, tail)) = heap.list_node(current).unwrap() else {
+                    panic!("short list")
+                };
+                assert_eq!(actual, value);
+                current = tail;
+            }
+            assert_eq!(heap.list_node(current).unwrap(), None);
+        }
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        let mut arguments = [0; 64];
+        let empty_payload = ListPayload {
+            mask: u64::MAX,
+            ..ListPayload::default()
+        };
+        context.remaining_steps = 4096;
+        context.slow_path = Some(resume_one_step);
+        assert_eq!(
+            unsafe { import_arguments(&mut context, &mut arguments, 0, &empty_payload) },
+            Err(STATUS_HEAP_EXHAUSTED)
+        );
+        assert_eq!(heap.stats().allocated, 9);
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn all_64_empty_list_parameters_have_independent_incoming_roots() {
+        let (vm, mut heap) = fixture(64);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        let mut arguments = [0; 64];
+        let payload = ListPayload {
+            mask: u64::MAX,
+            ..ListPayload::default()
+        };
+        unsafe { import_arguments(&mut context, &mut arguments, 0, &payload) }.unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 64);
+        for argument in arguments {
+            assert_eq!(heap.list_node(argument).unwrap(), None);
+        }
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
     #[test]
     fn imports_all_64_record_parameters_including_the_highest_mask_bit() {
         let (vm, mut heap) = fixture(64);
@@ -382,7 +677,15 @@ mod tests {
             effect_call: None,
         };
         let mut arguments = std::array::from_fn::<_, 64, _>(|index| index as i64 - 32);
-        unsafe { import_arguments(&mut context, &mut arguments, u64::MAX) }.unwrap();
+        unsafe {
+            import_arguments(
+                &mut context,
+                &mut arguments,
+                u64::MAX,
+                &ListPayload::default(),
+            )
+        }
+        .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.stats().allocated, 64);
         assert_eq!(context.remaining_steps, 192);
@@ -426,7 +729,8 @@ mod tests {
             effect_call: None,
         };
         let mut arguments = [11, 22];
-        unsafe { import_arguments(&mut context, &mut arguments, 3) }.unwrap();
+        unsafe { import_arguments(&mut context, &mut arguments, 3, &ListPayload::default()) }
+            .unwrap();
         assert_eq!(heap.record_value(arguments[0]), Ok(11));
         assert_eq!(heap.record_value(arguments[1]), Ok(22));
         let first = heap.heap.import_reference(arguments[0] as u64).unwrap();

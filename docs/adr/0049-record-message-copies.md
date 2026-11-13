@@ -1,6 +1,7 @@
 # ADR-0049：RecordInt 消息的按值复制与入口根
 
 - 日期：2026-11-13
+- 后续：[ADR-0051](0051-bounded-int-list-messages.md) 升至 ABI v12 并增加有界 IntList 消息载荷，RecordInt 复制及入口根契约保留。
 - 状态：已采纳（引用消息切片）
 - 扩展：[ADR-0026](0026-language-temporary-records.md) 的记录消息限制
 - 相关：[ADR-0025](0025-aot-record-roots.md)、[ADR-0039](0039-local-process-capabilities.md)、[ADR-0040](0040-language-request-events.md)

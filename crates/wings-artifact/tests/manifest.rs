@@ -126,7 +126,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn accepts_record_state_and_copied_record_parameters_but_not_reference_replies_or_lists() {
+fn accepts_reference_state_and_copied_parameters_but_not_reference_replies() {
     for ty in [ValueType::Ref, ValueType::ListRef] {
         let mut with_state = manifest();
         with_state.state = ty;
@@ -140,7 +140,7 @@ fn accepts_record_state_and_copied_record_parameters_but_not_reference_replies_o
                     .push(("reference".into(), ty)),
                 _ => manifest.handlers[0].reply = Some(ty),
             }
-            if ty == ValueType::Ref && boundary == 1 {
+            if boundary == 1 {
                 manifest.validate().unwrap();
             } else {
                 rejects(&manifest, "cannot cross scalar artifact boundaries");

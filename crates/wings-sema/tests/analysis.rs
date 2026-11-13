@@ -210,16 +210,14 @@ fn lists_have_distinct_types_across_builtins_state_functions_and_messages() {
     ] {
         assert_error(&handler(body), code, fragment);
     }
-    for declaration in [
-        "on Work(value: IntList) {}",
-        "on Get -> IntList { empty_ints() }",
-    ] {
-        assert_error(
-            &format!("process P {{ state n: Int = 0; {declaration} }}"),
-            "T011",
-            "IntList is not supported",
-        );
-    }
+    checked(
+        "process P { state n: Int = 0; on Work(value: IntList) { collect(); let first = is_empty_ints(value) } }",
+    );
+    assert_error(
+        "process P { state n: Int = 0; on Get -> IntList { empty_ints() } }",
+        "T011",
+        "IntList is not supported",
+    );
 }
 
 #[test]
@@ -411,7 +409,7 @@ fn accepts_record_state_and_message_fields_but_rejects_reference_replies() {
         "expected RecordInt",
     );
     for source in [
-        "process P { state n: Int = 0; on Get(value: IntList) {} }",
+        "process P { state n: Int = 0; on Get -> IntList { empty_ints() } }",
         "process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }",
     ] {
         assert_error(source, "T011", "not supported in message");

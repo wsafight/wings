@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0051](adr/0051-bounded-int-list-messages.md) 的 `list_messages` 由受限 AOT 脚本验证跨 actor/self、整数异步请求、多列表混合 RecordInt/Bool、空列表、共享尾独立复制、总元素 64 成功/65 拒绝、源失败不撤回及目标堆满。三个入口各 160 个单步 stop/Drop 边界及预建 64 元素列表后的 320 个复制边界核对资源归零，后者检查确实覆盖源遍历和目标中途重建。`--check-list-message-roots` 在 heap/slow/effect 前强制 GC，核对最后使用的整个源列表及混合 mask。内部测试验证逐节点预算/取消、重建期间强制 GC、整数极值、全部 64 个空列表入口根、规范段/schema、stale/布局和 mask 拒绝；宿主/JSON/ingress 不接受原 handle 或段编码。没有列表性能或完整 MVP 结论。
+
 最新已执行结果见 [2026-11-13 验证记录](validation-2026-11-13.md)：macOS 原生回归通过；Linux x86-64 隔离仿真通过独立 debug/release 测试及 release AOT 全回归，debug 大型编译触及既有 CPU 上限。不是双平台原生 CI、M0 或性能验收通过。
 
 隔离环境可在 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后以 `WINGS_PREBUILT_EXAMPLES=1 python3 scripts/verify_scalar_aot.py` 直接运行全部已有示例，不在子进程内再次调用 Cargo。交叉构建可用绝对 `WINGS_TARGET_DIR` 指向包含 `debug`/`release` 的目录，release 仍设 `WINGS_PROFILE=release`；目标环境必须有 Python 和本机 C linker。执行上限、真实 AOT 编译/加载和断言不变；仿真执行只作功能证据，不能代替原生性能或完整双平台 CI。

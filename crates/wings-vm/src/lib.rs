@@ -14,6 +14,7 @@ mod execution;
 mod heap;
 mod ingress;
 mod ingress_requests;
+mod message_values;
 mod module;
 mod resources;
 mod stack_pool;
@@ -160,7 +161,13 @@ impl ScalarProcess {
         arguments: &[i64],
         system: bool,
     ) -> Result<usize, String> {
-        self.validate_handler_payload(handler, arguments, system, 0)
+        self.validate_handler_payload(
+            handler,
+            arguments,
+            system,
+            0,
+            &message_values::ListPayload::default(),
+        )
     }
 
     fn validate_handler_payload(
@@ -169,6 +176,7 @@ impl ScalarProcess {
         arguments: &[i64],
         system: bool,
         record_mask: u64,
+        lists: &message_values::ListPayload,
     ) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
@@ -187,14 +195,22 @@ impl ScalarProcess {
             .fold(0u64, |mask, (index, (_, ty))| {
                 mask | (u64::from(*ty == ValueType::Ref) << index)
             });
+        let list_mask = schema
+            .parameters
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, (_, ty))| {
+                mask | (u64::from(*ty == ValueType::ListRef) << index)
+            });
         if record_mask != expected_mask
+            || !lists.valid(arguments, list_mask)
             || arguments.len() != schema.parameters.len()
             || arguments
                 .iter()
                 .zip(&schema.parameters)
                 .any(|(value, (_, ty))| {
                     !ty.accepts(*value)
-                        && *ty != ValueType::Ref
+                        && !ty.is_reference()
                         && !(system && *ty == ValueType::RequestId && *value > 0)
                 })
         {

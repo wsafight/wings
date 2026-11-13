@@ -1,6 +1,6 @@
 # wings-lang
 
-[ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息、引用回复、外部宿主/JSON/ingress 原 handle 仍拒绝。示例 `examples/record-messages.wings`。
+[ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息由 [ADR-0051](adr/0051-bounded-int-list-messages.md) 扩展：一条消息全部列表合计最多 64 个整数，逐节点检查预算与取消；引用回复、外部宿主/JSON/ingress 原 handle 或段编码仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings`。
 
 `examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。
 
@@ -22,7 +22,7 @@
 
 handler 内 `send_self(Message, args...)` 以本 process 单向入口为静态目标，调用点入队、返回 Unit；初始化/fn 禁止，只能由 worker 驱动。失败不撤回此前发送，队满/额度拒绝受管失败，见 [ADR-0038](adr/0038-self-send-effects.md)。同 worker 同模块创建/发送由 ADR-0039 扩展，异步整数请求事件由 ADR-0040 扩展。
 
-`IntList` 支持 `empty_ints()`、`prepend_int(Int, IntList)`、`head_int(IntList)`、`tail_ints(IntList)` 和 `is_empty_ints(IntList)`；可作 state/局部/fn 值，不可作消息参数/回复。列表不可变，空 head/tail 受管失败，节点及共享尾计费/根边界见 [ADR-0037](adr/0037-immutable-int-lists.md)。
+`IntList` 支持 `empty_ints()`、`prepend_int(Int, IntList)`、`head_int(IntList)`、`tail_ints(IntList)` 和 `is_empty_ints(IntList)`；可作 state/局部/fn 值和有界语言消息参数，不可作回复。列表不可变，空 head/tail 受管失败，节点及共享尾计费/根边界见 [ADR-0037](adr/0037-immutable-int-lists.md)。
 
 process 内可按 [ADR-0042](adr/0042-managed-function-frames.md) 声明有显式参数/返回类型的 `fn`：只访问参数/局部和更早函数，不访问 state，禁止递归/while。私有受管调用支持记录/列表参数与返回、collect，逐帧保留精确根；每函数最多 4096 IR 操作、全程序最多 65536 操作，聚合根和剩余栈也须准入。
 
@@ -165,7 +165,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v11 不兼容已发布 `0.0.2` 及旧源码 v2–v10 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v12 不兼容已发布 `0.0.2` 及旧源码 v2–v11 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 

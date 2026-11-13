@@ -1,0 +1,85 @@
+process ListMessages {
+  state saved: IntList = empty_ints()
+
+  on Start(value: Int, fail: Bool) -> Int {
+    let child = spawn_self()
+    let message = prepend_int(value, prepend_int(value + 1, empty_ints()))
+    send(child, Store, message)
+    collect()
+    if fail { 1 / 0 } else { head_int(message) }
+  }
+
+  on Self(value: Int) -> Int {
+    let message = prepend_int(value, prepend_int(value + 1, empty_ints()))
+    send_self(Store, message)
+    collect()
+    head_int(message)
+  }
+
+  on Ask(value: Int) -> Int {
+    let child = spawn_self()
+    let id = request(child, Compute, Completed, 60000,
+      prepend_int(value, prepend_int(value + 1, empty_ints())))
+    if is_empty_ints(saved) { -1 } else { head_int(saved) }
+  }
+
+  on Mixed(value: Int) -> Int {
+    let child = spawn_self()
+    let message = prepend_int(value, prepend_int(value + 1, empty_ints()))
+    send(child, StoreMixed, message, true, record_int(value + 2), tail_ints(message), empty_ints())
+    value
+  }
+
+  on Fill(count: Int, twice: Bool) -> Int {
+    saved = empty_ints()
+    while if is_empty_ints(saved) { count > 0 } else { head_int(saved) < count } {
+      saved = prepend_int(if is_empty_ints(saved) { 1 } else { head_int(saved) + 1 }, saved)
+    }
+    let child = spawn_self()
+    if twice { send(child, StoreBoth, saved, saved) } else { send(child, Store, saved) }
+    count
+  }
+
+  on Empty -> Int { send_self(Store, empty_ints()); 0 }
+
+  on Prepare(count: Int) -> Int {
+    saved = empty_ints()
+    while if is_empty_ints(saved) { count > 0 } else { head_int(saved) < count } {
+      saved = prepend_int(if is_empty_ints(saved) { 1 } else { head_int(saved) + 1 }, saved)
+    }
+    count
+  }
+
+  on Copy -> Int { let child = spawn_self(); send(child, Store, saved); head_int(saved) }
+
+  on Store(value: IntList) { collect(); saved = value; collect() }
+
+  on StoreBoth(first: IntList, second: IntList) {
+    collect()
+    saved = if head_int(first) == head_int(second) { second } else { empty_ints() }
+    collect()
+  }
+
+  on StoreMixed(first: IntList, flag: Bool, record: RecordInt, second: IntList, empty: IntList) {
+    collect()
+    saved = prepend_int(head_int(first) + head_int(second) + read_int(record)
+      + if flag { 1 } else { 0 } + if is_empty_ints(empty) { 0 } else { 100 }, empty)
+    collect()
+  }
+
+  on Compute(value: IntList) -> Int {
+    collect()
+    head_int(value) + head_int(tail_ints(value))
+  }
+
+  on Completed(id: RequestId, status: Int, value: Int) {
+    saved = prepend_int(status * 100 + value, empty_ints())
+  }
+
+  on Read -> Int { collect(); if is_empty_ints(saved) { -1 } else { head_int(saved) } }
+  on Next -> Int {
+    collect()
+    let rest = if is_empty_ints(saved) { saved } else { tail_ints(saved) }
+    if is_empty_ints(rest) { -1 } else { head_int(rest) }
+  }
+}

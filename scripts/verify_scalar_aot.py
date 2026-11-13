@@ -206,7 +206,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 11
+    assert manifest["abi"] == 12
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -297,7 +297,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v11 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v12 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -311,7 +311,7 @@ def example(name, *arguments):
     return cargo_example("wings-vm", name, "--trusted", *arguments)
 
 
-def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False):
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False, list_messages=False):
     import ctypes
 
     class Output(ctypes.Structure):
@@ -424,7 +424,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     effect_status = 0
     reject_operation = None
     class EffectRequest(ctypes.Structure):
-        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64)]
+        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64), ("list_mask", ctypes.c_uint64)]
 
     effect_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.POINTER(EffectRequest), ctypes.POINTER(ctypes.c_int64))
 
@@ -437,17 +437,28 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 assert current.operation in [0, 2, 3, 4]
                 values = list(current.arguments[:current.count])
                 if current.operation == 2:
-                    assert current.count == current.record_mask == 0
-                    effects.append((current.operation, None, 0, []))
+                    assert current.count == current.record_mask == current.list_mask == 0
+                    effects.append((current.operation, None, 0, 0, []) if list_messages else (current.operation, None, 0, []))
                 else:
                     schema = manifest["handlers"][current.handler]
                     expected_mask = sum(1 << index for index, parameter in enumerate(schema["parameters"]) if parameter[1] == "Ref")
+                    expected_lists = sum(1 << index for index, parameter in enumerate(schema["parameters"]) if parameter[1] == "ListRef")
                     assert current.record_mask == expected_mask
+                    assert current.list_mask == expected_lists
                     for index, value in enumerate(values):
                         if expected_mask & (1 << index):
                             assert value in roots
                             values[index] = records[value]
-                    effects.append((current.operation, schema["name"], current.record_mask, values))
+                        elif expected_lists & (1 << index):
+                            assert value in roots
+                            copied = []
+                            while records[value] is not None:
+                                node = records[value]
+                                copied.append(node[1] if node[1] < 1 << 63 else node[1] - (1 << 64))
+                                value = node[2]
+                                assert len(copied) <= 64
+                            values[index] = copied
+                    effects.append((current.operation, schema["name"], current.record_mask, current.list_mask, values) if list_messages else (current.operation, schema["name"], current.record_mask, values))
                 pointer.contents.slice_remaining = 1
                 output[0] = 42 if current.operation == 2 else (43 if current.operation == 4 else 0)
                 return 0
@@ -476,7 +487,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 11 and manifest["state"] == ("ListRef" if lists else ("Int" if branches or loops else "Ref"))
+    assert manifest["abi"] == 12 and manifest["state"] == ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref"))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif lists:
@@ -512,6 +523,24 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return output
 
         output = execute(library.wings_scalar_init, [])
+        if list_messages:
+            committed = output.state
+            for name, values, expected_reply in [
+                ("Start", [23, 0], 23), ("Self", [29], 29),
+                ("Mixed", [31], 31), ("Ask", [37], -1), ("Empty", [], 0),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert output.reply == expected_reply and records[output.state] is None
+            assert effects == [
+                (2, None, 0, 0, []), (3, "Store", 0, 1, [[23, 24]]),
+                (0, "Store", 0, 1, [[29, 30]]),
+                (2, None, 0, 0, []), (3, "StoreMixed", 4, 25, [[31, 32], 1, 33, [32], []]),
+                (2, None, 0, 0, []), (4, "Compute", 0, 1, [[37, 38]]),
+                (0, "Store", 0, 1, [[]]),
+            ], effects
+            print("Compiler roots verified: list source graphs and mixed record/list last-use arguments at every effect")
+            return
         if record_messages:
             committed = output.state
             for name, values, expected_reply in [
@@ -785,6 +814,17 @@ def main():
             expected=1,
         )
         assert "not JSON arguments" in result.stderr
+        list_messages = parent / "list-messages"
+        command([COMPILER, "build", ROOT / "examples/list-messages.wings", "-o", list_messages])
+        example("list_messages", list_messages)
+        command([sys.executable, Path(__file__), "--check-list-message-roots", list_messages])
+        for name in ["Store", "Compute"]:
+            result = command(
+                [VM, "run", "--trusted", list_messages, "--heap-records", 16],
+                json.dumps(message(name, 2 << 32)) + "\n",
+                expected=1,
+            )
+            assert "not JSON arguments" in result.stderr
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
         verify_tcp_service(tcp_artifact)
@@ -1101,6 +1141,8 @@ if __name__ == "__main__":
         verify_persistent_roots(Path(sys.argv[2]), lists=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-message-roots":
         verify_persistent_roots(Path(sys.argv[2]), record_messages=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-message-roots":
+        verify_persistent_roots(Path(sys.argv[2]), record_messages=True, list_messages=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-self-send-roots":
         verify_persistent_roots(Path(sys.argv[2]), self_send=True)
     elif len(sys.argv) == 3 and sys.argv[1] == "--check-local-process-roots":
