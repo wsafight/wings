@@ -1,3 +1,5 @@
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -18,6 +20,7 @@ struct Workload {
     hot: bool,
     rate: u64,
     count: usize,
+    measure: bool,
 }
 
 fn number(text: &str) -> Result<u64, String> {
@@ -51,7 +54,19 @@ fn decode(name: &str, duration: &str, rate: &str) -> Result<Workload, String> {
         hot,
         rate,
         count,
+        measure: false,
     })
+}
+
+fn decode_measure(name: &str, rate: &str) -> Result<Workload, String> {
+    let mut workload = decode(name, "1", rate)?;
+    let base = if workload.hot { 10000 } else { 1000 };
+    if !(0..8).any(|power| workload.rate == base << power) {
+        return Err("measurement rate".into());
+    }
+    workload.count = workload.rate as usize * 90;
+    workload.measure = true;
+    Ok(workload)
 }
 
 impl Workload {
@@ -82,7 +97,72 @@ struct Sample {
 struct Pending {
     index: usize,
     expected: i64,
+    sent: u64,
     request: IngressRequest,
+}
+
+enum Recorder {
+    Smoke(Vec<Sample>),
+    Measure(BufWriter<File>),
+}
+
+fn event(sequence: u64, sent: u64, observed: u64, value: i64, kind: u64) -> [u8; 40] {
+    let mut output = [0; 40];
+    for (position, word) in [sequence, sent, observed, value as u64, kind]
+        .into_iter()
+        .enumerate()
+    {
+        output[position * 8..position * 8 + 8].copy_from_slice(&word.to_be_bytes());
+    }
+    output
+}
+
+impl Recorder {
+    fn arrival(&mut self, index: usize, sample: Sample) -> Result<(), String> {
+        match self {
+            Self::Smoke(samples) => samples.push(sample),
+            Self::Measure(writer) => {
+                let kind = match sample.status {
+                    "pending" => 0,
+                    "mailbox_full" => 3,
+                    "pending_full" => 4,
+                    _ => return Err("unknown admission".into()),
+                };
+                writer
+                    .write_all(&event(index as u64 + 1, sample.sent, 0, 0, kind))
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn reply(
+        &mut self,
+        entry: &Pending,
+        planned: u64,
+        observed: u64,
+        value: i64,
+    ) -> Result<(), String> {
+        let status = classify(planned, observed);
+        match self {
+            Self::Smoke(samples) => {
+                let sample = &mut samples[entry.index];
+                sample.status = status;
+                sample.observed = Some(observed);
+                sample.value = Some(value);
+            }
+            Self::Measure(writer) => writer
+                .write_all(&event(
+                    entry.index as u64 + 1,
+                    entry.sent,
+                    observed,
+                    value,
+                    if status == "reply" { 1 } else { 2 },
+                ))
+                .map_err(|error| error.to_string())?,
+        }
+        Ok(())
+    }
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, String> {
@@ -108,7 +188,8 @@ fn classify(planned: u64, observed: u64) -> &'static str {
 
 fn collect(
     pending: &mut Vec<Pending>,
-    samples: &mut [Sample],
+    recorder: &mut Recorder,
+    workload: Workload,
     start: Instant,
     cursor: &mut usize,
 ) -> Result<(), String> {
@@ -132,10 +213,7 @@ fn collect(
         if value != entry.expected {
             return Err("open-loop per-target FIFO/value".into());
         }
-        let sample = &mut samples[entry.index];
-        sample.status = classify(sample.planned, observed);
-        sample.observed = Some(observed);
-        sample.value = Some(value);
+        recorder.reply(&entry, workload.planned(entry.index), observed, value)?;
     }
     Ok(())
 }
@@ -149,7 +227,19 @@ fn limits() -> Resources {
     }
 }
 
-fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
+fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result<Value, String> {
+    let mut recorder = if let Some(path) = trace {
+        Recorder::Measure(BufWriter::with_capacity(
+            65536,
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|error| format!("measurement trace: {error}"))?,
+        ))
+    } else {
+        Recorder::Smoke(Vec::with_capacity(workload.count))
+    };
     let vm = ResourceAccount::vm(limits());
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
@@ -164,7 +254,7 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
     let handle = scheduler.handle();
     let configure = module.handler("Configure")?;
     let apply = module.handler("Apply")?;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(if workload.measure { 120 } else { 3 });
     let mut pids = Vec::with_capacity(workload.actors);
     for _ in 0..workload.actors {
         remaining(deadline)?;
@@ -200,15 +290,35 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
             }
         }
     }
-    let mut samples = Vec::with_capacity(workload.count);
     let mut pending = Vec::with_capacity(PENDING);
     let mut cursor = 0;
     let mut committed = vec![0i64; workload.actors];
+    if workload.measure {
+        println!(
+            "{}",
+            json!({"event": "start", "warmup_seconds": 30, "sample_seconds": 60})
+        );
+        std::io::stdout()
+            .flush()
+            .map_err(|error| error.to_string())?;
+    }
     let start = Instant::now();
-    while samples.len() < workload.count || !pending.is_empty() {
+    let mut next = 0;
+    let mut sampling = false;
+    while next < workload.count || !pending.is_empty() {
         remaining(deadline)?;
-        collect(&mut pending, &mut samples, start, &mut cursor)?;
-        let index = samples.len();
+        collect(&mut pending, &mut recorder, workload, start, &mut cursor)?;
+        if workload.measure && !sampling && elapsed(start) >= 30_000_000_000 {
+            println!(
+                "{}",
+                json!({"event": "sampling", "elapsed_ns": elapsed(start)})
+            );
+            std::io::stdout()
+                .flush()
+                .map_err(|error| error.to_string())?;
+            sampling = true;
+        }
+        let index = next;
         if index == workload.count || elapsed(start) < workload.planned(index) {
             std::thread::yield_now();
             continue;
@@ -231,6 +341,7 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
                     pending.push(Pending {
                         index,
                         expected: committed[target],
+                        sent,
                         request,
                     });
                     "pending"
@@ -240,13 +351,17 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
                 Err(error) => return Err(error),
             }
         };
-        samples.push(Sample {
-            planned,
-            sent,
-            status,
-            observed: None,
-            value: None,
-        });
+        recorder.arrival(
+            index,
+            Sample {
+                planned,
+                sent,
+                status,
+                observed: None,
+                value: None,
+            },
+        )?;
+        next += 1;
     }
     for (index, pid) in pids.iter().enumerate() {
         loop {
@@ -271,27 +386,33 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
         }
         handle.stop(*pid)?;
     }
-    let samples: Vec<_> = samples
-        .iter()
-        .enumerate()
-        .map(|(index, sample)| {
-            json!([
-                index + 1,
-                workload.target(index) + 1,
-                sample.planned,
-                sample.sent,
-                sample.status,
-                sample.observed,
-                sample.value
-            ])
-        })
-        .collect();
+    let samples: Vec<_> = match &mut recorder {
+        Recorder::Smoke(samples) => samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                json!([
+                    index + 1,
+                    workload.target(index) + 1,
+                    sample.planned,
+                    sample.sent,
+                    sample.status,
+                    sample.observed,
+                    sample.value
+                ])
+            })
+            .collect(),
+        Recorder::Measure(writer) => {
+            writer.flush().map_err(|error| error.to_string())?;
+            Vec::new()
+        }
+    };
     drop((handle, scheduler, apply, configure, module, tenant));
     if vm.used() != Resources::default() {
         return Err("open-loop resources retained".into());
     }
     Ok(
-        json!({"version": 5, "status": "ok", "mode": "smoke", "actors": workload.actors,
+        json!({"version": if workload.measure { 6 } else { 5 }, "status": "ok", "mode": if workload.measure { "measure" } else { "smoke" }, "actors": workload.actors,
         "state_bytes": workload.state_bytes, "mailbox_capacity": workload.mailbox,
         "rate": workload.rate, "deadline_ns": DEADLINE_NS, "pending_capacity": PENDING,
         "message_bytes": 32, "samples": samples, "committed": committed,
@@ -302,20 +423,35 @@ fn execute(directory: &Path, workload: Workload) -> Result<Value, String> {
 
 fn main() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    let workload = if arguments.len() == 5 && arguments[0] == "--trusted" {
+    let measure = arguments
+        .get(2)
+        .is_some_and(|argument| argument == "--measure");
+    let workload = if measure && arguments.len() == 6 && arguments[0] == "--trusted" {
+        decode_measure(&arguments[3], &arguments[4])
+    } else if arguments.len() == 5 && arguments[0] == "--trusted" {
         decode(&arguments[2], &arguments[3], &arguments[4])
     } else {
         Err("arguments".into())
     };
     let (code, result) = match workload {
-        Ok(workload) => match execute(Path::new(&arguments[1]), workload) {
+        Ok(workload) => match execute(
+            Path::new(&arguments[1]),
+            workload,
+            measure.then(|| Path::new(&arguments[5])),
+        ) {
             Ok(result) => (0, result),
             Err(error) => {
                 eprintln!("{error}");
-                (3, json!({"version": 5, "status": "oracle_error"}))
+                (
+                    3,
+                    json!({"version": if measure { 6 } else { 5 }, "status": "oracle_error"}),
+                )
             }
         },
-        Err(_) => (2, json!({"version": 5, "status": "invalid"})),
+        Err(_) => (
+            2,
+            json!({"version": if measure { 6 } else { 5 }, "status": "invalid"}),
+        ),
     };
     println!("{result}");
     std::process::exit(code);
@@ -324,6 +460,49 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_measurement_is_separate_and_fixed_duration() {
+        for power in 0..8 {
+            let workload = decode_measure("hot-queue", &(10000u64 << power).to_string()).unwrap();
+            assert!(workload.measure);
+            assert_eq!(workload.count, (10000usize << power) * 90);
+        }
+        for rate in ["0", "1000", "10001", "2560000", "false"] {
+            assert!(decode_measure("hot-queue", rate).is_err());
+        }
+        assert!(decode("hot-queue", "90000", "10000").is_err());
+        assert!(!decode("hot-queue", "100", "10000").unwrap().measure);
+    }
+
+    #[test]
+    fn binary_event_is_fixed_big_endian_with_signed_value() {
+        let encoded = event(17, 23, 31, -7, 2);
+        assert_eq!(encoded.len(), 40);
+        for (position, expected) in [17, 23, 31, -7i64 as u64, 2].into_iter().enumerate() {
+            assert_eq!(
+                u64::from_be_bytes(encoded[position * 8..position * 8 + 8].try_into().unwrap()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn measurement_trace_is_exclusive_and_existing_bytes_are_untouched() {
+        let path = std::env::temp_dir().join(format!(
+            "wings-measure-existing-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"keep trace").unwrap();
+        let workload = decode_measure("hot-queue", "10000").unwrap();
+        assert!(execute(Path::new("missing-artifact"), workload, Some(&path)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep trace");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn open_loop_limits_before_artifact_load() {

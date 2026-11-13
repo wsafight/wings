@@ -17,7 +17,7 @@
 | [评测与验收](docs/evaluation.md) | BEAM 对照、负载矩阵、指标、正确性与故障注入 |
 | [2026-11-13 验证记录](docs/validation-2026-11-13.md) | macOS 原生与 Linux x86-64 隔离仿真结果及未通过项 |
 | [2026-11-14 验证记录](docs/validation-2026-11-14.md) | 大容量稀疏派发、真实 AOT 与平台边界和剩余门禁 |
-| [BEAM 工作负载 v1/v2/v3/v4/v5](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入与短时开环正确性及后续性能协议 |
+| [BEAM 工作负载 v1–v6](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、短时开环和独立长时测量协议 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 
 ## 维护

@@ -1,6 +1,6 @@
-# BEAM 工作负载协议 v1/v2/v3/v4/v5
+# BEAM 工作负载协议 v1–v6
 
-本协议是 M0 的独立正确性切片，配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 已接入 Wings/BEAM 两端的固定字节 Counter，验证有界异步 request/reply、单发送者 FIFO、checked i64 和失败退出。**只有显式 `--compare-beam` 才实际运行 BEAM；不是性能实验，也不作性能或内存领先声明。** 不修改副作用或提交契约。
+本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。
 
 ## 已执行的最小业务
 
@@ -119,7 +119,30 @@ python3 scripts/verify_open_loop.py --compare-beam --output target/open-loop-smo
 WINGS_PROFILE=release python3 scripts/verify_open_loop.py --compare-beam --output target/open-loop-smoke-release
 ```
 
-脚本执行四组固定速率各 100ms、hot-queue 1ms×1280000/s、dense-64k 10ms×1000000/s，并保留全部迟发/拒绝/超时；后两项是短时压力，不要求两端都恰好拒绝或超时，更不是饱和点。`--artifact` 可复用产物，`--output` 保留原始 JSON；采样仍由被测进程自己的单调时钟完成。该驱动 busy-yield 的 CPU、固定采样和 gate 成本都必须纳入未来整机测量。长时 runner、预热/采样/五次重复、分位/尾延迟判定、饱和扫描、fairness 与整机内存尚未实现。
+脚本执行四组固定速率各 100ms、hot-queue 1ms×1280000/s、dense-64k 10ms×1000000/s，并保留全部迟发/拒绝/超时；后两项是短时压力，不要求两端都恰好拒绝或超时，更不是饱和点。`--artifact` 可复用产物，`--output` 保留原始 JSON；采样仍由被测进程自己的单调时钟完成。该驱动 busy-yield 的 CPU、固定采样和 gate 成本都必须纳入整机测量。长时入口另见 v6，不能将短测结果拼成完整验收。
+
+## v6：独立长时开环测量
+
+[ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为同一业务新增 `--measure <case> <rate> <new-trace-file>`，Wings 前置 `--trusted <artifact>`；只允许下表四组非 fairness 的基准速率乘 `2^0..2^7`。固定连续 90 秒，前 30 秒预热、后 60 秒按计划时刻分组采样，边界不暂停/重置 state 或清 pending；结果仍 checked +1、完整 state、原路由/mailbox 和 256 实际 pending。外部 100ms deadline、迟发不重基准、超时保留至实际回复、拒绝不重试均不变。
+
+每条到达和真实回复按发生顺序写 40 B big-endian：`sequence:u64, sent_ns:u64, observed_ns:u64, value:i64, kind:u64`。kind 0=接受到达，1=按时真实回复，2=超时后的真实回复，3=mailbox_full，4=pending_full；非回复的 observed/value 为零。先有接受再有回复，拒绝无回复，目标/计划由 sequence 重算。固定 64 KiB 缓冲，独占新建文件不覆盖，写入成本计入业务运行；不随总请求数分配内存样本。stdout 只有 start、sampling 和最终结果三个控制 JSON，stderr 非空、缺事件/截断/重复/未闭合 pending 都判实验无效，不能当成功或预期业务失败。
+
+长测独立 OS 子进程 CPU 240 秒/墙钟 130 秒/总阶段 120 秒/禁 core/单文件 10 GiB。最高允许 115200000 到达、最多 230400000 事件/9216000000 B，runner 在每点之前按十次最坏输出加 1 GiB 余量检查磁盘。v1–v5 的原 CPU 5 秒/墙钟 10 秒/总阶段 3 秒及完整 AOT 限制不变，默认 AOT 只增加模型/非法长测参数校验，不自动执行 90 秒实验。
+
+`measure_open_loop.py` 固定五次独立配对重复，交替两端先后顺序、同一时刻只跑一端；启动前冻结执行文件、BEAM/gate、artifact 和当前 tracked 源码及本切片新文件，逐个保存 SHA-256。默认只跑基准点，`--scan` 才最多八点翻倍；任一运行时有拒绝/超时/尾延迟失败则当前点五次跑完后停止提高，无失败点标扫描不充分。任何异常保留原始输出、失败 manifest，不自动重试或跳过。
+
+离线 verifier 逐条核对计划、路由、关联、pending≤256、拒绝/超时、每目标值及最终提交；BEAM 另验实际到达 FIFO。分位包含迟到实际回复，nearest-rank 精确计算，少于 10000 不报 p999。用三轮固定 16-bit radix 桶离线选秩，不存全量延迟数组；另报全部到达的迟发、拒绝/超时比例和最大值。固定候选要求无拒绝/超时、p99≤20ms、p999≤50ms；报告 `tail_candidate_pass` 不等同 BEAM 双目标达标。RSS 每秒取被测进程树加 Python 驱动及瞬时监测辅助进程，保留共享页重复统计含义；超过观测 1 GiB 安全停止不是 OS 硬内存配额。
+
+```sh
+cargo build --release --workspace --locked --bins --examples
+target/release/wings-compile build examples/beam-multi-counter.wings -o target/long-counter
+python3 scripts/verify_measurement.py --compare-beam
+WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --artifact target/long-counter --output target/long-hot
+```
+
+选择其他 case 或增加 `--scan`，但不能减少时段/重复次数。当前 runner 明确标注未验证主机隔离/CPU 硬配额、未记录电源/热状态/QoS/核分配，缺少 Linux PSS、macOS physical footprint/压缩/swap；因此只能提供长时集成证据和 RSS 观测。fairness、最新原生双平台、最大持续吞吐、完整整机内存与可试用 MVP 均未据此通过。
+
+本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。没有饱和扫描或 CPU/平台内存完整口径，不作最大持续吞吐/整机内存领先结论；其余三组与 fairness 仍待验证。
 
 ## 代表性负载与性能验收冻结条件
 
@@ -141,7 +164,7 @@ WINGS_PROFILE=release python3 scripts/verify_open_loop.py --compare-beam --outpu
 
 未来每行先做固定负载，再做同一行的有界饱和扫描；每点预热 30s、采样 60s、独立重复 5 次。饱和扫描从该行固定速率开始逐次翻倍，最多 8 点，出现拒绝或尾延迟超标即停止提高；未找到饱和点就明确报告扫描不充分。非 fairness 请求 deadline 固定 100ms，固定负载候选要求 p99 ≤20ms、p999 ≤50ms；拒绝和超时均计入总请求数、单独报告，不能靠删样达标。分位按 nearest-rank，少于 10000 个样本的分组不报 p999，须报样本数和最大值。fairness 的受限饱和方案另行冻结，不把心跳降频当作通过。
 
-以下性能场景验收仍为**未验证**；v1/v2/v3/v4/v5 的有界正确性证据不能替代它们：
+以下性能场景验收仍为**未验证**；v1–v5 的有界正确性及 v6 的部分测量证据不能替代完整验收：
 
 - `spawn`：父/子/租户/实例额度在创建前准入，失败不产生半创建对象；有限批量创建与退出后计费守恒，不能无限 spawn 测宿主 OOM。
 - `request/reply`：关联 ID、pending 表准入、至少两个发送者的各自 FIFO、成功状态先于回复；不要求跨发送者顺序。v3 已补安全加法闭环下的双发送者，未覆盖本节开环与拒绝；普通单向 `send` 单列，不能以 request 代替全部消息行为。
@@ -168,7 +191,7 @@ Wings 驱动位于 [`beam_counter.rs`](../crates/wings-vm/examples/beam_counter.
 
 Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目归零只证明逻辑清理，不证明 RSS。
 
-v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2，短时开环见 v5。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无长时开环、心跳、公平性、过载性能或吞吐/整机内存结果。
+v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2，短时开环见 v5，独立长时入口见 v6。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP，也不自动执行长测；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无心跳/公平性、完整过载性能或吞吐/整机内存门禁结论。
 
 原 BEAM 独立 oracle 仍可单独运行：
 

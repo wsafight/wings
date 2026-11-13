@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0069](adr/0069-streamed-open-loop-measurement.md) 的长测只延长独立测试宿主的实验时段，不放宽原 smoke 或 runtime 配额。仍最多 256 实际 pending，外部超时不撤回远端提交，最终未收齐实际结果即判实验无效；冻结副本和原始事件不等于完整资源账本或 OS 隔离。
+
 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 仅新增测试宿主的计划时刻开环：外部 100ms deadline 不取消远端业务，超时 pending 保留到实际结果，拒绝不重试。未改变 runtime 请求/状态提交契约；长时公平性、超时竞争与完整资源账本仍待验收。
 
 [ADR-0067](adr/0067-beam-bounded-admission.md) 的 BEAM 测试 gate 对已接受尚未开始的业务消息计数，满时显式拒绝；开始只允许绑定 actor 归还，关闭后不再接收/开始。占槽与 `!` 间若发生退出，该请求仍算已接受，宿主依据 DOWN 完成 pending，不自动重试；旧 gate 不指向新实例。这是可信对照驱动，不是 VM 内置或公共 SDK。

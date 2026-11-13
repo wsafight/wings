@@ -104,11 +104,33 @@ Linux 沿原 2 vCPU/4 GiB/QEMU TCG 隔离环境重新交叉构建 release 工具
 
 本机 v5 原始 JSON 保留于 `target/open-loop-smoke-debug` 和 `target/open-loop-smoke-release`，包含所有拒绝和迟到，不据短时比例推断持续吞吐或领先。所有正确性/AOT 原资源限制不变；依赖隔离、禁 unwind feature、84 份 Markdown 路径/围栏、Python 语法和 diff whitespace 检查通过。没有长时预热/采样/重复、饱和扫描、分位达标或整机内存结果，MVP 仍未完成。
 
+## 独立长时采样：ADR-0069
+
+基于 `245e7fe`，按 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 新增独立 `--measure`，固定连续 30 秒预热/60 秒采样、五次配对重复，可选最多八点翻倍；原 v1–v5 的 CPU 5 秒/墙钟 10 秒/总阶段 3 秒及 AOT CPU 20 秒/墙钟 30 秒不变。最多 256 实际 pending、完整 state 和原路由/mailbox 保留，外部超时不取消提交。每个到达/回复写固定 40 B 事件、64 KiB 缓冲，独占新建文件；离线以固定 radix 桶精确选择分位，不将全量延迟留在内存。冻结执行文件、Erlang/gate、artifact 与源码，写入及监测成本不扣除。
+
+### 本机长时集成结果
+
+环境仍为 macOS 26.6.2 AArch64、Rust 1.99.1、OTP 29/ERTS 17.1.1 JIT。只执行 hot-queue 固定 10000 request/s：100 actor/全部活动、4 KiB state、mailbox 100、90% 到 actor 1。两端每次 900000 到达，其中采样 600000；五对共 9000000 到达、18000000 事件。全部收齐，无拒绝/超时，候选尾延迟通过。Wings 五次 p99 为 44000..88083 ns、p999 为 118125..1417833 ns；BEAM p99 为 6916..14709 ns、p999 为 71166..267833 ns。这里只证明该固定速率的长时集成，不是最大持续吞吐，不能据此声称 Wings 更快。
+
+观测的进程树加驱动 RSS 峰值：Wings 44285952..67993600 B，BEAM 91996160..105627648 B，均含共享页重复统计和驱动；采样每秒一次，不是 RSS 连续峰值、macOS physical footprint 或完整整机内存门禁。实验部分时段与编译/正确性/QEMU 工作重叠，没有 CPU 硬配额、电源/热状态/QoS/核分配和完整平台内存证据。没有扫描饱和点，也没有其余三组长测或 fairness，故不报告性能/内存领先或 MVP 完成。
+
+原始文件在 `target/open-loop-long-hot-v6-frozen`，精简结果、每次原始文件 SHA-256 和关键冻结输入哈希见 [JSON 证据](open-loop-hot-macos-2026-11-14.json)。十次原始事件均用最终离线 verifier 重新独立核对，全部与首次 summary 相同；冻结输入 SHA-256 全部一致。初次未冻结探索在开发时主动终止，记录为 `invalid_experiment` 并保留 `target/open-loop-long-hot-v6`，不计入五对。正式探测的 Python 驱动在其启动源码版本内运行，后续最终改动只加严离线事件时钟、失败清理、限制器与回归；不把两版本实验拼成同一个排名。
+
+### 回归与失败记录
+
+最终本机 workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 462，五个示例各合计 12 项，总计各 474 项。新增长测固定时段/合法倍频、40 B 编码、已有文件不可覆盖单测。Python 模型核对 90000 到达的相位/精确 deadline/迟到/拒绝、256 个超时 pending 不提前复用、三轮 radix 与排序 oracle 一致、跨 16/32 位与小样本不报 p999、伪造/截断/未知事件、启动失败/非零退出/不完整控制事件，以及更严继承限制不被提高。两种构建 v1–v5 真实三端全部通过，长测非法参数及已有文件拒绝在 Wings/BEAM 均通过；原 gate 测试不变。
+
+完整 AOT 曾在新 Python 失败路径自测触发 `preexec_fn` 错误：限制器试图将父 AOT CPU 硬上限 20 提高到长测 240。改成对 soft/hard 与目标上限取最小值，并用更严 CPU/文件限制的独立子进程核对。没有改变父限制；最终重新执行 debug/release 完整 AOT 均通过，日志为 `/tmp/wings-long-last-aot-debug.log` 和 `/tmp/wings-long-last-aot-release.log`。此前失败日志保留，不能算首次通过。
+
+Linux 同原 2 vCPU/4 GiB QEMU TCG 环境交叉构建 release 工具/示例。长测重叠期间完整 AOT 多次在旧 v2 大容量 Counter 触发原 3 秒 deadline/内部超时；一次原参数完整重跑通过，后续又复现，因此不以偶然通过删除失败记录，也不缩小 actor/state/到达规模。停止长测及本机回归后重新启动隔离客体、重传同一完整 package 和最终 Python/新示例 harness，30 个 harness 共 474 项和完整 release AOT 通过；最终日志 `/tmp/wings-long-linux-isolated-tests.log`、`/tmp/wings-long-linux-isolated-aot.log`，重叠失败保留于 `/tmp/wings-long-linux-{aot,final-aot,last-aot}.log`。这与竞争/仿真耗时有关但未独立证明根因，旧路径 3 秒余量仍是风险，不放宽限制。Linux 无 OTP/长测、无原生 debug/clippy/MSRV/doc-tests，测试后停止；仍非原生双平台证据。
+
+依赖隔离、禁 unwind feature、85 份 Markdown 路径/围栏、Python 语法、JSON 证据与 diff whitespace 检查通过。未推送或发布，语法草案仍待审，完整 MVP 门槛不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
 - 并发失败、长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环分别由 ADR-0065/0067/0068 补充，仍缺完整性能验收。
-- 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
+- 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 五对 30s/60s 只补长时集成；仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 
 M0/MVP 状态不变；不推送、发布或降低验收门槛。

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为测试宿主增加独立长时测量入口，以固定缓冲事件文件替代随时长增长的常驻样本；无 ABI/语言改动，不排除驱动、gate、采样及写入成本。原 smoke 资源边界不变，完整性能/内存门禁仍待验证。
+
 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 将现有 Bytes Counter、Scheduler 与 BEAM CAS gate 接入短时开环验证；不改 ABI/语言，驱动和采样成本不排除在未来整机测量外。长时性能和内存双目标仍未验证。
 
 [ADR-0067](adr/0067-beam-bounded-admission.md) 在可信 BEAM 测试端增加固定 Pid/容量与 signed atomics 计数，发送前 CAS 占槽、actor 开始归还，关闭设终态；不增加代理、无界等待者或自动重试。其成本须纳入后续 BEAM 整机测量。独立 v4 对照沿现有 Wings Scheduler，不改变 ABI v14、业务提交、资源或语法契约。

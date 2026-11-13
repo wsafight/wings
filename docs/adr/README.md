@@ -76,6 +76,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0066](0066-bounded-scheduler-mailbox-capacity.md) | mailbox 256 槽上限与热点 100 槽准入/清理 | 已采纳；部分替代 0054 的容量 |
 | [0067](0067-beam-bounded-admission.md) | BEAM 发送前有界准入、开始归还与终态关闭对照 | 已采纳（有界准入对照切片） |
 | [0068](0068-bounded-open-loop-counter.md) | 计划时刻开环、逐条迟发/拒绝/超时及最终提交核对 | 已采纳（短时开环正确性切片） |
+| [0069](0069-streamed-open-loop-measurement.md) | 独立长时开环、冻结输入、固定缓冲原始事件与离线精确分位 | 已采纳（测量入口；完整性能门禁未通过） |
 
 ## 维护方式
 

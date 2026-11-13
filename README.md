@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0069](docs/adr/0069-streamed-open-loop-measurement.md) 增加独立长时 runner：固定 30 秒预热、60 秒采样、五次配对重复，冻结输入并保留原始事件，精确计算分位和拒绝/超时。入口为 `WINGS_PROFILE=release python3 scripts/measure_open_loop.py --help`；尚缺 CPU 硬配额、完整平台内存口径及原生双平台，不能据此宣布 BEAM 双目标或 MVP 通过。
+
 [ADR-0068](docs/adr/0068-bounded-open-loop-counter.md) 接入四组代表负载的短时计划开环与逐条迟发/拒绝/超时记账。构建后 `python3 scripts/verify_open_loop.py --compare-beam` 核对 Wings/BEAM/独立模型；这是有界 `smoke`，不是 30s/60s/五次重复、fairness、整机内存或性能验收。
 
 [ADR-0067](docs/adr/0067-beam-bounded-admission.md) 为 BEAM 测试端补发送前有限准入、开始时归还和终态关闭。`python3 scripts/verify_admission_counter.py --compare-beam` 核对 1/100/256 满队列拒绝、健康 Bytes actor 与停止清理；默认完整 AOT 只跑 Wings/模型。这不等于开环、吞吐或整机内存验收。
