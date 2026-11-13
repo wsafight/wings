@@ -43,6 +43,12 @@ macOS 的 debug/release workspace 各 406 项测试、完整受限 AOT、TCP 示
 
 同一隔离 Linux 客体重新运行 release workspace 独立测试及 release TCP 单测：26 个 harness 共 408 项通过。完整 release 受限 AOT 通过，新增四线程独立 worker 共享已计费代码、单步恢复与状态隔离、跨 VM 拒绝、最后 handler 跨线程释放；没有放宽既有子进程限制。Linux debug/native CI 与性能仍未验证，不将该用例称 M:N。
 
+### 无活栈镜像增量：`70c4cb9`
+
+macOS debug/release workspace 各 409 项测试及 check/clippy/fmt/MSRV、TCP 示例单测通过。debug 完整受限 AOT 通过；release 首次在既有 TCP `frame_limit` 读取首回复时遇到 ConnectionResetError，未修改该测试或截止时间，重跑完整脚本通过。保留此偶发失败，不将一次重跑当稳定性验收。
+
+隔离 Linux release 独立测试含 release TCP 单测共 26 个 harness、411 项通过；完整受限 AOT 通过。新增镜像在三个新线程重绑同账户池，持续保存/更新 IntList 根，不重跑初始化；错 VM/账户/池及预算拒绝不丢镜像，取消后失败标志保留，未接回镜像在新线程 Drop 后资源归零。没有 unsafe Send、活栈迁移、worker 执行权路由或性能结论；Linux debug/native 门禁仍未补齐。
+
 ```sh
 cargo build --locked -p wings-compile -p wings-vm --bins --examples
 WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" python3 scripts/verify_scalar_aot.py

@@ -26,4 +26,4 @@
 
 沿用 workspace check/test/clippy/fmt、MSRV、两种构建受限 AOT 与平台独立记录；不得宣称 M:N 或 MVP 门禁通过。
 
-2026-11-13 在 macOS AArch64 通过 check/clippy/fmt、Rust 1.85.0 all-targets check、debug/release workspace 各 409 项测试及 TCP 单测。完整受限 AOT debug 通过；release 首次运行遇到既有 TCP frame_limit 的 ConnectionResetError，未修改该测试或放宽截止时间，重跑全套通过。无活栈镜像专项在两种构建均通过。Linux 最新增量另验，不将重跑成功写成 TCP 无偶发失败。
+2026-11-13 在 macOS AArch64 通过 check/clippy/fmt、Rust 1.85.0 all-targets check、debug/release workspace 各 409 项测试及 TCP 单测。完整受限 AOT debug 通过；release 首次运行遇到既有 TCP frame_limit 的 ConnectionResetError，未修改该测试或放宽截止时间，重跑全套通过。无活栈镜像专项在两种构建均通过；Linux 隔离仿真 release 独立测试及完整 AOT 亦通过，详见[验证记录](../validation-2026-11-13.md#无活栈镜像增量70c4cb9)。不将重跑成功写成 TCP 无偶发失败或 native 双平台已通过。
