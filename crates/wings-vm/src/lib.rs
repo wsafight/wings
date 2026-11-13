@@ -12,6 +12,7 @@ use wings_artifact::Manifest;
 mod aot_heap;
 mod execution;
 mod heap;
+mod ingress;
 mod module;
 mod resources;
 mod stack_pool;
@@ -31,6 +32,7 @@ pub use heap::{
     CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue,
     RootFrame, ShadowRoots,
 };
+pub use ingress::{IngressSender, IngressWake};
 pub use module::{HandlerId, ScalarModule};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use stack_pool::{StackPool, StackPoolStats};

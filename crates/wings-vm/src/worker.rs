@@ -1,10 +1,13 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::ingress::IngressReceiver;
 use crate::timer::DeadlineTimer;
 use crate::{
-    CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, PreemptionToken,
-    Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarTask, StackPool,
+    CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, IngressSender,
+    PreemptionToken, Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule,
+    ScalarTask, StackPool,
 };
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
@@ -54,7 +57,7 @@ pub enum WorkerWait {
 
 struct IdleWait {
     parker: crate::WorkerParker,
-    _charge: Reservation,
+    charge: Arc<Reservation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +139,7 @@ struct Completion {
 }
 
 struct Actor {
+    ingress: Option<IngressReceiver>,
     capability: i64,
     heap_records: Option<usize>,
     task: ScalarTask,
@@ -249,7 +253,7 @@ impl ScalarWorker {
             crate::WorkerParker::new().map_err(|error| format!("create worker wait: {error}"))?;
         self.idle_wait = Some(IdleWait {
             parker,
-            _charge: charge,
+            charge: Arc::new(charge),
         });
         Ok(())
     }
@@ -298,7 +302,45 @@ impl ScalarWorker {
         self.slots
             .iter()
             .filter_map(|slot| slot.actor.as_ref())
-            .any(|actor| actor.active.is_some() || actor.mailbox.count != 0)
+            .any(|actor| {
+                actor.active.is_some()
+                    || actor.mailbox.count != 0
+                    || actor
+                        .ingress
+                        .as_ref()
+                        .is_some_and(IngressReceiver::has_pending)
+            })
+    }
+
+    pub fn open_ingress(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        capacity: usize,
+        max_steps: u64,
+    ) -> Result<IngressSender, String> {
+        let wait = self
+            .idle_wait
+            .as_ref()
+            .ok_or("worker wait is not enabled")?;
+        let actor = self.actor(pid)?;
+        if actor.ingress.is_some() {
+            return Err("actor ingress is already registered".into());
+        }
+        if !Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
+            return Err("handler ID belongs to a different module".into());
+        }
+        let (receiver, sender) = IngressReceiver::new(
+            &actor.account,
+            handler.clone(),
+            capacity,
+            max_steps,
+            std::mem::size_of::<Message>() as u64,
+            wait.parker.notifier(),
+            wait.charge.clone(),
+        )?;
+        self.actor_mut(pid)?.ingress = Some(receiver);
+        Ok(sender)
     }
 
     pub fn tick_timed(
@@ -394,6 +436,7 @@ impl ScalarWorker {
         let mut task = ScalarTask::new(process);
         task.enable_effects();
         self.slots[index].actor = Some(Actor {
+            ingress: None,
             capability,
             heap_records,
             task,
@@ -543,6 +586,24 @@ impl ScalarWorker {
             let Some(actor) = self.slots[index].actor.as_mut() else {
                 continue;
             };
+            if actor.mailbox.count < actor.mailbox.slots.len() {
+                if let Some(ingress) = &actor.ingress {
+                    if let Some(envelope) = ingress.take() {
+                        let tail =
+                            (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
+                        actor.mailbox.slots[tail] = Some(Message {
+                            handler: ingress.handler.clone(),
+                            arguments: envelope.arguments,
+                            count: envelope.count,
+                            max_steps: ingress.max_steps,
+                            request: None,
+                            system: false,
+                            _charge: envelope.charge,
+                        });
+                        actor.mailbox.count += 1;
+                    }
+                }
+            }
             if actor.active.is_none() {
                 if actor.mailbox.count == 0 {
                     continue;

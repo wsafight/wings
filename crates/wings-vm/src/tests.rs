@@ -15,6 +15,7 @@ use crate::module::ModuleData;
 use crate::*;
 
 mod diagnostics;
+mod ingress;
 mod persistent_state;
 mod primitives;
 mod process_effects;

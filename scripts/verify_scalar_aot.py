@@ -599,6 +599,7 @@ def main():
         worker_artifact = parent / "worker"
         command([COMPILER, "build", worker_source, "-o", worker_artifact])
         example("scalar_worker", worker_artifact)
+        example("worker_ingress", worker_artifact)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)
         timer_source = parent / "timer.wings"

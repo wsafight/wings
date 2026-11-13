@@ -1,10 +1,12 @@
 # 运行时
 
+宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的标量单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 成功表示已接收，`IngressWake::WakeFailed` 也已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
+
 代码租约与模块 VM 级准入按 [ADR-0044](adr/0044-native-module-leases.md) 实现：clone/HandlerId/实例共享一次预留，跨 VM 计费执行拒绝；最后一个活栈先正常取消返回，再交还 Library 和预算。旧可信非计费工具入口保留，不将该兼容路径称为完整三级准入。
 
 受管 GC 按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 分为清旧标记、根、传递遍历与清扫，每块最多 16 个节点/根并扣一个 runtime 工作单位。原栈暂停保留 phase/cursor，不重做；取消/预算失败正常返回，清扫中止也保留活根，下一轮先清旧标记。heap_stats 使用实时计数，无全堆诊断扫描；同 actor 收集期间无其他入口执行，不是并发 GC。
 
-worker 的 `enable_wait` / `wait` 只在无就绪入口时进行有界 OS 等待，返回后重查 deadline/完成事件，不执行业务。私有 FD 的固定控制预留与 worker 同寿命，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
+worker 的 `enable_wait` / `wait` 只在无就绪入口时进行有界 OS 等待，返回后重查 deadline/完成事件与 ingress，不执行业务。FD 的固定控制预留由 worker 和 ingress notifier 共享租约，最后 owner 销毁后归还；等待语义见 [ADR-0041](adr/0041-worker-deadline-parking.md)，租约扩展见 ADR-0046。
 
 [ADR-0040](adr/0040-language-request-events.md) 将请求结果保留到完成事件实际入队；队满不丢结果，发起方退出清理预留而不撤回对端消息。当前仍由 tick 扫描 deadline，没有自动 OS 事件泵。
 

@@ -53,6 +53,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0043](0043-chunked-runtime-gc.md) | 固定块 GC、runtime 预算/取消及常量时间堆快照 | 已采纳（runtime 长操作切片） |
 | [0044](0044-native-module-leases.md) | 代码租约、加载预算与 VM 归属校验 | 已采纳（模块资源切片） |
 | [0045](0045-concurrent-resource-admission.md) | VM 级并发多维准入、净转移与跨线程归还 | 已采纳（资源并发切片） |
+| [0046](0046-bounded-cross-thread-ingress.md) | 固定跨线程入口、计费消息与 OS 通知租约 | 已采纳（外部事件前置切片） |
 
 ## 维护方式
 

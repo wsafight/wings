@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit 单向消息；不增加语言语法、跨线程请求或引用消息能力。
+
 宿主资源账本按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 支持跨线程准入和归还，不改变语言语义：业务状态不共享可变数据，actor 与挂起活栈仍在原线程执行，尚无 M:N 迁移。
 
 模块装载寿命由宿主代码租约管理，语言不提供 unload/热更新。heap CLI 和显式 `load_accounted` 使用 [ADR-0044](adr/0044-native-module-leases.md) 的 VM 级模块预算；静态 AOT 不得保留脱离实例的 native 回调或后台线程。

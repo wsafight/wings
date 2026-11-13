@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（OS 等待集成切片）
 - 补充：[ADR-0016](0016-worker-wakeup.md)、[ADR-0040](0040-language-request-events.md)
+- 后续：[ADR-0046](0046-bounded-cross-thread-ingress.md) 通过有界入口和共享计费租约导出通知能力，替代本文的私有 notifier 限制；等待仍不执行业务。
 
 ## 决定与理由
 

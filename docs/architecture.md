@@ -1,10 +1,12 @@
 # 架构设计
 
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 让外部线程通过固定计费 ingress 发布标量单向消息，并通知原线程 worker；HandlerId、actor 和活栈不跨线程。ring 与 OS 通知预算跟随最后 handle，不由 worker 提前释放。多 worker 执行权、引用消息和真实服务 I/O 仍须独立完成。
+
 资源账户按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 用同 VM 共享门闩串行提交三级四维准入、净转移和归还；只在固定长度计数更新中持锁，不在锁内执行分配/业务/OS 等待或协程切换。账户与票据自动 Send/Sync，actor/活栈仍保持原线程执行权。
 
 原生模块按 [ADR-0044](adr/0044-native-module-leases.md) 持有 Library 代码租约，最后一个模块/ID/实例/活栈所有者销毁后交还装载器引用。`load_accounted` 在解析/装载前向 VM 预留库文件取整大小加 2 MiB 逻辑控制预算，跨 VM 计费 worker/pool 执行前拒绝；不把该预算当实际映射/RSS，也不是热更新。
 
-[ADR-0041](adr/0041-worker-deadline-parking.md) 用 worker 私有计费 parker 集成空闲等待与请求 deadline；不导出跨线程 notifier，也不是完整 reactor。
+[ADR-0041](adr/0041-worker-deadline-parking.md) 用计费 parker 集成空闲等待与请求 deadline；ADR-0046 仅经有界 ingress 提供通知，不导出裸 notifier，也不是完整 reactor。
 
 [ADR-0040](adr/0040-language-request-events.md) 的 ABI v10 扩展固定 EffectRequest，整数请求使用静态完成事件；完成消息预留随 pending 保留、入队时净转移，普通外部入口不能伪造 RequestId。
 
@@ -131,7 +133,7 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 ## 首要运行平台
 
-未发布源码提供独立的 `WorkerParker`/`WorkerNotifier`：Linux 使用 epoll/eventfd，macOS 使用 kqueue 用户事件。等待端独占、通知端可克隆，通知可合并且先通知后等待不会丢失提示。单 worker 已通过私有、计费 parker 接入就绪检查与 deadline，不导出 notifier；它不是计算抢占、跨线程 inbox 或完整 I/O reactor。底层超时与生命周期见 [ADR-0016](adr/0016-worker-wakeup.md)，集成边界见 [ADR-0041](adr/0041-worker-deadline-parking.md)，各后端须分别执行本分支 CI。
+未发布源码提供独立的 `WorkerParker`/`WorkerNotifier`：Linux 使用 epoll/eventfd，macOS 使用 kqueue 用户事件。等待端独占、通知端可克隆，通知可合并且先通知后等待不会丢失提示。单 worker 已通过计费 parker 接入就绪检查与 deadline；跨线程通知只经 ADR-0046 的有界 ingress 导出，不提供裸 worker notifier。它不是计算抢占或完整 I/O reactor。底层超时与生命周期见 [ADR-0016](adr/0016-worker-wakeup.md)，等待边界见 [ADR-0041](adr/0041-worker-deadline-parking.md)，各后端须分别执行本分支 CI。
 
 macOS AArch64（Apple Silicon）与 Linux x86-64 同为首版目标，M0 原型和后续运行时验收均须覆盖两者。Linux AArch64、macOS x86-64 留待 M7 扩展；最低 OS 版本和工具链版本在 M0 冻结。
 

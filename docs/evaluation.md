@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的 ingress 回归覆盖配置/参数/额度拒绝、固定 FIFO、满 mailbox 保留、并发发布、关闭/槽位复用、挂起/失败退出和最后 sender 租约。私有通知失败 fixture 核对已接收但唤醒失败的结果，不关闭宿主 FD 制造错误。`cargo test --locked -p wings-vm ingress` 检查线程/账本边界，AOT 脚本在受限子进程运行 `worker_ingress` 验证生成代码的跨线程投递、等待与取消清理；两平台须分别执行，不将这些正确性用例当实际服务或吞吐结果。
+
 [ADR-0045](adr/0045-concurrent-resource-admission.md) 的 `concurrent_resources` 使用最多 8 个工作线程、固定屏障/轮数，检查每维每层争抢额度、并发溢出、满共同祖先跨租户净转移、拒绝保留源所有权、跨线程 Drop 与四维快照一致。内部 fixture 另检查独立 VM 不共锁和门闩中毒恢复；旧确定性独立模型保留。命令为 `cargo test -p wings-vm --test concurrent_resources --test resources --locked` 与 workspace/AOT 检查；没有争用性能结果，不能当作 M:N 验收。
 
 [ADR-0044](adr/0044-native-module-leases.md) 的 `module_accounting` 在受限 AOT 子进程验证级别/额度拒绝、同路径独立加载准入、坏清单/库/缺符号回滚、clone/ID 共享计费、挂起 task/worker/借用入口保活及正常取消清理、跨 VM worker/pool/heap 拒绝。反复加载/销毁恢复 VM 基线，不用账面归零宣称 OS 已解除全部映射。debug/release AOT 脚本覆盖；实际 dyld/ld.so 与 allocator 内存仍须平台实测。

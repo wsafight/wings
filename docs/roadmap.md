@@ -1,6 +1,6 @@
 # 风险与里程碑
 
-[ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，仍无跨线程 inbox、actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
+[ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，有界入口由 ADR-0046 接入，仍无 actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
 
 [ADR-0044](adr/0044-native-module-leases.md) 修复模块永久泄留，增加 VM 级加载预算、代码租约和归属检查；旧不计费工具入口、allocator/动态装载器内部开销仍不在完整资源门禁内，M1 与 MVP 尚未完成。
 
@@ -8,7 +8,7 @@
 
 [ADR-0042](adr/0042-managed-function-frames.md) 用非递归受管函数帧替代完全内联，接入逐帧剩余栈检查与跨帧精确根；递归/动态派发、完整业务值、外部 I/O、M:N 和双平台业务/性能门禁仍未完成。
 
-[ADR-0041](adr/0041-worker-deadline-parking.md) 将私有 OS 等待接到单 worker 空闲检查与请求 deadline；外部有界 inbox、I/O reactor 和 M:N 仍未实现，不降低 MVP 门槛。
+[ADR-0041](adr/0041-worker-deadline-parking.md) 将 OS 等待接到单 worker 空闲检查与请求 deadline；ADR-0046 增加有界标量入口，完整 I/O reactor 和 M:N 仍未实现，不降低 MVP 门槛。
 
 [ADR-0040](adr/0040-language-request-events.md) 接入有界异步整数请求事件；一般回复类型、关联 state、自动 OS 事件泵与双平台门禁尚未完成，保留完整 MVP 门槛。
 
@@ -59,6 +59,8 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 ## 里程碑
 
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 接入单 actor 单入口的有界计费跨线程发送与 OS 通知租约，仍由原 worker 执行业务；不代表 M:N、真实服务或完整外部 I/O 验收。
+
 当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录/IntList、非递归 fn 调用帧、条件表达式、比较和标量/RecordInt state while。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、外部 OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
 `0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0042](adr/0042-managed-function-frames.md) 将源码函数接到真实受管帧。尚无引用消息根、任意引用 phi、递归或动态派发，不等于完整 safepoint/GC 或 M0 验证。
@@ -80,7 +82,7 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 下一步继续 M0 执行/根边界与 BEAM 基线测试；语言扩展只接入完成契约和验证的必要切片，不同时铺开可选语法、平台或热更新。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
 
-OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd；[ADR-0041](adr/0041-worker-deadline-parking.md) 已接入 worker 就绪重查和请求 deadline，尚无外部 inbox 或真实 I/O，须在本分支 CI 各自验证，不替代完整 M0 与 BEAM 负载冻结门槛。
+OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd；[ADR-0041](adr/0041-worker-deadline-parking.md) 已接入 worker 就绪重查和请求 deadline，ADR-0046 增加外部有界标量 ingress，尚无真实服务 I/O。各平台须验证最新源码，不替代完整 M0 与 BEAM 负载冻结门槛。
 
 ## MVP 范围与开发顺序
 
