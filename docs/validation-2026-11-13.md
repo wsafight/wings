@@ -161,3 +161,5 @@ Linux 本增量另行验证。`config.requests` 现为全实例宿主结果总�
 最终代码的完整 debug/release AOT 均首次通过，包含语言 spawn/消息/GC、活栈恢复、迁移和监督；真实 Wings/OTP 29/独立 Python 两种构建各通过 45 业务、28 JSON 拒绝及 14 桥接拒绝。本增量未放宽既有 CPU 20 秒/墙钟 30 秒/禁 core，Counter 业务仍为 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒。此前 TCP 偶发记录仍保留，不因本次通过宣称稳定性门禁已过。
 
 Linux 本增量另行验证。当前仍限制 256 actor，有固定全 registry 扫描及编号迁移；通用业务值、完整资源账本、代表性多 actor/开环、原生最新双平台及同负载 BEAM 吞吐/整机内存双门禁未完成，MVP 状态不变。待审语法草案不包含在提交中。
+
+2026-11-14 凌晨，隔离 Linux 从 `ae2609f` 重新交叉构建全部 release 工具/示例与测试，27 个 harness 共 461 项通过（workspace 457、TCP 2、Counter 桥接 2）；完整受限 release AOT 首次通过，包含新按需栈的密度、三个同时暂停栈的 owner/健康 actor 推进、语言 spawn、迁移/监督及固定字节 Counter 模型回归。环境仍为 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，CPU/墙钟限制不变；未执行 Linux OTP、debug/native clippy/MSRV/doc-tests，不将仿真结果当原生双平台或 BEAM 性能证据。
