@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0071](adr/0071-observed-atomic-yield.md) 只扩展宿主控制对象和私有 checkpoint：可选 observer 经账户准入、固定空间、真实协程返回后确认，不改变 ABI v14 或 compiler 检查点。默认不读取时钟或获得诊断锁；启用时诊断锁不跨受管执行/切栈，计时线程仍不访问 actor。
+
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 用六层声明顺序的受管函数执行百万次 checked +1，同 worker 下与 100 个真实 Bytes 心跳 actor 竞争。只增加测试程序，不改语言/ABI；观察 CPU pending 不等于实际运行或让出时间戳，单 worker 数量不代替 OS 单核配额。
 
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为测试宿主增加独立长时测量入口，以固定缓冲事件文件替代随时长增长的常驻样本；无 ABI/语言改动，不排除驱动、gate、采样及写入成本。原 smoke 资源边界不变，完整性能/内存门禁仍待验证。

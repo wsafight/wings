@@ -138,6 +138,20 @@ Linux 使用同一 2 vCPU/4 GiB QEMU TCG 隔离客体，重新交叉构建 relea
 
 依赖隔离与禁止协程 unwind feature 检查通过。`observed_while_CPU_pending` 仅表示票据区间重叠，不是实际 CPU 执行或让出时间戳；单 worker/单在线 scheduler 不是 OS 单核配额。长时 fairness、独立让出延迟、CPU 硬配额、平台完整内存及 BEAM 吞吐/内存双目标均未据此通过。未推送或发布，语法提案仍待审。
 
+## 可选原子让出观测：ADR-0071
+
+基于 `5c61b1e`，按 [ADR-0071](adr/0071-observed-atomic-yield.md) 增加 `PreemptionToken::new_observed(account)` 与固定大小副本查询。显式账户先预留 4096 B，再分配 observer/token；首次未消费请求与最近确认让出分开保存。只有私有 checkpoint 消费请求、真实 coroutine 切回宿主后才确认时间，默认 token 不读时钟/不取诊断锁。ABI v14、编译器强制检查点、取消/预算顺序和状态提交契约不变，没有把独立 fixture 的样本冒充 Scheduler timer 指标。
+
+最终本机 check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 472 项、六个示例合计各 13 项，总计各 485 项通过。新增 10 个测试覆盖首次请求合并、真实切栈后确认、步骤/effect/取消/预算不误报、跨线程请求、后继请求不被旧确认清除、poison 恢复、三个资源层级准入失败回滚与租约最终释放。早期测试把“已正常返回后的 invocation”误当作仍持有 observer，失败后改为验证挂起期间持有、返回后释放；没有延长对象生命期来迎合测试。测试开发时的 Rust 借用错误也在编译阶段修正，不计入最终通过。
+
+真实 AOT 的 `observed_yield` 以原百万次 checked 加法负载验证预请求和远端线程请求。预请求不消耗新 steps，原子请求让出后仍算出百万，再发 Pulse 确认 state 为 2；远端若未命中执行窗口则显式标为未消费/null，不编造零延迟。`verify_fairness.py` 在原 CPU 5 秒/墙钟 10 秒/禁 core、总阶段 3 秒限制内执行并核对 JSON。完整 AOT 原 CPU 20 秒/墙钟 30 秒不变；候选 p99<5ms、长时公平性、CPU 硬配额与双平台性能门禁仍未通过。
+
+最终 debug 完整 AOT 及显式 v7 三端通过，日志 `/tmp/wings-yield-final-aot-debug.log`、`/tmp/wings-yield-final-three-debug.log`。release 完整 AOT 一次在旧 TCP 失败场景读首条回复时遇到 `ConnectionResetError`，当时与 QEMU/其他回归重叠；没有独立证明根因，也没有放宽 100ms I/O 或请求边界。初次开发版 release AOT 已通过；最终源码在停止客体、无并行重型测试后完整重跑通过，日志 `/tmp/wings-yield-isolated-aot-release.log`，失败日志 `/tmp/wings-yield-final-aot-release.log` 保留。最终 release v7 三端与独立观测通过，原始输出在 `target/observed-yield-final-{debug,release}`；只作功能证据。
+
+Linux 同配置隔离仿真 release 31 个 harness 共 485 项通过。首次 AOT 传包漏了编译工具的两个 example，在 `frame_limits` 启动前报文件缺失；补传原 cross-build 的两份现成 binary，不改源码/边界，完整 AOT 从头重跑通过。日志 `/tmp/wings-yield-final-linux-tests.log`、`/tmp/wings-yield-final-linux-complete-aot.log`，首次传包失败在 `/tmp/wings-yield-final-linux-aot.log`。客体仍无 OTP/原生 debug/clippy/MSRV/doc-tests，测试后已停止，不替代原生 Linux 门禁。CI 补上 open-loop/fairness 示例单测的 debug/release 入口，但未经推送、未宣称远端 CI 已通过。
+
+停止客体后最终 debug/release v1–v6 显式 Wings/BEAM/Python 回归全部通过，v6 仅核对模型/collector/配置，不重跑 90 秒实验。依赖隔离、禁 unwind feature、88 份 Markdown（含待审语法草案）的相对路径/代码围栏、Python 语法与 diff whitespace 检查通过。未 stage 语法草案，未推送或发布；M0/MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0071](adr/0071-observed-atomic-yield.md) 的 `PreemptionToken::new_observed(account)` 预先计费 4096 B，固定保留首次未消费请求和最近真实让出；克隆/调用租约释放后归还。重复请求合并，disarm 清除不生成样本，步骤/effect/取消/预算返回不伪造原子让出；默认 token 无时钟/诊断锁。它不是完整事件日志或逐 actor 的 Scheduler 指标。
+
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 增加同 worker CPU/突发心跳业务回归，沿用原强制检查点、总预算和原子取消。外部心跳超时不释放实际 pending、不撤回 state 提交；受限测试收齐 CPU/心跳后核对独立 state 及最终归零，不据此声称长时公平性或完整资源账本通过。
 
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 的长测只延长独立测试宿主的实验时段，不放宽原 smoke 或 runtime 配额。仍最多 256 实际 pending，外部超时不撤回远端提交，最终未收齐实际结果即判实验无效；冻结副本和原始事件不等于完整资源账本或 OS 隔离。

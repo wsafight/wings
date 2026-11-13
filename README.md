@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0071](docs/adr/0071-observed-atomic-yield.md) 增加可选计费的原子请求到真实 coroutine 返回时间观测，默认关闭。`verify_fairness.py` 同时核对独立 AOT fixture 的预请求/跨线程请求、状态与资源清理；未接为 Scheduler 长时公平性统计，不据此宣布让出延迟达标。
+
 [ADR-0070](docs/adr/0070-bounded-fairness-heartbeats.md) 增加同 worker 百万次 checked 加法与 100 actor 突发心跳的短时业务核对。构建后 `python3 scripts/verify_fairness.py --compare-beam` 显式执行三端；保留逐条拒绝/超时及每 actor 等待，不等同单核 CPU 配额、让出延迟或长时公平性门禁。
 
 [ADR-0069](docs/adr/0069-streamed-open-loop-measurement.md) 增加独立长时 runner：固定 30 秒预热、60 秒采样、五次配对重复，冻结输入并保留原始事件，精确计算分位和拒绝/超时。入口为 `WINGS_PROFILE=release python3 scripts/measure_open_loop.py --help`；尚缺 CPU 硬配额、完整平台内存口径及原生双平台，不能据此宣布 BEAM 双目标或 MVP 通过。

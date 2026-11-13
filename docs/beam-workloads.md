@@ -163,6 +163,8 @@ WINGS_PROFILE=release python3 scripts/verify_fairness.py --compare-beam --output
 
 `--artifact`可复用匹配可信产物；默认完整AOT只执行Wings/模型，缺少OTP29的显式三端失败、不回退。尚无公平性30s/60s/五次重复、OS单核硬配额、独立请求让出到实际让出时间戳和过载分组；不把心跳延迟代替候选让出p99<5ms，也不将此短测称MVP或BEAM双目标通过。
 
+[ADR-0071](adr/0071-observed-atomic-yield.md) 另提供 [`observed_yield`](../crates/wings-vm/examples/observed_yield.rs) 独立 fixture，用同一可信产物执行预请求与远端线程请求，并由 `verify_fairness.py` 在原限制内调用。只有真实 coroutine 返回后确认才产生观测；远端请求若在业务结束后才到达则单列未消费、延迟为 null。它不修改 v7 的 Scheduler/BEAM 业务或默认 worker token，也不将两个独立样本当作同 worker fairness 让出统计；该门禁仍待完成。
+
 ## 代表性负载与性能验收冻结条件
 
 这些是同业务对照的固定小集合，不展开整个笛卡尔积。v5执行四组非fairness短时验证，v6接独立长时入口，v7补fairness短时业务；均不自动构成完整性能验收。普通Idle与活跃场景都保持32 B逻辑请求/成功回复；逻辑state仍包含计数器与actor ID。actor ID为`1..N`，活动集合取前`A`个；其余保留状态但不处理业务消息，不冬眠。更大actor数、其他payload、冬眠与M:N另立协议版本。

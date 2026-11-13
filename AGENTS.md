@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0071 增加显式计费的可选原子让出观测：只在启用时记录首次未消费请求与最近真实切回 worker 的时间；默认无时钟/mutex 热路径，不改 ABI v14。独立 AOT fixture 不是 Scheduler 计时线程的完整测量，单样本和心跳 pending 重叠都不构成公平性门禁。语法草案仍待审。
+
 - ADR-0070 新增短时 fairness 前置：101×256 B actor、同 worker 的六层受管函数恰好百万次 checked +1，其余 100 actor 每 10ms 同刻突发心跳，mailbox 1、实际冷 pending 255 加热 pending 1。默认 AOT 仅 Wings/模型；单 worker/单 BEAM scheduler 不是 OS 单核配额，CPU pending 区间不是实际运行/让出时间戳，不将其称完整公平性或 MVP 通过。语法草案仍待审。
 
 - ADR-0069 新增独立 `--measure`：固定 30 秒预热/60 秒采样/五次配对重复，原始 40 B 事件固定缓冲写文件、离线精确分位和有界进程树 RSS 观测；原 smoke 限制不变。只执行冻结副本，缺少 CPU 硬配额、平台完整内存及原生双平台时不作性能门禁通过声明，语法草案仍待审。

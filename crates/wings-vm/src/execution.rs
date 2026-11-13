@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
@@ -7,7 +8,10 @@ use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarO
 use crate::aot_heap::AotHeap;
 use crate::message_values::ListPayload;
 use crate::stack_pool::PooledStack;
-use crate::{CancellationToken, HandlerId, HeapStats, ScalarModule, ScalarProcess, StackPool};
+use crate::{
+    CancellationToken, HandlerId, HeapStats, PreemptionToken, ScalarModule, ScalarProcess,
+    StackPool,
+};
 
 thread_local! {
     static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
@@ -21,6 +25,12 @@ struct Checkpoint {
     remaining_steps: u64,
     heap: Option<HeapStats>,
     effect: Option<ProcessEffect>,
+    yield_requested: Option<Instant>,
+}
+
+struct InvocationControl<'scope> {
+    yielder: &'scope Yielder<ResumeCommand, Checkpoint>,
+    preemption: &'scope PreemptionToken,
 }
 
 #[derive(Clone, Copy)]
@@ -142,21 +152,6 @@ pub(crate) fn initialize(
     }
 }
 
-#[derive(Clone, Default)]
-pub struct PreemptionToken {
-    flag: Arc<AtomicU32>,
-}
-
-impl PreemptionToken {
-    pub fn request(&self) {
-        self.flag.store(1, Ordering::SeqCst);
-    }
-
-    pub(crate) fn clear(&self) {
-        self.flag.store(0, Ordering::SeqCst);
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecutionStatus {
     Suspended,
@@ -188,6 +183,7 @@ struct Invocation {
     snapshot: ExecutionSnapshot,
     effect: Option<ProcessEffect>,
     acknowledgement: Option<(u32, i64)>,
+    preemption: PreemptionToken,
 }
 
 impl ScalarProcess {
@@ -450,6 +446,7 @@ impl Invocation {
             snapshot,
             effect: None,
             acknowledgement: None,
+            preemption: preemption.clone(),
         })
     }
 }
@@ -484,8 +481,13 @@ fn new_coroutine(
                 remaining_steps: max_steps,
                 heap: heap.as_deref().map(AotHeap::stats),
                 effect: None,
+                yield_requested: None,
             };
             return (STATUS_CANCELLED, output, heap, checkpoint);
+        };
+        let mut control = InvocationControl {
+            yielder,
+            preemption: &preemption,
         };
         let mut context = ScalarContext {
             cancellation: Arc::as_ptr(&cancellation.flag),
@@ -493,9 +495,7 @@ fn new_coroutine(
             yield_request: Arc::as_ptr(&preemption.flag),
             slice_remaining,
             slow_path: Some(suspend_scalar),
-            data: (yielder as *const Yielder<ResumeCommand, Checkpoint>)
-                .cast_mut()
-                .cast(),
+            data: std::ptr::from_mut(&mut control).cast(),
             stack_limit,
             roots: std::ptr::null(),
             heap_call: heap
@@ -526,6 +526,7 @@ fn new_coroutine(
             remaining_steps: context.remaining_steps,
             heap: heap.as_deref().map(AotHeap::stats),
             effect: None,
+            yield_requested: None,
         };
         if let Some(heap) = &mut heap {
             heap.clear_incoming();
@@ -581,6 +582,9 @@ fn resume_invocation(
     };
     match coroutine.resume(command) {
         CoroutineResult::Yield(checkpoint) => {
+            if let Some(requested_at) = checkpoint.yield_requested {
+                active.preemption.confirm_yield(requested_at);
+            }
             active.snapshot.phase = ExecutionPhase::Suspended;
             active.snapshot.remaining_steps = checkpoint.remaining_steps;
             active.snapshot.heap = checkpoint.heap;
@@ -632,14 +636,15 @@ impl Drop for Invocation {
 
 unsafe extern "C" fn suspend_scalar(context: *mut ScalarContext) -> u32 {
     let context = unsafe { &mut *context };
-    let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
-    unsafe { &*context.yield_request }.swap(0, Ordering::SeqCst);
+    let control = unsafe { &*context.data.cast::<InvocationControl<'_>>() };
+    let yield_requested = control.preemption.take_request();
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
         effect: None,
+        yield_requested,
     };
-    match yielder.suspend(checkpoint) {
+    match control.yielder.suspend(checkpoint) {
         ResumeCommand::Run(steps) => {
             context.slice_remaining = steps;
             STATUS_OK
@@ -741,9 +746,10 @@ unsafe extern "C" fn send_self(
             record_mask: request.record_mask,
             lists,
         }),
+        yield_requested: None,
     };
-    let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
-    match yielder.suspend(checkpoint) {
+    let control = unsafe { &*context.data.cast::<InvocationControl<'_>>() };
+    match control.yielder.suspend(checkpoint) {
         ResumeCommand::Effect(status, value, steps) => {
             context.slice_remaining = steps;
             if status == STATUS_OK {
@@ -759,6 +765,8 @@ unsafe extern "C" fn send_self(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+
     use super::*;
 
     #[test]
@@ -766,6 +774,7 @@ mod tests {
         let maximum = std::mem::size_of::<Invocation>()
             + std::mem::size_of::<ExecutionCoroutine>()
             + std::mem::size_of::<Checkpoint>()
+            + std::mem::size_of::<InvocationControl<'_>>()
             + std::mem::size_of::<ListPayload>()
             + 64 * std::mem::size_of::<i64>()
             + 256;

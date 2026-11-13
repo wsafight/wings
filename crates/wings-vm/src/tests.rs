@@ -18,6 +18,7 @@ mod diagnostics;
 mod ingress;
 mod ingress_requests;
 mod persistent_state;
+mod preemption;
 mod primitives;
 mod process_effects;
 mod request_events;

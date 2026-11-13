@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use super::{accounts, limits};
-use crate::execution::PreemptionToken;
+use crate::PreemptionToken;
 use crate::stack_pool::{EXECUTION_STACK_BYTES, SLOW_PATH_STACK_BYTES, StackPool};
 use crate::timer::DeadlineTimer;
 use crate::{ResourceAccount, Resources, WorkerParker};

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0071](adr/0071-observed-atomic-yield.md) 补可选计费的原子请求/真实 coroutine 返回时间原语及独立 AOT 回归。默认不增加时钟/诊断锁，仍未接为完整 Scheduler 让出统计；长时公平性、样本覆盖与开销、CPU/平台内存和原生双平台门禁继续推进，MVP 未完成。
+
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 接入 fairness 行的短时 CPU/突发心跳业务前置，保留百万次 checked 加法、101×256 B、mailbox 1、原每 actor 10ms 心跳；不以低频或标量 state 替代。OS 单核硬配额、长时公平性、独立让出延迟和原生双平台仍未完成，不能据功能回归宣布 MVP 达标。
 
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 新增长时开环测量入口，固定 30s/60s/五次配对重复，不缩短验收；原始事件、离线精确分位及进程树 RSS 仍非完整性能门禁。CPU 硬配额、平台完整内存、fairness、故障竞争、完整业务值/账本和最新原生双平台继续推进，MVP 未完成。

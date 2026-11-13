@@ -17,6 +17,7 @@ mod ingress;
 mod ingress_requests;
 mod message_values;
 mod module;
+mod preemption;
 mod resources;
 mod scheduler;
 mod stack_pool;
@@ -30,8 +31,7 @@ mod tests;
 
 pub use detached::DetachedProcess;
 pub use execution::{
-    ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, PreemptionToken,
-    ScalarExecution, ScalarTask,
+    ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, ScalarExecution, ScalarTask,
 };
 pub use heap::{
     ByteStateSnapshot, CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout,
@@ -40,6 +40,7 @@ pub use heap::{
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
 pub use module::{HandlerId, ScalarModule};
+pub use preemption::{PreemptionObservation, PreemptionToken, YieldObservation};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,

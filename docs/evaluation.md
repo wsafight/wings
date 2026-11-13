@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0071](adr/0071-observed-atomic-yield.md) 补独立请求/真实切回宿主的保守观测原语；仅显式启用，结果包含 safepoint、OS 调度和切栈开销。独立百万次加法 fixture 验证配对与未命中请求，不代表 Scheduler timer 的长时样本、完整丢样统计、候选 p99<5ms 或公平性通过。
+
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 的v7用单worker/单BEAM scheduler核对百万次checked加法与每10ms同刻100个心跳，保存逐条原始样本、每actor最大端到端等待、拒绝/超时和小样本分位；少于10000不报p999。CPU请求未完成期间观察到心跳仅是pending重叠，不是让出延迟；OS单核硬配额、30s/60s公平性长测、独立让出时间戳和双平台门禁仍待验收。
 
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 接入独立固定 30s/60s/五次重复的开环入口、可选最多八点翻倍扫描、原始事件关联核对和精确 nearest-rank 分位。每次实验冻结 runner/产物/源文件；目前进程树加驱动 RSS 只是观测，缺少 CPU 硬配额、Linux PSS、macOS physical/压缩/swap 及主机隔离证据，仍不构成同负载吞吐/整机内存门禁通过。协议和运行命令见 [BEAM v6](beam-workloads.md#v6独立长时开环测量)。
@@ -110,7 +112,7 @@ M0 确定 Erlang/OTP 版本、JIT 状态、调度器数量、堆与 GC 配置，
 
 ## 负载矩阵与基线
 
-可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1–v6](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；多 actor 正确性见 ADR-0063，双发送者合法交错见 ADR-0065，有限准入/关闭见 ADR-0067，短时计划开环见 ADR-0068，独立长时采样入口见 ADR-0069。Linux OTP oracle、完整 CPU/内存口径及性能验收仍未通过，不能当作性能达标。
+可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1–v7](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；多 actor 正确性见 ADR-0063，双发送者合法交错见 ADR-0065，有限准入/关闭见 ADR-0067，短时计划开环见 ADR-0068，独立长时采样入口见 ADR-0069，CPU/突发心跳业务见 ADR-0070。Linux OTP oracle、完整 CPU/内存口径及性能验收仍未通过，不能当作性能达标。
 
 - **内存维度**：逻辑 state 为 `0B/256B/4KiB/64KiB`，编码大小另报；mailbox 深度为 `0/1/100`，消息 payload 为 `32B/1KiB/64KiB`，活跃比例为 `0%/1%/10%/100%`。选代表性交叉组合并公开选择原因，不只挑 tiny state。
 - **行为维度**：Idle、冬眠、正常计算、被抢占挂起、request/回复、超时/取消、热点收件人、spawn 风暴和关系 fan-out；空闲会话与同时执行的进程分开报告。

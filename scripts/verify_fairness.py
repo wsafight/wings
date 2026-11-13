@@ -199,6 +199,26 @@ def verify(artifact, compare_beam, output):
         result = aot.command([aot.VM, "run", "--trusted", artifact, "--heap-records", 4, "--max-steps", budget],
                              '{"message":"Cpu","args":[1,2,0,0]}\n', expected=expected)
         require("budget" in result.stderr if expected else json.loads(result.stdout) == {"reply": 1000000}, "CPU budget bypass/value")
+    code, observed = invoke([aot.TARGET / aot.PROFILE / "examples/observed_yield", "--trusted", artifact], b"")
+    require(code == 0, f"observed yield exit {code}: {observed}")
+    for key, expected in {"version": 1, "status": "ok", "states_verified": True,
+                          "resources_released": True, "fairness_gate_proven": False}.items():
+        require(type(observed.get(key)) is type(expected) and observed[key] == expected, f"observed {key}")
+    require(type(observed["samples"]) is list and len(observed["samples"]) == 2, "observed yield samples")
+    for index, sample in enumerate(observed["samples"]):
+        require(type(sample["remote"]) is bool and sample["remote"] == (index == 1), "yield request origin")
+        require(type(sample["observed"]) is bool, "yield observation flag")
+        if sample["observed"]:
+            require(integer(sample["latency_ns"]) < 3_000_000_000, "yield latency bound")
+            require(integer(sample["steps_before_resume"], 1) == 1, "yield resume steps")
+            require(integer(sample["steps_at_yield"], 1) >= 1, "yield consumed steps")
+            require(index == 1 or sample["steps_at_yield"] == 1, "pre-request executed before yield")
+        else:
+            require(index == 1 and sample["latency_ns"] is None
+                    and sample["reason"] == "request_not_consumed_before_completion", "missing yield invented latency")
+    if output:
+        (output / "observed-yield.json").write_text(json.dumps(observed, indent=2) + "\n")
+    print("Atomic yield observation: pre-request and remote request checked after real coroutine return; no fairness gate")
     print(f"Fairness v7 {'Wings/BEAM/Python' if compare_beam else 'Wings/Python (BEAM not executed)'}: "
           "two exact-burst schedules, strict duration and CPU budget checked; no performance claim")
 
