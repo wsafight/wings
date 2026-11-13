@@ -97,3 +97,5 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 独立 `--check-byte-roots` 用 Python 字节模型在 compiler 检查点/heap 回调前收集，检查跨 fn、分支、循环的源/候选根及非法参数/算术失败不写输出、正常解链。每业务子进程继续使用 CPU 20 秒、墙钟 30 秒、禁 core，无放宽限制。
 
 本段只记录 macOS 本机结果；Linux 本增量另行验证。Bytes 不等于字符串、通用记录或引用消息/回复，逻辑字节不是 RSS，原生最新双平台与同负载 BEAM 性能/整机内存门禁仍未完成，M0/MVP 状态不变。
+
+隔离 Linux 从 `71fb8e2` 重新交叉构建 release 全部工具/示例与测试，26 个 harness 共 442 项通过（含 TCP 示例 2 项）；完整受限 release AOT 首次通过，包含真实 Linux `.so` 的字节构造、取消、独立根模型、迁移及监督空 state 重建。仍用 QEMU TCG 的 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，未放宽 CPU/墙钟上限。Linux debug/native clippy/MSRV/doc-tests 未在本次执行，仿真不能替代原生 CI 或吞吐/整机内存门禁。
