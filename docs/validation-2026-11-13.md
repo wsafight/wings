@@ -37,6 +37,12 @@ Rust 1.99.1 在 macOS 交叉构建 `x86_64-unknown-linux-gnu`，Zig 0.15.2 作�
 
 此次增量未重跑 Linux debug、原生 clippy/MSRV/doc-tests，也不替代原生双平台 CI。表中的 debug AOT 上限失败仍是旧代码测量，不能据本次 release 通过重标 debug 成功。
 
+### 跨线程模块增量：`3529ed7`
+
+macOS 的 debug/release workspace 各 406 项测试、完整受限 AOT、TCP 示例单测，以及 check/clippy/fmt/MSRV 检查通过。模块代码、Library 与预算现在位于同一个 Arc 控制节点，不使用两个可能并发析构的独立 Arc。
+
+同一隔离 Linux 客体重新运行 release workspace 独立测试及 release TCP 单测：26 个 harness 共 408 项通过。完整 release 受限 AOT 通过，新增四线程独立 worker 共享已计费代码、单步恢复与状态隔离、跨 VM 拒绝、最后 handler 跨线程释放；没有放宽既有子进程限制。Linux debug/native CI 与性能仍未验证，不将该用例称 M:N。
+
 ```sh
 cargo build --locked -p wings-compile -p wings-vm --bins --examples
 WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" python3 scripts/verify_scalar_aot.py

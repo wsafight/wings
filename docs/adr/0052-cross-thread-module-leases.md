@@ -23,4 +23,4 @@
 
 沿用 workspace check/test/clippy/fmt、MSRV、debug/release AOT 与最新双平台验证；没有 M:N、公平性、吞吐或 BEAM 内存领先结论。
 
-2026-11-13 在 macOS 26.6.2 AArch64、Rust 1.99.1 通过 workspace check、debug/release 各 406 项测试、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、两种构建的完整受限 AOT 和 TCP 示例单测。编译期另用歧义约束确认 worker/process/task/execution/pool 仍不满足 Send/Sync；单一 Arc 控制节点的预算随原始代码节点末持有者释放，跨线程并发 drop 和保留内部代码节点回归通过。Linux 最新增量另行验证，不引用旧 CI 代替本切片。
+2026-11-13 在 macOS 26.6.2 AArch64、Rust 1.99.1 通过 workspace check、debug/release 各 406 项测试、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、两种构建的完整受限 AOT 和 TCP 示例单测。编译期另用歧义约束确认 worker/process/task/execution/pool 仍不满足 Send/Sync；单一 Arc 控制节点的预算随原始代码节点末持有者释放，跨线程并发 drop 和保留内部代码节点回归通过。Linux 隔离仿真的 release 独立测试和完整受限 AOT 亦通过，详见[验证记录](../validation-2026-11-13.md#跨线程模块增量3529ed7)；仍非原生双平台 CI 或 M:N 验收。
