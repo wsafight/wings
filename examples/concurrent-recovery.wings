@@ -1,0 +1,20 @@
+process ConcurrentRecovery {
+  state data: Bytes = fill_bytes(4096, 0)
+
+  on Add(delta: Int) -> Int {
+    data = replace_i64_be(data, 0, read_i64_be(data, 0) + delta)
+    read_i64_be(data, 0)
+  }
+
+  on Hold {
+    data = replace_i64_be(data, 0, 99)
+    collect()
+    while true {}
+  }
+
+  on Fail -> Int {
+    data = replace_i64_be(data, 0, 99)
+    collect()
+    1 / 0
+  }
+}

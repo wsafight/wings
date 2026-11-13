@@ -160,6 +160,8 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 ## 低层实现范围
 
+[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 以现有 ABI 和公开入口集成核对活栈候选 Bytes/collect、有限 mailbox、宿主结果取消/超时、stop 与全新监督重启。没有改变查询活栈 actor 时拒绝 idle Bytes snapshot 的边界，不把结果取消作为执行取消。
+
 宿主 `SchedulerHandle` 与 `SchedulerSupervisor` 可通过 `spawn_with_heap_in_pool` 显式借用同 tenant 的计费初始化池，顺序创建复用固定缓存，不再逐次创建 mapping。每次仍绑定目标 process、完整准入并正常返回后发布；不把池保存为跨线程状态，自动重启仍使用原临时池。默认入口不变，详见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 为原 Bytes HeapCall 添加固定宽度 signed big-endian 读写；ABI v14 不改变 context 或 effect 布局。读取固定八字节，替换复制原对象并复用相同根、预算和三级计费边界，非法完整范围受管返回 InvalidBytes。

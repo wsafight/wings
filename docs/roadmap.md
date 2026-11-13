@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 补第 3/6 项的一/双 worker 有界并发取消/超时、排队保留、stop 竞争、候选 GC/旧提交状态与全新重启回归。仍未覆盖所有故障交错、完整业务值/账本、长时公平性和原生双平台 BEAM 双门禁，MVP 未完成。
+
 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 针对 Linux 隔离仿真大容量启动的原 3 秒失败，增加宿主显式复用计费初始化池。v2 的 actor 数、状态、窗口、配额与所有 deadline 保持不变，完整回归结果见验证记录；此资源复用不替代原生双平台、完整业务值/账本和 BEAM 吞吐/整机内存门禁，MVP 未完成。
 
 [ADR-0072](adr/0072-scheduler-yield-observation.md) 接入第 5 项的可选 Scheduler timer 请求/真实返回观测、有限 FIFO 与完整丢样/清除计数，默认关闭。v7 原业务的独立 `--observe` 不提高步骤片或 quantum 来凑样本；仍缺长时公平性、诊断开销/样本完整性、CPU/平台内存和原生双平台门禁，MVP 未完成。

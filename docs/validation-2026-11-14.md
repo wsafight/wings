@@ -192,6 +192,16 @@ Linux x86-64 release 交叉构建 bins、54 个示例和 31 个测试 harness �
 
 独立开环/fairness/让出计数模型与 90000 到达长测 collector 模型通过，日志 `/tmp/wings-init-pool-models.log`；这些模型不替代真实三端执行或长时公平性。依赖隔离、禁 unwind feature、90 份 Markdown 路径/围栏、Python 语法和 fmt/diff 检查通过。不推送或发布，MVP 未完成。
 
+## 有界并发请求与监督恢复：ADR-0074
+
+增加 `examples/concurrent-recovery.wings`、`concurrent_recovery` 宿主示例与回复表固定屏障竞争单测。分别一/双 worker、两 actor、完整 4 KiB Bytes、两发送者各八条，核对超时/取消后的 16 条仍占 mailbox/请求额度、17 槽共享结果的健康余量、满队列无净预留、stop/取消只取一个合法终态；旧 Pid 拒绝、队列不重放。Fail 替换候选并 collect 后除零，即使取消宿主结果也须有真实失败退出，快照长度/32 B 前缀保持旧提交零值，一次新 heap/state 重启后强度超限，最终 VM 零。每配置仍共享原 3 秒阶段，完整 AOT 仍 CPU 20 秒/墙钟 30 秒/禁 core，ABI v14/语法/执行路径未改。
+
+首次专项 fixture 在 Hold 活栈期间错误调用 idle Bytes snapshot，按原查询契约失败；测试改为断言该查询拒绝，不放宽运行时边界，日志 `/tmp/wings-recovery-aot-specific-active-snapshot-error.log`。修正后的 fixture 四次专项与增加 collect 后的四次专项均通过，见 `/tmp/wings-recovery-aot-specific.log`、`/tmp/wings-recovery-aot-specific-final.log`。独立回复表单测覆盖零 deadline 与非过期、publish/drop 两种情况各 16 次屏障竞争，检查单一终态、不可重复消费/取消、publisher 清理和下一代槽无旧值。
+
+本机 check、全目标 clippy `-D warnings`、fmt、Rust 1.85.0 全目标 check 通过。macOS debug/release 各 workspace 482 项加示例 13 项共 495 项，两种构建完整原限 AOT 均通过；日志 `/tmp/wings-recovery-{check,clippy,fmt,msrv,tests-debug,tests-release,examples-debug,examples-release,aot-debug,aot-release}.log`。Linux 验证另记。依赖隔离、禁 unwind feature、91 份 Markdown（含未提交待审语法稿）路径/围栏、Python 语法与 diff 检查通过。本片不是 BEAM 对照，不据短时并发回归宣布完整故障、公平性、性能或 MVP 达标。
+
+Linux 同配置隔离仿真交叉构建 55 个示例及 31 个 release harness，传包核对本片四份代码/脚本与当前工作区一致，排除待审语法稿。客体 31 个 harness 共 495 项及完整原限 AOT 均通过，包含新增真实 AOT 恢复和旧 v2 大容量；日志 `/tmp/wings-recovery-linux-{build,test-build,start,tests,aot}.log`。测试结束正常停止，见 `/tmp/wings-recovery-linux-stop.log`。客体无 OTP/原生 debug/clippy/MSRV/doc-tests，仍非原生 Linux、双平台性能或完整故障门禁。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

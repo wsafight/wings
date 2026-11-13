@@ -291,6 +291,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_result_cancel_publish_and_drop_keep_one_terminal_and_release_each_slot() {
+        for expired in [false, true] {
+            for complete in [false, true] {
+                let limits = Resources {
+                    bytes: 8192,
+                    requests: 1,
+                    ..Resources::default()
+                };
+                let account = ResourceAccount::vm(limits);
+                let table = ReplyTable::new(&account, 1).unwrap();
+                for _ in 0..16 {
+                    let deadline = Instant::now()
+                        + if expired {
+                            Duration::ZERO
+                        } else {
+                            Duration::from_secs(60)
+                        };
+                    let (mut request, publisher) =
+                        table.start(deadline, &account, ValueType::Int).unwrap();
+                    let race = std::sync::Barrier::new(2);
+                    let terminal = std::thread::scope(|scope| {
+                        let race = &race;
+                        let producer = scope.spawn(move || {
+                            race.wait();
+                            if complete {
+                                publisher.complete(7);
+                            } else {
+                                drop(publisher);
+                            }
+                        });
+                        race.wait();
+                        request.cancel().unwrap();
+                        let terminal = request.try_take().unwrap().unwrap();
+                        assert!(request.try_take().is_err());
+                        assert!(request.cancel().is_err());
+                        producer.join().unwrap();
+                        terminal
+                    });
+                    if expired {
+                        assert_eq!(terminal, RequestOutcome::TimedOut);
+                    } else if complete {
+                        assert!(matches!(
+                            terminal,
+                            RequestOutcome::Cancelled | RequestOutcome::Reply(7)
+                        ));
+                    } else {
+                        assert!(matches!(
+                            terminal,
+                            RequestOutcome::Cancelled | RequestOutcome::Failed
+                        ));
+                    }
+                    assert_eq!(account.used().requests, 0);
+                    let (mut next, publisher) = table
+                        .start(
+                            Instant::now() + Duration::from_secs(60),
+                            &account,
+                            ValueType::Int,
+                        )
+                        .unwrap();
+                    assert_eq!(next.try_take().unwrap(), None);
+                    publisher.complete(11);
+                    assert_eq!(next.try_take().unwrap(), Some(RequestOutcome::Reply(11)));
+                    assert_eq!(account.used().requests, 0);
+                }
+                drop(table);
+                assert_eq!(account.used(), Resources::default());
+            }
+        }
+    }
+
+    #[test]
     fn shared_results_charge_original_process_and_reject_foreign_paths_and_types() {
         let limits = Resources {
             bytes: 1 << 20,

@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 回归现有超时/取消只决定宿主结果、不撤回已接受消息的契约：仍存活的 publisher 保留请求额度，stop/取消竞争选择一个终态，失败保留旧提交 Bytes，监督重启不重放旧队列。用一/双 worker 真实 AOT 和固定屏障回复表测试验证，不新增消息撤回或事务。
+
 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 为宿主批量创建增加显式初始化池借用：只接受同 tenant 计费池，同步绑定目标 process 并转移完整栈额度，返回后归还；满池、错误账户、额度或 initializer 失败按原路径回滚。Scheduler/supervisor 不持有该池，后续 handler 与自动重启路径不变，缓存由调用者 drop/trim，不把缓存计费与 RSS 混同。
 
 [ADR-0072](adr/0072-scheduler-yield-observation.md) 的 `SchedulerConfig::yield_samples` 默认 0，可设每 worker 1..=65536 条固定 FIFO；启动前 tenant/VM 准入失败回滚。`take_yield_sample(worker)` 一次消费副本，`yield_statistics(worker)` 返回请求/合并/消费/清除/确认和保留/取出/丢弃计数；活动查询不保证跨锁快照，停机后核对守恒。样本只含 Pid/时间，不保留业务对象；最后 handle 释放才归还诊断租约。
