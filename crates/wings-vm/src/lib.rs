@@ -145,6 +145,15 @@ impl ScalarProcess {
     }
 
     fn validate_handler(&self, handler: &HandlerId, arguments: &[i64]) -> Result<usize, String> {
+        self.validate_handler_kind(handler, arguments, false)
+    }
+
+    fn validate_handler_kind(
+        &self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        system: bool,
+    ) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
         }
@@ -152,11 +161,16 @@ impl ScalarProcess {
             return Err("handler ID belongs to a different module".into());
         }
         let schema = handler.schema();
+        if schema.is_completion() != system {
+            return Err("completion events require the worker system path".into());
+        }
         if arguments.len() != schema.parameters.len()
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| !ty.accepts(*value))
+                .any(|(value, (_, ty))| {
+                    !ty.accepts(*value) && !(system && *ty == ValueType::RequestId && *value > 0)
+                })
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
@@ -229,6 +243,9 @@ fn check_status(status: u32) -> Result<(), String> {
         }
         wings_abi::STATUS_SPAWN_REJECTED => {
             Err("managed spawn rejected by capacity, initialization or quota".into())
+        }
+        wings_abi::STATUS_REQUEST_REJECTED => {
+            Err("managed request rejected by protocol, capacity, identity or quota".into())
         }
         _ => Err(format!("unknown scalar ABI status {status}")),
     }

@@ -12,6 +12,7 @@ pub enum Type {
     RecordInt,
     IntList,
     Pid,
+    RequestId,
     Function {
         parameters: Vec<(String, Type)>,
         result: Box<Type>,
@@ -32,6 +33,7 @@ impl std::fmt::Display for Type {
             Self::RecordInt => formatter.write_str("RecordInt"),
             Self::IntList => formatter.write_str("IntList"),
             Self::Pid => formatter.write_str("Pid"),
+            Self::RequestId => formatter.write_str("RequestId"),
             Self::Function { parameters, result } => {
                 formatter.write_str("(")?;
                 for (index, (name, ty)) in parameters.iter().enumerate() {
@@ -173,6 +175,8 @@ pub fn analyze(text: &str) -> Analysis {
                     | "self_pid"
                     | "spawn_self"
                     | "send"
+                    | "request"
+                    | "cancel_request"
             ) || checker.functions.contains_key(&function.name.text)
             {
                 checker.error(
@@ -227,8 +231,12 @@ pub fn analyze(text: &str) -> Analysis {
         let mut state_scope = HashMap::new();
         for state in &process.states {
             let declared = checker.declared_type(&state.ty);
-            if declared == Type::Pid {
-                checker.error("T018", "Pid state is not supported", state.ty.span);
+            if matches!(declared, Type::Pid | Type::RequestId) {
+                checker.error(
+                    "T018",
+                    "Pid/RequestId state is not supported",
+                    state.ty.span,
+                );
             }
             let actual = checker.expression(&state.default, &HashMap::new());
             checker.require(&actual, &declared, state.default.span);
@@ -262,11 +270,27 @@ pub fn analyze(text: &str) -> Analysis {
                 .map(|parameter| {
                     (parameter.name.text.clone(), {
                         let ty = checker.declared_type(&parameter.ty);
-                        checker.external_type(&ty, parameter.ty.span);
+                        if ty != Type::RequestId {
+                            checker.external_type(&ty, parameter.ty.span);
+                        }
                         ty
                     })
                 })
                 .collect();
+            if parameters.iter().any(|(_, ty)| *ty == Type::RequestId)
+                && !(handler.reply_type.is_none()
+                    && parameters.iter().map(|(_, ty)| ty).eq([
+                        &Type::RequestId,
+                        &Type::Int,
+                        &Type::Int,
+                    ]))
+            {
+                checker.error(
+                    "T011",
+                    "RequestId is only supported in completion event signatures",
+                    handler.name.span,
+                );
+            }
             let reply = handler.reply_type.as_ref().map(|name| {
                 let ty = checker.declared_type(name);
                 checker.external_type(&ty, name.span);
@@ -337,7 +361,10 @@ struct Checker {
 
 impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
-        if matches!(ty, Type::RecordInt | Type::IntList | Type::Pid) {
+        if matches!(
+            ty,
+            Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+        ) {
             self.error(
                 "T011",
                 format!("{ty} is not supported in message fields or replies"),
@@ -360,6 +387,7 @@ impl Checker {
             "RecordInt" => Type::RecordInt,
             "IntList" => Type::IntList,
             "Pid" => Type::Pid,
+            "RequestId" => Type::RequestId,
             "" => Type::Unknown,
             _ => {
                 self.error(
@@ -482,6 +510,86 @@ impl Checker {
                 .resolve(name, scope)
                 .map_or(Type::Unknown, |symbol| self.symbols[symbol].ty.clone()),
             ExprKind::Call { callee, arguments } => {
+                if callee.text == "request" {
+                    if !self.effects_allowed {
+                        self.error(
+                            "T018",
+                            "request is only supported in handlers",
+                            expression.span,
+                        );
+                    }
+                    if scope.contains_key(&callee.text) {
+                        self.error("T012", "bindings are not callable", callee.span);
+                    }
+                    if arguments.len() < 4 {
+                        self.error(
+                            "T013",
+                            "request requires pid, message, completion and timeout",
+                            expression.span,
+                        );
+                        return Type::RequestId;
+                    }
+                    let actual = self.expression(&arguments[0], scope);
+                    self.require(&actual, &Type::Pid, arguments[0].span);
+                    let target = self.message_target(&arguments[1], scope);
+                    let callback = self.message_target(&arguments[2], scope);
+                    let timeout = self.expression(&arguments[3], scope);
+                    self.require(&timeout, &Type::Int, arguments[3].span);
+                    let types: Vec<_> = arguments[4..]
+                        .iter()
+                        .map(|argument| self.expression(argument, scope))
+                        .collect();
+                    if let Some(Type::Message { parameters, reply }) = target {
+                        if reply.as_deref() != Some(&Type::Int) {
+                            self.error(
+                                "T018",
+                                "request requires an Int reply handler",
+                                arguments[1].span,
+                            );
+                        }
+                        if parameters.len() != types.len() {
+                            self.error("T013", "request argument count mismatch", expression.span);
+                        }
+                        for ((actual, (_, expected)), value) in
+                            types.iter().zip(&parameters).zip(&arguments[4..])
+                        {
+                            self.require(actual, expected, value.span);
+                        }
+                    }
+                    if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.iter().map(|(_, ty)| ty).eq([&Type::RequestId, &Type::Int, &Type::Int]))
+                    {
+                        self.error(
+                            "T018",
+                            "request completion requires one-way (RequestId, Int, Int)",
+                            arguments[2].span,
+                        );
+                    }
+                    return Type::RequestId;
+                }
+                if callee.text == "cancel_request" {
+                    if !self.effects_allowed {
+                        self.error(
+                            "T018",
+                            "cancel_request is only supported in handlers",
+                            expression.span,
+                        );
+                    }
+                    if scope.contains_key(&callee.text) {
+                        self.error("T012", "bindings are not callable", callee.span);
+                    }
+                    if arguments.len() != 1 {
+                        self.error(
+                            "T013",
+                            "cancel_request requires one RequestId",
+                            expression.span,
+                        );
+                    }
+                    for argument in arguments {
+                        let actual = self.expression(argument, scope);
+                        self.require(&actual, &Type::RequestId, argument.span);
+                    }
+                    return Type::Unit;
+                }
                 if matches!(callee.text.as_str(), "self_pid" | "spawn_self") {
                     if !self.effects_allowed {
                         self.error(
@@ -568,6 +676,13 @@ impl Checker {
                     };
                     if reply.is_some() {
                         self.error("T018", "send_self requires a one-way handler", name.span);
+                    }
+                    if parameters.iter().any(|(_, ty)| *ty == Type::RequestId) {
+                        self.error(
+                            "T018",
+                            "completion events cannot be sent directly",
+                            name.span,
+                        );
                     }
                     if types.len() != parameters.len() {
                         self.error("T013", "send_self argument count mismatch", expression.span);
@@ -682,9 +797,13 @@ impl Checker {
                 let right_type = self.expression(right, scope);
                 if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                     self.require(&right_type, &left_type, right.span);
-                    if matches!(left_type, Type::RecordInt | Type::IntList | Type::Pid)
-                        || matches!(right_type, Type::RecordInt | Type::IntList | Type::Pid)
-                    {
+                    if matches!(
+                        left_type,
+                        Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+                    ) || matches!(
+                        right_type,
+                        Type::RecordInt | Type::IntList | Type::Pid | Type::RequestId
+                    ) {
                         self.error(
                             "T015",
                             "record references and process capabilities cannot be compared",
@@ -709,5 +828,28 @@ impl Checker {
             }
             ExprKind::Error => Type::Unknown,
         }
+    }
+
+    fn message_target(
+        &mut self,
+        expression: &Expr,
+        scope: &HashMap<String, usize>,
+    ) -> Option<Type> {
+        let ExprKind::Name(name) = &expression.kind else {
+            self.error("T018", "expected static message name", expression.span);
+            return None;
+        };
+        if scope.contains_key(&name.text) {
+            self.error("T018", "message target is shadowed", name.span);
+        }
+        let Some(&symbol) = self.handlers.get(&name.text) else {
+            self.error("T018", "unknown request message", name.span);
+            return None;
+        };
+        self.references.push(Reference {
+            span: name.span,
+            symbol,
+        });
+        Some(self.symbols[symbol].ty.clone())
     }
 }

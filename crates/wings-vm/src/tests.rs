@@ -18,6 +18,7 @@ mod diagnostics;
 mod persistent_state;
 mod primitives;
 mod process_effects;
+mod request_events;
 mod stack_boundary;
 mod supervision;
 

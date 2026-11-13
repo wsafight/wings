@@ -29,6 +29,8 @@ pub(crate) struct ProcessEffect {
     pub handler: usize,
     pub arguments: [i64; 64],
     pub count: usize,
+    pub callback: usize,
+    pub timeout_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,7 @@ pub enum ExecutionFault {
     EmptyList,
     SendRejected,
     SpawnRejected,
+    RequestRejected,
     UnknownStatus(u32),
 }
 
@@ -71,6 +74,7 @@ impl ExecutionFault {
             wings_abi::STATUS_EMPTY_LIST => Self::EmptyList,
             wings_abi::STATUS_SEND_REJECTED => Self::SendRejected,
             wings_abi::STATUS_SPAWN_REJECTED => Self::SpawnRejected,
+            wings_abi::STATUS_REQUEST_REJECTED => Self::RequestRejected,
             other => Self::UnknownStatus(other),
         })
     }
@@ -311,10 +315,34 @@ impl ScalarTask {
         preemption: &PreemptionToken,
         pool: &StackPool,
     ) -> Result<(), String> {
+        self.start_kind(
+            handler,
+            arguments,
+            max_steps,
+            cancellation,
+            preemption,
+            pool,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_kind(
+        &mut self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+        preemption: &PreemptionToken,
+        pool: &StackPool,
+        system: bool,
+    ) -> Result<(), String> {
         if self.is_active() {
             return Err("scalar task already has an active invocation".into());
         }
-        let handler = self.process.validate_handler(handler, arguments)?;
+        let handler = self
+            .process
+            .validate_handler_kind(handler, arguments, system)?;
         self.invocation = Some(Invocation::new(
             &mut self.process,
             handler,
@@ -600,6 +628,8 @@ unsafe extern "C" fn send_self(
             handler: request.handler as usize,
             arguments: copied,
             count,
+            callback: request.callback as usize,
+            timeout_ms: request.timeout_ms,
         }),
     };
     let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
@@ -656,6 +686,10 @@ mod tests {
             (
                 wings_abi::STATUS_SPAWN_REJECTED,
                 ExecutionFault::SpawnRejected,
+            ),
+            (
+                wings_abi::STATUS_REQUEST_REJECTED,
+                ExecutionFault::RequestRejected,
             ),
             (u32::MAX, ExecutionFault::UnknownStatus(u32::MAX)),
         ] {

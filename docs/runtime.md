@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0040](adr/0040-language-request-events.md) 将请求结果保留到完成事件实际入队；队满不丢结果，发起方退出清理预留而不撤回对端消息。当前仍由 tick 扫描 deadline，没有自动 OS 事件泵。
+
 [ADR-0039](adr/0039-local-process-capabilities.md) 允许同 worker 同模块创建与投递；新实例独立账户和状态，父失败不撤回已创建子项。固定 actor 能力号不复用，退出失效，无增长能力表或隐式监督关系。
 
 [ADR-0038](adr/0038-self-send-effects.md) 的自发送经协程按值交出、worker 同线程立即准入入队，下一片确认后继续原调用；不重入 actor，不保存挂起 context 指针。独立 CLI 无此能力，调用受管失败；退出按现有规则清理已排队消息，不作为副作用回滚。

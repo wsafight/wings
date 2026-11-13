@@ -1,8 +1,10 @@
 # 风险与里程碑
 
-[ADR-0039](adr/0039-local-process-capabilities.md) 接入同 worker 同模块创建与单向发送；Pid 暂不跨 state/消息，异步语言请求、跨 worker 迁移与完整业务值仍未完成，不降低 MVP 门槛。
+[ADR-0040](adr/0040-language-request-events.md) 接入有界异步整数请求事件；一般回复类型、关联 state、自动 OS 事件泵与双平台门禁尚未完成，保留完整 MVP 门槛。
 
-[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；同模块创建/发送由 ADR-0039 扩展，异步语言请求和引用消息仍须完成，不降低 MVP 门槛。
+[ADR-0039](adr/0039-local-process-capabilities.md) 接入同 worker 同模块创建与单向发送；Pid 暂不跨 state/消息，异步整数请求另见 ADR-0040，跨 worker 迁移与完整业务值仍未完成，不降低 MVP 门槛。
+
+[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；同模块创建/发送由 ADR-0039 扩展，异步整数请求另见 ADR-0040，引用消息仍须完成，不降低 MVP 门槛。
 
 [ADR-0037](adr/0037-immutable-int-lists.md) 增加有界不可变 IntList 及传递根，ABI v7；字符串、通用记录、引用消息和三级账本全覆盖仍未完成，不降低 MVP 门槛。
 
@@ -72,7 +74,7 @@ OS 唤醒的前置切片已按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独�
 
 ## MVP 范围与开发顺序
 
-[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它的语言自发送/同模块创建与发送另见 ADR-0038/0039，尚无语言异步请求或真实 I/O，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
+[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它的语言自发送/同模块创建与发送另见 ADR-0038/0039，异步整数请求由 ADR-0040 扩展，真实 I/O 尚未接入，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
 
 [ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。ADR-0031 补充标量循环中的计时请求与有限轮转回归，但仍不覆盖 runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
 

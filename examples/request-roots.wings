@@ -1,0 +1,15 @@
+process RequestRoots {
+  state count: RecordInt = record_int(0)
+  on Start(value: Int, fail: Bool) -> Int {
+    let old = count;
+    count = record_int(9);
+    let child = spawn_self();
+    let id = request(child, Compute, Completed, 60000, value);
+    cancel_request(id);
+    collect();
+    (read_int(old) + read_int(count)) / if fail { 0 } else { 1 }
+  }
+  on Compute(value: Int) -> Int { count = record_int(value); read_int(count) }
+  on Completed(id: RequestId, status: Int, value: Int) { count = record_int(status * 100 + value) }
+  on Read -> Int { read_int(count) }
+}

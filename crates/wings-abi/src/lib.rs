@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 9;
+pub const SCALAR_ABI_VERSION: u32 = 10;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -16,10 +16,13 @@ pub const STATUS_INVALID_ROOT: u32 = 8;
 pub const STATUS_EMPTY_LIST: u32 = 9;
 pub const STATUS_SEND_REJECTED: u32 = 10;
 pub const STATUS_SPAWN_REJECTED: u32 = 11;
+pub const STATUS_REQUEST_REJECTED: u32 = 12;
 pub const EFFECT_SEND_SELF: u32 = 0;
 pub const EFFECT_SELF_PID: u32 = 1;
 pub const EFFECT_SPAWN_SELF: u32 = 2;
 pub const EFFECT_SEND: u32 = 3;
+pub const EFFECT_REQUEST: u32 = 4;
+pub const EFFECT_CANCEL_REQUEST: u32 = 5;
 pub const HEAP_RECORD_INT: u32 = 0;
 pub const HEAP_READ_INT: u32 = 1;
 pub const HEAP_COLLECT: u32 = 2;
@@ -39,6 +42,7 @@ pub enum ValueType {
     Ref,
     ListRef,
     Pid,
+    RequestId,
 }
 
 impl ValueType {
@@ -47,12 +51,16 @@ impl ValueType {
             Self::Int => true,
             Self::Bool => matches!(value, 0 | 1),
             Self::Unit => value == 0,
-            Self::Ref | Self::ListRef | Self::Pid => false,
+            Self::Ref | Self::ListRef | Self::Pid | Self::RequestId => false,
         }
     }
 
     pub fn is_reference(self) -> bool {
         matches!(self, Self::Ref | Self::ListRef)
+    }
+
+    pub fn is_capability(self) -> bool {
+        matches!(self, Self::Pid | Self::RequestId)
     }
 }
 
@@ -94,6 +102,8 @@ pub struct EffectRequest {
     pub target: i64,
     pub arguments: *const i64,
     pub count: usize,
+    pub callback: u32,
+    pub timeout_ms: i64,
 }
 
 pub type EffectCall =

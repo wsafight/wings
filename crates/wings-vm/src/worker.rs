@@ -9,6 +9,7 @@ use crate::{
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
 static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
+static NEXT_REQUEST_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
@@ -109,7 +110,16 @@ struct PendingRequest {
     target: Pid,
     deadline: Instant,
     outcome: Option<RequestOutcome>,
+    completion: Option<Completion>,
     _charge: Reservation,
+}
+
+struct Completion {
+    owner: Pid,
+    capability: i64,
+    handler: HandlerId,
+    budget: u64,
+    charge: Reservation,
 }
 
 struct Actor {
@@ -134,6 +144,7 @@ struct Message {
     count: usize,
     max_steps: u64,
     request: Option<RequestId>,
+    system: bool,
     _charge: Reservation,
 }
 
@@ -357,6 +368,7 @@ impl ScalarWorker {
             target: pid,
             deadline,
             outcome: None,
+            completion: None,
             _charge: charge,
         });
         Ok(request)
@@ -364,6 +376,9 @@ impl ScalarWorker {
 
     pub fn take_reply(&mut self, request: RequestId) -> Result<Option<RequestOutcome>, String> {
         self.expire_requests();
+        if self.pending(request)?.completion.is_some() {
+            return Err("language request results require completion events".into());
+        }
         let outcome = self.pending(request)?.outcome;
         if outcome.is_some() {
             let slot = &mut self.requests[request.slot as usize];
@@ -375,6 +390,9 @@ impl ScalarWorker {
 
     pub fn cancel_request(&mut self, request: RequestId) -> Result<(), String> {
         self.expire_requests();
+        if self.pending(request)?.completion.is_some() {
+            return Err("language request cancellation requires its owner".into());
+        }
         self.pending(request)?;
         self.finish_request(request, RequestOutcome::Cancelled);
         Ok(())
@@ -393,6 +411,9 @@ impl ScalarWorker {
             return Err("handler ID belongs to a different module".into());
         }
         let schema = handler.schema();
+        if schema.is_completion() {
+            return Err("completion events cannot be sent directly".into());
+        }
         if schema.reply.is_some() != request.is_some() {
             return Err("send requires a one-way handler; request requires a reply handler".into());
         }
@@ -421,6 +442,7 @@ impl ScalarWorker {
             count: arguments.len(),
             max_steps,
             request,
+            system: false,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -434,6 +456,7 @@ impl ScalarWorker {
             return Err("worker slice must contain at least one step".into());
         }
         self.expire_requests();
+        self.flush_completions();
         for _ in 0..self.slots.len() {
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % self.slots.len();
@@ -452,13 +475,14 @@ impl ScalarWorker {
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .as_ref()
                     .expect("mailbox head");
-                actor.task.start(
+                actor.task.start_kind(
                     &message.handler,
                     &message.arguments[..message.count],
                     message.max_steps,
                     &CancellationToken::default(),
                     &self.preemption,
                     &actor.pool,
+                    message.system,
                 )?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .take()
@@ -614,6 +638,34 @@ impl ScalarWorker {
             .message
             .max_steps;
         match effect.operation {
+            wings_abi::EFFECT_REQUEST => {
+                let result = self.language_request(pid, effect);
+                match result {
+                    Ok(value) => (wings_abi::STATUS_OK, value),
+                    Err(_) => (wings_abi::STATUS_REQUEST_REJECTED, 0),
+                }
+            }
+            wings_abi::EFFECT_CANCEL_REQUEST => {
+                let request = self.requests.iter().enumerate().find_map(|(index, slot)| {
+                    slot.pending
+                        .as_ref()
+                        .and_then(|pending| pending.completion.as_ref())
+                        .filter(|completion| {
+                            completion.owner == pid && completion.capability == effect.target
+                        })
+                        .map(|_| RequestId {
+                            worker: self.identity,
+                            slot: index as u32,
+                            generation: slot.generation,
+                        })
+                });
+                if let Some(request) = request {
+                    self.finish_request(request, RequestOutcome::Cancelled);
+                    (wings_abi::STATUS_OK, 0)
+                } else {
+                    (wings_abi::STATUS_REQUEST_REJECTED, 0)
+                }
+            }
             wings_abi::EFFECT_SELF_PID if effect.count == 0 => {
                 (wings_abi::STATUS_OK, actor.capability)
             }
@@ -701,6 +753,16 @@ impl ScalarWorker {
     fn remove(&mut self, index: usize) {
         let pid = self.pid(index);
         for slot in &mut self.requests {
+            if slot
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.completion.as_ref())
+                .is_some_and(|completion| completion.owner == pid)
+            {
+                slot.pending.take();
+                slot.generation = slot.generation.checked_add(1).unwrap_or(0);
+                continue;
+            }
             if let Some(pending) = &mut slot.pending {
                 if pending.target == pid && pending.outcome.is_none() {
                     pending.outcome = Some(RequestOutcome::Failed);
@@ -742,6 +804,158 @@ impl ScalarWorker {
                     pending.outcome = Some(RequestOutcome::TimedOut);
                 }
             }
+        }
+    }
+
+    fn language_request(
+        &mut self,
+        owner: Pid,
+        effect: crate::execution::ProcessEffect,
+    ) -> Result<i64, String> {
+        if !(0..=86_400_000).contains(&effect.timeout_ms) {
+            return Err("invalid request timeout".into());
+        }
+        let actor = self.actor(owner)?;
+        let module = actor.task.module().clone();
+        let target = self
+            .slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, slot)| {
+                slot.actor
+                    .as_ref()
+                    .filter(|actor| actor.capability == effect.target)
+                    .map(|_| self.pid(index))
+            })
+            .ok_or("invalid request target")?;
+        let schema = module
+            .manifest()
+            .handlers
+            .get(effect.handler)
+            .ok_or("invalid request handler")?;
+        if schema.reply != Some(wings_abi::ValueType::Int) {
+            return Err("request requires Int reply".into());
+        }
+        let callback = module
+            .manifest()
+            .handlers
+            .get(effect.callback)
+            .filter(|schema| schema.is_completion())
+            .ok_or("invalid request completion")?;
+        let handler = module.handler(&schema.name)?;
+        let callback = module.handler(&callback.name)?;
+        let index = self
+            .requests
+            .iter()
+            .position(|slot| slot.pending.is_none() && slot.generation != 0)
+            .ok_or("request_table_full")?;
+        let mut capability = NEXT_REQUEST_CAPABILITY.load(Ordering::Relaxed);
+        let capability = loop {
+            if capability > i64::MAX as u64 {
+                return Err("request capabilities exhausted".into());
+            }
+            match NEXT_REQUEST_CAPABILITY.compare_exchange_weak(
+                capability,
+                capability + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break capability as i64,
+                Err(current) => capability = current,
+            }
+        };
+        let request = RequestId {
+            worker: self.identity,
+            slot: index as u32,
+            generation: self.requests[index].generation,
+        };
+        let budget = actor
+            .active
+            .as_ref()
+            .expect("request active message")
+            .message
+            .max_steps;
+        let charge = actor.account.reserve(Resources {
+            requests: 1,
+            ..Resources::default()
+        })?;
+        let event_charge = actor.account.reserve(Resources {
+            messages: 1,
+            bytes: std::mem::size_of::<Message>() as u64,
+            ..Resources::default()
+        })?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(effect.timeout_ms as u64))
+            .ok_or("request deadline overflow")?;
+        self.enqueue(
+            target,
+            &handler,
+            &effect.arguments[..effect.count],
+            budget,
+            Some(request),
+        )?;
+        self.requests[index].pending = Some(PendingRequest {
+            target,
+            deadline,
+            outcome: None,
+            completion: Some(Completion {
+                owner,
+                capability,
+                handler: callback,
+                budget,
+                charge: event_charge,
+            }),
+            _charge: charge,
+        });
+        Ok(capability)
+    }
+
+    fn flush_completions(&mut self) {
+        for index in 0..self.requests.len() {
+            let Some(pending) = self.requests[index].pending.as_ref() else {
+                continue;
+            };
+            let Some(outcome) = pending.outcome else {
+                continue;
+            };
+            let Some(completion) = pending.completion.as_ref() else {
+                continue;
+            };
+            let owner = completion.owner;
+            let Ok(actor) = self.actor(owner) else {
+                continue;
+            };
+            if actor.mailbox.count == actor.mailbox.slots.len() {
+                continue;
+            }
+            let mut pending = self.requests[index]
+                .pending
+                .take()
+                .expect("completed request");
+            let completion = pending.completion.take().expect("completion route");
+            self.requests[index].generation =
+                self.requests[index].generation.checked_add(1).unwrap_or(0);
+            let mut arguments = [0; MAX_ARGUMENTS];
+            arguments[0] = completion.capability;
+            (arguments[1], arguments[2]) = match outcome {
+                RequestOutcome::Reply(value) => (0, value),
+                RequestOutcome::TimedOut => (1, 0),
+                RequestOutcome::Cancelled => (2, 0),
+                RequestOutcome::Failed => (3, 0),
+            };
+            let message = Message {
+                handler: completion.handler,
+                arguments,
+                count: 3,
+                max_steps: completion.budget,
+                request: None,
+                system: true,
+                _charge: completion.charge,
+            };
+            let actor = self.actor_mut(owner).expect("completion recipient");
+            let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
+            actor.mailbox.slots[tail] = Some(message);
+            actor.mailbox.count += 1;
         }
     }
 }

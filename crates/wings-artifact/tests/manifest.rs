@@ -149,13 +149,32 @@ fn accepts_record_state_but_rejects_reference_messages_and_replies() {
 fn process_capabilities_are_not_artifact_state_or_external_values() {
     let mut invalid = manifest();
     invalid.state = ValueType::Pid;
-    rejects(&invalid, "Pid state");
+    rejects(&invalid, "Pid/RequestId state");
     let mut invalid = manifest();
     invalid.handlers[0].reply = Some(ValueType::Pid);
     rejects(&invalid, "Pid cannot cross");
     let mut invalid = manifest();
     invalid.handlers[0].parameters[0].1 = ValueType::Pid;
     rejects(&invalid, "Pid cannot cross");
+}
+
+#[test]
+fn request_ids_only_enter_exact_one_way_completion_signatures() {
+    let mut manifest = manifest();
+    manifest.handlers[0].parameters = vec![
+        ("id".into(), ValueType::RequestId),
+        ("status".into(), ValueType::Int),
+        ("value".into(), ValueType::Int),
+    ];
+    manifest.handlers[0].reply = None;
+    assert!(manifest.handlers[0].is_completion());
+    manifest.validate().unwrap();
+    manifest.handlers[0].reply = Some(ValueType::Unit);
+    assert!(!manifest.handlers[0].is_completion());
+    assert!(manifest.validate().is_err());
+    manifest.handlers[0].reply = None;
+    manifest.handlers[0].parameters.pop();
+    assert!(manifest.validate().is_err());
 }
 
 #[test]

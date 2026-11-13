@@ -307,6 +307,8 @@ fn compile_body(
                     | Operation::Send { .. }
                     | Operation::SelfPid
                     | Operation::SpawnSelf
+                    | Operation::Request { .. }
+                    | Operation::CancelRequest(_)
             )
         })
         .then(|| {
@@ -363,7 +365,9 @@ fn compile_body(
             Operation::SendSelf { .. }
             | Operation::Send { .. }
             | Operation::SelfPid
-            | Operation::SpawnSelf => {
+            | Operation::SpawnSelf
+            | Operation::Request { .. }
+            | Operation::CancelRequest(_) => {
                 let (operation, handler, arguments): (_, _, &[usize]) = match &instruction.operation
                 {
                     Operation::SendSelf { handler, arguments } => {
@@ -374,6 +378,10 @@ fn compile_body(
                     } => (wings_abi::EFFECT_SEND, *handler, arguments),
                     Operation::SelfPid => (wings_abi::EFFECT_SELF_PID, 0, &[]),
                     Operation::SpawnSelf => (wings_abi::EFFECT_SPAWN_SELF, 0, &[]),
+                    Operation::Request {
+                        handler, arguments, ..
+                    } => (wings_abi::EFFECT_REQUEST, *handler, arguments),
+                    Operation::CancelRequest(_) => (wings_abi::EFFECT_CANCEL_REQUEST, 0, &[]),
                     _ => unreachable!(),
                 };
                 let request = effect_arguments.expect("effect argument storage");
@@ -402,10 +410,32 @@ fn compile_body(
                 let target = builder.ins().iconst(types::I32, handler as i64);
                 let operation = builder.ins().iconst(types::I32, i64::from(operation));
                 let pid = match &instruction.operation {
-                    Operation::Send { target, .. } => registers[*target],
+                    Operation::Send { target, .. } | Operation::Request { target, .. } => {
+                        registers[*target]
+                    }
+                    Operation::CancelRequest(target) => registers[*target],
                     _ => builder.ins().iconst(types::I64, 0),
                 };
                 let count = builder.ins().iconst(pointer_type, arguments.len() as i64);
+                let (completion, timeout) = match &instruction.operation {
+                    Operation::Request {
+                        callback, timeout, ..
+                    } => (*callback, registers[*timeout]),
+                    _ => (0, builder.ins().iconst(types::I64, 0)),
+                };
+                let completion = builder.ins().iconst(types::I32, completion as i64);
+                builder.ins().store(
+                    MemFlags::new(),
+                    completion,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, callback) as i32,
+                );
+                builder.ins().store(
+                    MemFlags::new(),
+                    timeout,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, timeout_ms) as i32,
+                );
                 builder.ins().store(
                     MemFlags::new(),
                     operation,

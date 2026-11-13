@@ -110,6 +110,51 @@ fn process_capabilities_are_local_typed_values_and_effects_are_handler_only() {
 }
 
 #[test]
+fn language_requests_require_typed_system_completions_and_int_replies() {
+    checked(include_str!("../../../examples/request-events.wings"));
+    for (body, code, fragment) in [
+        ("request()", "T013", "requires pid"),
+        ("request(1, Get, Done, 10)", "T005", "expected Pid"),
+        ("request(self_pid(), Notify, Done, 10)", "T018", "Int reply"),
+        (
+            "request(self_pid(), Get, Notify, 10)",
+            "T018",
+            "completion requires",
+        ),
+        (
+            "request(self_pid(), Get, Done, true)",
+            "T005",
+            "expected Int",
+        ),
+        ("cancel_request(1)", "T005", "expected RequestId"),
+        (
+            "send_self(Done, 1, 0, 3)",
+            "T018",
+            "cannot be sent directly",
+        ),
+        (
+            "let Done = 1; request(self_pid(), Get, Done, 10)",
+            "T018",
+            "shadowed",
+        ),
+        ("request(self_pid(), Get, 1, 10)", "T018", "static message"),
+    ] {
+        let text = format!(
+            "process P {{ state count: Int = 0; on Test {{ {body}; () }} on Get -> Int {{ count }} on Notify {{ () }} on Done(id: RequestId, status: Int, value: Int) {{ () }} }}"
+        );
+        assert_error(&text, code, fragment);
+    }
+    for text in [
+        "process P { state id: RequestId = request(); on Test {} }",
+        "process P { fn request() -> Unit { () } state count: Int = 0; on Test {} }",
+        "process P { state count: Int = 0; on Wrong(id: RequestId) {} }",
+        "process P { state count: Int = 0; on Wrong -> RequestId { request() } }",
+    ] {
+        assert!(!analyze(text).diagnostics.is_empty(), "{text}");
+    }
+}
+
+#[test]
 fn while_requires_bool_condition_unit_body_and_local_scope() {
     checked(
         "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",
@@ -336,7 +381,7 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
         ("collect(1); 0", "T013", "expects 0"),
         ("record_int(); 0", "T013", "expects 1"),
         ("record_int(1, 2); 0", "T013", "found 2"),
-        ("request(1); 0", "T012", "unsupported builtin"),
+        ("request(1); 0", "T013", "requires pid"),
         ("let collect = 1; collect(); 0", "T012", "shadows a builtin"),
         (
             "let saved = record_int(1); saved = record_int(2); 0",

@@ -19,6 +19,17 @@ pub struct Handler {
     pub reply: Option<ValueType>,
 }
 
+impl Handler {
+    pub fn is_completion(&self) -> bool {
+        self.reply.is_none()
+            && self.parameters.iter().map(|(_, ty)| *ty).eq([
+                ValueType::RequestId,
+                ValueType::Int,
+                ValueType::Int,
+            ])
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -53,17 +64,17 @@ impl Manifest {
         if !valid_name(&self.process) || self.handlers.len() > 128 {
             return Err("invalid process name or handler count".into());
         }
-        if self.state == ValueType::Pid {
-            return Err("Pid state is not supported".into());
+        if self.state.is_capability() {
+            return Err("Pid/RequestId state is not supported".into());
         }
         if self.handlers.iter().any(|handler| {
-            handler.reply == Some(ValueType::Pid)
-                || handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::Pid)
+            handler.reply.is_some_and(ValueType::is_capability)
+                || handler.parameters.iter().any(|(_, ty)| {
+                    *ty == ValueType::Pid
+                        || (*ty == ValueType::RequestId && !handler.is_completion())
+                })
         }) {
-            return Err("Pid cannot cross scalar artifact boundaries".into());
+            return Err("Pid cannot cross scalar artifact boundaries; RequestId is only allowed in completion events".into());
         }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_reference)

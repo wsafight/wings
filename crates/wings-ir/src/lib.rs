@@ -51,6 +51,14 @@ pub enum Operation {
         handler: usize,
         arguments: Vec<Register>,
     },
+    Request {
+        target: Register,
+        handler: usize,
+        callback: usize,
+        timeout: Register,
+        arguments: Vec<Register>,
+    },
+    CancelRequest(Register),
     If(Register),
     Else(Register),
     EndIf(Register),
@@ -80,6 +88,17 @@ pub struct Handler {
     pub function: Function,
 }
 
+impl Handler {
+    pub fn is_completion(&self) -> bool {
+        self.reply.is_none()
+            && self.parameters.iter().map(|(_, ty)| *ty).eq([
+                ValueType::RequestId,
+                ValueType::Int,
+                ValueType::Int,
+            ])
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Program {
     pub name: String,
@@ -95,13 +114,13 @@ enum Region {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
-        if self.state == ValueType::Pid
+        if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
-                handler.reply == Some(ValueType::Pid)
-                    || handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| *ty == ValueType::Pid)
+                handler.reply.is_some_and(ValueType::is_capability)
+                    || handler.parameters.iter().any(|(_, ty)| {
+                        *ty == ValueType::Pid
+                            || (*ty == ValueType::RequestId && !handler.is_completion())
+                    })
             })
         {
             return Err("Pid is only supported as a local value".into());
@@ -124,6 +143,8 @@ impl Program {
                     | Operation::Send { .. }
                     | Operation::SelfPid
                     | Operation::SpawnSelf
+                    | Operation::Request { .. }
+                    | Operation::CancelRequest(_)
             )
         }) {
             return Err("self-send is not supported in initializers".into());
@@ -139,6 +160,37 @@ impl Program {
                 false,
             )?;
             for instruction in &handler.function.instructions {
+                if let Operation::Request {
+                    handler: target,
+                    callback,
+                    arguments,
+                    ..
+                } = &instruction.operation
+                {
+                    let target = self
+                        .handlers
+                        .get(*target)
+                        .ok_or("invalid request handler")?;
+                    let callback = self
+                        .handlers
+                        .get(*callback)
+                        .ok_or("invalid request completion")?;
+                    if target.reply != Some(ValueType::Int)
+                        || !callback.is_completion()
+                        || target.parameters.len() != arguments.len()
+                        || arguments
+                            .iter()
+                            .zip(&target.parameters)
+                            .any(|(register, (_, ty))| {
+                                handler.function.instructions[*register].ty != *ty
+                            })
+                    {
+                        return Err(
+                            "request requires Int reply, completion event and matching parameters"
+                                .into(),
+                        );
+                    }
+                }
                 if let Operation::SendSelf {
                     handler: target,
                     arguments,
@@ -154,6 +206,7 @@ impl Program {
                         .get(*target)
                         .ok_or("invalid self-send handler")?;
                     if target.reply.is_some()
+                        || target.is_completion()
                         || target.parameters.len() != arguments.len()
                         || arguments
                             .iter()
@@ -255,6 +308,26 @@ impl Function {
                         })
                 }
                 Operation::SelfPid | Operation::SpawnSelf => instruction.ty == ValueType::Pid,
+                Operation::Request {
+                    target,
+                    timeout,
+                    ref arguments,
+                    ..
+                } => {
+                    instruction.ty == ValueType::RequestId
+                        && types.get(target) == Some(&ValueType::Pid)
+                        && types.get(timeout) == Some(&ValueType::Int)
+                        && arguments.len() <= MAX_PARAMETERS
+                        && arguments.iter().all(|register| {
+                            types.get(*register).is_some_and(|ty| {
+                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                            })
+                        })
+                }
+                Operation::CancelRequest(value) => {
+                    instruction.ty == ValueType::Unit
+                        && types.get(value) == Some(&ValueType::RequestId)
+                }
                 Operation::Send {
                     target,
                     ref arguments,
@@ -454,6 +527,13 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
             ref arguments,
             ..
         } => ([Some(target), None], arguments),
+        Operation::Request {
+            target,
+            timeout,
+            ref arguments,
+            ..
+        } => ([Some(target), Some(timeout)], arguments),
+        Operation::CancelRequest(value) => ([Some(value), None], &[]),
         _ => ([None, None], &[]),
     };
     fixed.into_iter().flatten().chain(extra.iter().copied())

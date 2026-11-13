@@ -1,0 +1,24 @@
+process RequestEvents {
+  state count: Int = 0
+  on Start(timeout: Int, cancel: Bool, fail: Bool) -> Int {
+    let child = spawn_self();
+    let id = request(child, Compute, Completed, timeout, 7, fail);
+    if cancel { cancel_request(id) } else { () };
+    count = 9;
+    count
+  }
+  on Self -> Int {
+    let id = request(self_pid(), Compute, Completed, 60000, 3, false);
+    count = 9;
+    count
+  }
+  on Compute(value: Int, fail: Bool) -> Int {
+    count = count + value;
+    count / if fail { 0 } else { 1 }
+  }
+  on Completed(id: RequestId, status: Int, value: Int) {
+    count = status * 100 + value
+  }
+  on Add(value: Int) { count = count + value }
+  on Read -> Int { count }
+}

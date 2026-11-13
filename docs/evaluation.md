@@ -1,5 +1,9 @@
 # 评测与验收
 
+[ADR-0040](adr/0040-language-request-events.md) 要求异步整数请求的正常回复、超时/取消/退出唯一终结、队满完成事件保留、发起方清理及三级预留回滚回归，不能用同步宿主查询代替语言事件执行。
+
+`request_events` 在受限 AOT 子进程验证正常回复、零/挂起超时、取消与目标算术失败、自请求、新状态先提交及各挂起边界 Drop 清理；workspace 可信 fixture 验证满完成 mailbox 保留预付费事件、发起方退出/槽复用、目标 stop/迟到结果、已终结取消不覆盖、过期/伪造取消、pending 饱和及三级字节/消息/请求额度失败回滚。`--check-request-roots` 在 heap/slow/effect 前强制 GC，覆盖 request/cancel 确认值、候选及外层根与拒绝解链。仍用 workspace 检查和 debug/release AOT 脚本，不是性能实验。
+
 [ADR-0039](adr/0039-local-process-capabilities.md) 要求验证同模块创建的新状态、独立预算、跨进程发送、父失败不撤回、容量/三级准入回滚、失效能力与模块/worker 边界、effect 根及清理；不替代双平台验收。
 
 `local_processes` 由同一 AOT 脚本在受限子进程检查创建当片可见、新 state、后续发送与一次处理、父失败/stop 后子独立存活、满表 SpawnRejected、Pid fn/条件和自身份；记录版本保留外层/候选根。`--check-local-process-roots` 在每次堆/慢路径/effect 前强制 GC，并检查 spawn/send 拒绝解链。workspace 测试另用可信 ABI fixture 检查 stale 能力、复用槽位、跨 worker/模块、VM/租户容量准入及子初始化失败回滚。仅可信 fixture 可注入能力整数，语言和 artifact 边界仍拒绝伪造。

@@ -47,6 +47,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0037](0037-immutable-int-lists.md) | ABI v7、不可变 IntList 节点、类型边界及传递根 | 已采纳（M0/M1 业务值切片） |
 | [0038](0038-self-send-effects.md) | ABI v8、静态自发送、按值 effect 交接与调用点准入 | 已采纳（消息副作用前置切片） |
 | [0039](0039-local-process-capabilities.md) | ABI v9、局部 Pid 能力、同模块创建与跨进程发送 | 已采纳（跨进程副作用切片） |
+| [0040](0040-language-request-events.md) | ABI v10、异步整数请求、完成事件预留与唯一终结 | 已采纳（语言交互切片） |
 
 ## 维护方式
 

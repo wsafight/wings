@@ -130,6 +130,36 @@ fn process_capabilities_share_local_types_and_send_target_navigation() {
 }
 
 #[test]
+fn request_ids_and_completion_names_use_shared_analysis() {
+    let mut server = server();
+    let text = "process P { state count: Int = 0; on Start { let id = request(self_pid(), Get, Done, 1000); cancel_request(id) } on Get -> Int { count } on Done(id: RequestId, status: Int, value: Int) { count = value } }";
+    assert_eq!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = text.find("id)").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+        "id: RequestId"
+    );
+    let offset = text.find("Done, 1000").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/definition", URI, 0, offset)["result"]["range"]["start"]["character"],
+        text.rfind("Done").unwrap()
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    for label in ["RequestId", "request", "cancel_request"] {
+        assert!(
+            completion["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == label)
+        );
+    }
+}
+
+#[test]
 fn function_calls_share_signature_definition_and_keyword_completion() {
     let mut server = server();
     let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";

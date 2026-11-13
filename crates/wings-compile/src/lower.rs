@@ -172,6 +172,36 @@ impl Lowerer<'_> {
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
             ExprKind::Call { callee, arguments } => {
+                if callee.text == "request" {
+                    let target = self.expression(&arguments[0])?;
+                    let ExprKind::Name(message) = &arguments[1].kind else {
+                        return Err("expected request message".into());
+                    };
+                    let ExprKind::Name(completion) = &arguments[2].kind else {
+                        return Err("expected request completion".into());
+                    };
+                    let handler = self.handlers[message.text.as_str()];
+                    let callback = self.handlers[completion.text.as_str()];
+                    let timeout = self.expression(&arguments[3])?;
+                    let arguments = arguments[4..]
+                        .iter()
+                        .map(|argument| self.expression(argument))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    return self.push(
+                        ValueType::RequestId,
+                        Operation::Request {
+                            target,
+                            handler,
+                            callback,
+                            timeout,
+                            arguments,
+                        },
+                    );
+                }
+                if callee.text == "cancel_request" {
+                    let value = self.expression(&arguments[0])?;
+                    return self.push(ValueType::Unit, Operation::CancelRequest(value));
+                }
                 if matches!(callee.text.as_str(), "self_pid" | "spawn_self") {
                     return self.push(
                         ValueType::Pid,
@@ -339,6 +369,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "RecordInt" => Ok(ValueType::Ref),
         "IntList" => Ok(ValueType::ListRef),
         "Pid" => Ok(ValueType::Pid),
+        "RequestId" => Ok(ValueType::RequestId),
         _ => Err(format!("unsupported scalar type {name}")),
     }
 }

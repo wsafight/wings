@@ -157,6 +157,79 @@ fn cross_process_send_requires_local_pid_and_matching_static_one_way_protocol() 
 }
 
 #[test]
+fn requests_require_int_reply_local_id_and_exact_completion_protocol() {
+    let mut program = valid_program();
+    program.handlers.push(Handler {
+        name: "Done".into(),
+        parameters: vec![
+            ("id".into(), ValueType::RequestId),
+            ("status".into(), ValueType::Int),
+            ("value".into(), ValueType::Int),
+        ],
+        reply: None,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Int, Operation::State),
+                instruction(ValueType::Unit, Operation::Constant(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    });
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    function.instructions.push(instruction(
+        ValueType::RequestId,
+        Operation::Request {
+            target: 3,
+            handler: 0,
+            callback: 1,
+            timeout: 2,
+            arguments: vec![1],
+        },
+    ));
+    function
+        .instructions
+        .push(instruction(ValueType::Unit, Operation::CancelRequest(4)));
+    program.validate().unwrap();
+    for (target, handler, callback, timeout, arguments, error) in [
+        (2, 0, 1, 2, vec![1], "invalid scalar IR"),
+        (3, usize::MAX, 1, 2, vec![1], "invalid request handler"),
+        (3, 0, 0, 2, vec![1], "completion event"),
+        (3, 0, usize::MAX, 2, vec![1], "invalid request completion"),
+        (3, 0, 1, 3, vec![1], "invalid scalar IR"),
+        (3, 0, 1, 2, vec![], "matching parameters"),
+        (3, 0, 1, 2, vec![4], "operand"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[4].operation = Operation::Request {
+            target,
+            handler,
+            callback,
+            timeout,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[5].operation = Operation::CancelRequest(3);
+    rejects(&invalid, "invalid scalar IR");
+    let mut invalid = program.clone();
+    invalid.handlers[1].reply = Some(ValueType::Unit);
+    rejects(&invalid, "local value");
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![4, 0, 0],
+        },
+    ));
+    rejects(&program, "invalid scalar IR");
+}
+
+#[test]
 fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
     let mut program = valid_program();
     let function = &mut program.handlers[0].function;

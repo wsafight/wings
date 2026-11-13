@@ -1,6 +1,7 @@
 # ADR-0039：同 worker 创建与语言进程能力
 
 - 日期：2026-11-13
+- 后续：[ADR-0040](0040-language-request-events.md) 使用 ABI v10 增加异步整数请求事件，局部 Pid 限制保留。
 - 状态：已采纳（M0/M1 跨进程副作用切片）
 - 补充：[ADR-0038](0038-self-send-effects.md)
 

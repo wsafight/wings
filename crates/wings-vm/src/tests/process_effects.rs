@@ -13,6 +13,8 @@ unsafe extern "C" fn identity(
 ) -> u32 {
     let request = EffectRequest {
         operation: EFFECT_SELF_PID,
+        callback: 0,
+        timeout_ms: 0,
         handler: 0,
         target: 0,
         arguments: std::ptr::null(),
@@ -29,6 +31,8 @@ unsafe extern "C" fn send_to(
 ) -> u32 {
     let request = EffectRequest {
         operation: EFFECT_SEND,
+        callback: 0,
+        timeout_ms: 0,
         handler: 0,
         target: unsafe { *arguments },
         arguments: unsafe { arguments.add(1) },
@@ -56,6 +60,8 @@ unsafe extern "C" fn spawn_child(
     }
     let request = EffectRequest {
         operation: EFFECT_SPAWN_SELF,
+        callback: 0,
+        timeout_ms: 0,
         handler: 0,
         target: 0,
         arguments: std::ptr::null(),
