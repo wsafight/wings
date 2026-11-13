@@ -139,3 +139,5 @@ release 同一个真实标量 Counter，2 worker、64 宿主结果槽、每 acto
 完整 debug AOT 首次在既有 TCP invalid 场景读取合法请求回复时遇到 ConnectionResetError，未改 TCP、断言或截止时间，第二次完整通过；完整 release 首次通过。两种构建另行执行真实 Wings/OTP 29/独立 Python 的 45 业务、28 JSON 拒绝和 14 桥接拒绝对照，均通过。Counter 业务子进程仍为 CPU 5 秒/墙钟 10 秒/禁 core、actor 总 deadline 3 秒，其他 AOT 子进程 CPU 20 秒/墙钟 30 秒/禁 core；密度退出 deadline 3 秒，不放宽历史限制。
 
 Linux 本增量另行验证。`config.requests` 现为全实例宿主结果总槽数，语言 pending 表仍独立；不把共享表锁、固定 registry 扫描、逐 worker 全容量栈池或 256 actor 上限当最终可扩展方案。多 actor/开环、完整业务值/资源计费、原生最新双平台与同负载 BEAM 吞吐/整机内存门禁仍未完成，MVP 状态不变；待审语法草案不在本提交范围。
+
+隔离 Linux 从 `596fb8b` 重新交叉构建 release 全部工具/示例与测试，27 个 harness 共 454 项通过（workspace 450、TCP 2、Counter 桥接 2）；完整受限 release AOT 首次通过，包含 16/64/256 actor 密度清理、跨 worker 业务及 45 组 Wings/独立模型 Counter。环境仍为 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，业务 CPU/墙钟限制不变；未执行 Linux OTP、debug/native clippy/MSRV/doc-tests，不将仿真结果当原生 CI、BEAM 比较或性能证据。
