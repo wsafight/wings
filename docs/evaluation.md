@@ -1,5 +1,7 @@
 # 评测与验收
 
+隔离环境可在 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后以 `WINGS_PREBUILT_EXAMPLES=1 python3 scripts/verify_scalar_aot.py` 直接运行全部已有示例，不在子进程内再次调用 Cargo。交叉构建可用绝对 `WINGS_TARGET_DIR` 指向包含 `debug`/`release` 的目录，release 仍设 `WINGS_PROFILE=release`；目标环境必须有 Python 和本机 C linker。执行上限、真实 AOT 编译/加载和断言不变；仿真执行只作功能证据，不能代替原生性能或完整双平台 CI。
+
 [ADR-0050](adr/0050-account-node-admission.md) 验证计费子账户的精确父路径额度、祖先拒绝、层级/溢出失败无变化、子业务零用量、并发创建、跨线程最后释放及转移末票据不死锁。worker 核对成功创建的 actor 字节与独立节点字节、VM/tenant 元数据额度不足和初始化失败回滚；ingress/请求结果保留节点至末持有者归还。受限 TCP 全回归使用计费 tenant，检查服务全部退出后账目归零；这些是容量逻辑门禁，不是 RSS 数据。
 
 [ADR-0049](adr/0049-record-message-copies.md) 的 `record_messages` 在受限 AOT 子进程验证跨 actor/self 复制、collect 后持久状态、请求参数、源失败不撤回、目标满堆及 96 个单步取消边界的清理。`--check-record-message-roots` 在每次 heap/slow/effect 回调前强制 GC，检查最后一次使用的参数根和混合 mask。内部回归核对全部 64 个导入参数、最高 mask 位、129 个汇总根槽、导入期间 GC、stale/列表布局拒绝、mask 越界/无源堆/非消息 effect 不让出；源码/IR/manifest/ABI 布局与宿主/JSON/ingress 伪造边界单独检查。不把 RecordInt 单节点复制当通用图复制或完整业务值验收。

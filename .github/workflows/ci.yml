@@ -33,6 +33,8 @@ jobs:
       - run: cargo test --locked -p wings-vm --example tcp_counter
       - run: cargo build --locked -p wings-compile -p wings-vm --bins --examples
       - run: python3 scripts/verify_scalar_aot.py
+      - name: Verify prebuilt AOT test entry point
+        run: WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" python3 scripts/verify_scalar_aot.py
       - name: Verify optimized stackful execution
         run: |
           cargo test --release --workspace --locked

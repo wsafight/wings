@@ -14,8 +14,9 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILE = os.environ.get("WINGS_PROFILE", "debug")
-COMPILER = ROOT / f"target/{PROFILE}/wings-compile"
-VM = ROOT / f"target/{PROFILE}/wings-vm"
+TARGET = Path(os.environ.get("WINGS_TARGET_DIR", ROOT / "target"))
+COMPILER = TARGET / PROFILE / "wings-compile"
+VM = TARGET / PROFILE / "wings-vm"
 
 
 def limit_child():
@@ -51,7 +52,7 @@ def message(name, *arguments):
 
 
 def verify_tcp_service(directory):
-    executable = ROOT / f"target/{PROFILE}/examples/tcp_counter"
+    executable = TARGET / PROFILE / "examples/tcp_counter"
 
     def frame(sequence, value, operation=1, reserved=0):
         return struct.pack(">QQqQ", sequence, operation, value, reserved)
@@ -299,9 +300,15 @@ def verify_control_abi(directory):
     print("Scalar ABI v11 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
-def example(name, *arguments):
+def cargo_example(package, name, *arguments):
+    if os.environ.get("WINGS_PREBUILT_EXAMPLES") == "1":
+        return command([TARGET / PROFILE / "examples" / name, *arguments])
     options = ["--release"] if PROFILE == "release" else []
-    return command(["cargo", "run", "--locked", *options, "-p", "wings-vm", "--example", name, "--", "--trusted", *arguments])
+    return command(["cargo", "run", "--locked", *options, "-p", package, "--example", name, "--", *arguments])
+
+
+def example(name, *arguments):
+    return cargo_example("wings-vm", name, "--trusted", *arguments)
 
 
 def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False):
@@ -781,7 +788,7 @@ def main():
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
         verify_tcp_service(tcp_artifact)
-        command([ROOT / f"target/{PROFILE}/examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
+        command([TARGET / PROFILE / "examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)
         timer_source = parent / "timer.wings"
@@ -807,7 +814,7 @@ def main():
         timer_artifact = parent / "timer"
         command([COMPILER, "build", timer_source, "-o", timer_artifact])
         example("worker_timer", timer_artifact)
-        command([ROOT / f"target/{PROFILE}/examples/frame_limits", parent / "frame-limit-rejected"])
+        command([TARGET / PROFILE / "examples/frame_limits", parent / "frame-limit-rejected"])
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
         total = " + ".join(f"value_{index}" for index in range(48))
@@ -835,8 +842,7 @@ def main():
         example("stack_boundary", counter, pressure_artifact)
         records = parent / "aot-records"
         records.mkdir()
-        options = ["--release"] if PROFILE == "release" else []
-        command(["cargo", "run", "--locked", *options, "-p", "wings-compile", "--example", "build_aot_records", "--", records])
+        cargo_example("wings-compile", "build_aot_records", records)
         example("aot_records", records)
         language_records = parent / "language-records"
         command([COMPILER, "build", ROOT / "examples/records.wings", "-o", language_records])
