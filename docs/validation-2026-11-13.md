@@ -58,7 +58,7 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 
 交叉构建时指定 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` 和 `--target x86_64-unknown-linux-gnu`；把目标二进制及源码复制到隔离 Linux，`WINGS_TARGET_DIR` 指向客体内的 `debug`/`release` 父目录。不要把跨架构仿真的 CPU 时间、内存占用或预留字节用于 BEAM 性能排名。
 
-### 多 worker 调度增量：ADR-0054
+### 多 worker 调度增量：`eff95a4`
 
 基于 `da57324` 的本次实现，macOS debug/release workspace 各 421 项测试通过；check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check 与两种构建的 TCP 示例单测通过。新增 12 项 scheduler 内部回归，覆盖唯一 owner、返回后轮转迁移、并发生产者、固定代次、schema/载荷拒绝、队满、start 前准入失败保留队首、请求终态和销毁后结果租约。
 
@@ -66,4 +66,6 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 
 保留失败记录：release 第一次完整回归在已有 TCP 非法帧用例得到 `invalid=2, io_errors=1`，与预期 `invalid=3` 不同；后续完整重跑通过。补齐初始化控制预留后，最终 release 回归又在已有 TCP overflow 场景遇到 ConnectionResetError，未修改 TCP 代码、断言或限制，完整重跑通过。不能将通过重跑写成无偶发失败或稳定性门禁通过。
 
-本节尚无最新 Linux 结果。多 worker 监督、负载自适应调度、全资源账本、原生双平台最新 CI 和同负载 BEAM 吞吐/整机内存双目标仍未完成；固定共享扫描、编号轮转与每 worker 全容量栈池没有性能结论。M0/M1/MVP 均未完成。
+隔离 Linux 从 `eff95a4` 重新交叉构建 release compiler/VM/examples、workspace 测试与 TCP 示例单测，26 个 harness 共 423 项通过；完整受限 release AOT 通过，包含实际 Linux `.so` 的多 worker 运行、消息/请求、迁移与清理。首次测试打包遗漏独立 `wings-lsp` 二进制，CLI help 用例报 NotFound；补传该未改动二进制后完整重跑全部 harness 通过，不将首次运行标成通过。
+
+多 worker 监督、负载自适应调度、全资源账本、原生双平台最新 CI 和同负载 BEAM 吞吐/整机内存双目标仍未完成；固定共享扫描、编号轮转与每 worker 全容量栈池没有性能结论。Linux debug/native clippy/MSRV/doc-tests 本次仍未执行。M0/M1/MVP 均未完成。
