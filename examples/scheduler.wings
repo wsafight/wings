@@ -1,0 +1,29 @@
+process SchedulerDemo {
+  state saved: IntList = empty_ints()
+
+  on Begin(value: Int) -> Int {
+    let child = spawn_self()
+    let items = prepend_int(value + 1, prepend_int(value + 2, empty_ints()))
+    send(child, Store, items, record_int(value))
+    collect()
+    let id = request(child, Compute, Completed, 60000, prepend_int(3, empty_ints()))
+    value
+  }
+
+  on Store(items: IntList, record: RecordInt) {
+    collect()
+    saved = prepend_int(head_int(items) + head_int(tail_ints(items)) + read_int(record), empty_ints())
+    collect()
+  }
+
+  on Compute(items: IntList) -> Int {
+    collect()
+    head_int(saved) + head_int(items)
+  }
+
+  on Completed(id: RequestId, status: Int, value: Int) {
+    saved = prepend_int(if status == 0 { value } else { -100 - status }, empty_ints())
+  }
+
+  on Read -> Int { collect(); if is_empty_ints(saved) { -1 } else { head_int(saved) } }
+}

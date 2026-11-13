@@ -21,6 +21,7 @@ mod persistent_state;
 mod primitives;
 mod process_effects;
 mod request_events;
+mod scheduler;
 mod stack_boundary;
 mod supervision;
 mod worker_wait;

@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 的多 worker 调度不改变源码拼写或 ABI v12。`examples/scheduler.wings` 在固定 worker 间以现有 spawn/send/request 复制 RecordInt/IntList，异步完成更新持久列表状态；迁移仅在 handler 返回后，仍无同步 call/await/receive 或引用回复。类型小写等语法调整留待独立草案审核，不在本切片改动。
+
 [ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息由 [ADR-0051](adr/0051-bounded-int-list-messages.md) 扩展：一条消息全部列表合计最多 64 个整数，逐节点检查预算与取消；引用回复、外部宿主/JSON/ingress 原 handle 或段编码仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings`。
 
 `examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。

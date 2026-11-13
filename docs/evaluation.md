@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 增加 `cargo test -p wings-vm scheduler --locked` 和完整受限 AOT 中的 `multi_worker`。以 1/2/3 个 worker 运行更多 actor，检查状态连续、边界迁移、活栈线程固定、RecordInt/IntList 消息和请求完成、GC 及最终清理；内部回归覆盖并发发送、队满、准入回滚、请求超时/取消/目标退出与销毁后结果租约。每业务子进程仍限制 CPU 20 秒、墙钟 30 秒、禁 core。固定线程轮转及逐 worker 全容量栈池的成本尚未测量，不作为吞吐/内存结论。
+
 [ADR-0053](adr/0053-detached-process-images.md) 的 `detached_process` 在受限 AOT 中先建立持久 IntList，释放源池后在三个新线程依次绑定同账户目标池，collect 后读取/追加并核对状态连续；不重跑 initializer。错账户/未计费池、重复 attach、取消后的失败镜像及未 attach 即跨线程 Drop 均检查资源清理。内部回归另覆盖标量 state、attach 后池满不毒化进程和原堆账户保留；原执行类型仍非 Send/Sync。这是宿主无活栈转交，不是调度器迁移或性能结果。
 
 [ADR-0052](adr/0052-cross-thread-module-leases.md) 的 `parallel_modules` 在受限真实 AOT 子进程启动四个固定 2 MiB 栈的线程，各自创建计费 tenant/worker/actor。主线程在启动前丢弃模块，四个独立 Counter 单步执行 16 次请求，验证状态隔离、同模块 handler 身份及跨 VM 拒绝；worker 退出后只剩模块和验证线程预留，最后 handler 转至新线程释放、归还线程预留后归零。线程控制/栈预留只是验证宿主的逻辑预算，不当作 RSS、生产 worker 池、迁移或性能数据。

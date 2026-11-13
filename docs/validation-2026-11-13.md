@@ -58,4 +58,12 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 
 交叉构建时指定 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER` 和 `--target x86_64-unknown-linux-gnu`；把目标二进制及源码复制到隔离 Linux，`WINGS_TARGET_DIR` 指向客体内的 `debug`/`release` 父目录。不要把跨架构仿真的 CPU 时间、内存占用或预留字节用于 BEAM 性能排名。
 
-仍需原生 macOS AArch64/Linux x86-64 最新 CI、通用业务值与消息、完整资源账本、M:N 唯一执行权/迁移，以及同机同业务 BEAM 吞吐与整机内存双目标；M0/M1/MVP 均未完成。
+### 多 worker 调度增量：ADR-0054
+
+基于 `da57324` 的本次实现，macOS debug/release workspace 各 421 项测试通过；check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check 与两种构建的 TCP 示例单测通过。新增 12 项 scheduler 内部回归，覆盖唯一 owner、返回后轮转迁移、并发生产者、固定代次、schema/载荷拒绝、队满、start 前准入失败保留队首、请求终态和销毁后结果租约。
+
+两种构建的完整受限 AOT 均通过。`multi_worker` 分别用 1/2/3 个 worker 运行六个父 actor 及六个语言创建的子 actor，检查跨 worker RecordInt/IntList 消息、请求完成、GC、持久状态、活栈固定及忙 actor 不阻塞其他 actor。每业务子进程仍为 CPU 20 秒、墙钟 30 秒、禁 core。
+
+保留失败记录：release 第一次完整回归在已有 TCP 非法帧用例得到 `invalid=2, io_errors=1`，与预期 `invalid=3` 不同；后续完整重跑通过。补齐初始化控制预留后，最终 release 回归又在已有 TCP overflow 场景遇到 ConnectionResetError，未修改 TCP 代码、断言或限制，完整重跑通过。不能将通过重跑写成无偶发失败或稳定性门禁通过。
+
+本节尚无最新 Linux 结果。多 worker 监督、负载自适应调度、全资源账本、原生双平台最新 CI 和同负载 BEAM 吞吐/整机内存双目标仍未完成；固定共享扫描、编号轮转与每 worker 全容量栈池没有性能结论。M0/M1/MVP 均未完成。

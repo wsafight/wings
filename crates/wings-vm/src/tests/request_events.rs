@@ -118,7 +118,7 @@ unsafe extern "C" fn done(
     STATUS_OK
 }
 
-fn fixture() -> ScalarModule {
+pub(super) fn fixture() -> ScalarModule {
     let mut module = module();
     let data = Arc::get_mut(&mut module.inner).unwrap();
     data.entries[3] = begin;

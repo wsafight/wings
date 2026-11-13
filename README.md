@@ -26,11 +26,13 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；已接入自发送及同 worker 同模块创建/单向发送、异步整数请求事件，已有 RecordInt 和有界 IntList 语言消息复制，尚无引用回复、递归/动态派发或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求与 handler 返回后的迁移。RecordInt 和有界 IntList 可复制为语言消息，尚无引用回复、递归/动态派发或多 worker 监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
-[ADR-0053](docs/adr/0053-detached-process-images.md) 增加宿主 `ScalarProcess::detach` / `DetachedProcess::attach`：无活栈时消费进程并独占转交 state/堆，目标线程绑定同 process 账户的本地池，不重跑 initializer。镜像不可 Clone、不含协程或执行接口；worker/mailbox/Pid 和活栈仍不迁移，不是 M:N。`detached_process` 验证 IntList 状态跨线程转交与取消后失败保留。
+[ADR-0054](docs/adr/0054-bounded-multi-worker-scheduler.md) 增加 `Scheduler` / `SchedulerHandle`：固定 1..=16 个 worker 调度最多 256 个 actor，活栈固定在 owner 线程，正常返回后按 worker 编号迁移。共享 registry 保持 Pid 和 FIFO，语言消息、异步请求与 GC 沿原 ABI；宿主 handle 可跨线程投递标量请求。`examples/scheduler.wings` 与 `multi_worker` 覆盖 N > M、列表/记录复制和忙 actor 共存。不是自适应 work stealing；多 worker 监督、完整资源账本及 BEAM 双目标仍待完成。
+
+[ADR-0053](docs/adr/0053-detached-process-images.md) 增加宿主 `ScalarProcess::detach` / `DetachedProcess::attach`：无活栈时消费进程并独占转交 state/堆，目标线程绑定同 process 账户的本地池，不重跑 initializer。镜像不可 Clone、不含协程或执行接口；镜像本身不含 worker/mailbox/Pid，也不转交活栈，后续调度由 ADR-0054 接入。`detached_process` 验证 IntList 状态跨线程转交与取消后失败保留。
 
 [ADR-0052](docs/adr/0052-cross-thread-module-leases.md) 使只读 `ScalarModule`/`HandlerId` 可跨线程共享，计费模块使用 Arc 租约；四个线程各建独立 worker，退出后由最后代码所有者归还预算。`parallel_modules` 是并行宿主回归，不是 M:N 调度器；actor、堆、栈池和挂起活栈仍在各自原线程。
 

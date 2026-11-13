@@ -942,6 +942,9 @@ def main():
         command([sys.executable, Path(__file__), "--check-branch-roots", branches])
         loops = parent / "loops"
         command([COMPILER, "build", ROOT / "examples/loops.wings", "-o", loops])
+        scheduler = parent / "scheduler"
+        command([COMPILER, "build", ROOT / "examples/scheduler.wings", "-o", scheduler])
+        example("multi_worker", scheduler, loops)
         result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
         result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("Heap", 30)) + "\n")

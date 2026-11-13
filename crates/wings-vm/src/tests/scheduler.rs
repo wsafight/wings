@@ -1,0 +1,547 @@
+use super::*;
+use std::time::Instant;
+
+fn quota() -> Resources {
+    Resources {
+        bytes: 128 << 20,
+        processes: 16,
+        messages: 128,
+        requests: 64,
+    }
+}
+
+fn fixture(workers: usize, capacity: usize) -> (ResourceAccount, ResourceAccount, Scheduler) {
+    let vm = ResourceAccount::vm(quota());
+    let tenant = vm.tenant_accounted(quota()).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers,
+            capacity,
+            requests: 4,
+            slice_steps: 1,
+            quantum: Duration::from_millis(1),
+        },
+    )
+    .unwrap();
+    (vm, tenant, scheduler)
+}
+
+fn reply(mut request: IngressRequest) -> RequestOutcome {
+    request.wait(Duration::from_secs(5)).unwrap().unwrap()
+}
+
+fn wait_until(mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(Instant::now() < deadline, "scheduler progress deadline");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+unsafe extern "C" fn spin(
+    _state: i64,
+    _arguments: *const i64,
+    _output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    loop {
+        let status = unsafe { checkpoint(context) };
+        if status != STATUS_OK {
+            return status;
+        }
+    }
+}
+
+fn spinning_module() -> ScalarModule {
+    let fixture = module();
+    let mut manifest = fixture.manifest().clone();
+    manifest.handlers.push(Handler {
+        name: "Spin".into(),
+        parameters: vec![],
+        reply: None,
+    });
+    let mut entries = fixture.inner.entries.to_vec();
+    entries.push(spin);
+    ScalarModule {
+        inner: Arc::new(ModuleData {
+            manifest,
+            initializer: initialize,
+            entries: entries.into_boxed_slice(),
+            _library: None,
+            lease: None,
+        }),
+    }
+}
+
+#[test]
+fn scheduler_runs_more_actors_than_workers_and_migrates_without_reinitializing() {
+    fn assert_send_sync<Value: Send + Sync>() {}
+    assert_send_sync::<Scheduler>();
+    assert_send_sync::<SchedulerHandle>();
+    let (vm, tenant, scheduler) = fixture(2, 8);
+    let handle = scheduler.handle();
+    let module = module();
+    let actors: Vec<_> = (0..8)
+        .map(|_| handle.spawn(&module, quota(), 16).unwrap())
+        .collect();
+    assert!(handle.spawn(&module, quota(), 1).is_err());
+    for round in 1..=8 {
+        for (index, pid) in actors.iter().copied().enumerate() {
+            let request = handle
+                .request(
+                    pid,
+                    &module.handler("Bump").unwrap(),
+                    &[(index + 1) as i64],
+                    32,
+                    Duration::from_secs(5),
+                )
+                .unwrap();
+            assert_eq!(
+                reply(request),
+                RequestOutcome::Reply((round * (index + 1)) as i64)
+            );
+            let snapshot = handle.snapshot(pid).unwrap();
+            assert_eq!(snapshot.migrations, (round - 1) as u64);
+            assert_eq!(snapshot.owner, None);
+        }
+    }
+    drop((scheduler, handle, tenant, module));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_concurrent_producers_preserve_single_actor_fifo_and_state() {
+    let (vm, tenant, scheduler) = fixture(3, 4);
+    let handle = scheduler.handle();
+    let module = module();
+    let pid = handle.spawn(&module, quota(), 32).unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let handle = handle.clone();
+            let handler = module.handler("Bump").unwrap();
+            scope.spawn(move || {
+                let mut previous = 0;
+                for _ in 0..32 {
+                    let request = handle
+                        .request(pid, &handler, &[1], 32, Duration::from_secs(5))
+                        .unwrap();
+                    let RequestOutcome::Reply(value) = reply(request) else {
+                        panic!("unexpected request outcome")
+                    };
+                    assert!(value > previous);
+                    previous = value;
+                }
+            });
+        }
+    });
+    let value = handle
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(value), RequestOutcome::Reply(128));
+    assert_eq!(handle.snapshot(pid).unwrap().migrations, 128);
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_rejects_foreign_schema_and_rolls_back_failed_spawn() {
+    let (vm, tenant, scheduler) = fixture(2, 2);
+    let handle = scheduler.handle();
+    let module = module();
+    let baseline = vm.used();
+    assert!(handle.spawn(&module, limits(0), 2).is_err());
+    assert_eq!(vm.used(), baseline);
+    let pid = handle.spawn(&module, quota(), 2).unwrap();
+    let baseline = vm.used();
+    for handler in [
+        module.handler("Bump").unwrap(),
+        super::module().handler("Add").unwrap(),
+    ] {
+        assert!(handle.send(pid, &handler, &[1], 32).is_err());
+    }
+    assert!(
+        handle
+            .send(pid, &module.handler("Bool").unwrap(), &[2], 32)
+            .is_err()
+    );
+    assert!(
+        handle
+            .send(pid, &module.handler("Unit").unwrap(), &[1], 32)
+            .is_err()
+    );
+    assert!(
+        handle
+            .request(
+                pid,
+                &module.handler("Add").unwrap(),
+                &[1],
+                32,
+                Duration::from_secs(1)
+            )
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    let foreign = fixture(1, 1);
+    assert!(foreign.2.handle().snapshot(pid).is_err());
+    handle.stop(pid).unwrap();
+    assert!(handle.snapshot(pid).is_err());
+    let replacement = handle.spawn(&module, quota(), 2).unwrap();
+    assert_ne!(pid, replacement);
+    assert!(
+        handle
+            .send(pid, &module.handler("Add").unwrap(), &[1], 32)
+            .is_err()
+    );
+    drop((foreign, scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_deadline_and_cancel_do_not_retract_messages_and_failure_retires_pid() {
+    let (vm, tenant, scheduler) = fixture(2, 2);
+    let handle = scheduler.handle();
+    let module = module();
+    let pid = handle.spawn(&module, quota(), 8).unwrap();
+    let expired = handle
+        .request(
+            pid,
+            &module.handler("Bump").unwrap(),
+            &[1],
+            32,
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(reply(expired), RequestOutcome::TimedOut);
+    let cancelled = handle
+        .request(
+            pid,
+            &module.handler("Bump").unwrap(),
+            &[1],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    cancelled.cancel().unwrap();
+    assert!(matches!(
+        reply(cancelled),
+        RequestOutcome::Cancelled | RequestOutcome::Reply(2)
+    ));
+    let read = handle
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(read), RequestOutcome::Reply(2));
+    let unit = handle
+        .request(
+            pid,
+            &module.handler("Ack").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(unit), RequestOutcome::Reply(0));
+    let failed = handle
+        .request(
+            pid,
+            &module.handler("FailRequest").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(failed), RequestOutcome::Failed);
+    wait_until(|| handle.snapshot(pid).is_err());
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_result_leases_outlive_shutdown_but_handle_cannot_execute() {
+    let (vm, tenant, scheduler) = fixture(2, 2);
+    let handle = scheduler.handle();
+    let module = module();
+    let pid = handle.spawn(&module, quota(), 8).unwrap();
+    let result = handle
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    drop((scheduler, tenant));
+    assert!(handle.snapshot(pid).is_err());
+    assert!(handle.spawn(&module, quota(), 8).is_err());
+    assert!(matches!(
+        reply(result),
+        RequestOutcome::Failed | RequestOutcome::Reply(0)
+    ));
+    assert!(vm.used().bytes > 0);
+    drop(handle);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_pins_live_stack_bounds_mailbox_and_stops_without_starving_other_actors() {
+    let (vm, tenant, scheduler) = fixture(2, 4);
+    let handle = scheduler.handle();
+    let module = spinning_module();
+    let busy = handle.spawn(&module, quota(), 1).unwrap();
+    let healthy = handle.spawn(&module, quota(), 8).unwrap();
+    handle
+        .send(busy, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| handle.snapshot(busy).unwrap().execution.is_some());
+    let owner = handle.snapshot(busy).unwrap().owner.unwrap();
+    let queued = handle
+        .request(
+            busy,
+            &module.handler("Get").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    let baseline = handle.snapshot(busy).unwrap().resources;
+    assert!(
+        handle
+            .send(busy, &module.handler("Add").unwrap(), &[1], 32)
+            .is_err()
+    );
+    assert_eq!(handle.snapshot(busy).unwrap().resources, baseline);
+    for expected in 1..=8 {
+        let request = handle
+            .request(
+                healthy,
+                &module.handler("Bump").unwrap(),
+                &[1],
+                32,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(reply(request), RequestOutcome::Reply(expected));
+        let snapshot = handle.snapshot(busy).unwrap();
+        assert_eq!(snapshot.owner, Some(owner));
+        assert_eq!(snapshot.migrations, 0);
+    }
+    handle.stop(busy).unwrap();
+    assert_eq!(reply(queued), RequestOutcome::Failed);
+    wait_until(|| handle.snapshot(busy).is_err());
+    handle
+        .send(healthy, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| handle.snapshot(healthy).unwrap().owner.is_some());
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_start_admission_failure_restores_front_message_and_other_actors_progress() {
+    let (vm, tenant, scheduler) = fixture(2, 3);
+    let handle = scheduler.handle();
+    let module = module();
+    let original = handle.spawn(&module, quota(), 1).unwrap();
+    let baseline = handle.snapshot(original).unwrap().resources.bytes;
+    handle.stop(original).unwrap();
+    let mut limited = quota();
+    limited.bytes = baseline
+        + crate::stack_pool::EXECUTION_STACK_BYTES as u64
+        + unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64
+        + 4096;
+    let constrained = handle.spawn(&module, limited, 1).unwrap();
+    let queued = handle
+        .request(
+            constrained,
+            &module.handler("Bump").unwrap(),
+            &[7],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    let healthy = handle.spawn(&module, quota(), 2).unwrap();
+    for expected in 1..=8 {
+        let result = handle
+            .request(
+                healthy,
+                &module.handler("Bump").unwrap(),
+                &[1],
+                32,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(reply(result), RequestOutcome::Reply(expected));
+        let snapshot = handle.snapshot(constrained).unwrap();
+        assert_eq!(snapshot.committed_state, Some(0));
+        assert_eq!(snapshot.resources.messages, 1);
+        assert_eq!(snapshot.migrations, 0);
+        assert!(
+            handle
+                .send(constrained, &module.handler("Add").unwrap(), &[1], 32)
+                .is_err()
+        );
+    }
+    handle.stop(constrained).unwrap();
+    assert_eq!(reply(queued), RequestOutcome::Failed);
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_configuration_and_startup_admission_roll_back() {
+    let vm = ResourceAccount::vm(quota());
+    let tenant = vm.tenant_accounted(quota()).unwrap();
+    let baseline = vm.used();
+    for config in [
+        SchedulerConfig {
+            workers: 0,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
+            workers: 17,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
+            capacity: 0,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
+            requests: 257,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
+            slice_steps: 0,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
+            quantum: Duration::ZERO,
+            ..SchedulerConfig::default()
+        },
+    ] {
+        assert!(Scheduler::new(&tenant, config).is_err());
+        assert_eq!(vm.used(), baseline);
+    }
+    let small = vm.tenant_accounted(limits(6 << 20)).unwrap();
+    let baseline = vm.used();
+    assert!(
+        Scheduler::new(
+            &small,
+            SchedulerConfig {
+                workers: 2,
+                capacity: 16,
+                requests: 4,
+                ..SchedulerConfig::default()
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    drop((small, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_bool_replies_and_initializer_failure_preserve_budget() {
+    let (vm, tenant, scheduler) = fixture(2, 2);
+    let handle = scheduler.handle();
+    let mut failed = module();
+    Arc::get_mut(&mut failed.inner).unwrap().initializer = fail;
+    let baseline = vm.used();
+    assert!(handle.spawn(&failed, quota(), 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let mut module = module();
+    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[1].reply = Some(ValueType::Bool);
+    let pid = handle.spawn(&module, quota(), 2).unwrap();
+    let result = handle
+        .request(
+            pid,
+            &module.handler("Bump").unwrap(),
+            &[1],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(result), RequestOutcome::Reply(1));
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_language_request_deadlines_and_cancellation_keep_terminal_outcome() {
+    let (vm, tenant, scheduler) = fixture(2, 4);
+    let handle = scheduler.handle();
+    let mut module = super::request_events::fixture();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.handlers.push(Handler {
+        name: "Spin".into(),
+        parameters: vec![],
+        reply: None,
+    });
+    let mut entries = data.entries.to_vec();
+    entries.push(spin);
+    data.entries = entries.into_boxed_slice();
+    let owner = handle.spawn(&module, quota(), 8).unwrap();
+    let target = handle.spawn(&module, quota(), 8).unwrap();
+    let capability = match reply(
+        handle
+            .request(
+                target,
+                &module.handler("Fail").unwrap(),
+                &[],
+                128,
+                Duration::from_secs(5),
+            )
+            .unwrap(),
+    ) {
+        RequestOutcome::Reply(value) => value,
+        outcome => panic!("unexpected capability {outcome:?}"),
+    };
+    handle
+        .send(target, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| {
+        handle
+            .snapshot(target)
+            .unwrap()
+            .execution
+            .is_some_and(|execution| execution.max_steps == u64::MAX)
+    });
+    for (timeout, mode, expected) in [(0, 0, 100), (60000, 1, 200), (60000, 0, 300)] {
+        let begun = handle
+            .request(
+                owner,
+                &module.handler("Ack").unwrap(),
+                &[capability, timeout, mode],
+                128,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        let outcome = reply(begun);
+        assert!(
+            matches!(outcome, RequestOutcome::Reply(value) if value > 0 || (mode == 1 && value == 0)),
+            "unexpected begin outcome: {outcome:?}"
+        );
+        if expected == 300 {
+            handle.stop(target).unwrap();
+        }
+        wait_until(|| handle.snapshot(owner).unwrap().committed_state == Some(expected));
+    }
+    let baseline = handle.snapshot(owner).unwrap().resources;
+    assert_eq!(baseline.requests, 0);
+    assert_eq!(baseline.messages, 0);
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}

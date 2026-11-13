@@ -1,6 +1,8 @@
 # 架构设计
 
-[ADR-0053](adr/0053-detached-process-images.md) 将原线程栈池绑定从 AotHeap 移到 ScalarProcess，堆仅保留线程安全的原账户；DetachedProcess 独占持有无活栈模块/state/堆，自动 Send，无 unsafe trait。目标 attach 验证 VM 与原 process 账户后才取走镜像，失败可重试。同步执行绑定新池，业务堆及精确根不复制、额度不转移；尚未接入 worker 调度或活栈迁移。
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 将独占镜像接入固定多 worker Scheduler：共享有界 registry 管理稳定 Pid、mailbox 和唯一 owner；本地 ScalarTask 保留所有活栈，只有正常返回后的镜像可迁移到下一 worker。native init/resume 不在 registry 锁内执行，没有 unsafe Send。共享扫描、按编号轮转和每 worker 全容量栈池是正确性基线，非 work stealing 或性能结论；已有 Supervisor 仍只服务单 worker。
+
+[ADR-0053](adr/0053-detached-process-images.md) 将原线程栈池绑定从 AotHeap 移到 ScalarProcess，堆仅保留线程安全的原账户；DetachedProcess 独占持有无活栈模块/state/堆，自动 Send，无 unsafe trait。目标 attach 验证 VM 与原 process 账户后才取走镜像，失败可重试。同步执行绑定新池，业务堆及精确根不复制、额度不转移；调度集成见 ADR-0054，仍不支持活栈迁移。
 
 [ADR-0052](adr/0052-cross-thread-module-leases.md) 使模块代码与预算租约同属一个 Arc<ModuleData>，由同一末持有者先释放 Library 再归还预算，避免分离 Arc 的并发析构窗口。ScalarModule/HandlerId 自动 Send/Sync，不增加 unsafe trait 实现。不同线程创建独立 worker 并共享只读代码，最终卸载可发生于最后持有者线程；可信模块不得依赖装载线程 TLS 或可变 native 全局。actor、栈池与挂起执行仍不能跨线程转交，不等于 M:N。
 
