@@ -838,6 +838,14 @@ def main():
             assert density["retired_bytes"] == density["empty_bytes"]
             assert density["resources_released"] is True
         print("Scheduler idle actor reservations verified: shared reply capacity, bounded metadata and cleanup; not RSS")
+        for count in (1000, 10000):
+            sparse = json.loads(example("scheduler_sparse", counter, count).stdout)
+            assert sparse["actors"] == count and sparse["active"] == 100
+            assert sparse["workers"] == 2 and sparse["replies"] == 600
+            assert sparse["metric"] == "logical_reservation_not_rss"
+            assert 0 < sparse["empty_bytes"] < sparse["populated_bytes"] <= 256 << 20
+            assert sparse["resources_released"] is True
+        print("Sparse scheduler verified: 1000/10000 actors, 100 active, FIFO, generation reuse and cleanup; not BEAM/performance")
         messages = [message("Get"), message("Inc", 3), message("Inc", 4), message("Reset"), message("Set", 12), message("Get"), message("Confirm")]
         actual = [json.loads(line) for line in invoke(counter, messages).stdout.splitlines()]
         assert actual == [{"reply": 0}, {"reply": 3}, {"reply": 7}, {"accepted": True}, {"accepted": True}, {"reply": 12}, {"reply": None}]
