@@ -1,6 +1,8 @@
 # wings-lang
 
-[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit 单向消息；不增加语言语法、跨线程请求或引用消息能力。
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 仅扩展宿主标量请求入口，保留无 `->` 的单向消息与 `-> Unit` 的请求确认区别；外部线程可以等待结果，业务 handler 仍不支持阻塞 receive/await/call。
+
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit；ADR-0047 增加宿主请求模式，均不增加语言语法或引用消息能力。
 
 宿主资源账本按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 支持跨线程准入和归还，不改变语言语义：业务状态不共享可变数据，actor 与挂起活栈仍在原线程执行，尚无 M:N 迁移。
 

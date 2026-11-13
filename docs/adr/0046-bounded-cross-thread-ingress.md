@@ -5,6 +5,7 @@
 - 补充：[ADR-0020](0020-single-worker-mailbox.md) 的宿主发送入口
 - 替代：[ADR-0041](0041-worker-deadline-parking.md) 的私有 notifier 限制
 - 前置：[并发资源准入](0045-concurrent-resource-admission.md)
+- 后续：[ADR-0047](0047-cross-thread-ingress-requests.md) 允许将同一固定入口配置为有界标量请求模式，不解除单 actor 单协议或原线程执行限制。
 
 ## 决定与理由
 

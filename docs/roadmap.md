@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 为外部有界入口增加 Int/Bool/Unit 请求结果与双端清理，尚无真实网络适配器、通用业务值或 M:N；后续仍须完成同业务服务与双平台性能门禁。
+
 [ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，有界入口由 ADR-0046 接入，仍无 actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
 
 [ADR-0044](adr/0044-native-module-leases.md) 修复模块永久泄留，增加 VM 级加载预算、代码租约和归属检查；旧不计费工具入口、allocator/动态装载器内部开销仍不在完整资源门禁内，M1 与 MVP 尚未完成。

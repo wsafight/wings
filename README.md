@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+`ScalarWorker::open_request_ingress` 可将单个外部入口绑定为 Int/Bool/Unit 请求协议；发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位。超时/取消不撤回已接收消息；示例 `worker_ingress_requests`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。仍不提供网络服务或语言阻塞请求。
+
 宿主可在配置等待后用 `ScalarWorker::open_ingress` 注册单 actor 单入口的固定跨线程队列，发送端只传 Int/Bool/Unit，并以原票据转入 mailbox；关闭后旧 sender 拒绝，最后 sender 释放前保留控制与通知预算。示例 `worker_ingress`，契约见 [ADR-0046](docs/adr/0046-bounded-cross-thread-ingress.md)。这不是网络服务、引用消息或 M:N。
 
 资源账户与预留票据支持跨线程共享/归还，同 VM 的三级四维准入和净转移通过一个门闩串行提交，失败不留半账；见 [ADR-0045](docs/adr/0045-concurrent-resource-admission.md)。actor/活栈仍绑定原线程，这不是 M:N，也没有无锁或吞吐领先结论。

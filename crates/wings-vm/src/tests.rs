@@ -16,6 +16,7 @@ use crate::*;
 
 mod diagnostics;
 mod ingress;
+mod ingress_requests;
 mod persistent_state;
 mod primitives;
 mod process_effects;

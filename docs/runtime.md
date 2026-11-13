@@ -1,5 +1,7 @@
 # 运行时
 
+宿主可用 `open_request_ingress` 配置固定标量回复入口；`IngressSender::request` 返回唯一结果 handle 与已接收通知状态。结果 `try_take` 或外部线程 `wait` 只终结一次；超时/取消/丢弃不撤回消息，结果槽在调用者结束且消息完成后才回收。请求预算、代次、失败/关闭与双端租约见 [ADR-0047](adr/0047-cross-thread-ingress-requests.md)；不等于语言同步 call 或完整 I/O。
+
 宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的标量单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 成功表示已接收，`IngressWake::WakeFailed` 也已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
 
 代码租约与模块 VM 级准入按 [ADR-0044](adr/0044-native-module-leases.md) 实现：clone/HandlerId/实例共享一次预留，跨 VM 计费执行拒绝；最后一个活栈先正常取消返回，再交还 Library 和预算。旧可信非计费工具入口保留，不将该兼容路径称为完整三级准入。

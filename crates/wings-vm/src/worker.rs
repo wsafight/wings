@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ingress::IngressReceiver;
+use crate::ingress_requests::ReplyPublisher;
 use crate::timer::DeadlineTimer;
 use crate::{
     CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, IngressSender,
@@ -162,6 +163,7 @@ struct Message {
     max_steps: u64,
     request: Option<RequestId>,
     system: bool,
+    external: Option<ReplyPublisher>,
     _charge: Reservation,
 }
 
@@ -313,6 +315,32 @@ impl ScalarWorker {
     }
 
     pub fn open_ingress(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        capacity: usize,
+        max_steps: u64,
+    ) -> Result<IngressSender, String> {
+        if handler.schema().reply.is_some() {
+            return Err("one-way ingress requires a one-way handler".into());
+        }
+        self.open_ingress_kind(pid, handler, capacity, max_steps)
+    }
+
+    pub fn open_request_ingress(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        capacity: usize,
+        max_steps: u64,
+    ) -> Result<IngressSender, String> {
+        if handler.schema().reply.is_none() {
+            return Err("request ingress requires a reply handler".into());
+        }
+        self.open_ingress_kind(pid, handler, capacity, max_steps)
+    }
+
+    fn open_ingress_kind(
         &mut self,
         pid: Pid,
         handler: &HandlerId,
@@ -565,6 +593,7 @@ impl ScalarWorker {
             max_steps,
             request,
             system: false,
+            external: None,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -598,6 +627,7 @@ impl ScalarWorker {
                             max_steps: ingress.max_steps,
                             request: None,
                             system: false,
+                            external: envelope.reply,
                             _charge: envelope.charge,
                         });
                         actor.mailbox.count += 1;
@@ -658,11 +688,12 @@ impl ScalarWorker {
                         .active
                         .take()
                         .expect("completed message");
-                    match (active.message.request, reply) {
-                        (Some(request), Some(value)) => {
+                    match (active.message.request, active.message.external, reply) {
+                        (Some(request), None, Some(value)) => {
                             self.finish_request(request, RequestOutcome::Reply(value));
                         }
-                        (None, None) => {}
+                        (None, Some(publisher), Some(value)) => publisher.complete(value),
+                        (None, None, None) => {}
                         _ => {
                             self.remove(index);
                             return Err("handler reply does not match message kind".into());
@@ -1093,6 +1124,7 @@ impl ScalarWorker {
                 max_steps: completion.budget,
                 request: None,
                 system: true,
+                external: None,
                 _charge: completion.charge,
             };
             let actor = self.actor_mut(owner).expect("completion recipient");

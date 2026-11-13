@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use wings_abi::ValueType;
 
-use crate::{HandlerId, Reservation, ResourceAccount, Resources, WorkerNotifier};
+use crate::ingress_requests::{ReplyPublisher, ReplyTable};
+use crate::{HandlerId, IngressRequest, Reservation, ResourceAccount, Resources, WorkerNotifier};
 
 const MAX_ARGUMENTS: usize = 64;
 
@@ -30,6 +32,7 @@ struct Shared {
     message_bytes: u64,
     account: ResourceAccount,
     notifier: WorkerNotifier,
+    replies: Option<Arc<ReplyTable>>,
     _wait_charge: Arc<Reservation>,
     _charge: Reservation,
 }
@@ -45,11 +48,34 @@ pub(crate) struct Envelope {
     pub(crate) arguments: [i64; MAX_ARGUMENTS],
     pub(crate) count: usize,
     pub(crate) charge: Reservation,
+    pub(crate) reply: Option<ReplyPublisher>,
 }
 
 impl IngressSender {
     pub fn send(&self, arguments: &[i64]) -> Result<IngressWake, String> {
+        if self.shared.replies.is_some() {
+            return Err("send requires a one-way ingress".into());
+        }
         self.send_with_notification(arguments, || self.shared.notifier.notify())
+    }
+
+    pub fn request(
+        &self,
+        arguments: &[i64],
+        timeout: Duration,
+    ) -> Result<(IngressRequest, IngressWake), String> {
+        let replies = self
+            .shared
+            .replies
+            .as_ref()
+            .ok_or("request requires a reply ingress")?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or("ingress request deadline overflow")?;
+        self.validate_arguments(arguments)?;
+        let (request, publisher) = replies.start(deadline)?;
+        let wake = self.publish(arguments, Some(publisher), || self.shared.notifier.notify())?;
+        Ok((request, wake))
     }
 
     fn send_with_notification(
@@ -57,6 +83,10 @@ impl IngressSender {
         arguments: &[i64],
         notify: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<IngressWake, String> {
+        self.publish(arguments, None, notify)
+    }
+
+    fn validate_arguments(&self, arguments: &[i64]) -> Result<(), String> {
         if arguments.len() != self.shared.count
             || arguments
                 .iter()
@@ -65,6 +95,16 @@ impl IngressSender {
         {
             return Err("ingress argument count or scalar type mismatch".into());
         }
+        Ok(())
+    }
+
+    fn publish(
+        &self,
+        arguments: &[i64],
+        reply: Option<ReplyPublisher>,
+        notify: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<IngressWake, String> {
+        self.validate_arguments(arguments)?;
         let charge = self.shared.account.reserve(Resources {
             messages: 1,
             bytes: self.shared.message_bytes,
@@ -76,6 +116,7 @@ impl IngressSender {
             arguments: owned,
             count: arguments.len(),
             charge,
+            reply,
         };
         let mut ring = self
             .shared
@@ -122,15 +163,17 @@ impl IngressReceiver {
             return Err("ingress requires 1..=64 slots and a nonzero execution budget".into());
         }
         let schema = handler.schema();
-        if schema.reply.is_some()
-            || schema.is_completion()
+        if schema.is_completion()
+            || schema
+                .reply
+                .is_some_and(|ty| !matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit))
             || schema.parameters.len() > MAX_ARGUMENTS
             || schema
                 .parameters
                 .iter()
                 .any(|(_, ty)| !matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit))
         {
-            return Err("ingress requires a scalar one-way handler".into());
+            return Err("ingress requires a scalar handler".into());
         }
         let bytes = std::mem::size_of::<Shared>()
             + capacity * std::mem::size_of::<Option<Envelope>>()
@@ -144,6 +187,10 @@ impl IngressReceiver {
             .try_reserve_exact(capacity)
             .map_err(|_| "ingress storage allocation failed")?;
         slots.resize_with(capacity, || None);
+        let replies = schema
+            .reply
+            .map(|ty| ReplyTable::new(account, capacity, ty))
+            .transpose()?;
         let mut parameters = [ValueType::Unit; MAX_ARGUMENTS];
         for (target, (_, ty)) in parameters.iter_mut().zip(&schema.parameters) {
             *target = *ty;
@@ -160,6 +207,7 @@ impl IngressReceiver {
             message_bytes,
             account: account.clone(),
             notifier,
+            replies,
             _wait_charge: wait_charge,
             _charge: charge,
         });
@@ -246,6 +294,7 @@ mod tests {
                 message_bytes: 16,
                 account: account.clone(),
                 notifier: parker.notifier(),
+                replies: None,
                 _wait_charge: wait_charge,
                 _charge: account.reserve(Resources::default()).unwrap(),
             }),

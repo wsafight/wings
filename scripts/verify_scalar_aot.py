@@ -593,6 +593,7 @@ def main():
   on Get -> Int { count }
   on Bump(value: Int) -> Int { count = count + value; count }
   on Ack -> Unit { () }
+  on EchoBool(value: Bool) -> Bool { value }
   on FailRequest -> Int { count = 99; 1 / 0 }
 }
 """)
@@ -600,6 +601,7 @@ def main():
         command([COMPILER, "build", worker_source, "-o", worker_artifact])
         example("scalar_worker", worker_artifact)
         example("worker_ingress", worker_artifact)
+        example("worker_ingress_requests", worker_artifact)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)
         timer_source = parent / "timer.wings"

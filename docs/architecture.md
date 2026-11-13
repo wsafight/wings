@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 在固定外部入口上增加标量请求模式：结果表无模块/actor 引用，调用者与消息发布者共同持有有界槽位和资源票据；worker 提交 state 后才发布回复。外部 Condvar 等待不进入受管 handler，不修改 ABI 或 M:N 执行权。
+
 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 让外部线程通过固定计费 ingress 发布标量单向消息，并通知原线程 worker；HandlerId、actor 和活栈不跨线程。ring 与 OS 通知预算跟随最后 handle，不由 worker 提前释放。多 worker 执行权、引用消息和真实服务 I/O 仍须独立完成。
 
 资源账户按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 用同 VM 共享门闩串行提交三级四维准入、净转移和归还；只在固定长度计数更新中持锁，不在锁内执行分配/业务/OS 等待或协程切换。账户与票据自动 Send/Sync，actor/活栈仍保持原线程执行权。
