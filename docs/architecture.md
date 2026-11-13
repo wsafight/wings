@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0064](adr/0064-indexed-supervisor-slots.md) 用固定空槽链和带完整身份校验的 child 槽索引，消除监督创建/查询/停止的容量扫描。可失败准入/初始化完成后才摘链，成功重启保留稳定身份和监督槽；最终终结归还槽。构造前按新固定元数据三级路径计费，不新增动态哈希表；poll 仍按容量扫描。
+
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 将已提交 Bytes 的定长副本诊断扩至 Scheduler。初始化及 handler 返回后在 detached image 上复制长度/最多 32 B 前缀，锁内只发布副本；owner 存在时拒绝读取，不访问挂起栈/候选。普通快照不暴露前缀，显式接口仅供可信宿主；退出副本不保留资源租约。测试宿主接入多 actor Counter，不改变 ABI v14 或语言语法。
 
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 用槽内 intrusive FIFO 和固定 worker 本地活栈 FIFO 代替全 actor 派发扫描；空槽链 O(1) 分配、退役移除旧就绪成员，成员/代次/唯一 owner 在同 registry 锁下更新。actor 上限 16384，宿主结果和语言 pending 仍各最多 256；后者有界扫描保留。首次派发按 slot 分布，返回后固定编号迁移不变，不宣称自适应窃取、无锁或性能门禁完成。

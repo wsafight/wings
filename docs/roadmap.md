@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0064](adr/0064-indexed-supervisor-slots.md) 消除监督批量创建/查询/停止的容量扫描，针对多 actor Linux 隔离仿真的 3 秒失败补充回归；poll 仍为固定容量扫描。M0/MVP、原生双平台和同业务 BEAM 双目标门槛不变。
+
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 补齐代表性 actor 数量的完整 Bytes Counter 闭环正确性：三端核对各目标状态/FIFO/失败与清理，未改变 ABI 或语法。仍缺双发送者、开环/热点/公平性、完整业务值/资源账本、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁，MVP 未完成。
 
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 去除全 actor 派发与本地空执行槽扫描，使用固定 intrusive 就绪 FIFO、本地活栈 FIFO 和空槽链；actor 容量扩至 16384，请求表各最多 256 不变。1000/10000 actor 标量稀疏功能探测接入完整受限 AOT，完整 Bytes 多 actor 正确性见 ADR-0063；开环/热点/公平性、自适应负载、原生最新双平台及 BEAM 吞吐/整机内存双门禁仍待推进，不因容量可创建而称 MVP 完成。

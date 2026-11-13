@@ -3,7 +3,7 @@ use crate::RestartPolicy;
 use crate::supervision::RestartHistory;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SchedulerChildId(SchedulerPid);
+pub struct SchedulerChildId(SchedulerPid, u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
@@ -85,10 +85,16 @@ impl Drop for ExitPublisher {
 
 pub struct SchedulerSupervisor {
     scheduler: Scheduler,
-    children: Box<[Option<Child>]>,
+    children: Box<[ChildSlot]>,
+    free: Option<usize>,
     cursor: usize,
     tenant: ResourceAccount,
     _charge: Reservation,
+}
+
+struct ChildSlot {
+    child: Option<Child>,
+    next: Option<usize>,
 }
 
 struct Child {
@@ -110,14 +116,22 @@ impl SchedulerSupervisor {
         }
         let charge = tenant.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
-                + config.capacity * std::mem::size_of::<Option<Child>>()) as u64,
+                + config.capacity * std::mem::size_of::<ChildSlot>()) as u64,
             ..Resources::default()
         })?;
-        let children = storage(config.capacity, || None)?;
+        let mut next_slot = 0;
+        let children = storage(config.capacity, || {
+            next_slot += 1;
+            ChildSlot {
+                child: None,
+                next: (next_slot < config.capacity).then_some(next_slot),
+            }
+        })?;
         let scheduler = Scheduler::new(tenant, config)?;
         Ok(Self {
             scheduler,
             children,
+            free: Some(0),
             cursor: 0,
             tenant: tenant.clone(),
             _charge: charge,
@@ -157,11 +171,7 @@ impl SchedulerSupervisor {
         heap: Option<usize>,
         policy: RestartPolicy,
     ) -> Result<SchedulerChildId, String> {
-        let index = self
-            .children
-            .iter()
-            .position(Option::is_none)
-            .ok_or("supervisor child capacity exhausted")?;
+        let index = self.free.ok_or("supervisor child capacity exhausted")?;
         let (capacity, _) = RestartHistory::capacity(policy)?;
         let charge = self.tenant.reserve(Resources {
             bytes: (capacity * std::mem::size_of::<Option<Instant>>()) as u64,
@@ -178,8 +188,9 @@ impl SchedulerSupervisor {
             None,
             Some(publisher),
         )?;
-        let identity = SchedulerChildId(pid);
-        self.children[index] = Some(Child {
+        let identity = SchedulerChildId(pid, index as u32);
+        self.free = self.children[index].next.take();
+        self.children[index].child = Some(Child {
             identity,
             pid,
             module: module.clone(),
@@ -194,25 +205,28 @@ impl SchedulerSupervisor {
     }
 
     pub fn current_pid(&self, child: SchedulerChildId) -> Result<SchedulerPid, String> {
-        self.children
-            .iter()
-            .flatten()
-            .find(|entry| entry.identity == child)
-            .map(|entry| entry.pid)
-            .ok_or_else(|| "stale or foreign scheduler child ID".into())
+        let index = self.child_index(child)?;
+        Ok(self.children[index]
+            .child
+            .as_ref()
+            .expect("validated child")
+            .pid)
     }
 
     pub fn stop(&mut self, child: SchedulerChildId) -> Result<(), String> {
-        let index = self
-            .children
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.identity == child))
-            .ok_or("stale or foreign scheduler child ID")?;
-        let pid = self.children[index].as_ref().expect("validated child").pid;
+        let index = self.child_index(child)?;
+        let pid = self.children[index]
+            .child
+            .as_ref()
+            .expect("validated child")
+            .pid;
         match self.scheduler.handle.stop(pid) {
             Ok(()) => {}
             Err(error) => {
-                let entry = self.children[index].as_ref().expect("validated child");
+                let entry = self.children[index]
+                    .child
+                    .as_ref()
+                    .expect("validated child");
                 if !entry
                     .ticket
                     .outcome
@@ -224,15 +238,32 @@ impl SchedulerSupervisor {
                 }
             }
         }
-        self.children[index].take();
+        self.children[index].child.take();
+        self.release_slot(index);
         Ok(())
+    }
+
+    fn child_index(&self, child: SchedulerChildId) -> Result<usize, String> {
+        let index = child.1 as usize;
+        self.children
+            .get(index)
+            .and_then(|slot| slot.child.as_ref())
+            .filter(|entry| entry.identity == child)
+            .map(|_| index)
+            .ok_or_else(|| "stale or foreign scheduler child ID".into())
+    }
+
+    fn release_slot(&mut self, index: usize) {
+        assert!(self.children[index].child.is_none());
+        self.children[index].next = self.free;
+        self.free = Some(index);
     }
 
     pub fn poll(&mut self) -> Option<SchedulerSupervisorEvent> {
         for _ in 0..self.children.len() {
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % self.children.len();
-            let Some(child) = self.children[index].as_ref() else {
+            let Some(child) = self.children[index].child.as_ref() else {
                 continue;
             };
             let outcome = child
@@ -245,7 +276,7 @@ impl SchedulerSupervisor {
             }
             let termination = outcome.termination;
             drop(outcome);
-            let mut child = self.children[index].take().expect("terminal child");
+            let mut child = self.children[index].child.take().expect("terminal child");
             let identity = child.identity;
             let pid = child.pid;
             let restart = match termination {
@@ -277,13 +308,16 @@ impl SchedulerSupervisor {
                             child.pid = pid;
                             child.ticket = ticket;
                             child.history.record(Instant::now());
-                            self.children[index] = Some(child);
+                            self.children[index].child = Some(child);
                             SchedulerRestartStatus::Restarted(pid)
                         }
                         Err(error) => SchedulerRestartStatus::Failed(error),
                     }
                 }
             };
+            if self.children[index].child.is_none() {
+                self.release_slot(index);
+            }
             return Some(SchedulerSupervisorEvent {
                 child: identity,
                 pid,

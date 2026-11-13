@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（宿主监督集成切片；macOS 功能已验证，Linux 与完整门禁另记）
 - 扩展：[ADR-0023](0023-bounded-host-supervision.md)、[ADR-0054](0054-bounded-multi-worker-scheduler.md)、[ADR-0055](0055-multi-worker-exit-diagnostics.md)
+- 后续：[ADR-0064](0064-indexed-supervisor-slots.md) 部分替代创建/查询/停止扫描；终态与重启语义不变。
 
 ## 决定与理由
 

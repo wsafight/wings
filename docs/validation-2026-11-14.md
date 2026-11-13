@@ -50,10 +50,20 @@
 
 该结果仍是闭环功能验证，没有预热/采样、吞吐、尾延迟或整机内存结果。
 
+## 固定监督索引与空槽链：ADR-0064
+
+针对上一段 Linux 失败，在 `28db2c7` 上按 [ADR-0064](adr/0064-indexed-supervisor-slots.md) 消除监督创建寻找空槽及 current_pid/stop 的线性搜索，保留原始稳定身份、全部准入/初始化顺序和终态契约；poll 仍为固定容量扫描。没有改初始化栈、状态大小、测试规模或时间限制。
+
+Linux 同配置 QEMU TCG x86-64 重新构建全部 release 工具/示例及 28 个 harness，共 465 项通过（workspace 460、三个桥接示例合计 5）；完整受限 release AOT 首次通过，包括此前失败的 10000×256 B、另外两组大容量 Bytes、全部旧 AOT/迁移/暂停/GC/监督回归。单独的 v2 Wings/Python 套件也在原 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒通过。前段超时是改造前结果，现已解决，不删除该失败记录。
+
+本机 macOS check/clippy/fmt/MSRV 通过，debug/release workspace 各 460 项、三个示例各合计 5 项通过。新增回归覆盖八轮满表/任意顺序停止与复用、全部旧身份/外来 supervisor 拒绝、失败创建不占槽和重启失败后继续创建；保留稳定 child 重启与强度、并发退出不丢失及活栈停止测试。完整 debug/release AOT 首次通过；两种构建显式 v2 三端对照均通过 18/17/49 项，v1 均通过 45/14/28 项。
+
+依赖隔离与禁 unwind feature、文档链接/围栏和 diff whitespace 检查通过。隔离 Linux 未安装 OTP，也未运行原生 debug/clippy/MSRV/doc-tests，不是最新原生 CI 或 Linux BEAM 证据。实例测试后已停止。没有吞吐、尾延迟或整机内存结果。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 多 actor 正确性在 Linux 的上述 3 秒失败；两个发送者 FIFO、开环到达、热点/公平性、过载/超时及端到端诊断。mailbox 100 的 hot-queue 协议当前仍超出实现上限 64，不更改协议绕过。
+- 两个发送者 FIFO、开环到达、热点/公平性、过载/超时及端到端诊断。多 actor 的上述仿真超时已由 ADR-0064 解决，仍不代替原生验证；mailbox 100 的 hot-queue 协议当前仍超出实现上限 64，不更改协议绕过。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 

@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0064 将 SchedulerSupervisor 创建/查询/停止改为固定空槽链和完整身份校验的槽索引，失败创建不摘链、成功重启保持稳定 child ID；poll 仍扫描固定容量。原 CPU/墙钟和 actor 阶段 3 秒限制不变，不将仿真回归或索引改造称为性能/内存门禁通过。
+
 - ADR-0063 增加 10000×256 B、1000×4 KiB、100×64 KiB 多 actor Counter 的有界闭环正确性对照及 Scheduler 已提交 Bytes 长度/32 B 前缀副本。真实三端仍须显式 `--compare-beam`；只有同发送者到同目标 FIFO，不保证跨 actor 全序。完整 Bytes 不是完整状态导出，仍无开环、双发送者或 BEAM 性能/整机内存门禁结论。
 
 - ADR-0062 将 Scheduler 改为固定 intrusive 就绪队列、本地活栈 FIFO 和空槽链，容量上限 16384 actor；宿主结果与语言 pending 仍各最多 256，mailbox 仍最多 64。首次派发按 slot 分布，返回后固定编号迁移，不是自适应窃取；每轮最多认领一个 handler 并恢复一个时间片。`scheduler_sparse` 的 1000/10000 标量探测不替代完整 Bytes 同业务、开环或 BEAM 双门禁。

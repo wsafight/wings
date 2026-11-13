@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0064](adr/0064-indexed-supervisor-slots.md) 增加监督满表拒绝/任意停止顺序/多轮槽复用/外来身份/失败创建与重启后槽恢复回归。重新运行 ADR-0063 代表容量用例，保留 actor 阶段 3 秒而不缩小规模；Linux TCG 仅记功能证据，不将耗时差异用于 BEAM 性能判断。
+
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 的 `verify_multi_counter.py --compare-beam` 用真实 Wings Scheduler/OTP 29/独立 Python 模型验证多 actor Bytes Counter：10000×256 B、1000×4 KiB、100×64 KiB 均保留完整状态，每目标不同 ID，100 个活跃目标、最多 256 请求及总窗口 32。另覆盖单目标、空输入、跨窗口 FIFO、并发目标失败、溢出优先、旧提交状态和清理。Wings 读取长度/32 B 前缀，不声称完整 padding 导出；默认完整 AOT 只运行 Wings/模型。业务 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒不变，仍是单发送者闭环，不替代开环、超时/过载或性能/整机内存采样。
 
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 的完整受限 AOT 增加 `scheduler_sparse`：1000/10000 个标量 Counter、2 worker、100 个活跃 actor，固定 32 条以内宿主请求窗口，各 actor 两条连续请求共三轮、共 600 次成功回复，核对状态独立、FIFO、五次边界迁移、空闲状态、表满无部分准入、旧 Pid/代次及最终归零。队列单测覆盖去重、头/中/尾摘链、跨 worker 归属和旧成员清理；保留暂停/取消、并发生产者、语言消息/完成、启动失败及监督回归。此处是标量功能探测，不是完整 Bytes 同业务状态或开环/RSS/BEAM 性能门禁，原 CPU 20 秒/墙钟 30 秒/禁 core 不变。

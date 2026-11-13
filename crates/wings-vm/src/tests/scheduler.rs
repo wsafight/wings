@@ -860,6 +860,73 @@ fn supervisor_event(supervisor: &mut SchedulerSupervisor) -> SchedulerSupervisor
 }
 
 #[test]
+fn scheduler_supervision_reuses_indexed_slots_and_rejects_foreign_or_stale_children() {
+    let (vm, tenant, mut supervisor) = supervisor_fixture(4);
+    let mut foreign = SchedulerSupervisor::new(
+        &tenant,
+        SchedulerConfig {
+            capacity: 1,
+            requests: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let module = module();
+    let foreign_child = foreign
+        .spawn(&module, quota(), 1, RestartPolicy::Never)
+        .unwrap();
+    assert!(supervisor.current_pid(foreign_child).is_err());
+    assert!(supervisor.stop(foreign_child).is_err());
+    let mut previous = Vec::new();
+    for _ in 0..8 {
+        let children: Vec<_> = (0..4)
+            .map(|_| {
+                supervisor
+                    .spawn(&module, quota(), 1, RestartPolicy::Never)
+                    .unwrap()
+            })
+            .collect();
+        let pids: Vec<_> = children
+            .iter()
+            .map(|child| supervisor.current_pid(*child).unwrap())
+            .collect();
+        for child in &previous {
+            assert!(supervisor.current_pid(*child).is_err());
+            assert!(supervisor.stop(*child).is_err());
+        }
+        let baseline = vm.used();
+        assert!(
+            supervisor
+                .spawn(&module, quota(), 1, RestartPolicy::Never)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        for index in [2, 0, 3, 1] {
+            assert_eq!(
+                supervisor.current_pid(children[index]).unwrap(),
+                pids[index]
+            );
+            supervisor.stop(children[index]).unwrap();
+            assert!(supervisor.current_pid(children[index]).is_err());
+        }
+        let baseline = vm.used();
+        assert!(
+            supervisor
+                .spawn(&module, limits(0), 1, RestartPolicy::Never)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        previous.extend(children);
+    }
+    assert!(supervisor.poll().is_none());
+    assert!(foreign.current_pid(previous[0]).is_err());
+    assert!(foreign.stop(previous[0]).is_err());
+    foreign.stop(foreign_child).unwrap();
+    drop((supervisor, foreign, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn scheduler_supervision_restarts_fresh_state_and_enforces_finite_intensity() {
     let (vm, tenant, mut supervisor) = supervisor_fixture(2);
     let handle = supervisor.handle();
@@ -1028,6 +1095,11 @@ fn scheduler_supervision_stops_and_restart_admission_failures_do_not_retry() {
     drop(blocked);
     assert!(supervisor.current_pid(child).is_err());
     assert!(supervisor.poll().is_none());
+    let replacement = supervisor
+        .spawn(&module, quota(), 1, RestartPolicy::Never)
+        .unwrap();
+    assert!(supervisor.current_pid(child).is_err());
+    supervisor.stop(replacement).unwrap();
     drop((supervisor, handle, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
@@ -1109,6 +1181,10 @@ fn scheduler_supervision_initializer_failure_and_spawn_admission_release_tickets
     );
     assert!(supervisor.current_pid(child).is_err());
     assert!(supervisor.poll().is_none());
+    let replacement = supervisor
+        .spawn(&module, quota(), 1, RestartPolicy::Never)
+        .unwrap();
+    supervisor.stop(replacement).unwrap();
     drop((supervisor, handle, tenant));
     assert_eq!(vm.used(), Resources::default());
 }

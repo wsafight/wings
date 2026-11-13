@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0064](adr/0064-indexed-supervisor-slots.md) 保留监督 child 的原始 Pid 身份并添加私有槽索引；查询/停止完整核对身份，复用槽不接受旧 child，重启不改变稳定 ID。创建成功才占用空槽，创建失败保持可用；主动 stop、禁用/超限/失败重启归还槽，成功重启不归还。独立终态/清理顺序与有界 poll 不变。
+
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 的 Scheduler `byte_state_snapshot(pid)` 只在无 owner 时返回已提交 Bytes 长度/32 B 前缀副本，非 Bytes 返回 None、旧 Pid/关闭拒绝；初始化和 handler 返回更新缓存，失败退出复制旧提交值。副本可在 actor/堆/模块销毁后保留，不持资源租约。普通 SchedulerSnapshot 不自动暴露前缀；副本可能含业务数据，只供可信宿主显式读取，不是完整导出或持久快照。
 
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 将 actor 容量扩至 16384，并以每 worker 固定就绪 FIFO 和本地活栈 FIFO 派发，不遍历空闲 actor/执行槽。每 actor 最多一个就绪成员，消息发布与完成投递按唯一 owner 决定入队，退役先摘链再复用代次；失败启动恢复原消息头并重排队尾。每轮至多认领一个新 handler 和恢复一个活栈片，语言 pending 维护仍最多扫描 256 槽，其他容量/提交/副作用契约不变。

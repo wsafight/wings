@@ -24,13 +24,15 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 完整阅读顺序见[文档目录](docs.md)。参与修改前请阅读[协作约定](AGENTS.md)。
 
-[ADR-0063](docs/adr/0063-multi-actor-byte-counter.md) 已将多 actor 固定 Bytes Counter 接入有界正确性测试，覆盖三种状态与代表性 actor 数；显式 `--compare-beam` 才运行真实 OTP。仍不是开环性能实验、整机内存结果或 MVP 完成，运行方式见 [BEAM 工作负载](docs/beam-workloads.md)。
-
 ## 当前进度
 
 处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无 Bytes 消息、引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
 
 ## 开发
+
+[ADR-0064](docs/adr/0064-indexed-supervisor-slots.md) 用固定空槽链和带身份校验的槽索引，消除监督创建/查询/停止的容量扫描，保留原初始化/计费/重启语义；poll 仍扫描固定容量。原 CPU/墙钟/阶段 deadline 不变，不将功能回归当成 BEAM 性能结果。
+
+[ADR-0063](docs/adr/0063-multi-actor-byte-counter.md) 已将多 actor 固定 Bytes Counter 接入有界正确性测试，覆盖三种状态与代表性 actor 数；显式 `--compare-beam` 才运行真实 OTP。仍不是开环性能实验、整机内存结果或 MVP 完成，运行方式见 [BEAM 工作负载](docs/beam-workloads.md)。
 
 [ADR-0062](docs/adr/0062-sparse-ready-scheduler.md) 将全 actor 派发扫描改成固定就绪/活栈 FIFO 和空槽链，容量上限为 16384 actor，请求表各最多 256。完整受限 AOT 的 `scheduler_sparse` 检查 1000/10000 标量 actor、100 活跃、FIFO、边界迁移和清理。构建使用下列 workspace/示例命令，不需额外依赖；这不是完整 Bytes 同业务、开环或 BEAM 性能/内存结果。
 
