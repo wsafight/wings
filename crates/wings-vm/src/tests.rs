@@ -1140,6 +1140,48 @@ fn worker_timer_is_optional_validates_arguments_and_charges_once() {
 }
 
 #[test]
+fn worker_account_metadata_is_parent_charged_and_spawn_failures_roll_it_back() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(16 << 20)).unwrap();
+    let tenant_metadata = vm.used();
+    let probe = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let node_bytes = tenant.used().bytes;
+    drop(probe);
+    assert!(node_bytes > 0);
+    assert_eq!(tenant.used(), Resources::default());
+    let blueprint = module();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let baseline = vm.used();
+    let pid = worker.spawn(&blueprint, limits(4 << 20), 1).unwrap();
+    let actor_bytes = worker.resources(pid).unwrap().bytes;
+    assert_eq!(vm.used().bytes - baseline.bytes, actor_bytes + node_bytes);
+    worker.stop(pid).unwrap();
+    assert_eq!(vm.used(), baseline);
+    for target in [&vm, &tenant] {
+        let held = target
+            .reserve(Resources {
+                bytes: target.limit().bytes - target.used().bytes - actor_bytes - node_bytes + 1,
+                ..Resources::default()
+            })
+            .unwrap();
+        let blocked = vm.used();
+        assert!(worker.spawn(&blueprint, limits(4 << 20), 1).is_err());
+        assert_eq!(vm.used(), blocked);
+        assert_eq!(worker.process_count(), 0);
+        drop(held);
+        assert_eq!(vm.used(), baseline);
+    }
+    let mut invalid = module();
+    Arc::get_mut(&mut invalid.inner).unwrap().initializer = fail;
+    assert!(worker.spawn(&invalid, limits(4 << 20), 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    drop(worker);
+    assert_eq!(vm.used(), tenant_metadata);
+    drop(tenant);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn worker_drop_cancels_suspended_work_and_joins_enabled_timer() {
     let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
     worker.enable_timer().unwrap();

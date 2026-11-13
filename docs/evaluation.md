@@ -1,8 +1,10 @@
 # 评测与验收
 
+[ADR-0050](adr/0050-account-node-admission.md) 验证计费子账户的精确父路径额度、祖先拒绝、层级/溢出失败无变化、子业务零用量、并发创建、跨线程最后释放及转移末票据不死锁。worker 核对成功创建的 actor 字节与独立节点字节、VM/tenant 元数据额度不足和初始化失败回滚；ingress/请求结果保留节点至末持有者归还。受限 TCP 全回归使用计费 tenant，检查服务全部退出后账目归零；这些是容量逻辑门禁，不是 RSS 数据。
+
 [ADR-0049](adr/0049-record-message-copies.md) 的 `record_messages` 在受限 AOT 子进程验证跨 actor/self 复制、collect 后持久状态、请求参数、源失败不撤回、目标满堆及 96 个单步取消边界的清理。`--check-record-message-roots` 在每次 heap/slow/effect 回调前强制 GC，检查最后一次使用的参数根和混合 mask。内部回归核对全部 64 个导入参数、最高 mask 位、129 个汇总根槽、导入期间 GC、stale/列表布局拒绝、mask 越界/无源堆/非消息 effect 不让出；源码/IR/manifest/ABI 布局与宿主/JSON/ingress 伪造边界单独检查。不把 RecordInt 单节点复制当通用图复制或完整业务值验收。
 
-[ADR-0048](adr/0048-bounded-loopback-service.md) 通过 `python3 scripts/verify_scalar_aot.py` 在 CPU/core/墙钟受限 OS 子进程启动真实 `tcp_counter`。Python 以临时 loopback socket 验证分片/流水线 FIFO、正常提交、checked overflow/候选失败、退出后拒绝、非法协议/模块、短帧/EOF、断连不回滚、读/accept 超时与连接/帧上限，核对服务退出时账面资源归零及 socket 收发缓冲均不超过 64 KiB；示例单测另检查缓冲配置及部分帧不刷新读 deadline。没有连接吞吐、state 大小等价或内存领先结论。
+[ADR-0048](adr/0048-bounded-loopback-service.md) 通过 `python3 scripts/verify_scalar_aot.py` 在 CPU/core/墙钟受限 OS 子进程启动真实 `tcp_counter`。Python 以临时 loopback socket 验证分片/流水线 FIFO、正常提交、checked overflow/候选失败、退出后拒绝、非法协议/模块、短帧/EOF、客户端写半关闭后仍回复并保留提交、读/accept 超时与连接/帧上限，核对服务退出时账面资源归零及 socket 收发缓冲均不超过 64 KiB；示例单测另检查缓冲配置及部分帧不刷新读 deadline。客户端保留读端直到确认回复，不能用在服务准入前就全关闭的竞态声称已验证发布后的断连。没有连接吞吐、state 大小等价或内存领先结论。
 
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 的 `cargo test --locked -p wings-vm ingress` 覆盖固定结果槽背压、三级拒绝回滚、完成/超时/取消/Drop 竞争、迟到回复、代次退休、Bool/Unit 与关闭后租约。受限 AOT 脚本另运行 `worker_ingress_requests`：四个生产者、16 个请求，核对实际生成代码提交后的整数/布尔/Unit 回复、失败、挂起清理和最终归零；不是服务或性能数据。
 

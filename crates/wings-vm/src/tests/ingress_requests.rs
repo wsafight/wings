@@ -226,6 +226,35 @@ fn request_quota_rejection_and_registration_failure_roll_back_all_levels() {
 }
 
 #[test]
+fn request_result_retains_account_node_after_actor_and_sender_exit() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(16 << 20)).unwrap();
+    let tenant_metadata = vm.used();
+    let probe = tenant.process_accounted(limits(0)).unwrap();
+    let node_bytes = tenant.used().bytes;
+    drop(probe);
+    let module = module();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    worker.enable_wait().unwrap();
+    let pid = worker.spawn(&module, limits(4 << 20), 1).unwrap();
+    let sender = worker
+        .open_request_ingress(pid, &module.handler("Bump").unwrap(), 1, 128)
+        .unwrap();
+    let (mut request, _) = sender.request(&[7], Duration::from_secs(60)).unwrap();
+    worker.stop(pid).unwrap();
+    drop((sender, worker));
+    assert_eq!(vm.used().processes, 0);
+    assert_eq!(vm.used().messages, 0);
+    assert_eq!(vm.used().requests, 1);
+    assert!(vm.used().bytes >= tenant_metadata.bytes + node_bytes);
+    assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Failed));
+    drop(tenant);
+    assert!(vm.used().bytes >= tenant_metadata.bytes + node_bytes);
+    std::thread::spawn(move || drop(request)).join().unwrap();
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn external_wait_observes_completion_and_honors_its_own_shorter_timeout() {
     let (vm, _, mut worker, module, pid) = worker_fixture(1, 1, 1);
     worker.enable_wait().unwrap();

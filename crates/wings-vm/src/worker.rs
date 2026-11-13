@@ -449,7 +449,7 @@ impl ScalarWorker {
             processes: 1,
             ..Resources::default()
         })?;
-        let account = self.tenant.process(limits)?;
+        let account = self.tenant.process_accounted(limits)?;
         let mut charge = charge;
         charge.transfer(&account)?;
         let mailbox = Mailbox {

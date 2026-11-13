@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；旧工具构造器、根 bootstrap、allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
+
 [ADR-0049](adr/0049-record-message-copies.md) 接入 ABI v11 的 RecordInt 语言消息复制、目标入口根及整数请求参数，仍无列表消息、引用回复、通用业务值或 M:N；M0/M1 和同业务 BEAM 双目标门禁仍未完成。
 
 [ADR-0048](adr/0048-bounded-loopback-service.md) 增加真实 loopback TCP Counter 验证示例，有界连接/帧/截止时间及预算清理；单适配线程、Int state 尚不等价于 BEAM 状态/到达负载。外部 I/O 已从原语推进至可运行示例，完整服务公平性、M:N 和双平台性能/内存仍未验收。

@@ -168,6 +168,8 @@ def verify_tcp_service(directory):
         with connect() as connection:
             connection.sendall(frame(1, 6))
             connection.shutdown(socket.SHUT_WR)
+            assert reply(connection) == (1, 3, 6, 0)
+            require_closed(connection)
 
     scenario(1, 2, disconnected, {"connections": 1, "published": 1,
                                  "replies": 1, "committed": 6})

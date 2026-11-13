@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 堆模式使用计费子账户；旧账户构造入口及 VM 根 bootstrap 仍是未计费工具路径，不代表完整资源隔离。
+
 ABI v11 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 允许语言消息参数携带 RecordInt：发送点复制 Int 字段，目标堆重新分配并以入口根保活；源失败不撤回已接受消息。示例 `examples/record-messages.wings` 及 `record_messages`；JSON/宿主/ingress 不接受原 handle，列表消息和引用回复仍不支持。
 
 受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。

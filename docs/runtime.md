@@ -216,10 +216,10 @@ Linux 通过 `epoll` + `eventfd` 管理 I/O 等待与 worker 唤醒，macOS 使�
 
 未发布源码在 [ADR-0014](adr/0014-resource-reservations.md) 的三级资源原语上，按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 接入跨线程串行提交；尚未覆盖所有运行时分配，不代表完整资源隔离：
 
-- `ResourceAccount` 按 VM → tenant → process 创建，分别配置 `bytes`、`processes`、`messages`、`requests` 四维上限。创建账户本身不预留进程数，也不替真实资源分配计费。
+- `ResourceAccount` 按 VM → tenant → process 创建，分别配置 `bytes`、`processes`、`messages`、`requests` 四维上限。`tenant_accounted`/`process_accounted` 在 Arc 节点分配前向父路径预留节点及强弱引用计数的逻辑存储，不占子业务额度，不预留进程数；最后一个账户/票据/入口/结果所有者释放才归还。worker 一律创建计费进程账户，TCP 示例使用计费 tenant，CLI 堆模式使用计费 tenant/process，见 [ADR-0050](adr/0050-account-node-admission.md)。旧 `tenant`/`process` 保留为未计费工具原语，根及共享门闩仍属 bootstrap。
 - `reserve` 先检查当前账户及全部祖先的额度与整数溢出，全部成功才记账；失败各级用量不变。不可克隆的 `Reservation` 在 Drop 时归还当前所有者及祖先的额度，调用者必须让票据与真实资源同寿命。
 - `transfer` 只接受同一 VM 内的目标，共同祖先不重复计费；先验证目标独有路径，成功后才转移用量和票据所有权。失败保留原所有权和全部账目；跨 VM 转移拒绝，零预留合法。
-- 账户使用 `Arc`，同 VM 的 reserve/transfer/Drop/used 共用一个门闩；四维计数只在门闩内读写，used 是单账户一致快照，不是跨多次查询的整体快照。锁内不分配、等待业务或调用协程；其他 VM 不共锁。账户与唯一票据可跨线程，不代表 actor/活栈可以迁移。堆、根表、worker 活栈/mailbox/请求表及 opt-in 模块预算已接入，账户本体及 allocator/动态装载器内部开销仍未完整覆盖。账面字节数不是 RSS 或 OS 内存隔离。
+- 账户使用 `Arc`，同 VM 的 reserve/transfer/Drop/used 共用一个门闩；四维计数只在门闩内读写，used 是单账户一致快照，不是跨多次查询的整体快照。锁内不分配、等待业务或调用协程；其他 VM 不共锁。账户与唯一票据可跨线程，不代表 actor/活栈可以迁移。堆、根表、worker 活栈/mailbox/请求表、计费子账户及 opt-in 模块预算已接入，未计费构造路径、根 bootstrap 及 allocator/动态装载器内部开销仍未完整覆盖。账面字节数不是 RSS 或 OS 内存隔离。
 
 单个 arena 的堆上限拦不住 mailbox 洪泛和无限 spawn。所有可增长资源在分配前都要经过**微进程、租户、VM 实例**三级额度检查。跨级预留失败时回滚，资源所有权转移时连同已预留额度一起转移，中间缓冲区也必须计费。
 

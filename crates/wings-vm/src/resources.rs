@@ -53,7 +53,7 @@ struct AccountNode {
     limit: Resources,
     used: [AtomicU64; 4],
     gate: Arc<Mutex<()>>,
-    parent: Option<ResourceAccount>,
+    parent: Option<Reservation>,
 }
 
 pub struct Reservation {
@@ -72,6 +72,14 @@ impl ResourceAccount {
 
     pub fn process(&self, limit: Resources) -> Result<Self, String> {
         self.child(ResourceLevel::Tenant, ResourceLevel::Process, limit)
+    }
+
+    pub fn tenant_accounted(&self, limit: Resources) -> Result<Self, String> {
+        self.child_accounted(ResourceLevel::Vm, ResourceLevel::Tenant, limit)
+    }
+
+    pub fn process_accounted(&self, limit: Resources) -> Result<Self, String> {
+        self.child_accounted(ResourceLevel::Tenant, ResourceLevel::Process, limit)
     }
 
     pub fn level(&self) -> ResourceLevel {
@@ -116,7 +124,7 @@ impl ResourceAccount {
         self.node
             .parent
             .as_ref()
-            .is_some_and(|owner| owner.same(parent))
+            .is_some_and(|owner| owner.account.same(parent))
     }
 
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
@@ -145,10 +153,10 @@ impl ResourceAccount {
         })
     }
 
-    fn create(level: ResourceLevel, limit: Resources, parent: Option<Self>) -> Self {
+    fn create(level: ResourceLevel, limit: Resources, parent: Option<Reservation>) -> Self {
         let gate = parent.as_ref().map_or_else(
             || Arc::new(Mutex::new(())),
-            |parent| parent.node.gate.clone(),
+            |parent| parent.account.node.gate.clone(),
         );
         Self {
             node: Arc::new(AccountNode {
@@ -170,12 +178,36 @@ impl ResourceAccount {
         if self.level() != required {
             return Err("resource account hierarchy must be VM -> tenant -> process".into());
         }
-        Ok(Self::create(level, limit, Some(self.clone())))
+        Ok(Self::create(
+            level,
+            limit,
+            Some(Reservation {
+                account: self.clone(),
+                amount: Resources::default(),
+            }),
+        ))
+    }
+
+    fn child_accounted(
+        &self,
+        required: ResourceLevel,
+        level: ResourceLevel,
+        limit: Resources,
+    ) -> Result<Self, String> {
+        if self.level() != required {
+            return Err("resource account hierarchy must be VM -> tenant -> process".into());
+        }
+        let charge = self.reserve(Resources {
+            bytes: (std::mem::size_of::<AccountNode>() + 2 * std::mem::size_of::<usize>()) as u64,
+            ..Resources::default()
+        })?;
+        Ok(Self::create(level, limit, Some(charge)))
     }
 
     fn path(&self) -> [Option<&Self>; 3] {
-        let parent = self.node.parent.as_ref();
-        let root = parent.and_then(|parent| parent.node.parent.as_ref());
+        let parent = self.node.parent.as_ref().map(|parent| &parent.account);
+        let root =
+            parent.and_then(|parent| parent.node.parent.as_ref().map(|parent| &parent.account));
         [Some(self), parent, root]
     }
 
@@ -319,5 +351,128 @@ mod tests {
             .unwrap();
         assert_eq!(ticket.amount(), limit);
         drop(ticket);
+    }
+
+    fn node_bytes() -> u64 {
+        (std::mem::size_of::<AccountNode>() + 2 * std::mem::size_of::<usize>()) as u64
+    }
+
+    fn bytes(amount: u64) -> Resources {
+        Resources {
+            bytes: amount,
+            ..Resources::default()
+        }
+    }
+
+    #[test]
+    fn accounted_nodes_charge_only_the_parent_path_and_last_owner_releases_it() {
+        let cost = node_bytes();
+        let vm = ResourceAccount::vm(bytes(3 * cost));
+        let tenant = vm.tenant_accounted(bytes(2 * cost)).unwrap();
+        assert_eq!(vm.used(), bytes(cost));
+        assert_eq!(tenant.used(), Resources::default());
+        let process = tenant.process_accounted(bytes(0)).unwrap();
+        assert_eq!(vm.used(), bytes(2 * cost));
+        assert_eq!(tenant.used(), bytes(cost));
+        assert_eq!(process.used(), Resources::default());
+        let clone = process.clone();
+        let ticket = process.reserve(Resources::default()).unwrap();
+        drop((process, clone, tenant));
+        assert_eq!(vm.used(), bytes(2 * cost));
+        std::thread::spawn(move || drop(ticket)).join().unwrap();
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn accounted_nodes_reject_each_parent_or_ancestor_limit_before_allocation() {
+        let cost = node_bytes();
+        let vm = ResourceAccount::vm(bytes(cost - 1));
+        assert!(vm.tenant_accounted(bytes(u64::MAX)).is_err());
+        assert_eq!(vm.used(), Resources::default());
+        for (root_limit, tenant_limit, error) in
+            [(2 * cost - 1, cost, "Vm"), (2 * cost, cost - 1, "Tenant")]
+        {
+            let vm = ResourceAccount::vm(bytes(root_limit));
+            let tenant = vm.tenant_accounted(bytes(tenant_limit)).unwrap();
+            assert!(
+                tenant
+                    .process_accounted(bytes(0))
+                    .err()
+                    .unwrap()
+                    .contains(error)
+            );
+            assert_eq!(vm.used(), bytes(cost));
+            assert_eq!(tenant.used(), Resources::default());
+            drop(tenant);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn accounted_node_hierarchy_rejection_and_overflow_do_not_change_usage() {
+        let vm = ResourceAccount::vm(bytes(u64::MAX));
+        let tenant = vm.tenant_accounted(bytes(u64::MAX)).unwrap();
+        let process = tenant.process_accounted(bytes(u64::MAX)).unwrap();
+        let baseline = vm.used();
+        assert!(vm.process_accounted(bytes(0)).is_err());
+        assert!(tenant.tenant_accounted(bytes(0)).is_err());
+        assert!(process.tenant_accounted(bytes(0)).is_err());
+        assert!(process.process_accounted(bytes(0)).is_err());
+        assert_eq!(vm.used(), baseline);
+        let held = vm.reserve(bytes(u64::MAX - baseline.bytes)).unwrap();
+        assert!(vm.tenant_accounted(bytes(0)).is_err());
+        assert!(tenant.process_accounted(bytes(0)).is_err());
+        assert_eq!(vm.used(), bytes(u64::MAX));
+        drop((held, process, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn transferring_last_ticket_to_parent_releases_child_metadata_after_unlocking() {
+        let cost = node_bytes();
+        let vm = ResourceAccount::vm(bytes(3 * cost));
+        let tenant = vm.tenant_accounted(bytes(2 * cost)).unwrap();
+        let process = tenant.process_accounted(bytes(cost)).unwrap();
+        let mut ticket = process.reserve(bytes(cost)).unwrap();
+        drop(process);
+        assert_eq!(vm.used(), bytes(3 * cost));
+        ticket.transfer(&tenant).unwrap();
+        assert_eq!(vm.used(), bytes(2 * cost));
+        assert_eq!(tenant.used(), bytes(cost));
+        drop((ticket, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn concurrent_accounted_node_creation_cannot_overrun_shared_metadata_budget() {
+        let cost = node_bytes();
+        let vm = ResourceAccount::vm(bytes(4 * cost));
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let vm = &vm;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let account = vm.tenant_accounted(bytes(0));
+                        barrier.wait();
+                        barrier.wait();
+                        account
+                    })
+                })
+                .collect();
+            barrier.wait();
+            barrier.wait();
+            assert_eq!(vm.used(), bytes(4 * cost));
+            barrier.wait();
+            let accounts: Vec<_> = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect();
+            assert_eq!(accounts.iter().filter(|account| account.is_ok()).count(), 4);
+            drop(accounts);
+        });
+        assert_eq!(vm.used(), Resources::default());
     }
 }

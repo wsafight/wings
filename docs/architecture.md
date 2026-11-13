@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0050](adr/0050-account-node-admission.md) 将子账户节点的逻辑存储纳入父路径准入，内部票据仅引用父级，无自循环。worker 创建计费进程账户；actor 退出后，跨线程入口/结果仍可延长节点及祖先租约。旧工具构造器和根 bootstrap 不计费，未完成全部分配门禁。
+
 [ADR-0049](adr/0049-record-message-copies.md) 升至 ABI v11，在 EffectRequest 末尾新增 u64 record_mask，结构从 48 到 56 字节，context/入口不变。源堆仅在 callback 内校验并复制 RecordInt 字段，目标进入业务前按预算重建，固定宿主入口根覆盖 GC/暂停；无共享堆或外部 handle 注入。
 
 [ADR-0048](adr/0048-bounded-loopback-service.md) 的 loopback TCP Counter 由一个有预算的外部适配线程接收固定帧，经有界请求入口交给原 worker；native I/O 不进入业务线程。线程/连接数、缓冲及等待有明确上限，错误先停止并 join，再释放 VM；该示例不是通用 reactor 或可部署的网络执行引擎。
