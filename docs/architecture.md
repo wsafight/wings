@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0067](adr/0067-beam-bounded-admission.md) 在可信 BEAM 测试端增加固定 Pid/容量与 signed atomics 计数，发送前 CAS 占槽、actor 开始归还，关闭设终态；不增加代理、无界等待者或自动重试。其成本须纳入后续 BEAM 整机测量。独立 v4 对照沿现有 Wings Scheduler，不改变 ABI v14、业务提交、资源或语法契约。
+
 [ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 将 Scheduler 的 mailbox 参数允许范围扩至 1..256，不更改默认或现有调用方容量。固定环缓冲按实际槽数构造前三级准入；全局宿主结果/语言 pending 仍各最多 256。认领未 start 的消息继续保留一个容量位置以便失败恢复队首，成功开始后不占排队数；没有无界等待者/自动重试。
 
 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 的双发送者宿主示例让两个真实线程直接经 SchedulerHandle 投递，BEAM 用两个真实进程；没有代发串行代理。业务 Bytes 保存每目标各发送者的已提交序号，独立模型验证合法交错。此为测试协议，不改变 ABI v14、调度/资源实现或语言语法。

@@ -82,10 +82,20 @@ workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targe
 
 依赖隔离、禁 unwind feature、Markdown 链接/围栏及 diff whitespace 通过。Linux TCG 未安装 OTP、未执行原生 debug/clippy/MSRV/doc-tests，测试后已停止实例；功能结果仍不替代最新原生双平台、真实 Linux BEAM 或吞吐/整机内存门禁。
 
+## BEAM 发送前有限准入：ADR-0067
+
+基于 `223db2d`，新增 [ADR-0067](adr/0067-beam-bounded-admission.md) 的固定 Pid/容量/atomics gate，发送前 CAS 占槽、绑定 actor 开始归还、终态关闭；没有代理、无界等待者或自动重试。v4 用真实 Wings/BEAM 两个完整 4 KiB actor 核对 1/100/256 排满、下一条拒绝、健康单向消息提交 +7、满队列停止、已接受请求失败和旧入口拒绝。Wings 另核对结果一次消费与最终逻辑归零；BEAM 核对 DOWN/旧 binary/队列计数，不冒充 VM 资源账本。
+
+本机 check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 462、四个桥接各合计 6 项通过。两种构建完整受限 AOT 首次通过，显式 OTP 29/ERTS 17.1.1 JIT v4 三端均通过全部容量、7 个非法容量拒绝及 gate 自测；gate 自测覆盖归还/FIFO/复用、非法/外来 started、两真实发送进程竞争不超额、关闭后迟到与竞争不重开。两种构建 v1/v2/v3 显式三端均继续通过，分别为 45/14/28、18/17/49、21/8/17/47。
+
+Linux 同配置隔离仿真重新交叉构建全部 release 工具/示例、29 个 harness 共 468 项通过，完整受限 release AOT 首次通过，包含 v4 Wings/模型与旧全部回归。首次向客体传包遭 SSH 握手 reset；确认实例 Running 后重试同一实例传输成功，未重复启动 VM/业务。Linux 无 OTP、未执行原生 debug/clippy/MSRV/doc-tests，仍不是原生最新 CI 或 Linux BEAM 证据；测试后已停止实例。
+
+业务保持 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 3 秒，AOT 原 CPU 20 秒/墙钟 30 秒不变；依赖隔离、禁 unwind feature、Markdown 链接/围栏与 diff whitespace 检查通过。无开环、计划时刻延迟、吞吐或整机内存结果；gate 的未来集成成本必须计入 BEAM 测量。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 已由 ADR-0065 补充，仍不是开环；ADR-0066 已补 mailbox 100 的 Wings 前置，但仍缺 BEAM 等价有限准入与完整性能验收。
+- 并发失败、开环到达、热点/公平性、过载/超时及端到端诊断。双发送者安全加法各自 FIFO 与有限准入/关闭分别由 ADR-0065/0067 补充，仍缺开环集成及完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标，包括预热 30 秒、采样 60 秒、5 次重复和尾延迟/拒绝要求。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 

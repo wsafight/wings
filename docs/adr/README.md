@@ -74,6 +74,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0064](0064-indexed-supervisor-slots.md) | 固定监督空槽链、稳定身份索引与复用拒绝 | 已采纳；部分替代 0056 的扫描 |
 | [0065](0065-two-sender-counter-fifo.md) | 两个真实发送者的各自 FIFO 与合法提交交错 | 已采纳（有界正确性切片） |
 | [0066](0066-bounded-scheduler-mailbox-capacity.md) | mailbox 256 槽上限与热点 100 槽准入/清理 | 已采纳；部分替代 0054 的容量 |
+| [0067](0067-beam-bounded-admission.md) | BEAM 发送前有界准入、开始归还与终态关闭对照 | 已采纳（有界准入对照切片） |
 
 ## 维护方式
 

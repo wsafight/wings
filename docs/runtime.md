@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0067](adr/0067-beam-bounded-admission.md) 的 BEAM 测试 gate 对已接受尚未开始的业务消息计数，满时显式拒绝；开始只允许绑定 actor 归还，关闭后不再接收/开始。占槽与 `!` 间若发生退出，该请求仍算已接受，宿主依据 DOWN 完成 pending，不自动重试；旧 gate 不指向新实例。这是可信对照驱动，不是 VM 内置或公共 SDK。
+
 [ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 允许 Scheduler mailbox 配置 1..256，0/257/极大值在创建资源前拒绝；同模块 spawn/监督重启保留已配置容量。满队列沿原 `mailbox_full` 显式失败，不改变 state/队列或票据；当前执行 handler 不算排队数，starting 暂保留原容量。满队列仍能 stop，排队请求选择唯一终态并释放，ScalarWorker 上限不变。
 
 [ADR-0065](adr/0065-two-sender-counter-fifo.md) 对同发送者到同目标 FIFO 增加双发送者正确性对照，不保证跨发送者全序。每发送者独立 16 条闭环窗口，总共最多 32 请求；业务状态验证序号连续并与计数器一起提交。现有请求的锁内准入/入队仍为线性化点，测试不提供新的全局完成事件流，也不将安全加法用例称为并发故障/超时验收。

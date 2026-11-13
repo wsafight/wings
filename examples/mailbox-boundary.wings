@@ -6,6 +6,10 @@ process MailboxBoundary {
     read_i64_be(data, 0)
   }
 
+  on Notify(delta: Int) {
+    data = replace_i64_be(data, 0, read_i64_be(data, 0) + delta)
+  }
+
   on Hold {
     while true {}
   }

@@ -1,4 +1,4 @@
-# BEAM 工作负载协议 v1/v2/v3
+# BEAM 工作负载协议 v1/v2/v3/v4
 
 本协议是 M0 的独立正确性切片，配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 已接入 Wings/BEAM 两端的固定字节 Counter，验证有界异步 request/reply、单发送者 FIFO、checked i64 和失败退出。**只有显式 `--compare-beam` 才实际运行 BEAM；不是性能实验，也不作性能或内存领先声明。** 不修改副作用或提交契约。
 
@@ -82,6 +82,26 @@ WINGS_PROFILE=release python3 scripts/verify_senders_counter.py --compare-beam
 
 `--artifact <目录>` 复用匹配产物；默认完整受限 AOT 只跑 Wings/独立模型，真实 BEAM 仍须显式启用。未安装 OTP 29 不回退成模型通过。并发故障/过载/超时、开环、热点和公平性仍待验证，没有吞吐、尾延迟或整机内存结论。
 
+## 有限准入正确性协议 v4
+
+[ADR-0067](adr/0067-beam-bounded-admission.md) 的 `beam_bounded_mailbox.erl` 绑定固定 Pid、1..256 容量和 signed atomics 计数；发送前 CAS 占一个排队位置，actor 收到后开始业务前调用 `started` 归还。满时返回 `mailbox_full`、关闭后返回 `closed`，都不发业务消息。没有代理代发、等待者队列或自动重试；系统控制/诊断消息另列，不冒充业务队列容量。
+
+占槽是准入点不是提交点；占槽与 `!` 之间退出/关闭的请求仍算已接受，依据目标 DOWN 结束 pending，不能重试造成重复。只有绑定 actor 能归还，关闭不会因迟到消息/归还重开，旧 gate 不重新绑定；可信驱动保证发送者不在占槽后永久崩溃。本模块不是恶意代码沙箱或完整资源账本，未来性能/整机内存必须计入其原子元数据和全部真实 mailbox 成本。
+
+v4 固定三个容量 1/100/256，每个独立受限子进程内运行两个完整 4 KiB state 的业务 actor。目标先进入 CPU Hold，确认已开始再排满请求，下一条拒绝且排队数不变；健康目标仍可通过单向消息提交 +7。随后关闭/停止满队列目标，所有已接受请求失败、旧入口拒绝，清理后输出；不是等待队列自然排空来伪造关闭。Wings 检查原 live owner、每结果只能消费一次和最终三级逻辑归零，BEAM 消费目标 DOWN、确认完整旧 state/队列长度及 gate 关闭；不声称 BEAM 有 Wings 资源账本。`initial_value` 只表示 Hold 前状态，不是 Wings 退出时全量导出。
+
+BEAM 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 1024 +Q 1024`，业务 actor max_heap_size 为 262144 words；原子 gate 自测增加两发送进程竞争、各自 FIFO、开始归还/复用、非法容量、关闭与发送竞态。业务 CPU 5 秒/墙钟 10 秒/禁 core、共享 actor 阶段 3 秒，AOT 原 CPU 20 秒/墙钟 30 秒不变。真实 OTP 29 须显式启用，默认完整 AOT 只跑 Wings/模型：
+
+```sh
+cargo build --workspace --locked --bins --examples
+python3 scripts/verify_admission_counter.py
+python3 scripts/verify_admission_counter.py --compare-beam
+cargo build --release --workspace --locked --bins --examples
+WINGS_PROFILE=release python3 scripts/verify_admission_counter.py --compare-beam
+```
+
+`--artifact <目录>` 可复用匹配的 mailbox-boundary 可信产物。该 v4 是有限准入/关闭正确性，不是 10000 request/s 开环、超时竞争、预热/采样或性能结果。
+
 ## 后续代表性负载冻结条件（开环尚未实现）
 
 这些是未来同业务对照的固定小集合，不展开整个笛卡尔积，不由当前脚本接受参数或执行。普通 Idle 与活跃场景都保持 32 B 逻辑请求/成功回复；逻辑 state 仍包含计数器与 actor ID。actor ID 为 `1..N`，活动集合取前 `A` 个；其余保留状态但不处理业务消息，不冬眠。更大 actor 数、其他 payload、冬眠与 M:N 另立协议版本。
@@ -94,20 +114,20 @@ WINGS_PROFILE=release python3 scripts/verify_senders_counter.py --compare-beam
 | hot-queue | 100 / 100% | 4 KiB | 100 | 固定 10000 request/s，90% 到 actor 1，剩余轮转 2..100；显式拒绝超限 |
 | fairness | 101 / 100% | 256 B | 1 | actor 1 连续有界 CPU 任务，其余 100 个每 10 ms 各发一次心跳；不让热 actor 掩盖冷 actor 尾延迟 |
 
-到达时间由单调时钟 `t0 + floor(k*10^9/rate)` ns 决定，从 k=0 开始，不能等待上一请求完成后再生成下一请求。生成器迟发仍从计划时刻计延迟；不能静默跳样、暂停时间线或把拒绝请求当作不存在。hot-queue 每连续 100 次中前 90 次给 actor 1，后 10 次在其余 actor 间连续轮转。所有请求、重试、pending 表和结果采样都须有显式上限，满时记录拒绝而非继续分配；mailbox 限额包括已接受、尚未开始的消息，不含当前 handler。BEAM 没有原生有限 mailbox，未来必须在发送前用等价准入层实现，不能拿无界 `!` 代替。
+到达时间由单调时钟 `t0 + floor(k*10^9/rate)` ns 决定，从 k=0 开始，不能等待上一请求完成后再生成下一请求。生成器迟发仍从计划时刻计延迟；不能静默跳样、暂停时间线或把拒绝请求当作不存在。hot-queue 每连续 100 次中前 90 次给 actor 1，后 10 次在其余 actor 间连续轮转。所有请求、重试、pending 表和结果采样都须有显式上限，满时记录拒绝而非继续分配；mailbox 限额包括已接受、尚未开始的消息，不含当前 handler。BEAM 没有原生有限 mailbox，必须经已验证的发送前准入层，不能拿无界 `!` 代替。
 
-[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 已让 Wings Scheduler 可配置 100 槽（上限 256），完整受限 AOT `scheduler_overload` 检查真实 4 KiB Bytes 满队列拒绝/取消/健康 actor。这只解除容量前置，仍没有本节的 BEAM 等价准入层、固定速率开环、预热/采样或性能结论。
+[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 已让 Wings Scheduler 可配置 100 槽（上限 256），完整受限 AOT `scheduler_overload` 检查真实 4 KiB Bytes 满队列拒绝/取消/健康 actor；ADR-0067 增加 BEAM 有限准入对照。仍没有本节固定速率开环、预热/采样或性能结论。
 
 公平性 CPU 任务固定为从零开始执行 1000000 次 checked `+1` 后返回，不溢出、不使用阻塞 native；心跳到达不因其执行而暂停。记录心跳端到端 p50/p99/p999、最大值、超时比例及每 actor 最大等待；另报请求让出到实际让出的延迟，沿用[评测文档](evaluation.md)的候选 p99 <5ms，不等同于心跳业务延迟。过载与非过载组分开，不能只报聚合直方图。
 
 未来每行先做固定负载，再做同一行的有界饱和扫描；每点预热 30s、采样 60s、独立重复 5 次。饱和扫描从该行固定速率开始逐次翻倍，最多 8 点，出现拒绝或尾延迟超标即停止提高；未找到饱和点就明确报告扫描不充分。非 fairness 请求 deadline 固定 100ms，固定负载候选要求 p99 ≤20ms、p999 ≤50ms；拒绝和超时均计入总请求数、单独报告，不能靠删样达标。分位按 nearest-rank，少于 10000 个样本的分组不报 p999，须报样本数和最大值。fairness 的受限饱和方案另行冻结，不把心跳降频当作通过。
 
-以下性能场景验收仍为**未验证**；v1/v2/v3 的有界正确性证据不能替代它们：
+以下性能场景验收仍为**未验证**；v1/v2/v3/v4 的有界正确性证据不能替代它们：
 
 - `spawn`：父/子/租户/实例额度在创建前准入，失败不产生半创建对象；有限批量创建与退出后计费守恒，不能无限 spawn 测宿主 OOM。
 - `request/reply`：关联 ID、pending 表准入、至少两个发送者的各自 FIFO、成功状态先于回复；不要求跨发送者顺序。v3 已补安全加法闭环下的双发送者，未覆盖本节开环与拒绝；普通单向 `send` 单列，不能以 request 代替全部消息行为。
 - `timeout/cancel`：每个 ID 只终结一次，回复/超时竞争及迟到回复明确可观测；超时不撤回已发生的远端副作用，不自动重试造成重复业务。
-- `overload/exit`：有限 mailbox 满时显式拒绝且不提交；满队列仍能终止，故障退出完成 pending 清理、monitor 通知与额度归还；失败前的外部副作用不回滚。当前 escript 的 32 条窗口是流控，不是已实现 overload 验收。
+- `overload/exit`：有限 mailbox 满时显式拒绝且不提交；满队列仍能终止，故障退出完成 pending 清理、monitor 通知与额度归还；失败前的外部副作用不回滚。v4 只补有限准入/主动停止正确性，仍非开环 overload；旧 32 条窗口是流控，不作为过载证据。
 - 同平台同机器的 CPU/内存配额、OTP/ERTS/JIT、堆/GC、Wings 版本、生成器开销和原始输出必须随性能实验冻结。保留 BEAM 正常优化；逻辑相同不代表分配布局相同。分别报告整机 RSS 与平台口径，不能混用 macOS 物理占用与 Linux PSS；当前没有这些性能结果。
 
 ## 独立验证
