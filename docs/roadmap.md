@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+最新源码的 [2026-11-13 验证记录](validation-2026-11-13.md) 增加 Linux x86-64 隔离仿真功能证据：debug/release 独立测试与 release AOT 全回归通过，debug AOT 大型编译触及既有 CPU 上限；原生双平台和 BEAM 门禁仍未完成，不放宽既有资源限制。
+
 [ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；旧工具构造器、根 bootstrap、allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
 
 [ADR-0049](adr/0049-record-message-copies.md) 接入 ABI v11 的 RecordInt 语言消息复制、目标入口根及整数请求参数，仍无列表消息、引用回复、通用业务值或 M:N；M0/M1 和同业务 BEAM 双目标门禁仍未完成。

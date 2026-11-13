@@ -1,5 +1,7 @@
 # 评测与验收
 
+最新已执行结果见 [2026-11-13 验证记录](validation-2026-11-13.md)：macOS 原生回归通过；Linux x86-64 隔离仿真通过独立 debug/release 测试及 release AOT 全回归，debug 大型编译触及既有 CPU 上限。不是双平台原生 CI、M0 或性能验收通过。
+
 隔离环境可在 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 后以 `WINGS_PREBUILT_EXAMPLES=1 python3 scripts/verify_scalar_aot.py` 直接运行全部已有示例，不在子进程内再次调用 Cargo。交叉构建可用绝对 `WINGS_TARGET_DIR` 指向包含 `debug`/`release` 的目录，release 仍设 `WINGS_PROFILE=release`；目标环境必须有 Python 和本机 C linker。执行上限、真实 AOT 编译/加载和断言不变；仿真执行只作功能证据，不能代替原生性能或完整双平台 CI。
 
 [ADR-0050](adr/0050-account-node-admission.md) 验证计费子账户的精确父路径额度、祖先拒绝、层级/溢出失败无变化、子业务零用量、并发创建、跨线程最后释放及转移末票据不死锁。worker 核对成功创建的 actor 字节与独立节点字节、VM/tenant 元数据额度不足和初始化失败回滚；ingress/请求结果保留节点至末持有者归还。受限 TCP 全回归使用计费 tenant，检查服务全部退出后账目归零；这些是容量逻辑门禁，不是 RSS 数据。
