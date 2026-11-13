@@ -70,8 +70,10 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 
 多 worker 监督、负载自适应调度、全资源账本、原生双平台最新 CI 和同负载 BEAM 吞吐/整机内存双目标仍未完成；固定共享扫描、编号轮转与每 worker 全容量栈池没有性能结论。Linux debug/native clippy/MSRV/doc-tests 本次仍未执行。M0/M1/MVP 均未完成。
 
-### 多 worker 最近失败诊断增量：ADR-0055
+### 多 worker 最近失败诊断增量：`270bf3f`
 
 基于 `9f864f2`，macOS debug/release workspace 各 423 项测试、两种构建 TCP 示例单测、check、clippy all-targets `-D warnings`、fmt 与 Rust 1.85.0 all-targets check 通过；依赖隔离检查通过。两种构建的完整受限 AOT 首次运行均通过，既有 TCP 偶发失败记录仍保留，不据此宣称已解决。
 
-新增两项单测验证跨 worker 失败覆盖、旧提交及预算分类、引用 state 不暴露 handle、成功/主动 stop/关闭保留和诊断副本不持有业务资源。`multi_worker` 增加真实循环失败的旧 state、worker 轮转、算术故障、旧 Pid 退休及其他 actor 继续执行检查。每业务子进程仍限制 CPU 20 秒、墙钟 30 秒、禁 core。当前最新 Linux 结果另记；固定单槽不是可靠恢复事件，多 worker 监督及 MVP 剩余门禁不变。
+新增两项单测验证跨 worker 失败覆盖、旧提交及预算分类、引用 state 不暴露 handle、成功/主动 stop/关闭保留和诊断副本不持有业务资源。`multi_worker` 增加真实循环失败的旧 state、worker 轮转、算术故障、旧 Pid 退休及其他 actor 继续执行检查。macOS 另在有 CPU/墙钟限制的子进程中重复运行全部 14 项 scheduler 测试 20 次通过。
+
+隔离 Linux 从 `270bf3f` 重新构建全部 release 工具/示例及测试，26 个 harness 共 425 项通过；完整受限 release AOT 通过。每业务子进程仍限制 CPU 20 秒、墙钟 30 秒、禁 core。Linux debug/native 门禁本次未执行；固定单槽不是可靠恢复事件，多 worker 监督及 MVP 剩余门禁不变。
