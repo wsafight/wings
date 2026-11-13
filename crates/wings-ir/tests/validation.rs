@@ -1,7 +1,7 @@
 use wings_abi::ValueType;
 use wings_ir::{
     Comparison, Function, Handler, Instruction, MAX_HANDLERS, MAX_OPERATIONS, MAX_PARAMETERS,
-    Operation, Operator, Program,
+    Operation, Operator, Procedure, Program,
 };
 
 fn instruction(ty: ValueType, operation: Operation) -> Instruction {
@@ -12,6 +12,7 @@ fn valid_program() -> Program {
     Program {
         name: "Counter".into(),
         state: ValueType::Int,
+        functions: Vec::new(),
         initializer: Function {
             instructions: vec![
                 instruction(ValueType::Int, Operation::Constant(0)),
@@ -40,6 +41,177 @@ fn valid_program() -> Program {
 fn rejects(program: &Program, message: &str) {
     let error = program.validate().unwrap_err();
     assert!(error.contains(message), "unexpected error: {error}");
+}
+
+fn identity_procedure(ty: ValueType) -> Procedure {
+    Procedure {
+        name: "identity".into(),
+        parameters: vec![("value".into(), ty)],
+        result: ty,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Unit, Operation::Constant(0)),
+                instruction(ty, Operation::Argument(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    }
+}
+
+#[test]
+fn managed_calls_validate_signatures_scope_and_acyclic_declaration_order() {
+    let mut program = valid_program();
+    program.functions.push(identity_procedure(ValueType::Int));
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Int,
+        Operation::Call {
+            function: 0,
+            arguments: vec![2],
+        },
+    ));
+    program.handlers[0].function.reply = 3;
+    program.validate().unwrap();
+    for (target, arguments, ty, message) in [
+        (1, vec![2], ValueType::Int, "forward"),
+        (0, vec![], ValueType::Int, "signature"),
+        (0, vec![usize::MAX], ValueType::Int, "operand"),
+        (0, vec![2], ValueType::Bool, "signature"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].reply = Some(ty);
+        invalid.handlers[0].function.instructions[3] = instruction(
+            ty,
+            Operation::Call {
+                function: target,
+                arguments,
+            },
+        );
+        rejects(&invalid, message);
+    }
+    let mut invalid = program.clone();
+    invalid.functions[0].function.instructions.push(instruction(
+        ValueType::Int,
+        Operation::Call {
+            function: 0,
+            arguments: vec![1],
+        },
+    ));
+    rejects(&invalid, "forward");
+    let mut invalid = program.clone();
+    invalid.functions[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    rejects(&invalid, "effects");
+    let mut invalid = program.clone();
+    invalid.functions[0].function.instructions[0].operation = Operation::State;
+    rejects(&invalid, "invalid scalar IR");
+    for index in 1..33 {
+        let mut procedure = identity_procedure(ValueType::Int);
+        procedure.function.instructions.push(instruction(
+            ValueType::Int,
+            Operation::Call {
+                function: index - 1,
+                arguments: vec![1],
+            },
+        ));
+        procedure.function.reply = 2;
+        program.functions.push(procedure);
+        if index == 31 {
+            program.validate().unwrap();
+        }
+    }
+    rejects(&program, "chain exceeds 32");
+}
+
+#[test]
+fn managed_call_paths_bound_aggregate_roots_and_total_ir_before_codegen() {
+    let mut program = valid_program();
+    let mut procedure = identity_procedure(ValueType::Ref);
+    for _ in 0..32 {
+        let index = procedure.function.instructions.len();
+        procedure
+            .function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::Argument(0)));
+        procedure
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::ReadInt(index)));
+    }
+    procedure.function.instructions.push(instruction(
+        ValueType::Ref,
+        Operation::Call {
+            function: 0,
+            arguments: vec![1],
+        },
+    ));
+    procedure.function.reply = procedure.function.instructions.len() - 1;
+    program.functions.push(identity_procedure(ValueType::Ref));
+    program.functions.push(procedure);
+    program.validate().unwrap();
+    let mut roots = identity_procedure(ValueType::Ref);
+    for _ in 0..33 {
+        roots
+            .function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::Argument(0)));
+    }
+    roots.function.instructions.push(instruction(
+        ValueType::Ref,
+        Operation::Call {
+            function: 1,
+            arguments: vec![1],
+        },
+    ));
+    for register in 1..35 {
+        roots
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::ReadInt(register)));
+    }
+    program.functions.push(roots);
+    program.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.functions[1].function.instructions =
+        vec![instruction(ValueType::Unit, Operation::Constant(0))];
+    for _ in 0..33 {
+        invalid.functions[1]
+            .function
+            .instructions
+            .push(instruction(ValueType::Ref, Operation::Argument(0)));
+    }
+    for register in 1..34 {
+        invalid.functions[1]
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::ReadInt(register)));
+    }
+    invalid.functions[1].function.reply = 1;
+    rejects(&invalid, "call path exceeds 64");
+    let mut program = valid_program();
+    let mut procedure = identity_procedure(ValueType::Int);
+    procedure
+        .function
+        .instructions
+        .resize_with(MAX_OPERATIONS, || {
+            instruction(ValueType::Int, Operation::Constant(0))
+        });
+    program.functions = vec![procedure.clone(); 15];
+    let mut remainder = procedure.clone();
+    remainder.function.instructions.truncate(MAX_OPERATIONS - 5);
+    program.functions.push(remainder);
+    program.validate().unwrap();
+    program.functions[15]
+        .function
+        .instructions
+        .push(instruction(ValueType::Int, Operation::Constant(0)));
+    rejects(&program, "65536 total");
+    program.functions = vec![procedure; 16];
+    rejects(&program, "65536 total");
+    program.functions = vec![identity_procedure(ValueType::Int); 65];
+    rejects(&program, "too many managed functions");
 }
 
 #[test]

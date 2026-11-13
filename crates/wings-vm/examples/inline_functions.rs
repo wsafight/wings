@@ -9,6 +9,13 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let module = unsafe { ScalarModule::load_trusted(Path::new(&arguments[1])) }.unwrap();
+    assert!(module.handler("fresh").is_err());
+    let library = unsafe {
+        libloading::Library::new(Path::new(&arguments[1]).join(wings_artifact::library_name()))
+    }
+    .unwrap();
+    assert!(unsafe { library.get::<wings_abi::ScalarEntry>(b"wings_managed_function_0") }.is_err());
+    drop(library);
     let limits = Resources {
         bytes: 16 << 20,
         ..Resources::default()
@@ -48,6 +55,26 @@ fn main() {
     assert_eq!(process.invoke("Get", &[]).unwrap(), Some(60));
     drop(process);
     assert_eq!(vm.used(), baseline);
+    for checkpoints in 0..48 {
+        let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
+        let mut execution = process
+            .start_controlled(
+                "Order",
+                &[],
+                4096,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+            )
+            .unwrap();
+        for _ in 0..checkpoints {
+            if matches!(execution.resume(1).unwrap(), ExecutionStatus::Complete(_)) {
+                break;
+            }
+        }
+        drop(execution);
+        drop(process);
+        assert_eq!(vm.used(), baseline);
+    }
     for (name, arguments, budget, fault) in [
         ("Count", vec![30], 16, ExecutionFault::BudgetExhausted),
         ("Fail", vec![], 128, ExecutionFault::DivisionByZero),
@@ -93,6 +120,6 @@ fn main() {
     drop((bound, pool));
     assert_eq!(vm.used(), Resources::default());
     println!(
-        "Inline functions verified: argument order, reference roots, loop calls, slices and failures"
+        "Managed functions verified: argument order, cross-frame roots, loop calls, slices and failures"
     );
 }

@@ -27,6 +27,12 @@ fn main() {
     let error = wings_compile::build_with_frame_limit(&pressure, directory, 512).unwrap_err();
     assert!(error.contains("wings_scalar_handler_0") && error.contains("limit is 512"));
     assert!(!directory.exists());
+    let managed = format!(
+        "process Pressure {{ state count: Int = 0; fn work(seed: Int) -> Int {{ {bindings}; {total} }} on Work(seed: Int) -> Int {{ work(seed) }} }}"
+    );
+    let error = wings_compile::build_with_frame_limit(&managed, directory, 512).unwrap_err();
+    assert!(error.contains("wings_managed_function_0") && error.contains("limit is 512"));
+    assert!(!directory.exists());
     wings_compile::build(source, directory).expect("default frame admission");
     assert!(directory.join("manifest.json").is_file());
     println!(

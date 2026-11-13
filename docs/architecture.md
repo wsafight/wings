@@ -10,7 +10,7 @@
 
 [ADR-0037](adr/0037-immutable-int-lists.md) 升至 ABI v7，在原有 context/回调签名中增加有类型 ListRef、不可变 IntList 节点与传递 GC；旧 v6 产物须重编译。列表仍不跨消息边界，不改变非移动 GC。
 
-源码业务函数按 [ADR-0036](adr/0036-bounded-inline-functions.md) 先做有界非递归内联，复用入口内 SSA 根/预算及实际帧准入；ABI v10 不变，不等于动态调用栈或跨帧根链验证完成。
+源码业务函数按 [ADR-0042](adr/0042-managed-function-frames.md) 编译为私有非递归受管调用：四参数协议复用 ABI v10，每层薄入口检查实际剩余栈，caller/callee 链接精确根，失败逐层正常返回。最多 32 层函数链、64 个聚合根；不开放递归或动态派发，不等于完整 M0。
 
 受管返回状态与输出校验按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 分类，固定退出快照不持有模块、业务引用或资源所有权；ABI v10 与既有事件形状不变。
 
@@ -114,7 +114,7 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 `ScalarSupervisor` 独占宿主 worker，固定子项及重启历史，按策略有界重建失败实例；每次重启重新执行 initializer、生成新 Pid，不保存失败状态、不重放消息，也不改变 ABI 或语言范围。当前仅 one-for-one 宿主接口，边界见 [ADR-0023](adr/0023-bounded-host-supervision.md)。
 
-当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer 与每个 handler 的实际业务帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链；[ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口另检查实际可用空间。源码 fn 按 ADR-0036 内联到该业务帧，仍无递归/动态函数调用，不据此宣称跨帧栈边界完成。
+当前标量后端另按 [ADR-0017](adr/0017-scalar-frame-admission.md) 在生成机器码后、写产物前检查 initializer、每个 handler 与源码 fn 的实际业务帧，默认最大 64 KiB，库调用可降低但不可提高。超限构建失败且不创建输出目录。该值不包含 ABI setup、宿主包装和慢路径调用链；[ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口检查实际可用空间，源码 fn 按 [ADR-0042](adr/0042-managed-function-frames.md) 逐帧应用，不把单帧上限当整条调用链的总栈开销。
 
 语言、IR、调度与资源契约共用，目标 ABI、对象格式、上下文切换和 OS I/O 由平台层处理。汇编行数少不代表实现正确或容易维护。
 

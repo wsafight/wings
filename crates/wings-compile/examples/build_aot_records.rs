@@ -18,6 +18,7 @@ fn main() {
     let mut program = Program {
         name: "Records".into(),
         state: ValueType::Int,
+        functions: Vec::new(),
         initializer: Function {
             instructions: initializer,
             state: 0,

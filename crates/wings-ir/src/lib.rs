@@ -3,6 +3,8 @@ use wings_abi::{MAX_SHADOW_ROOTS, ValueType};
 pub const MAX_OPERATIONS: usize = 4096;
 pub const MAX_HANDLERS: usize = 128;
 pub const MAX_PARAMETERS: usize = 64;
+pub const MAX_FUNCTIONS: usize = 64;
+pub const MAX_TOTAL_OPERATIONS: usize = 65536;
 
 pub type Register = usize;
 
@@ -59,6 +61,10 @@ pub enum Operation {
         arguments: Vec<Register>,
     },
     CancelRequest(Register),
+    Call {
+        function: usize,
+        arguments: Vec<Register>,
+    },
     If(Register),
     Else(Register),
     EndIf(Register),
@@ -104,7 +110,16 @@ pub struct Program {
     pub name: String,
     pub state: ValueType,
     pub initializer: Function,
+    pub functions: Vec<Procedure>,
     pub handlers: Vec<Handler>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Procedure {
+    pub name: String,
+    pub parameters: Vec<(String, ValueType)>,
+    pub result: ValueType,
+    pub function: Function,
 }
 
 enum Region {
@@ -114,6 +129,47 @@ enum Region {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
+        if self.functions.len() > MAX_FUNCTIONS {
+            return Err("too many managed functions".into());
+        }
+        let total = self
+            .functions
+            .iter()
+            .map(|function| &function.function)
+            .chain(self.handlers.iter().map(|handler| &handler.function))
+            .chain(std::iter::once(&self.initializer))
+            .try_fold(0usize, |total, function| {
+                total.checked_add(function.instructions.len())
+            })
+            .ok_or("total IR operation count overflow")?;
+        if total > MAX_TOTAL_OPERATIONS {
+            return Err("program exceeds 65536 total IR operations".into());
+        }
+        let mut paths = Vec::new();
+        for (index, procedure) in self.functions.iter().enumerate() {
+            if procedure.parameters.len() > MAX_PARAMETERS {
+                return Err("too many managed function parameters".into());
+            }
+            procedure.function.validate(
+                ValueType::Unit,
+                &procedure.parameters,
+                procedure.result,
+                true,
+            )?;
+            if procedure
+                .function
+                .instructions
+                .iter()
+                .any(|instruction| is_effect(&instruction.operation))
+            {
+                return Err("effects are not supported in managed functions".into());
+            }
+            let path = self.validate_calls(&procedure.function, index, &paths)?;
+            if path.0 > 32 {
+                return Err("function call chain exceeds 32".into());
+            }
+            paths.push(path);
+        }
         if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
                 handler.reply.is_some_and(ValueType::is_capability)
@@ -136,6 +192,7 @@ impl Program {
         }
         self.initializer
             .validate(self.state, &[], ValueType::Unit, true)?;
+        self.validate_calls(&self.initializer, self.functions.len(), &paths)?;
         if self.initializer.instructions.iter().any(|instruction| {
             matches!(
                 instruction.operation,
@@ -159,6 +216,7 @@ impl Program {
                 handler.reply.unwrap_or(ValueType::Unit),
                 false,
             )?;
+            self.validate_calls(&handler.function, self.functions.len(), &paths)?;
             for instruction in &handler.function.instructions {
                 if let Operation::Request {
                     handler: target,
@@ -222,6 +280,58 @@ impl Program {
         }
         Ok(())
     }
+
+    fn validate_calls(
+        &self,
+        function: &Function,
+        allowed: usize,
+        paths: &[(usize, usize)],
+    ) -> Result<(usize, usize), String> {
+        let mut depth = 1;
+        let mut child_roots = 0;
+        for instruction in &function.instructions {
+            if let Operation::Call {
+                function: target,
+                arguments,
+            } = &instruction.operation
+            {
+                let procedure = self
+                    .functions
+                    .get(*target)
+                    .filter(|_| *target < allowed)
+                    .ok_or("unknown or forward managed function call")?;
+                if instruction.ty != procedure.result
+                    || arguments.len() != procedure.parameters.len()
+                    || arguments
+                        .iter()
+                        .zip(&procedure.parameters)
+                        .any(|(register, (_, ty))| function.instructions[*register].ty != *ty)
+                {
+                    return Err("managed function call signature mismatch".into());
+                }
+                let path = paths[*target];
+                depth = depth.max(1 + path.0);
+                child_roots = child_roots.max(path.1);
+            }
+        }
+        let roots = function.root_plan().capacity + child_roots;
+        if roots > MAX_SHADOW_ROOTS {
+            return Err("managed call path exceeds 64 shadow roots".into());
+        }
+        Ok((depth, roots))
+    }
+}
+
+fn is_effect(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::SendSelf { .. }
+            | Operation::Send { .. }
+            | Operation::SelfPid
+            | Operation::SpawnSelf
+            | Operation::Request { .. }
+            | Operation::CancelRequest(_)
+    )
 }
 
 impl Function {
@@ -328,6 +438,7 @@ impl Function {
                     instruction.ty == ValueType::Unit
                         && types.get(value) == Some(&ValueType::RequestId)
                 }
+                Operation::Call { ref arguments, .. } => arguments.len() <= MAX_PARAMETERS,
                 Operation::Send {
                     target,
                     ref arguments,
@@ -522,6 +633,7 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::Compare(_, left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
+        Operation::Call { ref arguments, .. } => ([None, None], arguments),
         Operation::Send {
             target,
             ref arguments,

@@ -46,6 +46,7 @@ fn program() -> Program {
     Program {
         name: "Counter".into(),
         state: ValueType::Int,
+        functions: Vec::new(),
         initializer: Function {
             instructions: vec![
                 instruction(ValueType::Int, Operation::Constant(0)),

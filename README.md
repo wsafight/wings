@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界内联 fn 与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；已接入自发送及同 worker 同模块创建/单向发送，新增异步整数请求事件，尚无引用消息、动态调用栈或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；已接入自发送及同 worker 同模块创建/单向发送、异步整数请求事件，尚无引用消息、递归/动态派发或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
@@ -38,9 +38,9 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 未发布源码 ABI v10 支持 handler 内 `send_self(Message, args...)`：目标为本 process 单向入口，worker 在调用点准入入队，下一片恢复后继续；失败不撤回此前发送。示例 `examples/self-send.wings` 与 `examples/self-send-roots.wings`，见 [ADR-0038](docs/adr/0038-self-send-effects.md)。CLI 与独立实例无 worker 回调，调用受管失败；旧 v9 产物须重编译。
 
-`IntList` 是不可变整数节点和共享尾，可作 state、局部或内联 fn 值，仍禁止引用消息。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。
+`IntList` 是不可变整数节点和共享尾，可作 state、局部或 fn 值，仍禁止引用消息。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。
 
-process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；编译器有界内联，每次入口保留预算检查。示例 `examples/functions.wings`、限制和根验证见 [ADR-0036](docs/adr/0036-bounded-inline-functions.md)。
+process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；私有受管调用逐帧检查剩余栈，保留跨帧精确根和强制预算检查。最多 32 层函数链、64 个聚合根，示例 `examples/functions.wings`、限制和验证见 [ADR-0042](docs/adr/0042-managed-function-frames.md)。
 
 宿主 `ScalarWorker::snapshot` / `ScalarSupervisor::snapshot` 可查询排队、当前入口、已提交标量状态、进程用量及最近安全点预算/GC 统计；不推进执行或暴露记录 handle。`ScalarTask` / `ScalarExecution` 保留最近入口的只读执行快照。挂起统计不是后台实时采样，边界见 [ADR-0032](docs/adr/0032-safe-point-diagnostics.md)；验证命令仍为 workspace 测试及 debug/release AOT 脚本。
 

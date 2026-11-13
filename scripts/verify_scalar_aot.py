@@ -196,6 +196,8 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     sequence = 0
     errors = []
     observations = []
+    frame_depths = []
+    cancel_depth = None
 
     def collect(current):
         roots = set()
@@ -208,6 +210,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             assert depth <= 64 and count <= 64
             roots.update(frame.contents.slots[index] for index in range(frame.contents.count))
             frame = frame.contents.previous
+        frame_depths.append(depth)
         assert roots <= records.keys(), (roots, records)
         retained = set(roots)
         if committed is not None:
@@ -269,6 +272,8 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     def slow_path(pointer):
         try:
             observations.append((pointer.contents.remaining_steps, collect(pointer.contents)))
+            if cancel_depth is not None and frame_depths[-1] >= cancel_depth:
+                flag.value = 1
             pointer.contents.slice_remaining = 1
             return 0
         except Exception as error:
@@ -417,7 +422,35 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
                 assert records[output.state] == expected_state and output.reply == expected_reply, (name, records, output.reply)
                 committed = output.state
-            print("Compiler roots verified: inline function arguments, returns, call collections and loop calls")
+            assert max(frame_depths) >= 3, frame_depths
+            sentinel_slots = (ctypes.c_uint64 * 1)(committed)
+            sentinel = Frame(None, sentinel_slots, 1)
+            cancel_depth = 3
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Choose")
+            entry = getattr(library, f"wings_scalar_handler_{index}")
+            context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+            context.roots = ctypes.pointer(sentinel)
+            rejected = Output(71, 91)
+            assert entry(committed, (ctypes.c_int64 * 1)(1), ctypes.byref(rejected), ctypes.byref(context)) == 3, errors
+            assert not errors and ctypes.addressof(context.roots.contents) == ctypes.addressof(sentinel) and flag.value == 1
+            assert (rejected.state, rejected.reply) == (71, 91)
+            cancel_depth = None
+            flag.value = 0
+            for name, values, expected_status in [("Fail", [], 2), ("FirstFailure", [], 2), ("SecondFailure", [], 1)]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                entry = getattr(library, f"wings_scalar_handler_{index}")
+                entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+                entry.restype = ctypes.c_uint32
+                arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+                previous = records[committed]
+                for budget in [0, 1, 4, 16, 128]:
+                    context = Context(ctypes.pointer(flag), budget, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                    context.roots = ctypes.pointer(sentinel)
+                    rejected = Output(71, 91)
+                    status = entry(committed, arguments, ctypes.byref(rejected), ctypes.byref(context))
+                    assert status in [expected_status, 4] and not errors and ctypes.addressof(context.roots.contents) == ctypes.addressof(sentinel), (name, status, errors)
+                    assert (rejected.state, rejected.reply) == (71, 91) and records[committed] == previous
+            print("Compiler roots verified: nested managed frames, arguments, returns, collections and failure unlinking")
             return
         if record_loops:
             for name, values, expected_state, expected_reply in [
@@ -683,6 +716,16 @@ def main():
         command([COMPILER, "build", ROOT / "examples/functions.wings", "-o", functions])
         example("inline_functions", functions)
         command([sys.executable, Path(__file__), "--check-function-roots", functions])
+        managed_stack_source = parent / "managed-stack.wings"
+        managed_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(32))
+        managed_total = " + ".join(f"value_{index}" for index in range(32))
+        managed_functions = ["fn f0(seed: Int) -> Int { seed + 1 }"]
+        for index in range(1, 32):
+            managed_functions.append(f"fn f{index}(seed: Int) -> Int {{ {managed_bindings}; let nested = f{index - 1}(seed); {managed_total} + nested }}")
+        managed_stack_source.write_text("process ManagedStack { state count: Int = 0; " + "\n".join(managed_functions) + " on Work(seed: Int) -> Int { count = 99; f31(seed) } }")
+        managed_stack = parent / "managed-stack"
+        command([COMPILER, "build", managed_stack_source, "-o", managed_stack])
+        example("managed_stack", managed_stack)
         lists = parent / "lists"
         command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
         example("int_lists", lists)

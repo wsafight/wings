@@ -68,11 +68,24 @@ pub fn build_with_frame_limit(
     let object = ObjectBuilder::new(isa, "wings_scalar", default_libcall_names())
         .map_err(|error| error.to_string())?;
     let mut module = ObjectModule::new(object);
+    let mut procedures = Vec::new();
+    for (index, procedure) in program.functions.iter().enumerate() {
+        procedures.push(compile_function(
+            &mut module,
+            &format!("wings_managed_function_{index}"),
+            &procedure.function,
+            max_frame_bytes,
+            Linkage::Local,
+            &procedures,
+        )?);
+    }
     compile_function(
         &mut module,
         INITIALIZER_SYMBOL,
         &program.initializer,
         max_frame_bytes,
+        Linkage::Export,
+        &procedures,
     )?;
     for (index, handler) in program.handlers.iter().enumerate() {
         compile_function(
@@ -80,6 +93,8 @@ pub fn build_with_frame_limit(
             &handler_symbol(index),
             &handler.function,
             max_frame_bytes,
+            Linkage::Export,
+            &procedures,
         )?;
     }
     let bytes = module.finish().emit().map_err(|error| error.to_string())?;
@@ -118,8 +133,10 @@ fn compile_function(
     name: &str,
     function: &Function,
     max_frame_bytes: u32,
-) -> Result<(), String> {
-    let (body, frame_bytes) = compile_body(module, name, function, max_frame_bytes)?;
+    linkage: Linkage,
+    procedures: &[FuncId],
+) -> Result<FuncId, String> {
+    let (body, frame_bytes) = compile_body(module, name, function, max_frame_bytes, procedures)?;
     let mut context = module.make_context();
     let pointer_type = module.target_config().pointer_type();
     context.func.signature.params = vec![
@@ -130,7 +147,7 @@ fn compile_function(
     ];
     context.func.signature.returns = vec![AbiParam::new(types::I32)];
     let identifier = module
-        .declare_function(name, Linkage::Export, &context.func.signature)
+        .declare_function(name, linkage, &context.func.signature)
         .map_err(|error| error.to_string())?;
     let body = module.declare_func_in_func(body, &mut context.func);
     let mut builder_context = FunctionBuilderContext::new();
@@ -177,7 +194,7 @@ fn compile_function(
         ));
     }
     module.clear_context(&mut context);
-    Ok(())
+    Ok(identifier)
 }
 
 fn compile_body(
@@ -185,6 +202,7 @@ fn compile_body(
     name: &str,
     function: &Function,
     max_frame_bytes: u32,
+    procedures: &[FuncId],
 ) -> Result<(FuncId, u32), String> {
     let mut context = module.make_context();
     let pointer_type = module.target_config().pointer_type();
@@ -202,6 +220,10 @@ fn compile_body(
             &context.func.signature,
         )
         .map_err(|error| error.to_string())?;
+    let callees: Vec<_> = procedures
+        .iter()
+        .map(|identifier| module.declare_func_in_func(*identifier, &mut context.func))
+        .collect();
     let mut builder_context = FunctionBuilderContext::new();
     let mut slow_signature = module.make_signature();
     slow_signature.params.push(AbiParam::new(pointer_type));
@@ -320,6 +342,25 @@ fn compile_body(
             builder.ins().stack_addr(pointer_type, slot, 0)
         });
     let mut registers = Vec::new();
+    let call_storage = function
+        .instructions
+        .iter()
+        .filter_map(|instruction| {
+            if let Operation::Call { arguments, .. } = &instruction.operation {
+                Some(arguments.len())
+            } else {
+                None
+            }
+        })
+        .max()
+        .map(|arguments| {
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (16 + arguments * 8) as u32,
+                3,
+            ));
+            builder.ins().stack_addr(pointer_type, slot, 0)
+        });
     let mut branches = Vec::new();
     let mut loops = Vec::new();
     for (index, instruction) in function.instructions.iter().enumerate() {
@@ -362,6 +403,34 @@ fn compile_body(
             exit,
         );
         let value = match instruction.operation {
+            Operation::Call {
+                function,
+                ref arguments,
+            } => {
+                let output = call_storage.expect("managed call storage");
+                let buffer = builder.ins().iadd_imm(output, 16);
+                for (index, register) in arguments.iter().enumerate() {
+                    builder.ins().store(
+                        MemFlags::new(),
+                        registers[*register],
+                        buffer,
+                        (index * 8) as i32,
+                    );
+                }
+                let state = builder.ins().iconst(types::I64, 0);
+                let call = builder
+                    .ins()
+                    .call(callees[function], &[state, buffer, output, parameters[3]]);
+                let status = builder.inst_results(call)[0];
+                let success = builder.ins().icmp_imm(IntCC::Equal, status, 0);
+                let continuation = builder.create_block();
+                let failure = builder.create_block();
+                builder.ins().brif(success, continuation, &[], failure, &[]);
+                builder.switch_to_block(failure);
+                builder.ins().jump(exit, &[status]);
+                builder.switch_to_block(continuation);
+                builder.ins().load(types::I64, MemFlags::new(), output, 8)
+            }
             Operation::SendSelf { .. }
             | Operation::Send { .. }
             | Operation::SelfPid

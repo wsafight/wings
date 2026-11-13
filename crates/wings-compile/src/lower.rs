@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use wings_abi::ValueType;
 use wings_ir::{
-    Comparison, Function, Handler, Instruction, MAX_OPERATIONS, Operation, Operator, Program,
-    Register,
+    Comparison, Function, Handler, Instruction, MAX_OPERATIONS, Operation, Operator, Procedure,
+    Program, Register,
 };
 use wings_syntax::ast::{BinaryOperator, Expr, ExprKind, Statement};
 
@@ -22,8 +22,46 @@ pub fn lower(text: &str) -> Result<Program, String> {
     let functions: HashMap<_, _> = process
         .functions
         .iter()
-        .map(|function| (function.name.text.as_str(), function))
-        .collect();
+        .enumerate()
+        .map(|(index, function)| {
+            Ok((
+                function.name.text.as_str(),
+                (index, value_type(&function.result.text)?),
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    let mut procedures = Vec::new();
+    for function in &process.functions {
+        let mut lowerer = Lowerer {
+            functions: functions.clone(),
+            ..Lowerer::default()
+        };
+        let state = lowerer.push(ValueType::Unit, Operation::Constant(0))?;
+        let parameters = function
+            .parameters
+            .iter()
+            .map(|parameter| Ok((parameter.name.text.clone(), value_type(&parameter.ty.text)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        for (index, (name, ty)) in parameters.iter().enumerate() {
+            let register = lowerer.push(*ty, Operation::Argument(index))?;
+            lowerer.bindings.insert(name.clone(), register);
+        }
+        lowerer.statements(&function.body.statements, "", state)?;
+        let reply = match &function.body.tail {
+            Some(tail) => lowerer.expression(tail)?,
+            None => lowerer.push(ValueType::Unit, Operation::Constant(0))?,
+        };
+        procedures.push(Procedure {
+            name: function.name.text.clone(),
+            parameters,
+            result: value_type(&function.result.text)?,
+            function: Function {
+                instructions: lowerer.instructions,
+                state,
+                reply,
+            },
+        });
+    }
     let handler_ids: HashMap<_, _> = process
         .handlers
         .iter()
@@ -84,6 +122,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         name: process.name.text.clone(),
         state: state_type,
         initializer,
+        functions: procedures,
         handlers,
     };
     program.validate()?;
@@ -94,8 +133,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
 struct Lowerer<'program> {
     bindings: HashMap<String, Register>,
     instructions: Vec<Instruction>,
-    functions: HashMap<&'program str, &'program wings_syntax::ast::Function>,
-    call_depth: usize,
+    functions: HashMap<&'program str, (usize, ValueType)>,
     expression_depth: usize,
     handlers: HashMap<&'program str, usize>,
 }
@@ -241,39 +279,19 @@ impl Lowerer<'_> {
                         },
                     );
                 }
-                if let Some(function) = self.functions.get(callee.text.as_str()).copied() {
-                    if self.call_depth == 32 {
-                        return Err("function call chain exceeds 32".into());
-                    }
+                if let Some((function, result)) = self.functions.get(callee.text.as_str()).copied()
+                {
                     let values = arguments
                         .iter()
                         .map(|argument| self.expression(argument))
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.call_depth += 1;
-                    self.push(ValueType::Unit, Operation::Constant(0))?;
-                    let outer = std::mem::take(&mut self.bindings);
-                    for (parameter, register) in function.parameters.iter().zip(values) {
-                        self.bindings.insert(parameter.name.text.clone(), register);
-                    }
-                    for statement in &function.body.statements {
-                        match statement {
-                            Statement::Let { name, value, .. } => {
-                                let register = self.expression(value)?;
-                                self.bindings.insert(name.text.clone(), register);
-                            }
-                            Statement::Expr(value) => {
-                                self.expression(value)?;
-                            }
-                            _ => return Err("functions cannot assign state or loop".into()),
-                        }
-                    }
-                    let result = match &function.body.tail {
-                        Some(tail) => self.expression(tail),
-                        None => self.push(ValueType::Unit, Operation::Constant(0)),
-                    };
-                    self.bindings = outer;
-                    self.call_depth -= 1;
-                    return result;
+                    return self.push(
+                        result,
+                        Operation::Call {
+                            function,
+                            arguments: values,
+                        },
+                    );
                 }
                 match callee.text.as_str() {
                     "record_int" => {
@@ -379,7 +397,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inline_functions_evaluate_arguments_once_restore_bindings_and_bound_empty_expansion() {
+    fn managed_functions_evaluate_arguments_once_and_do_not_expand_call_graph() {
         let program = lower("process P { state n: Int = 0; fn twice(value: RecordInt) -> Int { read_int(value) + read_int(value) } on Get -> Int { let value = 7; twice(record_int(value)) + value } }").unwrap();
         assert_eq!(
             program.handlers[0]
@@ -400,8 +418,10 @@ mod tests {
         }
         let text =
             format!("process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f13(n) }} }}");
-        let error = lower(&text).unwrap_err();
-        assert!(error.contains("4096"), "{error}");
+        let program = lower(&text).unwrap();
+        assert_eq!(program.functions.len(), 14);
+        assert_eq!(program.functions[13].function.instructions.len(), 4);
+        assert_eq!(program.handlers[0].function.instructions.len(), 2);
         let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
         for index in 1..32 {
             definitions.push_str(&format!(
@@ -413,7 +433,7 @@ mod tests {
             "process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f31(f31(n)) }} }}"
         );
         let program = lower(&text).unwrap();
-        assert_eq!(program.handlers[0].function.instructions.len(), 65);
+        assert_eq!(program.handlers[0].function.instructions.len(), 3);
         let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
         for index in 1..32 {
             definitions.push_str(&format!(
@@ -424,11 +444,8 @@ mod tests {
         }
         let text =
             format!("process P {{ state n: Int = 0; {definitions} on Get -> Int {{ f31(n) }} }}");
-        assert!(
-            lower(&text)
-                .unwrap_err()
-                .contains("expression depth exceeds 256")
-        );
+        let program = lower(&text).unwrap();
+        assert_eq!(program.functions[31].function.instructions.len(), 19);
     }
 
     #[test]

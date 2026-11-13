@@ -16,7 +16,7 @@
 
 [ADR-0037](adr/0037-immutable-int-lists.md) 用每个内建/慢路径前收集验证列表传递根、共享尾、条件/循环/函数和最终候选，另核对小堆 push/pop、空读取、预算/取消及完整计费清理。列表不是同业务 BEAM 基线实现。
 
-[ADR-0036](adr/0036-bounded-inline-functions.md) 验证函数状态隔离、顺序/递归/链深与展开上限，真实 AOT 在函数参数/返回/collect 及循环调用处强制 GC；再核对逐片恢复、预算/取消和失败清理。内联不替代动态帧或双平台验证。
+[ADR-0042](adr/0042-managed-function-frames.md) 验证函数状态隔离、签名/声明顺序、链深、聚合根与总操作上限。真实 AOT 在每次 heap/slow 回调前强制 GC，观测至少三层根链，覆盖返回、嵌套取消、错误解链及候选不提交；`inline_functions` 保留旧示例命名，但已运行真实受管帧，并逐检查点 Drop 清理。`managed_stack` 在受限子进程用 32 层标量链验证剩余栈拒绝与正常返回；`frame_limits` 另验证源码 fn 实际帧超限在写产物前拒绝。这些检查不替代双平台或性能实验。
 
 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 核对故障分类、清理前/后账目区别、重启后旧失败可查及后续覆盖；真实 AOT 预算、除零、堆满失败均需定位 handler 并终结请求，不能因缓存诊断保留旧资源。
 

@@ -2,6 +2,7 @@
 
 - 日期：2026-11-13
 - 状态：已采纳（M0 源码函数切片）
+- 后端决定由 [ADR-0042](0042-managed-function-frames.md) 的有界受管调用帧替代；以下保留原内联理由。
 - 补充：[ADR-0002](0002-language-and-aot.md)、[ADR-0025](0025-aot-record-roots.md)、[ADR-0033](0033-record-conditional-roots.md)
 
 ## 决定与理由
