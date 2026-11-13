@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 的显式初始化池仅消除批量启动重复 mapping。须核对独立 state、错误 tenant/未计费/满池拒绝、process/tenant/VM 准入与失败回滚、监督重启不持有池及最终零；完整 v2/AOT 保持原规模和 3 秒阶段、CPU/墙钟限制。保留旧失败及前后版本证据，不用仿真 wall time 宣称 BEAM 性能或内存领先。
+
 [ADR-0072](adr/0072-scheduler-yield-observation.md) 将请求/真实返回时间接到 Scheduler 每 worker 有界 FIFO，独立 `--observe` 保存原始序号、actor、请求/返回时间、合并/清除/丢样；守恒与时序由 Python 独立核对。原片预算/quantum 不变，零样本的分位为 null，有丢样不称完整；不是长时公平性、CPU 配额、开销或候选 p99<5ms 验收。
 
 [ADR-0071](adr/0071-observed-atomic-yield.md) 补独立请求/真实切回宿主的保守观测原语；仅显式启用，结果包含 safepoint、OS 调度和切栈开销。独立百万次加法 fixture 验证配对与未命中请求，不代表 Scheduler timer 的长时样本、完整丢样统计、候选 p99<5ms 或公平性通过。

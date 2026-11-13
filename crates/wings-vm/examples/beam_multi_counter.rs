@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use wings_vm::{
     ByteStateSnapshot, ExecutionFault, IngressRequest, RequestOutcome, ResourceAccount, Resources,
     RestartPolicy, ScalarModule, SchedulerConfig, SchedulerExitReason, SchedulerSupervisor,
-    SchedulerTermination,
+    SchedulerTermination, StackPool,
 };
 
 const MAX_REQUESTS: usize = 256;
@@ -143,6 +143,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
     let configure = module.handler("Configure")?;
     let apply = module.handler("Apply")?;
     let deadline = Instant::now() + Duration::from_secs(3);
+    let initializer_pool = StackPool::new_accounted(&tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);
     let mut children = Vec::with_capacity(workload.actors);
     let mut mailboxes = vec![1; workload.actors];
@@ -158,7 +159,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
     }
     for identity in 1..=workload.actors {
         remaining(deadline)?;
-        let child = supervisor.spawn_with_heap(
+        let child = supervisor.spawn_with_heap_in_pool(
             &module,
             Resources {
                 bytes: 4 << 20,
@@ -167,6 +168,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
             mailboxes[identity - 1],
             4,
             RestartPolicy::Never,
+            &initializer_pool,
         )?;
         children.push(child);
         pids.push(supervisor.current_pid(child)?);
@@ -284,7 +286,15 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
         }
     }
     let code = i32::from(!reported.is_empty());
-    drop((handle, supervisor, configure, apply, module, tenant));
+    drop((
+        handle,
+        supervisor,
+        configure,
+        apply,
+        initializer_pool,
+        module,
+        tenant,
+    ));
     if vm.used() != Resources::default() {
         return Err("multi Counter resource leak".into());
     }

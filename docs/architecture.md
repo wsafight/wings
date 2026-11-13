@@ -160,6 +160,8 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 ## 低层实现范围
 
+宿主 `SchedulerHandle` 与 `SchedulerSupervisor` 可通过 `spawn_with_heap_in_pool` 显式借用同 tenant 的计费初始化池，顺序创建复用固定缓存，不再逐次创建 mapping。每次仍绑定目标 process、完整准入并正常返回后发布；不把池保存为跨线程状态，自动重启仍使用原临时池。默认入口不变，详见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。
+
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 为原 Bytes HeapCall 添加固定宽度 signed big-endian 读写；ABI v14 不改变 context 或 effect 布局。读取固定八字节，替换复制原对象并复用相同根、预算和三级计费边界，非法完整范围受管返回 InvalidBytes。
 
 当前 ABI v14 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，使用 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref/ListRef/BytesRef，候选状态保活至出口，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 个 compiler 根，另加一个宿主持久状态根及最多 64 个已导入消息参数根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。状态提交契约见 [ADR-0027](adr/0027-persistent-record-state.md)。

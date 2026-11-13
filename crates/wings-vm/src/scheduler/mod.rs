@@ -404,6 +404,17 @@ impl SchedulerHandle {
         self.spawn_with_options(module, limits, mailbox, Some(records), None, None)
     }
 
+    pub fn spawn_with_heap_in_pool(
+        &self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox: usize,
+        records: usize,
+        pool: &StackPool,
+    ) -> Result<SchedulerPid, String> {
+        self.spawn_with_options(module, limits, mailbox, Some(records), Some(pool), None)
+    }
+
     fn spawn_with_options(
         &self,
         module: &ScalarModule,

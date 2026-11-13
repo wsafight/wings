@@ -4,6 +4,8 @@
 
 ## 已执行的最小业务
 
+v2 Wings 批量创建可显式复用同 tenant 的一槽计费初始化池，见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。池创建仍在原 3 秒 actor 阶段内；不改输入、规模、100 活动 actor、32 窗口、CPU/墙钟限制或失败业务。停止 actor 后释放池再检查账本零，复用本身不是性能验收。
+
 - 一个普通 BEAM actor，或 Wings 单 worker 下一个有计费堆的 actor，初始计数器由输入给出；不冬眠、不重启。一个外部驱动发送请求，actor 内没有阻塞业务调用。
 - 计数器和 delta 均为 `[-2^63, 2^63-1]` 的有符号整数，每次加法单独 checked；不环绕、不饱和，也不让 BEAM 的任意精度整数成为业务结果。BEAM 和 Python 可用宽整数计算临时值，但必须在编码、提交和成功回复之前检查范围。
 - 逻辑 state 恰为 `256 / 4096 / 65536 B`：计数器 `i64 big-endian`、actor ID `u64 big-endian`（固定为 1），其余为零填充。Erlang 使用不可变 binary，Wings 使用不可变 Bytes 保留该完整状态，每次成功构造候选状态；逻辑字节不等于堆大小、复制成本或 RSS。

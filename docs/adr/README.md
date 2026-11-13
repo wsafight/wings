@@ -80,6 +80,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0070](0070-bounded-fairness-heartbeats.md) | 同 worker 百万次受管加法、同刻突发心跳与每 actor 等待核对 | 已采纳（短时公平性业务前置） |
 | [0071](0071-observed-atomic-yield.md) | 可选计费原子请求时间与真实 coroutine 返回后确认 | 已采纳（有界观测切片） |
 | [0072](0072-scheduler-yield-observation.md) | Scheduler 每 worker 固定让出 FIFO、请求/合并/清除与丢样计数 | 已采纳（调度观测切片） |
+| [0073](0073-reusable-initializer-stack-pool.md) | 宿主同步初始化显式借用同 tenant 计费栈池，不持有跨线程池 | 已采纳（批量启动资源复用） |
 
 ## 维护方式
 

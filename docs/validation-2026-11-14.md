@@ -172,6 +172,26 @@ Linux 同原 2 vCPU/4 GiB QEMU TCG 交叉构建 release，31 个 harness 共 491
 
 本机最终 v1–v6 显式三端 debug/release 全部通过；v6 仍仅模型/collector/配置，不执行 90 秒实验。依赖隔离、禁 unwind feature、89 份 Markdown（含未提交待审草案）相对路径/围栏、Python 语法、fmt/diff whitespace 检查通过。未推送或发布，语法未改；此切片保留 Linux 完整 AOT 未通过状态，MVP 仍未完成。
 
+## 显式复用初始化栈池：ADR-0073
+
+新增宿主 `SchedulerHandle::spawn_with_heap_in_pool` 与 `SchedulerSupervisor::spawn_with_heap_in_pool`，仅在同步 initializer 期间借用同 tenant 计费池，不存入跨线程 Scheduler 或 supervisor；默认 spawn 和自动重启仍走原临时池。v2 大容量 Counter 改用调用者一槽/缓存一槽池，池创建仍算入原 3 秒阶段，保留 10000×256 B、1000×4 KiB、100×64 KiB、100 活动 actor、32 窗口及原 CPU/墙钟限制。未修改 ABI v14 或待审语法。
+
+三项新回归覆盖同池顺序创建独立 state、错误 tenant/未计费/忙池拒绝、process/tenant/VM 额度与 initializer 失败回滚，以及释放显式池后真实失败监督重启不持有池。专项通过；本机 workspace check、全目标 clippy `-D warnings`、fmt、Rust 1.85.0 全目标 check 通过，debug/release 各 481 项 workspace 加 13 项示例测试，共各 494 项通过。日志 `/tmp/wings-init-pool-{check,clippy,fmt,msrv,tests-debug,tests-release,examples-debug,examples-release}.log`。
+
+完整本机 AOT 首轮在原 30 秒 `frame_limits` 上限超时，后两次在原 30 秒 timer 编译上限超时；原记录分别保留于 `/tmp/wings-init-pool-aot-debug-first-timeout.log`、`/tmp/wings-init-pool-aot-debug-second-timeout.log`、`/tmp/wings-init-pool-aot-debug-third-timeout.log`。release 首次在原 5 秒 TCP 服务启动等待失败，日志 `/tmp/wings-init-pool-aot-release-first-tcp-timeout.log`。显式 BEAM v1 首次也触发原 10 秒子进程上限，日志 `/tmp/wings-init-pool-verify_counter_equivalence-debug-first-timeout.log`。不据宿主负载诊断豁免这些失败，不提高时限。
+
+Linux x86-64 release 交叉构建 bins、54 个示例和 31 个测试 harness 成功，传包核对当前改动源码且排除未批准语法草案。此次同配置 2 vCPU/4 GiB QEMU TCG 客体在 Lima 启动 10 分钟内未达到 running；后续 SSH 在 banner/kex 阶段失败，没有执行本轮客体测试或完整 AOT。日志 `/tmp/wings-init-pool-linux-{build,test-build,start,ssh-check,ssh-final}.log`，客体已强制停止并保留 `/tmp/wings-init-pool-linux-stop.log`。交叉构建不替代运行验证，前节 v2 的 Linux 3 秒失败仍未证明修复，也不构成原生 Linux 或性能门禁。
+
+停止客体后，保留原代码/输入/断言和全部上限，macOS debug/release 完整 AOT 隔离重测均通过；两种构建另行 v2 Wings/OTP 29/独立 Python 各通过 18 个完整状态/FIFO/退出业务、17 个 bridge 拒绝和 49 个 JSON 拒绝。日志 `/tmp/wings-init-pool-aot-{debug,release}.log`、`/tmp/wings-init-pool-three-{debug,release}.log`。这些通过不抹去首轮失败，也没有证明 Linux 大容量启动已修复。
+
+本机两种构建另行 v1/v3/v4/v5/v6/v7 显式 Wings/OTP 29/独立模型全部通过；v6 只核对长测协议/collector/配置，不执行 90 秒实验。日志 `/tmp/wings-init-pool-verify_{counter_equivalence,senders_counter,admission_counter,open_loop,measurement,fairness}-{debug,release}.log`。v7 原百万次加法与心跳工作量不变，短测 `--observe` 不据零数据声称让出延迟达标。
+
+待本机回归全部结束后，同配置客体第二次启动成功，核对四份运行时改动源码 SHA-256 与本机一致；31 个 release harness 共 494 项及完整原限 AOT 全部通过，包含原三组大容量 v2，没有删输入、增加时限或重试业务。日志 `/tmp/wings-init-pool-linux-isolated-start.log`、`/tmp/wings-init-pool-linux-tests.log`、`/tmp/wings-init-pool-linux-aot.log`。客体仍无 OTP/原生 debug/clippy/MSRV/doc-tests，不替代原生 Linux 门禁。
+
+另外取历史 `b550546` 验证包的现成 binary，用同客体/同一新编译业务产物/原 CPU 5 秒、墙钟 10 秒和阶段 3 秒比较。首次诊断在旧版 10000×256 B 返回 deadline 后停止，保留 `/tmp/wings-init-pool-linux-comparison-baseline-deadline.log`；后来逐组完整比较两版三组均通过，见 `/tmp/wings-init-pool-linux-comparison.log`。此前诊断脚本误把 JSON 发给二进制 bridge，两个 invalid 只属 harness 失误，不是有效业务或性能证据，见 `/tmp/wings-init-pool-linux-comparison-harness-error.log`。因此本次完整回归通过，但不能证明旧 deadline 的唯一根因或优化收益，更不能宣称 BEAM 领先。测试结束正常停止客体，见 `/tmp/wings-init-pool-linux-isolated-stop.log`。
+
+独立开环/fairness/让出计数模型与 90000 到达长测 collector 模型通过，日志 `/tmp/wings-init-pool-models.log`；这些模型不替代真实三端执行或长时公平性。依赖隔离、禁 unwind feature、90 份 Markdown 路径/围栏、Python 语法和 fmt/diff 检查通过。不推送或发布，MVP 未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

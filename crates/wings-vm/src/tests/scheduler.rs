@@ -135,6 +135,185 @@ fn scheduler_yield_capacity_and_startup_failures_preserve_accounting() {
 }
 
 #[test]
+fn scheduler_explicit_initializer_pool_preserves_states_and_rejects_foreign_or_busy_pools() {
+    let (vm, tenant, scheduler) = fixture(1, 4);
+    let handle = scheduler.handle();
+    let module = module();
+    let pool = StackPool::new_accounted(&tenant, 1, 1).unwrap();
+    let baseline = vm.used();
+    for _ in 0..2 {
+        let pid = handle
+            .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+            .unwrap();
+        assert_eq!(pool.stats().cached, 1);
+        assert_eq!(pool.stats().active, 0);
+        assert_eq!(handle.snapshot(pid).unwrap().committed_state, Some(0));
+        let request = handle
+            .request(
+                pid,
+                &module.handler("Bump").unwrap(),
+                &[7],
+                32,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(reply(request), RequestOutcome::Reply(7));
+        handle.stop(pid).unwrap();
+        wait_until(|| handle.snapshot(pid).is_err());
+    }
+    let other = vm.tenant_accounted(quota()).unwrap();
+    let foreign = StackPool::new_accounted(&other, 1, 1).unwrap();
+    let unaccounted = StackPool::new(1, 1).unwrap();
+    for invalid in [&foreign, &unaccounted] {
+        let before = vm.used();
+        assert!(
+            handle
+                .spawn_with_heap_in_pool(&module, quota(), 1, 4, invalid)
+                .is_err()
+        );
+        assert_eq!(vm.used(), before);
+    }
+    let occupied = tenant.process_accounted(quota()).unwrap();
+    let bound = pool.for_process(&occupied).unwrap();
+    let stack = bound.acquire().unwrap();
+    let before = vm.used();
+    assert!(
+        handle
+            .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+            .is_err()
+    );
+    assert_eq!(vm.used(), before);
+    drop((stack, bound, occupied));
+    let pid = handle
+        .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+        .unwrap();
+    handle.stop(pid).unwrap();
+    drop((handle, scheduler, module, foreign, unaccounted, other));
+    assert_eq!(pool.stats().active, 0);
+    assert_eq!(pool.stats().cached, 1);
+    assert!(vm.used().bytes <= baseline.bytes);
+    drop((pool, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_explicit_initializer_pool_rolls_back_quota_and_initializer_failure() {
+    let (vm, tenant, scheduler) = fixture(1, 2);
+    let handle = scheduler.handle();
+    let mut failed = module();
+    Arc::get_mut(&mut failed.inner).unwrap().initializer = fail;
+    let module = module();
+    let pool = StackPool::new_accounted(&tenant, 1, 1).unwrap();
+    let pid = handle
+        .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+        .unwrap();
+    handle.stop(pid).unwrap();
+    wait_until(|| handle.snapshot(pid).is_err());
+    let baseline = vm.used();
+    assert!(
+        handle
+            .spawn_with_heap_in_pool(&failed, quota(), 1, 4, &pool)
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    assert!(
+        handle
+            .spawn_with_heap_in_pool(&module, limits(128 << 10), 1, 4, &pool)
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    for limited in [&tenant, &vm] {
+        let fill = limited
+            .reserve(Resources {
+                bytes: limited.limit().bytes - limited.used().bytes - 4095,
+                ..Resources::default()
+            })
+            .unwrap();
+        let before = vm.used();
+        assert!(
+            handle
+                .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+                .is_err()
+        );
+        assert_eq!(vm.used(), before);
+        drop(fill);
+    }
+    let pid = handle
+        .spawn_with_heap_in_pool(&module, quota(), 1, 4, &pool)
+        .unwrap();
+    assert_eq!(handle.snapshot(pid).unwrap().committed_state, Some(0));
+    drop((scheduler, handle, pool, module, failed, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn supervisor_does_not_retain_explicit_initializer_pool_across_restart() {
+    fn assert_send_sync<Value: Send + Sync>() {}
+    assert_send_sync::<SchedulerSupervisor>();
+    let (vm, tenant, mut supervisor) = supervisor_fixture(2);
+    let handle = supervisor.handle();
+    let module = module();
+    let pool = StackPool::new_accounted(&tenant, 1, 1).unwrap();
+    let child = supervisor
+        .spawn_with_heap_in_pool(
+            &module,
+            quota(),
+            1,
+            4,
+            RestartPolicy::OnFailure {
+                max_restarts: 1,
+                within: Duration::from_secs(60),
+            },
+            &pool,
+        )
+        .unwrap();
+    drop(pool);
+    let pid = supervisor.current_pid(child).unwrap();
+    assert_eq!(
+        reply(
+            handle
+                .request(
+                    pid,
+                    &module.handler("FailRequest").unwrap(),
+                    &[],
+                    32,
+                    Duration::from_secs(5)
+                )
+                .unwrap()
+        ),
+        RequestOutcome::Failed
+    );
+    let mut replacement = None;
+    wait_until(|| {
+        if let Some(event) = supervisor.poll() {
+            let SchedulerRestartStatus::Restarted(pid) = event.restart else {
+                panic!("unexpected restart")
+            };
+            replacement = Some(pid);
+        }
+        replacement.is_some()
+    });
+    let pid = replacement.unwrap();
+    assert_eq!(
+        reply(
+            handle
+                .request(
+                    pid,
+                    &module.handler("Bump").unwrap(),
+                    &[9],
+                    32,
+                    Duration::from_secs(5)
+                )
+                .unwrap()
+        ),
+        RequestOutcome::Reply(9)
+    );
+    supervisor.stop(child).unwrap();
+    drop((handle, supervisor, module, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn scheduler_timer_yields_have_worker_and_pid_identity_without_losing_cleanup() {
     let vm = ResourceAccount::vm(quota());
     let tenant = vm.tenant_accounted(quota()).unwrap();

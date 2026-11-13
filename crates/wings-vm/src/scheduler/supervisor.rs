@@ -149,7 +149,7 @@ impl SchedulerSupervisor {
         mailbox: usize,
         policy: RestartPolicy,
     ) -> Result<SchedulerChildId, String> {
-        self.spawn_configured(module, limits, mailbox, None, policy)
+        self.spawn_configured(module, limits, mailbox, None, policy, None)
     }
 
     pub fn spawn_with_heap(
@@ -160,9 +160,23 @@ impl SchedulerSupervisor {
         records: usize,
         policy: RestartPolicy,
     ) -> Result<SchedulerChildId, String> {
-        self.spawn_configured(module, limits, mailbox, Some(records), policy)
+        self.spawn_configured(module, limits, mailbox, Some(records), policy, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_heap_in_pool(
+        &mut self,
+        module: &ScalarModule,
+        limits: Resources,
+        mailbox: usize,
+        records: usize,
+        policy: RestartPolicy,
+        pool: &StackPool,
+    ) -> Result<SchedulerChildId, String> {
+        self.spawn_configured(module, limits, mailbox, Some(records), policy, Some(pool))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn spawn_configured(
         &mut self,
         module: &ScalarModule,
@@ -170,6 +184,7 @@ impl SchedulerSupervisor {
         mailbox: usize,
         heap: Option<usize>,
         policy: RestartPolicy,
+        pool: Option<&StackPool>,
     ) -> Result<SchedulerChildId, String> {
         let index = self.free.ok_or("supervisor child capacity exhausted")?;
         let (capacity, _) = RestartHistory::capacity(policy)?;
@@ -185,7 +200,7 @@ impl SchedulerSupervisor {
             limits,
             mailbox,
             heap,
-            None,
+            pool,
             Some(publisher),
         )?;
         let identity = SchedulerChildId(pid, index as u32);

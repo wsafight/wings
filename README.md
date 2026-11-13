@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0073](docs/adr/0073-reusable-initializer-stack-pool.md) 增加宿主批量创建时显式复用计费初始化栈池，减少重复 mapping；不改变默认 spawn、自动重启或线程所有权。v2 原规模与时限不变，实际结果见[验证记录](docs/validation-2026-11-14.md)，不据此宣布性能或 MVP 达标。
+
 [ADR-0072](docs/adr/0072-scheduler-yield-observation.md) 增加 Scheduler 可选固定容量让出样本与请求/清除/丢样计数。`verify_fairness.py` 在原参数下另跑 `--observe`；默认关闭，短测零样本明确为无数据，不把独立观测或样本缺失当作公平性达标。
 
 [ADR-0071](docs/adr/0071-observed-atomic-yield.md) 增加可选计费的原子请求到真实 coroutine 返回时间观测，默认关闭。`verify_fairness.py` 同时核对独立 AOT fixture 的预请求/跨线程请求、状态与资源清理；未接为 Scheduler 长时公平性统计，不据此宣布让出延迟达标。
