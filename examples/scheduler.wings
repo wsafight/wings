@@ -26,4 +26,5 @@ process SchedulerDemo {
   }
 
   on Read -> Int { collect(); if is_empty_ints(saved) { -1 } else { head_int(saved) } }
+  on Fail -> Int { saved = prepend_int(99, saved); 1 / 0 }
 }

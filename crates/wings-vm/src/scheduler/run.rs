@@ -205,12 +205,19 @@ fn start(
             actor.starting = false;
             actor.image = Some(claim.image);
             actor.mailbox.restore(claim.message);
+            if closed {
+                if let Some(publisher) = actor.termination.as_mut() {
+                    publisher.set(SchedulerTermination::Closed);
+                }
+            }
             let retired = if actor.stopping || closed {
                 state.retire(shared.identity, claim.pid)
             } else {
                 None
             };
             drop(state);
+            drop(claim.account);
+            drop(claim.cancellation);
             drop(retired);
             None
         }
@@ -221,7 +228,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     let Running {
         pid,
         task,
-        message,
+        mut message,
         _charge: charge,
     } = active;
     let snapshot = task.snapshot();
@@ -262,6 +269,17 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     actor.image = Some(image);
     actor.execution = snapshot;
     actor.committed_state = committed_state;
+    if failed {
+        if let Some(publisher) = actor.termination.as_mut() {
+            publisher.set(if closed {
+                SchedulerTermination::Closed
+            } else if let Some(diagnostic) = diagnostic {
+                SchedulerTermination::Failed(diagnostic)
+            } else {
+                SchedulerTermination::Stopped
+            });
+        }
+    }
     if let Some(diagnostic) = diagnostic {
         state.last_exit = Some(diagnostic);
     }
@@ -269,7 +287,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
         Ok(Some(value)) if !failed => RequestOutcome::Reply(value),
         _ => RequestOutcome::Failed,
     };
-    match message.reply {
+    match std::mem::replace(&mut message.reply, Reply::None) {
         Reply::External(publisher) => match outcome {
             RequestOutcome::Reply(value) => publisher.complete(value),
             _ => drop(publisher),
@@ -284,6 +302,8 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     };
     state.maintain(shared.identity);
     drop(state);
-    drop((retired, charge));
+    drop(message);
+    drop(charge);
+    drop(retired);
     shared.changed.notify_all();
 }

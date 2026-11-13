@@ -54,7 +54,7 @@ struct Child {
     _charge: Reservation,
 }
 
-struct RestartHistory {
+pub(crate) struct RestartHistory {
     times: Box<[Option<Instant>]>,
     within: Duration,
     head: usize,
@@ -62,7 +62,7 @@ struct RestartHistory {
 }
 
 impl RestartHistory {
-    fn capacity(policy: RestartPolicy) -> Result<(usize, Duration), String> {
+    pub(crate) fn capacity(policy: RestartPolicy) -> Result<(usize, Duration), String> {
         match policy {
             RestartPolicy::Never => Ok((0, Duration::ZERO)),
             RestartPolicy::OnFailure {
@@ -78,7 +78,21 @@ impl RestartHistory {
         }
     }
 
-    fn admit(&mut self, now: Instant) -> bool {
+    pub(crate) fn new(policy: RestartPolicy) -> Result<Self, String> {
+        let (capacity, within) = Self::capacity(policy)?;
+        Ok(Self {
+            times: storage(capacity)?,
+            within,
+            head: 0,
+            count: 0,
+        })
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        !self.times.is_empty()
+    }
+
+    pub(crate) fn admit(&mut self, now: Instant) -> bool {
         while self.count > 0 {
             let oldest = self.times[self.head].expect("occupied restart history");
             if now.saturating_duration_since(oldest) < self.within {
@@ -91,7 +105,7 @@ impl RestartHistory {
         self.count < self.times.len()
     }
 
-    fn record(&mut self, now: Instant) {
+    pub(crate) fn record(&mut self, now: Instant) {
         let tail = (self.head + self.count) % self.times.len();
         self.times[tail] = Some(now);
         self.count += 1;

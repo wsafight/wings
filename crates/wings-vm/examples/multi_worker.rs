@@ -2,8 +2,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wings_vm::{
-    ExecutionFault, IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule,
-    Scheduler, SchedulerConfig, SchedulerExitReason,
+    ExecutionFault, IngressRequest, RequestOutcome, ResourceAccount, Resources, RestartPolicy,
+    ScalarModule, Scheduler, SchedulerConfig, SchedulerExitReason, SchedulerRestartStatus,
+    SchedulerSupervisor, SchedulerTermination,
 };
 
 fn limits() -> Resources {
@@ -159,7 +160,79 @@ fn main() {
         assert_eq!(handle.last_exit(), Some(diagnostic));
         drop((handle, scheduler));
     }
-    drop((module, loops, tenant));
+    let mut supervisor = SchedulerSupervisor::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 4,
+            requests: 4,
+            slice_steps: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = supervisor.handle();
+    let child = supervisor
+        .spawn_with_heap(
+            &module,
+            limits(),
+            4,
+            8,
+            RestartPolicy::OnFailure {
+                max_restarts: 1,
+                within: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+    for attempt in 0..2 {
+        let pid = supervisor.current_pid(child).unwrap();
+        assert_eq!(
+            reply(
+                handle
+                    .request(
+                        pid,
+                        &module.handler("Read").unwrap(),
+                        &[],
+                        4096,
+                        Duration::from_secs(5)
+                    )
+                    .unwrap()
+            ),
+            -1
+        );
+        let mut failed = handle
+            .request(
+                pid,
+                &module.handler("Fail").unwrap(),
+                &[],
+                4096,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            failed.wait(Duration::from_secs(5)).unwrap(),
+            Some(RequestOutcome::Failed)
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let event = loop {
+            if let Some(event) = supervisor.poll() {
+                break event;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(event.pid, pid);
+        assert!(matches!(event.termination, SchedulerTermination::Failed(_)));
+        if attempt == 0 {
+            let SchedulerRestartStatus::Restarted(replacement) = event.restart else {
+                panic!("missing replacement")
+            };
+            assert_ne!(pid, replacement);
+        } else {
+            assert_eq!(event.restart, SchedulerRestartStatus::IntensityExceeded);
+        }
+    }
+    drop((supervisor, handle, module, loops, tenant));
     assert_eq!(vm.used(), Resources::default());
     println!(
         "Multi-worker scheduler verified: N > M actors, live-stack ownership, boundary migration, copied list/record messages, request events, GC and cleanup"

@@ -673,3 +673,288 @@ fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserve
     drop(handle);
     assert_eq!(vm.used(), Resources::default());
 }
+
+fn supervisor_fixture(capacity: usize) -> (ResourceAccount, ResourceAccount, SchedulerSupervisor) {
+    let vm = ResourceAccount::vm(quota());
+    let tenant = vm.tenant_accounted(quota()).unwrap();
+    let supervisor = SchedulerSupervisor::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity,
+            requests: 4,
+            slice_steps: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    (vm, tenant, supervisor)
+}
+
+fn supervisor_event(supervisor: &mut SchedulerSupervisor) -> SchedulerSupervisorEvent {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(event) = supervisor.poll() {
+            return event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "supervision termination deadline"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn scheduler_supervision_restarts_fresh_state_and_enforces_finite_intensity() {
+    let (vm, tenant, mut supervisor) = supervisor_fixture(2);
+    let handle = supervisor.handle();
+    let module = module();
+    let child = supervisor
+        .spawn(
+            &module,
+            quota(),
+            4,
+            RestartPolicy::OnFailure {
+                max_restarts: 2,
+                within: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+    for attempt in 0..3 {
+        let pid = supervisor.current_pid(child).unwrap();
+        assert_eq!(
+            reply(
+                handle
+                    .request(
+                        pid,
+                        &module.handler("Bump").unwrap(),
+                        &[7],
+                        32,
+                        Duration::from_secs(5)
+                    )
+                    .unwrap()
+            ),
+            RequestOutcome::Reply(7)
+        );
+        let result = handle
+            .request(
+                pid,
+                &module.handler("FailRequest").unwrap(),
+                &[],
+                32,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(reply(result), RequestOutcome::Failed);
+        let event = supervisor_event(&mut supervisor);
+        assert_eq!(event.child, child);
+        assert_eq!(event.pid, pid);
+        let SchedulerTermination::Failed(exit) = event.termination else {
+            panic!("missing failed termination")
+        };
+        assert_eq!(exit.committed_state, Some(7));
+        assert_eq!(
+            exit.reason,
+            SchedulerExitReason::Managed(ExecutionFault::DivisionByZero)
+        );
+        assert!(handle.snapshot(pid).is_err());
+        if attempt < 2 {
+            let SchedulerRestartStatus::Restarted(replacement) = event.restart else {
+                panic!("missing replacement")
+            };
+            assert_ne!(replacement, pid);
+            assert_eq!(supervisor.current_pid(child).unwrap(), replacement);
+            assert_eq!(
+                handle.snapshot(replacement).unwrap().committed_state,
+                Some(0)
+            );
+            assert_eq!(handle.last_exit(), Some(exit));
+        } else {
+            assert_eq!(event.restart, SchedulerRestartStatus::IntensityExceeded);
+            assert!(supervisor.current_pid(child).is_err());
+        }
+    }
+    assert!(supervisor.poll().is_none());
+    drop((supervisor, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_supervision_keeps_each_concurrent_exit_despite_overwritten_last_failure() {
+    let (vm, tenant, mut supervisor) = supervisor_fixture(8);
+    let handle = supervisor.handle();
+    let module = module();
+    let mut children = Vec::new();
+    let mut results = Vec::new();
+    for _ in 0..8 {
+        let child = supervisor
+            .spawn(&module, quota(), 2, RestartPolicy::Never)
+            .unwrap();
+        let pid = supervisor.current_pid(child).unwrap();
+        results.push(
+            handle
+                .request(
+                    pid,
+                    &module.handler("FailRequest").unwrap(),
+                    &[],
+                    32,
+                    Duration::from_secs(5),
+                )
+                .unwrap(),
+        );
+        children.push(child);
+    }
+    for result in results {
+        assert_eq!(reply(result), RequestOutcome::Failed);
+    }
+    for _ in 0..8 {
+        let event = supervisor_event(&mut supervisor);
+        assert_eq!(event.restart, SchedulerRestartStatus::Disabled);
+        assert!(matches!(event.termination, SchedulerTermination::Failed(_)));
+        let index = children
+            .iter()
+            .position(|child| *child == event.child)
+            .unwrap();
+        children.remove(index);
+    }
+    assert!(children.is_empty());
+    assert!(supervisor.poll().is_none());
+    drop((supervisor, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_supervision_stops_and_restart_admission_failures_do_not_retry() {
+    let (vm, tenant, mut supervisor) = supervisor_fixture(3);
+    let handle = supervisor.handle();
+    let module = spinning_module();
+    let policy = RestartPolicy::OnFailure {
+        max_restarts: 1,
+        within: Duration::from_secs(60),
+    };
+    let child = supervisor.spawn(&module, quota(), 4, policy).unwrap();
+    let pid = supervisor.current_pid(child).unwrap();
+    handle
+        .send(pid, &module.handler("Spin").unwrap(), &[], u64::MAX)
+        .unwrap();
+    wait_until(|| handle.snapshot(pid).unwrap().execution.is_some());
+    handle.stop(pid).unwrap();
+    assert_eq!(
+        supervisor_event(&mut supervisor).restart,
+        SchedulerRestartStatus::Stopped
+    );
+    assert!(supervisor.current_pid(child).is_err());
+    let child = supervisor.spawn(&module, quota(), 4, policy).unwrap();
+    supervisor.stop(child).unwrap();
+    assert!(supervisor.current_pid(child).is_err());
+    assert!(supervisor.poll().is_none());
+    let child = supervisor.spawn(&module, quota(), 4, policy).unwrap();
+    let pid = supervisor.current_pid(child).unwrap();
+    let result = handle
+        .request(
+            pid,
+            &module.handler("FailRequest").unwrap(),
+            &[],
+            32,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(reply(result), RequestOutcome::Failed);
+    wait_until(|| vm.used().processes == 0);
+    let remaining = vm.limit().bytes - vm.used().bytes;
+    let blocked = vm
+        .reserve(Resources {
+            bytes: remaining,
+            ..Resources::default()
+        })
+        .unwrap();
+    let event = supervisor_event(&mut supervisor);
+    assert!(matches!(event.restart, SchedulerRestartStatus::Failed(_)));
+    drop(blocked);
+    assert!(supervisor.current_pid(child).is_err());
+    assert!(supervisor.poll().is_none());
+    drop((supervisor, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+static SUPERVISOR_INIT_FAILS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "C" fn supervised_initializer(
+    state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    if SUPERVISOR_INIT_FAILS.load(Ordering::SeqCst) {
+        STATUS_DIVISION_BY_ZERO
+    } else {
+        unsafe { initialize(state, arguments, output, context) }
+    }
+}
+
+#[test]
+fn scheduler_supervision_initializer_failure_and_spawn_admission_release_tickets() {
+    let (vm, tenant, mut supervisor) = supervisor_fixture(2);
+    let handle = supervisor.handle();
+    let mut module = module();
+    Arc::get_mut(&mut module.inner).unwrap().initializer = supervised_initializer;
+    let baseline = vm.used();
+    assert!(
+        supervisor
+            .spawn(&module, limits(0), 2, RestartPolicy::Never)
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    assert!(
+        supervisor
+            .spawn(
+                &module,
+                quota(),
+                2,
+                RestartPolicy::OnFailure {
+                    max_restarts: 0,
+                    within: Duration::from_secs(1)
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    let child = supervisor
+        .spawn(
+            &module,
+            quota(),
+            2,
+            RestartPolicy::OnFailure {
+                max_restarts: 1,
+                within: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+    let pid = supervisor.current_pid(child).unwrap();
+    SUPERVISOR_INIT_FAILS.store(true, Ordering::SeqCst);
+    assert_eq!(
+        reply(
+            handle
+                .request(
+                    pid,
+                    &module.handler("FailRequest").unwrap(),
+                    &[],
+                    32,
+                    Duration::from_secs(5)
+                )
+                .unwrap()
+        ),
+        RequestOutcome::Failed
+    );
+    let event = supervisor_event(&mut supervisor);
+    SUPERVISOR_INIT_FAILS.store(false, Ordering::SeqCst);
+    assert!(
+        matches!(event.restart, SchedulerRestartStatus::Failed(error) if error.contains("division by zero"))
+    );
+    assert!(supervisor.current_pid(child).is_err());
+    assert!(supervisor.poll().is_none());
+    drop((supervisor, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}

@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 补第 6 项的跨 worker 最近失败定位，不保留旧堆/栈/账户，也不把可覆盖缓存当可靠恢复事件。多 worker 监督的有界终态交接、重启强度和全新实例仍待集成；该切片不改变 MVP 验收门槛。
+[ADR-0056](adr/0056-multi-worker-supervision.md) 接入第 6 项的宿主有界 one-for-one 恢复：独立终态交接、全新实例、有限滚动强度与失败回滚。依赖宿主 poll，不覆盖语言监督、link/monitor 或可靠日志；原生最新双平台、完整资源/业务值和同负载 BEAM 双目标仍待验收，MVP 状态不变。
+
+[ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 补第 6 项的跨 worker 最近失败定位，不保留旧堆/栈/账户，也不把可覆盖缓存当可靠恢复事件。有界终态交接与宿主恢复由 ADR-0056 独立接入；该切片不改变 MVP 验收门槛。
 
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 实现第 5 项的有界 M:N 集成切片：稳定 Pid、唯一活栈 owner、返回后迁移和跨 worker 语言消息/请求。采用固定扫描/编号轮转，没有自适应窃取；单 worker Supervisor 尚未接入。原生双平台最新验证、完整资源与业务值、故障恢复集成和同负载 BEAM 双目标仍是独立门禁，不能据此宣布 M0/MVP 完成。
 

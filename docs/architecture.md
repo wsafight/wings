@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0056](adr/0056-multi-worker-supervision.md) 用独立固定终态票据接入 SchedulerSupervisor，不依赖可覆盖的最近失败缓存。actor 发布端位于最后释放字段，旧镜像/mailbox/控制票据先清理，终态才可消费；票据及重启历史在 tenant 准入。poll 在锁外初始化新实例，沿用已有有限滚动窗口，不增加后台线程或业务 ABI。
+
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 在 Scheduler 的共享计费控制区保存一个按值失败快照。写入与 Pid 退休共用 registry 锁，跨线程读取不持有模块/堆/账户；固定名称缓冲、不解析错误文本。该缓存可覆盖，不能直接作为不丢终态的监督协议。
 
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 将独占镜像接入固定多 worker Scheduler：共享有界 registry 管理稳定 Pid、mailbox 和唯一 owner；本地 ScalarTask 保留所有活栈，只有正常返回后的镜像可迁移到下一 worker。native init/resume 不在 registry 锁内执行，没有 unsafe Send。共享扫描、按编号轮转和每 worker 全容量栈池是正确性基线，非 work stealing 或性能结论；已有 Supervisor 仍只服务单 worker。

@@ -77,3 +77,11 @@ WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" WINGS_PROFILE=release p
 新增两项单测验证跨 worker 失败覆盖、旧提交及预算分类、引用 state 不暴露 handle、成功/主动 stop/关闭保留和诊断副本不持有业务资源。`multi_worker` 增加真实循环失败的旧 state、worker 轮转、算术故障、旧 Pid 退休及其他 actor 继续执行检查。macOS 另在有 CPU/墙钟限制的子进程中重复运行全部 14 项 scheduler 测试 20 次通过。
 
 隔离 Linux 从 `270bf3f` 重新构建全部 release 工具/示例及测试，26 个 harness 共 425 项通过；完整受限 release AOT 通过。每业务子进程仍限制 CPU 20 秒、墙钟 30 秒、禁 core。Linux debug/native 门禁本次未执行；固定单槽不是可靠恢复事件，多 worker 监督及 MVP 剩余门禁不变。
+
+### 多 worker 宿主监督增量：ADR-0056
+
+基于 `910851f`，macOS debug/release workspace 各 427 项测试通过；check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check 与两种构建 TCP 示例单测通过。全部 18 项 scheduler 测试在有 CPU/墙钟上限的子进程中重复 20 次通过。
+
+新增四项监督单测覆盖全新 state/Pid、有限重启窗口、八个并发失败各自终态、Never/stop、不自动重试资源或 initializer 失败、创建拒绝的票据回滚。两种构建的完整受限 AOT 首次均通过；`multi_worker` 额外验证持久 IntList 在失败后重建为空、旧请求终结与重启强度上限。每业务子进程仍为 CPU 20 秒、墙钟 30 秒、禁 core；既有 TCP 偶发失败证据不删除。
+
+终态在旧 actor 资源清理后发布，监督依赖宿主 poll；它不是语言监督、持久恢复、可靠故障日志或完整 M4。最新 Linux 本节尚未记录，MVP 原生双平台与同业务 BEAM 双目标仍待验收。

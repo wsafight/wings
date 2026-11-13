@@ -13,6 +13,11 @@ use crate::{
 
 mod run;
 mod state;
+mod supervisor;
+pub use supervisor::{
+    SchedulerChildId, SchedulerRestartStatus, SchedulerSupervisor, SchedulerSupervisorEvent,
+    SchedulerTermination,
+};
 #[cfg(test)]
 mod tests;
 
@@ -138,6 +143,7 @@ struct Actor {
     mailbox: Mailbox,
     replies: [Arc<ReplyTable>; 3],
     _charge: Reservation,
+    termination: Option<supervisor::ExitPublisher>,
 }
 
 struct Mailbox {
@@ -283,7 +289,10 @@ impl Drop for Scheduler {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for index in 0..state.slots.len() {
-            let actor = state.slots[index].actor.take();
+            let mut actor = state.slots[index].actor.take();
+            if let Some(publisher) = actor.as_mut().and_then(|actor| actor.termination.as_mut()) {
+                publisher.set(SchedulerTermination::Closed);
+            }
             state.slots[index].creating = false;
             drop(state);
             drop(actor);
@@ -307,7 +316,7 @@ impl SchedulerHandle {
         limits: Resources,
         mailbox: usize,
     ) -> Result<SchedulerPid, String> {
-        self.spawn_with_options(module, limits, mailbox, None, None)
+        self.spawn_with_options(module, limits, mailbox, None, None, None)
     }
 
     pub fn spawn_with_heap(
@@ -317,7 +326,7 @@ impl SchedulerHandle {
         mailbox: usize,
         records: usize,
     ) -> Result<SchedulerPid, String> {
-        self.spawn_with_options(module, limits, mailbox, Some(records), None)
+        self.spawn_with_options(module, limits, mailbox, Some(records), None, None)
     }
 
     fn spawn_with_options(
@@ -327,6 +336,7 @@ impl SchedulerHandle {
         mailbox: usize,
         heap_records: Option<usize>,
         pool: Option<&StackPool>,
+        termination: Option<supervisor::ExitPublisher>,
     ) -> Result<SchedulerPid, String> {
         if !(1..=64).contains(&mailbox) {
             return Err("mailbox requires 1..=64 slots".into());
@@ -412,6 +422,7 @@ impl SchedulerHandle {
                 },
                 replies,
                 _charge: charge,
+                termination,
             })
         })();
         let mut state = self.shared.lock();

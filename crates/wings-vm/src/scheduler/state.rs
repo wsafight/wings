@@ -189,7 +189,14 @@ impl Shared {
             let handle = SchedulerHandle {
                 shared: self.clone(),
             };
-            return match handle.spawn_with_options(&module, limits, capacity, heap, Some(pool)) {
+            return match handle.spawn_with_options(
+                &module,
+                limits,
+                capacity,
+                heap,
+                Some(pool),
+                None,
+            ) {
                 Ok(child) => match self.lock().actor(self.identity, child) {
                     Ok(actor) => (wings_abi::STATUS_OK, actor.capability),
                     Err(_) => (wings_abi::STATUS_SPAWN_REJECTED, 0),

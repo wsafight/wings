@@ -26,13 +26,15 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求与 handler 返回后的迁移。RecordInt 和有界 IntList 可复制为语言消息，尚无引用回复、递归/动态派发或多 worker 监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
 
+[ADR-0056](docs/adr/0056-multi-worker-supervision.md) 增加 `SchedulerSupervisor`：每个子进程有独立、固定终态票据，旧业务资源清理后才可由宿主 `poll` 消费。受管失败按有限滚动窗口 one-for-one 重启为全新 state/堆与 Pid；Never、强度超限或初始化/额度失败明确终结，不重放旧 mailbox，也不自动监督语言创建的后代。没有后台监督线程，服务宿主必须驱动 `poll`。
+
 [ADR-0055](docs/adr/0055-multi-worker-exit-diagnostics.md) 增加 `SchedulerHandle::last_exit`：固定单槽按值保留最近失败的旧 Pid、worker、handler、ABI 故障、已提交标量 state、预算/GC 和清理前账目。失败 actor 仍立即清理；成功、stop 和关闭不覆盖该值，不提供可靠监督事件或无界历史。
 
-[ADR-0054](docs/adr/0054-bounded-multi-worker-scheduler.md) 增加 `Scheduler` / `SchedulerHandle`：固定 1..=16 个 worker 调度最多 256 个 actor，活栈固定在 owner 线程，正常返回后按 worker 编号迁移。共享 registry 保持 Pid 和 FIFO，语言消息、异步请求与 GC 沿原 ABI；宿主 handle 可跨线程投递标量请求。`examples/scheduler.wings` 与 `multi_worker` 覆盖 N > M、列表/记录复制和忙 actor 共存。不是自适应 work stealing；多 worker 监督、完整资源账本及 BEAM 双目标仍待完成。
+[ADR-0054](docs/adr/0054-bounded-multi-worker-scheduler.md) 增加 `Scheduler` / `SchedulerHandle`：固定 1..=16 个 worker 调度最多 256 个 actor，活栈固定在 owner 线程，正常返回后按 worker 编号迁移。共享 registry 保持 Pid 和 FIFO，语言消息、异步请求与 GC 沿原 ABI；宿主 handle 可跨线程投递标量请求。`examples/scheduler.wings` 与 `multi_worker` 覆盖 N > M、列表/记录复制和忙 actor 共存。不是自适应 work stealing；宿主监督另见 ADR-0056，完整资源账本及 BEAM 双目标仍待完成。
 
 [ADR-0053](docs/adr/0053-detached-process-images.md) 增加宿主 `ScalarProcess::detach` / `DetachedProcess::attach`：无活栈时消费进程并独占转交 state/堆，目标线程绑定同 process 账户的本地池，不重跑 initializer。镜像不可 Clone、不含协程或执行接口；镜像本身不含 worker/mailbox/Pid，也不转交活栈，后续调度由 ADR-0054 接入。`detached_process` 验证 IntList 状态跨线程转交与取消后失败保留。
 

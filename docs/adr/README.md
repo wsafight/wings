@@ -63,6 +63,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0053](0053-detached-process-images.md) | 无活栈独占进程镜像、线程转交与同账户重绑定 | 已采纳（迁移前置切片） |
 | [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳（有界 M:N 集成切片） |
 | [0055](0055-multi-worker-exit-diagnostics.md) | 多 worker 最近失败的固定按值诊断，不延长业务资源租约 | 已采纳（有界诊断切片） |
+| [0056](0056-multi-worker-supervision.md) | 独立终态票据与多 worker 有界 one-for-one 宿主重启 | 已采纳（宿主监督集成切片） |
 
 ## 维护方式
 

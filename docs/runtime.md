@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0056](adr/0056-multi-worker-supervision.md) 的 SchedulerSupervisor 通过固定子表与每实例唯一终态票据实现宿主 one-for-one 恢复。poll 一次至多消费一个退出，受管失败且滚动窗口仍准入时创建全新 state/堆和 Pid，旧请求已终结、旧消息不重放。并发失败不能互相覆盖终态；stop/关闭不重启，初始化/资源拒绝或强度超限不自动重试。host handle 的结果租约仍可延长旧账户，但票据不持有业务资源。需显式 poll，不提供语言 supervision/link/monitor。
+
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 的 SchedulerHandle::last_exit 返回跨 worker 最近失败的按值副本。记录旧 Pid、owner 编号、handler、ABI 故障和执行/预算/GC 快照；已提交引用 state 不暴露 handle，清理前账目不表示资源未归还。正常成功、主动 stop、关闭和未开始的准入失败不覆盖。关闭后仍可读取，不持有旧业务资源；固定单槽可能覆盖，不能替代可靠监督事件或故障历史。
 
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 的 Scheduler 使用固定线程与共享有界 registry，Pid 不依赖当前 worker；活 handler 始终由唯一 owner 恢复，正常返回后的镜像按 worker 编号轮转。send/request 的接受顺序由 registry 锁确定，同 sender FIFO，跨线程不承诺调用先后全序。stop 活目标只请求取消，owner 正常返回后退休代次；Drop 关闭入口、取消并 join 后才释放池。宿主结果可延长原账户租约但不能继续执行，语言完成事件提前计费且队满保留。配置边界与 start 前准入失败恢复队首见 ADR，未接入旧 Supervisor。
