@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0058](adr/0058-byte-i64-big-endian-access.md) 增加 `read_i64_be(Bytes, offset: Int) -> Int` 与 `replace_i64_be(Bytes, offset: Int, value: Int) -> Bytes`：按 signed big-endian 二进制补码访问连续八字节，支持完整 i64 范围及未对齐 offset。offset 必须非负且八字节均在对象内，否则 InvalidBytes；替换复制完整对象，不修改旧值。无隐式编码、字符串或可变切片，消息/回复限制不变。
+
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 增加不可变 `Bytes`，可作 state、局部、fn 参数/结果、条件表达式与 state while 的值。`fill_bytes(length: Int, value: Int) -> Bytes` 构造 0..=65536 字节，`bytes_len(Bytes) -> Int` 取长度，`byte_at(Bytes, Int) -> Int` 读字节，`replace_byte(Bytes, Int, Int) -> Bytes` 复制替换一个字节。字节必须为 0..=255，索引必须非负且小于长度；不合法时受管失败，不修改旧对象或提交候选。没有字符串字面量或隐式 UTF-8，也不允许 Bytes 消息参数/回复。示例见 [`examples/bytes.wings`](../examples/bytes.wings)，执行须配置计费堆。
 
 [ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 的多 worker 调度不改变源码拼写或 ABI v12。`examples/scheduler.wings` 在固定 worker 间以现有 spawn/send/request 复制 RecordInt/IntList，异步完成更新持久列表状态；迁移仅在 handler 返回后，仍无同步 call/await/receive 或引用回复。类型小写等语法调整留待独立草案审核，不在本切片改动。
@@ -169,7 +171,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽或非法字节参数属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v13 不兼容已发布 `0.0.2` 及旧源码 v2–v12 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽或非法字节参数属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v14 不兼容已发布 `0.0.2` 及旧源码 v2–v13 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 

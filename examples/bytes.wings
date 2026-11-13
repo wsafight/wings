@@ -1,5 +1,6 @@
 process ByteState {
   fn changed(value: Bytes, index: Int, byte: Int) -> Bytes { replace_byte(value, index, byte) }
+  fn changed_word(value: Bytes, offset: Int, number: Int) -> Bytes { replace_i64_be(value, offset, number) }
 
   state data: Bytes = fill_bytes(0, 0)
 
@@ -13,6 +14,15 @@ process ByteState {
   }
   on Read(index: Int) -> Int { collect(); byte_at(data, index) }
   on Length -> Int { collect(); bytes_len(data) }
+  on SetWord(offset: Int, number: Int) -> Int {
+    let old = data
+    let next = changed_word(data, offset, number)
+    collect()
+    data = next
+    read_i64_be(old, offset)
+  }
+  on ReadWord(offset: Int) -> Int { collect(); read_i64_be(data, offset) }
+  on FailWord -> Int { data = changed_word(data, 0, 99); 1 / 0 }
   on Branch(flag: Bool) -> Int {
     let selected = if flag { changed(data, 0, 7) } else { data }
     collect()

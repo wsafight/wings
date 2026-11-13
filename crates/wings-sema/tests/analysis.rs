@@ -12,6 +12,25 @@ fn checked(text: &str) -> Analysis {
 }
 
 #[test]
+fn byte_i64_builtins_require_explicit_byte_and_integer_operands() {
+    checked(
+        "process P { fn changed(value: Bytes, number: Int) -> Bytes { replace_i64_be(value, 1, number) } state data: Bytes = fill_bytes(16, 0); on Set(number: Int) -> Int { let next = changed(data, number); data = next; read_i64_be(data, 1) } }",
+    );
+    for text in [
+        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(data, true) } }",
+        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(1, 0) } }",
+        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { replace_i64_be(data, 0, false); 0 } }",
+        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(data) } }",
+        "process P { fn replace_i64_be(value: Int) -> Int { value } state data: Int = 0 }",
+    ] {
+        assert!(
+            !analyze(text).diagnostics.is_empty(),
+            "unexpected acceptance: {text}"
+        );
+    }
+}
+
+#[test]
 fn bytes_are_typed_immutable_roots_but_not_message_fields_or_replies() {
     checked(
         "process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 255) } state data: Bytes = fill_bytes(4, 0); on Set(value: Int) -> Int { let old = data; data = if true { changed(old) } else { fill_bytes(value, 7) }; collect(); bytes_len(data) + byte_at(old, 0) } }",

@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 13;
+pub const SCALAR_ABI_VERSION: u32 = 14;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -36,6 +36,8 @@ pub const HEAP_FILL_BYTES: u32 = 8;
 pub const HEAP_BYTES_LEN: u32 = 9;
 pub const HEAP_BYTE_AT: u32 = 10;
 pub const HEAP_REPLACE_BYTE: u32 = 11;
+pub const HEAP_READ_I64_BE: u32 = 12;
+pub const HEAP_REPLACE_I64_BE: u32 = 13;
 pub const MAX_SHADOW_ROOTS: usize = 64;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 

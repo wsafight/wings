@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0058](docs/adr/0058-byte-i64-big-endian-access.md) 补充 `read_i64_be` 和 `replace_i64_be`，支持 Bytes 内连续八字节的 signed big-endian 读写、未对齐 offset 及完整 i64 范围；写操作仍复制完整对象、计费并分块检查。当前 ABI v14，旧产物须重编译，为后续 BEAM 固定字节状态对照补齐编码基础，不代表该业务或性能门禁已经通过。
+
 [ADR-0057](docs/adr/0057-accounted-immutable-bytes.md) 增加 `Bytes`、`fill_bytes`、`bytes_len`、`byte_at` 与复制替换的 `replace_byte`；每块最多 256 字节，检查预算/取消，未发布 buffer 也向原进程三级计费。精确 GC 支持字节叶节点，失败不修改旧 state；ABI 升至 v13，旧产物须重编译。`examples/bytes.wings` 覆盖 state、fn、条件和循环，完整验证仍用下列 workspace 与受限 AOT 命令；不是字符串/通用记录或 BEAM 性能结果。类型大小写不变，语法草案仍待评审。
 
 [ADR-0056](docs/adr/0056-multi-worker-supervision.md) 增加 `SchedulerSupervisor`：每个子进程有独立、固定终态票据，旧业务资源清理后才可由宿主 `poll` 消费。受管失败按有限滚动窗口 one-for-one 重启为全新 state/堆与 Pid；Never、强度超限或初始化/额度失败明确终结，不重放旧 mailbox，也不自动监督语言创建的后代。没有后台监督线程，服务宿主必须驱动 `poll`。

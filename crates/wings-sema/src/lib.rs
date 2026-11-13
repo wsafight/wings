@@ -177,6 +177,8 @@ pub fn analyze(text: &str) -> Analysis {
                     | "bytes_len"
                     | "byte_at"
                     | "replace_byte"
+                    | "read_i64_be"
+                    | "replace_i64_be"
                     | "send_self"
                     | "self_pid"
                     | "spawn_self"
@@ -756,6 +758,8 @@ impl Checker {
                     "bytes_len" => (vec![Type::Bytes], Type::Int),
                     "byte_at" => (vec![Type::Bytes, Type::Int], Type::Int),
                     "replace_byte" => (vec![Type::Bytes, Type::Int, Type::Int], Type::Bytes),
+                    "read_i64_be" => (vec![Type::Bytes, Type::Int], Type::Int),
+                    "replace_i64_be" => (vec![Type::Bytes, Type::Int, Type::Int], Type::Bytes),
                     _ => {
                         self.error(
                             "T012",

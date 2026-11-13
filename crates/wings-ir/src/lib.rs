@@ -46,6 +46,8 @@ pub enum Operation {
     BytesLen(Register),
     ByteAt(Register, Register),
     ReplaceByte([Register; 3]),
+    ReadI64Be(Register, Register),
+    ReplaceI64Be([Register; 3]),
     SendSelf {
         handler: usize,
         arguments: Vec<Register>,
@@ -430,12 +432,13 @@ impl Function {
                     instruction.ty == ValueType::Int
                         && types.get(value) == Some(&ValueType::BytesRef)
                 }
-                Operation::ByteAt(value, index) => {
+                Operation::ByteAt(value, index) | Operation::ReadI64Be(value, index) => {
                     instruction.ty == ValueType::Int
                         && types.get(value) == Some(&ValueType::BytesRef)
                         && types.get(index) == Some(&ValueType::Int)
                 }
-                Operation::ReplaceByte([value, index, byte]) => {
+                Operation::ReplaceByte([value, index, byte])
+                | Operation::ReplaceI64Be([value, index, byte]) => {
                     instruction.ty == ValueType::BytesRef
                         && types.get(value) == Some(&ValueType::BytesRef)
                         && types.get(index) == Some(&ValueType::Int)
@@ -688,8 +691,11 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::Compare(_, left, right)
         | Operation::FillBytes(left, right)
         | Operation::ByteAt(left, right)
+        | Operation::ReadI64Be(left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),
-        Operation::ReplaceByte(ref arguments) => ([None, None], arguments.as_slice()),
+        Operation::ReplaceByte(ref arguments) | Operation::ReplaceI64Be(ref arguments) => {
+            ([None, None], arguments.as_slice())
+        }
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
         Operation::Call { ref arguments, .. } => ([None, None], arguments),
         Operation::Send {

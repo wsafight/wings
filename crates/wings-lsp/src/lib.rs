@@ -125,7 +125,7 @@ impl Server {
                         for (name, detail) in [("record_int", "(Int) -> RecordInt"), ("read_int", "(RecordInt) -> Int"), ("collect", "() -> Unit"), ("empty_ints", "() -> IntList"), ("prepend_int", "(Int, IntList) -> IntList"), ("head_int", "(IntList) -> Int"), ("tail_ints", "(IntList) -> IntList"), ("is_empty_ints", "(IntList) -> Bool"), ("send_self", "(Message, args...) -> Unit"), ("self_pid", "() -> Pid"), ("spawn_self", "() -> Pid"), ("send", "(Pid, Message, args...) -> Unit"), ("request", "(Pid, Message, Completed, Int, args...) -> RequestId"), ("cancel_request", "(RequestId) -> Unit")] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
-                        for (name, detail) in [("fill_bytes", "(Int, Int) -> Bytes"), ("bytes_len", "(Bytes) -> Int"), ("byte_at", "(Bytes, Int) -> Int"), ("replace_byte", "(Bytes, Int, Int) -> Bytes")] {
+                        for (name, detail) in [("fill_bytes", "(Int, Int) -> Bytes"), ("bytes_len", "(Bytes) -> Int"), ("byte_at", "(Bytes, Int) -> Int"), ("replace_byte", "(Bytes, Int, Int) -> Bytes"), ("read_i64_be", "(Bytes, Int) -> Int"), ("replace_i64_be", "(Bytes, Int, Int) -> Bytes")] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
                         for symbol in document.analysis.visible_symbols(offset) {

@@ -99,3 +99,11 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 本段只记录 macOS 本机结果；Linux 本增量另行验证。Bytes 不等于字符串、通用记录或引用消息/回复，逻辑字节不是 RSS，原生最新双平台与同负载 BEAM 性能/整机内存门禁仍未完成，M0/MVP 状态不变。
 
 隔离 Linux 从 `71fb8e2` 重新交叉构建 release 全部工具/示例与测试，26 个 harness 共 442 项通过（含 TCP 示例 2 项）；完整受限 release AOT 首次通过，包含真实 Linux `.so` 的字节构造、取消、独立根模型、迁移及监督空 state 重建。仍用 QEMU TCG 的 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载，未放宽 CPU/墙钟上限。Linux debug/native clippy/MSRV/doc-tests 未在本次执行，仿真不能替代原生 CI 或吞吐/整机内存门禁。
+
+### Bytes signed i64 大端访问增量：ADR-0058
+
+基于 `633b3ef`，macOS debug/release workspace 各 445 项测试通过（新增 5 项）；两种构建 TCP 示例各 2 项、check、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离与文档链接/围栏检查通过。ABI v14 增加固定八字节读与不可变整对象复制替换，context/effect 布局及故障码不变。
+
+单测覆盖完整 i64 两端、正负数、未对齐及末尾 offset、短 buffer/极端 offset 不分配/不写输出、旧对象不变、精确 GC 和复制低预算清理。完整 AOT 增加 64 KiB state 末尾连续更新与一步恢复，独立字节根模型验证跨 fn 读写与失败候选不提交。CPU 20 秒、墙钟 30 秒、禁 core 和 TCP 启动等待均未放宽。
+
+保留失败：debug 完整 AOT 前两次均在既有 TCP normal 场景的 5 秒启动等待超时；单独受限子进程探测能输出监听地址，未修改 TCP 或限制，第三次完整 debug 通过，完整 release 首次通过。不能据此宣称启动偶发失败已修复或稳定性门禁通过。Linux 本增量另行验证；编码原语不是 Wings/BEAM 同协议业务或性能结果，MVP 剩余门禁不变。

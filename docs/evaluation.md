@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的单测覆盖 i64 两端/负数、未对齐/尾部八字节、短 buffer 与极端 offset、源不变、精确 GC、低预算和取消。真实 `byte_buffers` AOT 核对最大 state 的反复更新、逐步恢复和低预算清理，独立根模型验证嵌套函数读写、失败不提交及解链。此处仅验证编码原语，不将其称为 Wings/BEAM 等价业务或性能结果。
+
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 在 `byte_buffers` 受限 AOT 覆盖 0/256/4096/65536 字节、旧值不变、fn/条件/循环、小堆 GC、非法参数、低预算与 512 组最大状态暂停后取消/Drop 清理，另验证跨 worker 迁移及监督重建为空。`--check-byte-roots` 用独立字节堆在每个 compiler 检查点和 heap 回调前收集，核对源引用、候选出口及失败解链。单测检查三级预留失败、跨堆发布拒绝、传递根、回收与字节额度 GC 重试；子进程 CPU 20 秒/墙钟 30 秒/禁 core 不变。这只是固定业务字节的表示基础，不是 BEAM 等价负载或内存排名。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 增加并发八个 child 失败的独立终态检查、全新 state/代次、有限强度、Never、主动停止、重启额度/initializer 失败回滚；真实 `multi_worker` AOT 验证持久列表失败后以全新空列表恢复、旧请求失败、第二次失败达到强度上限。固定 poll 不保证自动恢复延迟，未补齐语言监督、故障历史或性能门禁。

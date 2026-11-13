@@ -359,7 +359,15 @@ unsafe fn byte_call(
     operation: u32,
     arguments: [i64; 3],
 ) -> Result<u64, u32> {
-    use wings_abi::{HEAP_BYTE_AT, HEAP_BYTES_LEN, HEAP_FILL_BYTES, STATUS_INVALID_BYTES};
+    use wings_abi::{
+        HEAP_BYTE_AT, HEAP_BYTES_LEN, HEAP_FILL_BYTES, HEAP_READ_I64_BE, HEAP_REPLACE_I64_BE,
+        STATUS_INVALID_BYTES,
+    };
+    let width = if operation == HEAP_READ_I64_BE || operation == HEAP_REPLACE_I64_BE {
+        8
+    } else {
+        1
+    };
     let pointer = context.heap_data.cast::<AotHeap>();
     let (length, source, index, value) = if operation == HEAP_FILL_BYTES {
         let length = usize::try_from(arguments[0])
@@ -367,7 +375,7 @@ unsafe fn byte_call(
             .filter(|length| *length <= crate::heap::MAX_BYTES)
             .ok_or(STATUS_INVALID_BYTES)?;
         let value = u8::try_from(arguments[1]).map_err(|_| STATUS_INVALID_BYTES)?;
-        (length, None, 0, value)
+        (length, None, 0, u64::from(value))
     } else {
         let heap = unsafe { &*pointer };
         let reference = heap
@@ -383,12 +391,26 @@ unsafe fn byte_call(
         }
         let index = usize::try_from(arguments[1])
             .ok()
-            .filter(|index| *index < bytes.len())
+            .filter(|index| {
+                index
+                    .checked_add(width)
+                    .is_some_and(|end| end <= bytes.len())
+            })
             .ok_or(STATUS_INVALID_BYTES)?;
         if operation == HEAP_BYTE_AT {
             return Ok(u64::from(bytes[index]));
         }
-        let value = u8::try_from(arguments[2]).map_err(|_| STATUS_INVALID_BYTES)?;
+        if operation == HEAP_READ_I64_BE {
+            let value = bytes[index..index + 8]
+                .try_into()
+                .expect("eight byte range");
+            return Ok(i64::from_be_bytes(value) as u64);
+        }
+        let value = if operation == HEAP_REPLACE_I64_BE {
+            arguments[2] as u64
+        } else {
+            u64::from(u8::try_from(arguments[2]).map_err(|_| STATUS_INVALID_BYTES)?)
+        };
         (bytes.len(), Some(reference), index, value)
     };
     let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
@@ -409,11 +431,15 @@ unsafe fn byte_call(
             let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
             buffer.data.extend_from_slice(&bytes[start..end]);
         } else {
-            buffer.data.resize(end, value);
+            buffer.data.resize(end, value as u8);
         }
     }
     if source.is_some() {
-        buffer.data[index] = value;
+        if width == 8 {
+            buffer.data[index..index + 8].copy_from_slice(&value.to_be_bytes());
+        } else {
+            buffer.data[index] = value as u8;
+        }
     }
     let mut buffer = Some(buffer);
     for attempt in 0..2 {
@@ -447,7 +473,7 @@ pub(crate) unsafe extern "C" fn heap_call(
         return STATUS_INVALID_CONTROL;
     }
     let pointer = context.heap_data.cast::<AotHeap>();
-    if (wings_abi::HEAP_FILL_BYTES..=wings_abi::HEAP_REPLACE_BYTE).contains(&operation) {
+    if (wings_abi::HEAP_FILL_BYTES..=wings_abi::HEAP_REPLACE_I64_BE).contains(&operation) {
         let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
         return match unsafe { byte_call(context, operation, arguments) } {
             Ok(value) => {
@@ -692,7 +718,8 @@ mod tests {
     #[test]
     fn byte_builder_budget_and_cancellation_release_unpublished_data_at_every_chunk() {
         use wings_abi::{
-            HEAP_FILL_BYTES, HEAP_REPLACE_BYTE, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED,
+            HEAP_FILL_BYTES, HEAP_REPLACE_BYTE, HEAP_REPLACE_I64_BE, STATUS_BUDGET_EXHAUSTED,
+            STATUS_CANCELLED,
         };
         for budget in [0, 1, 2, 16, 64, 128, 255, 256] {
             let (vm, mut heap) = fixture(4);
@@ -703,7 +730,7 @@ mod tests {
             heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
                 .unwrap();
             let baseline = vm.used();
-            for operation in [HEAP_FILL_BYTES, HEAP_REPLACE_BYTE] {
+            for operation in [HEAP_FILL_BYTES, HEAP_REPLACE_BYTE, HEAP_REPLACE_I64_BE] {
                 context.remaining_steps = budget;
                 context.slice_remaining = 1;
                 let arguments = if operation == HEAP_FILL_BYTES {
@@ -725,6 +752,87 @@ mod tests {
                 (STATUS_CANCELLED, 79)
             );
             assert_eq!(vm.used(), baseline);
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn byte_i64_access_is_big_endian_signed_unaligned_immutable_and_rooted() {
+        use wings_abi::{HEAP_FILL_BYTES, HEAP_READ_I64_BE, HEAP_REPLACE_I64_BE};
+        for value in [i64::MIN, -65537, -1, 0, 1, 65537, i64::MAX] {
+            for offset in [0, 1, 8] {
+                let (vm, mut heap) = fixture(4);
+                let flag = std::sync::atomic::AtomicU32::new(0);
+                let mut context = context(&mut heap, &flag);
+                let (status, original) =
+                    unsafe { bytes(&mut context, HEAP_FILL_BYTES, [16, 0, 0]) };
+                assert_eq!(status, STATUS_OK);
+                heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                    .unwrap();
+                let (status, replacement) = unsafe {
+                    bytes(
+                        &mut context,
+                        HEAP_REPLACE_I64_BE,
+                        [original as i64, offset, value],
+                    )
+                };
+                assert_eq!(status, STATUS_OK);
+                let original_ref = heap.heap.import_reference(original).unwrap();
+                let replacement_ref = heap.heap.import_reference(replacement).unwrap();
+                assert_eq!(heap.heap.bytes(original_ref).unwrap(), [0; 16]);
+                let mut expected = [0; 16];
+                expected[offset as usize..offset as usize + 8]
+                    .copy_from_slice(&value.to_be_bytes());
+                assert_eq!(heap.heap.bytes(replacement_ref).unwrap(), expected);
+                assert_eq!(
+                    unsafe {
+                        bytes(
+                            &mut context,
+                            HEAP_READ_I64_BE,
+                            [replacement as i64, offset, 0],
+                        )
+                    },
+                    (STATUS_OK, value as u64)
+                );
+                heap.commit_typed(wings_abi::ValueType::BytesRef, replacement as i64)
+                    .unwrap();
+                unsafe { heap.collect(std::ptr::null()) }.unwrap();
+                assert_eq!(heap.stats().allocated, 1);
+                assert_eq!(heap.heap.bytes(replacement_ref).unwrap(), expected);
+                drop(heap);
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+
+    #[test]
+    fn byte_i64_range_rejections_do_not_allocate_or_change_output() {
+        use wings_abi::{
+            HEAP_FILL_BYTES, HEAP_READ_I64_BE, HEAP_REPLACE_I64_BE, STATUS_INVALID_BYTES,
+        };
+        for length in [0, 1, 7, 8, 16] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            let (status, original) =
+                unsafe { bytes(&mut context, HEAP_FILL_BYTES, [length, 255, 0]) };
+            assert_eq!(status, STATUS_OK);
+            heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                .unwrap();
+            let baseline = vm.used();
+            for offset in [i64::MIN, -1, length.saturating_sub(7), length, i64::MAX] {
+                for operation in [HEAP_READ_I64_BE, HEAP_REPLACE_I64_BE] {
+                    assert_eq!(
+                        unsafe {
+                            bytes(&mut context, operation, [original as i64, offset, i64::MIN])
+                        },
+                        (STATUS_INVALID_BYTES, 79)
+                    );
+                    assert_eq!(vm.used(), baseline);
+                    assert_eq!(heap.stats().allocated, 1);
+                }
+            }
             drop(heap);
             assert_eq!(vm.used(), Resources::default());
         }

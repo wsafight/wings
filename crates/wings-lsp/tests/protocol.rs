@@ -35,6 +35,8 @@ fn bytes_hover_and_builtins_share_frontend_types_without_execution() {
         "bytes_len",
         "byte_at",
         "replace_byte",
+        "read_i64_be",
+        "replace_i64_be",
     ] {
         assert!(
             completion["result"]["items"]

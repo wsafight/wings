@@ -9,6 +9,34 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 }
 
 #[test]
+fn byte_i64_operations_validate_types_and_preserve_last_use_source_roots() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(16)),
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::BytesRef, Operation::ReplaceI64Be([3, 2, 1])),
+        instruction(ValueType::Int, Operation::ReadI64Be(4, 2)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 5;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&4));
+    for operation in [
+        Operation::ReplaceI64Be([3, 3, 1]),
+        Operation::ReplaceI64Be([3, 1, 9]),
+        Operation::ReadI64Be(2, 1),
+    ] {
+        let mut bad = program.clone();
+        bad.handlers[0].function.instructions[4].operation = operation;
+        assert!(bad.validate().is_err());
+    }
+}
+
+#[test]
 fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
     let mut program = valid_program();
     program.handlers[0].function.instructions = vec![

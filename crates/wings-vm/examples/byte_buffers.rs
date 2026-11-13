@@ -44,6 +44,39 @@ fn main() {
         }
     }
     assert_eq!(process.invoke("Loop", &[20]).unwrap(), Some(20));
+    process.invoke("Fill", &[65536, 0]).unwrap();
+    let mut previous = 0;
+    for number in [i64::MIN, -1, 0, 1, i64::MAX] {
+        assert_eq!(
+            process.invoke("SetWord", &[65528, number]).unwrap(),
+            Some(previous)
+        );
+        assert_eq!(process.invoke("ReadWord", &[65528]).unwrap(), Some(number));
+        assert_eq!(process.invoke("Read", &[0]).unwrap(), Some(0));
+        previous = number;
+    }
+    let mut execution = process
+        .start_controlled(
+            "SetWord",
+            &[65528, -7],
+            4096,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+        )
+        .unwrap();
+    let mut suspensions = 0;
+    loop {
+        match execution.resume(1).unwrap() {
+            ExecutionStatus::Suspended => suspensions += 1,
+            ExecutionStatus::Complete(reply) => {
+                assert_eq!(reply, Some(i64::MAX));
+                break;
+            }
+        }
+    }
+    assert!(suspensions >= 256);
+    drop(execution);
+    assert_eq!(process.invoke("ReadWord", &[65528]).unwrap(), Some(-7));
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut observed_unpublished_bytes = false;
@@ -84,6 +117,9 @@ fn main() {
         ("Set", vec![4, 3]),
         ("Set", vec![0, -1]),
         ("Read", vec![4]),
+        ("ReadWord", vec![0]),
+        ("SetWord", vec![0, i64::MAX]),
+        ("SetWord", vec![i64::MAX, i64::MIN]),
     ] {
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
         process.invoke("Fill", &[4, 8]).unwrap();
@@ -112,6 +148,27 @@ fn main() {
             .start_controlled(
                 "Set",
                 &[128, 7],
+                budget,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+            )
+            .unwrap();
+        assert!(execution.resume(4096).is_err());
+        assert_eq!(
+            execution.snapshot().fault,
+            Some(ExecutionFault::BudgetExhausted)
+        );
+        drop(execution);
+        drop(process);
+        assert_eq!(vm.used(), baseline);
+    }
+    for budget in [0, 4, 64, 128, 255] {
+        let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
+        process.invoke("Fill", &[65536, 0]).unwrap();
+        let mut execution = process
+            .start_controlled(
+                "SetWord",
+                &[65528, i64::MIN],
                 budget,
                 &CancellationToken::default(),
                 &PreemptionToken::default(),

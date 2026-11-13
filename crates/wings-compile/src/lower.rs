@@ -303,7 +303,8 @@ impl Lowerer<'_> {
                         self.push(ValueType::Int, Operation::ReadInt(value))
                     }
                     "collect" => self.push(ValueType::Unit, Operation::Collect),
-                    "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" => {
+                    "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" | "read_i64_be"
+                    | "replace_i64_be" => {
                         let values = arguments
                             .iter()
                             .map(|argument| self.expression(argument))
@@ -315,6 +316,13 @@ impl Lowerer<'_> {
                             ),
                             "bytes_len" => (ValueType::Int, Operation::BytesLen(values[0])),
                             "byte_at" => (ValueType::Int, Operation::ByteAt(values[0], values[1])),
+                            "read_i64_be" => {
+                                (ValueType::Int, Operation::ReadI64Be(values[0], values[1]))
+                            }
+                            "replace_i64_be" => (
+                                ValueType::BytesRef,
+                                Operation::ReplaceI64Be([values[0], values[1], values[2]]),
+                            ),
                             _ => (
                                 ValueType::BytesRef,
                                 Operation::ReplaceByte([values[0], values[1], values[2]]),
@@ -652,6 +660,27 @@ mod tests {
         assert_eq!(program.handlers[0].function.instructions.len(), 1);
         assert_eq!(program.handlers[0].function.state, 0);
         assert_eq!(program.handlers[0].function.reply, 0);
+    }
+
+    #[test]
+    fn byte_i64_lowering_keeps_order_types_and_source_roots() {
+        let program = lower("process P { state data: Bytes = fill_bytes(16, 0); on Set(value: Int) -> Int { data = replace_i64_be(data, 1, value); read_i64_be(data, 1) } }").unwrap();
+        let function = &program.handlers[0].function;
+        let replaced = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::ReplaceI64Be(_)))
+            .unwrap();
+        let read = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::ReadI64Be(_, _)))
+            .unwrap();
+        assert!(replaced < read);
+        assert_eq!(function.instructions[replaced].ty, ValueType::BytesRef);
+        assert_eq!(function.instructions[read].ty, ValueType::Int);
+        assert!(function.root_plan().at[replaced].contains(&0));
+        assert!(function.root_plan().at[read].contains(&replaced));
     }
 
     #[test]

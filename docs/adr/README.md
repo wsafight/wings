@@ -65,6 +65,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0055](0055-multi-worker-exit-diagnostics.md) | 多 worker 最近失败的固定按值诊断，不延长业务资源租约 | 已采纳（有界诊断切片） |
 | [0056](0056-multi-worker-supervision.md) | 独立终态票据与多 worker 有界 one-for-one 宿主重启 | 已采纳（宿主监督集成切片） |
 | [0057](0057-accounted-immutable-bytes.md) | ABI v13、计费不可变字节叶节点与有界构造/复制 | 已采纳（业务值集成切片） |
+| [0058](0058-byte-i64-big-endian-access.md) | ABI v14、固定八字节 signed big-endian 读取与不可变替换 | 已采纳（状态编码切片） |
 
 ## 维护方式
 

@@ -259,6 +259,8 @@ fn compile_body(
                 | Operation::BytesLen(_)
                 | Operation::ByteAt(_, _)
                 | Operation::ReplaceByte(_)
+                | Operation::ReadI64Be(_, _)
+                | Operation::ReplaceI64Be(_)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -679,7 +681,9 @@ fn compile_body(
             Operation::FillBytes(_, _)
             | Operation::BytesLen(_)
             | Operation::ByteAt(_, _)
-            | Operation::ReplaceByte(_) => {
+            | Operation::ReplaceByte(_)
+            | Operation::ReadI64Be(_, _)
+            | Operation::ReplaceI64Be(_) => {
                 let output = heap_output.expect("heap operation scratch");
                 let (operation, arguments) = match instruction.operation {
                     Operation::FillBytes(length, value) => (
@@ -695,6 +699,14 @@ fn compile_body(
                     Operation::ReplaceByte([value, index, byte]) => (
                         wings_abi::HEAP_REPLACE_BYTE,
                         [Some(value), Some(index), Some(byte)],
+                    ),
+                    Operation::ReadI64Be(value, index) => (
+                        wings_abi::HEAP_READ_I64_BE,
+                        [Some(value), Some(index), None],
+                    ),
+                    Operation::ReplaceI64Be([value, index, number]) => (
+                        wings_abi::HEAP_REPLACE_I64_BE,
+                        [Some(value), Some(index), Some(number)],
                     ),
                     _ => unreachable!(),
                 };

@@ -206,7 +206,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 13
+    assert manifest["abi"] == 14
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -297,7 +297,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v13 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v14 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -398,7 +398,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                     return 9
                 else:
                     result[0] = node[1 if operation == 5 else 2]
-            elif operation in [8, 9, 10, 11]:
+            elif operation in [8, 9, 10, 11, 12, 13]:
                 values = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
                 if operation == 8:
                     length, value = values[:2]
@@ -412,14 +412,19 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                         result[0] = len(data)
                         return 0
                     index = values[1]
-                    if not 0 <= index < len(data):
+                    width = 8 if operation in [12, 13] else 1
+                    if not 0 <= index <= len(data) - width:
                         return 13
                     if operation == 10:
                         result[0] = data[index]
                         return 0
-                    if not 0 <= values[2] <= 255:
+                    if operation == 12:
+                        result[0] = int.from_bytes(data[index:index + 8], "big", signed=True) % (1 << 64)
+                        return 0
+                    if operation == 11 and not 0 <= values[2] <= 255:
                         return 13
-                    data = data[:index] + bytes([values[2]]) + data[index + 1:]
+                    replacement = values[2].to_bytes(8, "big", signed=True) if operation == 13 else bytes([values[2]])
+                    data = data[:index] + replacement + data[index + width:]
                 sequence += 1
                 records[sequence] = data
                 result[0] = sequence
@@ -512,7 +517,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 13 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 14 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -567,9 +572,21 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 assert (records[output.state], output.reply) == (expected_state, expected_reply), (name, output.reply)
                 committed = output.state
             assert max(frame_depths) >= 2, frame_depths
+            previous = 0
+            for number in [-(1 << 63), -1, 0, 1, (1 << 63) - 1, 0]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "SetWord")
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504, number])
+                assert output.reply == previous
+                committed = output.state
+                assert records[committed][504:] == number.to_bytes(8, "big", signed=True)
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "ReadWord")
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504])
+                assert output.reply == number
+                previous = number
             for name, values, expected_status in [
                 ("Fill", [-1, 0], 13), ("Fill", [65537, 0], 13),
                 ("Fill", [1, 256], 13), ("Set", [512, 0], 13), ("Fail", [], 2),
+                ("ReadWord", [505], 13), ("SetWord", [-1, 0], 13), ("FailWord", [], 2),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 entry = getattr(library, f"wings_scalar_handler_{index}")
