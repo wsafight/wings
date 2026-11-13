@@ -1,4 +1,4 @@
-# BEAM 工作负载协议 v1–v6
+# BEAM 工作负载协议 v1–v7
 
 本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。
 
@@ -144,9 +144,28 @@ WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --ar
 
 本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。没有饱和扫描或 CPU/平台内存完整口径，不作最大持续吞吐/整机内存领先结论；其余三组与 fairness 仍待验证。
 
+## v7：百万次加法与突发心跳的短时验证
+
+[ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 和 [`beam-fairness.wings`](../examples/beam-fairness.wings) 将下表fairness行接入有界正确性：101个actor各保留完整256 B state/独立ID，mailbox1；Wings只有一个worker，BEAM只有一个在线scheduler（`+S 1:1`），但未设置OS单核硬配额。热actor1每个CPU请求从零执行恰好1000000次checked +1，回复百万、state计数加一；以六层非递归受管函数逐级十次调用，不改语法/ABI，不在每次加法分配Bytes，也不使用一次+百万代替。BEAM使用相同六层checked业务，保留原生reduction调度。
+
+冷actor2..101每10ms各发送一次心跳，计划为 `t0+floor(k/100)*10000000ns`，同一burst100条同刻，不均匀摊开。短测只接受严格字符串`10`/`30`，分别100/300条到达；直接发送、不等旧回复/不暂停计划/不重试。热任务正常返回后立即续发，直到最后计划burst发送完；随后收齐已有CPU/冷请求，不继续续热任务。总结果容量256，其中255实际冷pending加一个保留热请求；队列满/冷pending满逐条记录拒绝。冷请求计划后100ms外部deadline，迟发不重基准、超时pending仍占空间至真实回复，不取消已接受业务。
+
+输出v7 smoke包括与v5同形状的全部`samples`、热任务`hot:[sequence,sent_ns,observed_ns,1000000]`、每actor实际`committed`。最终要求至少一个CPU实际完成、所有接受的心跳实际收齐并核对state；BEAM还检查完整padding/实际每目标回复顺序/monitor，Wings检查提交Bytes长度/ID/32 B前缀及逻辑归零。CPU预算固定10000000 steps，另以小预算真实执行验证不可绕过。任何阶段超时、业务失败或清理不完整使整个测试失败；CPU5秒/墙钟10秒/禁core、总阶段3秒与完整AOT20/30秒不变。
+
+独立Python重算全部同刻计划/目标/每目标值/最终状态、拒绝与超时、255实际冷pending上界，报告每冷actor最大观测等待及拒绝/超时、nearest-rank p50/p99/最大值，少于10000不报p999。`observed_while_CPU_pending`只表示CPU票据开始到结果观察区间的重叠，不能冒充CPU当时仍在执行、实际抢占或让出时间。两端CPU完成次数/拒绝位置/时间不要求相同，不将某种OS交错写成必然。
+
+```sh
+cargo build --workspace --locked --bins --examples
+cargo test --locked -p wings-vm --example beam_fairness
+python3 scripts/verify_fairness.py --compare-beam --output target/fairness-smoke-debug
+WINGS_PROFILE=release python3 scripts/verify_fairness.py --compare-beam --output target/fairness-smoke-release
+```
+
+`--artifact`可复用匹配可信产物；默认完整AOT只执行Wings/模型，缺少OTP29的显式三端失败、不回退。尚无公平性30s/60s/五次重复、OS单核硬配额、独立请求让出到实际让出时间戳和过载分组；不把心跳延迟代替候选让出p99<5ms，也不将此短测称MVP或BEAM双目标通过。
+
 ## 代表性负载与性能验收冻结条件
 
-这些是同业务对照的固定小集合，不展开整个笛卡尔积。v5 只执行四组非 fairness 的短时验证，不等同本节长时性能验收。普通 Idle 与活跃场景都保持 32 B 逻辑请求/成功回复；逻辑 state 仍包含计数器与 actor ID。actor ID 为 `1..N`，活动集合取前 `A` 个；其余保留状态但不处理业务消息，不冬眠。更大 actor 数、其他 payload、冬眠与 M:N 另立协议版本。
+这些是同业务对照的固定小集合，不展开整个笛卡尔积。v5执行四组非fairness短时验证，v6接独立长时入口，v7补fairness短时业务；均不自动构成完整性能验收。普通Idle与活跃场景都保持32 B逻辑请求/成功回复；逻辑state仍包含计数器与actor ID。actor ID为`1..N`，活动集合取前`A`个；其余保留状态但不处理业务消息，不冬眠。更大actor数、其他payload、冬眠与M:N另立协议版本。
 
 | ID | actor 数 / 活跃比例 | state | mailbox 准入上限 | 调度与目的 |
 |---|---|---|---|---|
@@ -191,7 +210,7 @@ Wings 驱动位于 [`beam_counter.rs`](../crates/wings-vm/examples/beam_counter.
 
 Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目归零只证明逻辑清理，不证明 RSS。
 
-v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2，短时开环见 v5，独立长时入口见 v6。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP，也不自动执行长测；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无心跳/公平性、完整过载性能或吞吐/整机内存门禁结论。
+v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2，短时开环见 v5，独立长时入口见 v6，CPU/突发心跳短时业务见 v7。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP，也不自动执行长测；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无长时公平性、完整过载性能或吞吐/整机内存门禁结论。
 
 原 BEAM 独立 oracle 仍可单独运行：
 

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 的v7用单worker/单BEAM scheduler核对百万次checked加法与每10ms同刻100个心跳，保存逐条原始样本、每actor最大端到端等待、拒绝/超时和小样本分位；少于10000不报p999。CPU请求未完成期间观察到心跳仅是pending重叠，不是让出延迟；OS单核硬配额、30s/60s公平性长测、独立让出时间戳和双平台门禁仍待验收。
+
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 接入独立固定 30s/60s/五次重复的开环入口、可选最多八点翻倍扫描、原始事件关联核对和精确 nearest-rank 分位。每次实验冻结 runner/产物/源文件；目前进程树加驱动 RSS 只是观测，缺少 CPU 硬配额、Linux PSS、macOS physical/压缩/swap 及主机隔离证据，仍不构成同负载吞吐/整机内存门禁通过。协议和运行命令见 [BEAM v6](beam-workloads.md#v6独立长时开环测量)。
 
 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 的 v5 只验证计划时刻开环、逐条拒绝/超时、迟到实际结果和最终提交记账；短时 `smoke` 不作吞吐/尾延迟排名。完整负载、长时预热/采样/重复及双平台整机测量仍按本文与 [BEAM 协议](beam-workloads.md)验收，不能用功能探测替代。

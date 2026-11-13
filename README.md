@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0070](docs/adr/0070-bounded-fairness-heartbeats.md) 增加同 worker 百万次 checked 加法与 100 actor 突发心跳的短时业务核对。构建后 `python3 scripts/verify_fairness.py --compare-beam` 显式执行三端；保留逐条拒绝/超时及每 actor 等待，不等同单核 CPU 配额、让出延迟或长时公平性门禁。
+
 [ADR-0069](docs/adr/0069-streamed-open-loop-measurement.md) 增加独立长时 runner：固定 30 秒预热、60 秒采样、五次配对重复，冻结输入并保留原始事件，精确计算分位和拒绝/超时。入口为 `WINGS_PROFILE=release python3 scripts/measure_open_loop.py --help`；尚缺 CPU 硬配额、完整平台内存口径及原生双平台，不能据此宣布 BEAM 双目标或 MVP 通过。
 
 [ADR-0068](docs/adr/0068-bounded-open-loop-counter.md) 接入四组代表负载的短时计划开环与逐条迟发/拒绝/超时记账。构建后 `python3 scripts/verify_open_loop.py --compare-beam` 核对 Wings/BEAM/独立模型；这是有界 `smoke`，不是 30s/60s/五次重复、fairness、整机内存或性能验收。

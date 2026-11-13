@@ -1,5 +1,7 @@
 # wings-lang
 
+[`examples/beam-fairness.wings`](../examples/beam-fairness.wings) 用现有声明顺序非递归 `fn`，以六层、每层十次调用执行恰好百万次 checked `+1`；`Cpu` 正常返回才替换 Bytes state。它没有引入可变局部、fn 内 while 或新类型拼写，也不在每次加法时复制 state。单 worker 的突发心跳功能验证见 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md)，不等同公平性性能门禁。基础类型小写仍待独立语法评审，不在该负载中修改。
+
 [`examples/beam-counter.wings`](../examples/beam-counter.wings) 用现有 Bytes 内建构造固定长度 state，通过 `Configure` 初始化 actor ID/计数器，`Apply` 做 checked 加法、完整候选复制及注入失败；正常返回才提交/自动回复。sequence/operation/reserved 由有界外部测试驱动验证，不新增 `await`、同步 call 或消息类型。它是同协议正确性负载，不是生产入口或性能结果，见 [ADR-0059](adr/0059-byte-state-counter-equivalence.md)。
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 增加 `read_i64_be(Bytes, offset: Int) -> Int` 与 `replace_i64_be(Bytes, offset: Int, value: Int) -> Bytes`：按 signed big-endian 二进制补码访问连续八字节，支持完整 i64 范围及未对齐 offset。offset 必须非负且八字节均在对象内，否则 InvalidBytes；替换复制完整对象，不修改旧值。无隐式编码、字符串或可变切片，消息/回复限制不变。

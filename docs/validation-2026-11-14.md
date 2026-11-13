@@ -126,10 +126,22 @@ Linux 同原 2 vCPU/4 GiB QEMU TCG 环境交叉构建 release 工具/示例。�
 
 依赖隔离、禁 unwind feature、85 份 Markdown 路径/围栏、Python 语法、JSON 证据与 diff whitespace 检查通过。未推送或发布，语法草案仍待审，完整 MVP 门槛不变。
 
+## CPU 与突发心跳短时业务：ADR-0070
+
+基于 `aed92ec`，按 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 增加 101 个真实 256 B actor、mailbox 1、同 worker 百万次 checked 加法与其余 100 actor 每 10ms 同刻突发心跳。Wings/BEAM 均直接发送且保留 255 实际冷 pending 加一个热请求；外部 100ms deadline 不释放旧 pending，不撤回已接受的状态提交。六层有界非递归函数沿用受管帧、根与强制检查点，不改语言、ABI v14、生产调度器或语法草案。
+
+环境同上：macOS 26.6.2 AArch64、Rust 1.99.1，真实对照为 OTP 29/ERTS 17.1.1 JIT。workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；debug/release workspace 各 462 项、六个示例合计各 13 项，共各 475 项通过。新增严格时段/精确突发计划单测；两种构建完整受限 AOT 通过，日志 `/tmp/wings-fairness-aot-debug.log` 和 `/tmp/wings-fairness-aot-release.log`。没有提高原 CPU 5 秒/墙钟 10 秒/禁 core、总阶段 3 秒或完整 AOT CPU 20 秒/墙钟 30 秒限制。
+
+两种构建显式 v1–v7 三端回归全部通过。v7 的 10/30ms 分别核对 100/300 条冷心跳、至少一个完成的百万次 CPU 任务、每目标 FIFO/值、最终 state 和停止清理；这些运行均收齐心跳，无拒绝或超时。独立模型另覆盖精确 deadline、迟到分类、拒绝不算零延迟、每 actor 最大等待、255 个已超时请求仍占 pending、额外到达拒绝，以及 20 份伪造历史；少于 10000 个样本不报 p999。最终原始输出与逐 actor 摘要在 `target/fairness-smoke-{debug,release}`；这不是 90 秒采样、吞吐或公平性验收。Wings 另以 100 steps 真实失败、10000000 steps 返回百万，确认总预算不可绕过。
+
+Linux 使用同一 2 vCPU/4 GiB QEMU TCG 隔离客体，重新交叉构建 release 工具与示例。31 个 harness 共 475 项及完整受限 release AOT 通过，日志 `/tmp/wings-fairness-linux-tests.log` 和 `/tmp/wings-fairness-linux-aot.log`；没有缩小旧 v2 大容量用例或百万次任务。本次通过不消除上节记录的大容量阶段 deadline 余量风险。客体无 OTP/长测，也未执行原生 debug/clippy/MSRV/doc-tests；测试后停止。仿真仍不等同最新原生双平台。
+
+依赖隔离与禁止协程 unwind feature 检查通过。`observed_while_CPU_pending` 仅表示票据区间重叠，不是实际 CPU 执行或让出时间戳；单 worker/单在线 scheduler 不是 OS 单核配额。长时 fairness、独立让出延迟、CPU 硬配额、平台完整内存及 BEAM 吞吐/内存双目标均未据此通过。未推送或发布，语法提案仍待审。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 并发失败、长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环分别由 ADR-0065/0067/0068 补充，仍缺完整性能验收。
+- 并发失败、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，仍缺完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 五对 30s/60s 只补长时集成；仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 

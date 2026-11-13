@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 增加同 worker CPU/突发心跳业务回归，沿用原强制检查点、总预算和原子取消。外部心跳超时不释放实际 pending、不撤回 state 提交；受限测试收齐 CPU/心跳后核对独立 state 及最终归零，不据此声称长时公平性或完整资源账本通过。
+
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 的长测只延长独立测试宿主的实验时段，不放宽原 smoke 或 runtime 配额。仍最多 256 实际 pending，外部超时不撤回远端提交，最终未收齐实际结果即判实验无效；冻结副本和原始事件不等于完整资源账本或 OS 隔离。
 
 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 仅新增测试宿主的计划时刻开环：外部 100ms deadline 不取消远端业务，超时 pending 保留到实际结果，拒绝不重试。未改变 runtime 请求/状态提交契约；长时公平性、超时竞争与完整资源账本仍待验收。

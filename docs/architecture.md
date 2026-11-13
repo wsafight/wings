@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 用六层声明顺序的受管函数执行百万次 checked +1，同 worker 下与 100 个真实 Bytes 心跳 actor 竞争。只增加测试程序，不改语言/ABI；观察 CPU pending 不等于实际运行或让出时间戳，单 worker 数量不代替 OS 单核配额。
+
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为测试宿主增加独立长时测量入口，以固定缓冲事件文件替代随时长增长的常驻样本；无 ABI/语言改动，不排除驱动、gate、采样及写入成本。原 smoke 资源边界不变，完整性能/内存门禁仍待验证。
 
 [ADR-0068](adr/0068-bounded-open-loop-counter.md) 将现有 Bytes Counter、Scheduler 与 BEAM CAS gate 接入短时开环验证；不改 ABI/语言，驱动和采样成本不排除在未来整机测量外。长时性能和内存双目标仍未验证。

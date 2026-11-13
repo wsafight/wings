@@ -1054,6 +1054,9 @@ def main():
         command([sys.executable, ROOT / "scripts/verify_multi_counter.py", "--artifact", multi_counter])
         command([sys.executable, ROOT / "scripts/verify_open_loop.py", "--artifact", multi_counter])
         command([sys.executable, ROOT / "scripts/verify_measurement.py"])
+        fairness = parent / "beam-fairness"
+        command([COMPILER, "build", ROOT / "examples/beam-fairness.wings", "-o", fairness])
+        command([sys.executable, ROOT / "scripts/verify_fairness.py", "--artifact", fairness])
         senders_counter = parent / "beam-senders-counter"
         command([COMPILER, "build", ROOT / "examples/beam-senders-counter.wings", "-o", senders_counter])
         command([sys.executable, ROOT / "scripts/verify_senders_counter.py", "--artifact", senders_counter])
