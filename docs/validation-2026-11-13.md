@@ -107,3 +107,5 @@ ABI v13 的 Bytes 是 0..=64 KiB 不可变叶节点，固定所有权表和独�
 单测覆盖完整 i64 两端、正负数、未对齐及末尾 offset、短 buffer/极端 offset 不分配/不写输出、旧对象不变、精确 GC 和复制低预算清理。完整 AOT 增加 64 KiB state 末尾连续更新与一步恢复，独立字节根模型验证跨 fn 读写与失败候选不提交。CPU 20 秒、墙钟 30 秒、禁 core 和 TCP 启动等待均未放宽。
 
 保留失败：debug 完整 AOT 前两次均在既有 TCP normal 场景的 5 秒启动等待超时；单独受限子进程探测能输出监听地址，未修改 TCP 或限制，第三次完整 debug 通过，完整 release 首次通过。不能据此宣称启动偶发失败已修复或稳定性门禁通过。Linux 本增量另行验证；编码原语不是 Wings/BEAM 同协议业务或性能结果，MVP 剩余门禁不变。
+
+隔离 Linux 从 `86cd40e` 重新交叉构建所有 release 工具/示例及测试，26 个 harness 共 447 项通过（含 TCP 示例 2 项）；完整受限 release AOT 首次通过，覆盖 i64 两端、末尾八字节替换、逐步恢复及独立根模型。环境仍为无宿主挂载的 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB，CPU/墙钟限制未变；未执行 Linux debug/native clippy/MSRV/doc-tests，不将仿真成功写成原生 CI 或性能通过。
