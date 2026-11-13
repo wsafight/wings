@@ -2,7 +2,7 @@
 
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 接入 ABI v12 的有界 IntList 消息、源遍历检查与目标重建根：每消息合计最多 64 个整数元素，不是任意业务图或引用回复。该切片须独立执行各平台回归，旧 Linux 记录不覆盖此变更；M:N、完整业务值及同业务 BEAM 双目标仍未验收。
 
-最新源码的 [2026-11-13 验证记录](validation-2026-11-13.md) 增加 Linux x86-64 隔离仿真功能证据：debug/release 独立测试与 release AOT 全回归通过，debug AOT 大型编译触及既有 CPU 上限；原生双平台和 BEAM 门禁仍未完成，不放宽既有资源限制。
+[2026-11-13 验证记录](validation-2026-11-13.md) 保存 Linux x86-64 隔离仿真功能证据：`6e390af` 的 release 独立测试与 AOT 全回归通过；较早源码的 debug AOT 大型编译触及既有 CPU 上限，未重标成功。原生双平台和 BEAM 门禁仍未完成，不放宽既有资源限制。
 
 [ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；旧工具构造器、根 bootstrap、allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
 

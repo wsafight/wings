@@ -29,6 +29,14 @@ Rust 1.99.1 在 macOS 交叉构建 `x86_64-unknown-linux-gnu`，Zig 0.15.2 作�
 
 ## 复现入口与后续
 
+### ABI v12 增量：`6e390af`
+
+同一 macOS 宿主通过 check/clippy/fmt、Rust 1.85.0 all-targets check、debug/release workspace 各 403 项测试、两种构建的 TCP 示例单测及完整受限 AOT。新增列表消息覆盖全部 64 元素、超限拒绝、混合载荷与 800 个单步 stop/Drop 边界。
+
+复用上述隔离 Linux x86-64 客体，从 `6e390af` 重新交叉构建 release compiler/VM/examples、workspace 测试及 **release TCP 示例单测**。26 个 harness 共 405 项通过；完整 release AOT 通过，包含实际 `.so` 编译/链接/加载、列表源根/目标重建、跨线程入口和 TCP。每业务子进程仍为 CPU 20 秒、墙钟 30 秒、禁 core，独立测试仍为 `timeout 120`；未使用仿真时间/内存作排名。
+
+此次增量未重跑 Linux debug、原生 clippy/MSRV/doc-tests，也不替代原生双平台 CI。表中的 debug AOT 上限失败仍是旧代码测量，不能据本次 release 通过重标 debug 成功。
+
 ```sh
 cargo build --locked -p wings-compile -p wings-vm --bins --examples
 WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" python3 scripts/verify_scalar_aot.py

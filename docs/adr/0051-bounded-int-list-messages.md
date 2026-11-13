@@ -27,4 +27,4 @@
 
 运行 workspace check/test/clippy/fmt、MSRV 与 debug/release 受限 AOT；各平台单独记录，不放宽故障子进程上限，不用仿真结果代替 native 双平台或 BEAM 性能/内存验收。
 
-2026-11-13 在 macOS 26.6.2 AArch64、Rust 1.99.1 通过 workspace check/test、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、debug/release workspace 测试及完整受限 AOT，TCP 示例两测试在两种构建下均通过。AOT 包含 800 个单步 stop/Drop 边界，并确认覆盖源 64 元素遍历和目标中途重建；CPU 20 秒、墙钟 30 秒、禁 core 限制未变。Linux 尚未验证此切片，无 native 双平台、列表吞吐或 BEAM 内存领先结论。
+2026-11-13 在 macOS 26.6.2 AArch64、Rust 1.99.1 通过 workspace check/test、clippy all-targets `-D warnings`、fmt、Rust 1.85.0 all-targets check、debug/release workspace 测试及完整受限 AOT，TCP 示例两测试在两种构建下均通过。AOT 包含 800 个单步 stop/Drop 边界，并确认覆盖源 64 元素遍历和目标中途重建；CPU 20 秒、墙钟 30 秒、禁 core 限制未变。Linux x86-64 隔离仿真增量通过 release 独立测试及完整受限 AOT，详见[验证记录](../validation-2026-11-13.md#abi-v12-增量6e390af)；无 native 双平台、列表吞吐或 BEAM 内存领先结论。
