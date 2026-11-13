@@ -36,7 +36,28 @@
 
 只经 [`scripts/verify_beam_workload.py`](../scripts/verify_beam_workload.py) 启动日常验证；裸跑 escript 不具备上述 OS CPU/core/墙钟保护。脚本仅使用 Python 标准库与 OTP 29 内置 `json`；不下载依赖。驱动清除 `ERL_FLAGS/ERL_AFLAGS/ERL_ZFLAGS/ERL_LIBS`，禁用 crash dump。固定 `+S 1:1 +A 1 +SDcpu 1:1 +SDio 1`；没有 CPU affinity 或单核 OS 配额声明，dirty/辅助线程仍存在。不做无限 spawn、OOM 或 native 崩溃注入；资源限额不是恶意代码沙箱。
 
-## 后续代表性负载冻结条件（尚未实现）
+## 多 actor 正确性协议 v2
+
+[ADR-0063](adr/0063-multi-actor-byte-counter.md) 接入独立的 `verify_multi_counter.py`、`beam_multi_counter` 和 `beam_multi_workload.escript`，保留 v1 不变。JSON 为 `{version:2, actors, state_bytes, initial, requests:[{actor,delta,fail}]}`；actor 为 `1..N`，其余严格类型/重复键/未知字段/64 KiB 输入限制沿 v1。actor 数 1..10000，完整逻辑 state 总量最多 16 MiB，单次最多 256 请求、总在途窗口 32。
+
+真实状态布局仍为 counter/actor ID/零填充，ID 改为各目标独立编号。三组大容量测试为 10000×256 B、1000×4 KiB、100×64 KiB，每组 100 个活动目标、按 slot 间隔分布，不冒充后述性能协议的前 A 个活动集合。失败只终结原目标的已入队队尾，其他目标继续；输出按输入序号规范化，但只约束同发送者到同目标 FIFO，不要求跨 actor 全序。BEAM 在规范化前核对实际回复顺序和 monitor；Wings 核对唯一请求 handle 的值序列及每目标独立终态。
+
+Wings 用 Never 监督、2 worker、共享 32 结果槽、堆四槽，每 actor mailbox 取其在任一 32 条窗口内的最大请求数（至少 1、最多 32）。VM/tenant 各 256 MiB、process 4 MiB。二进制桥接为 40 B 头 `version/state_bytes/initial/actors/count`，后接最多 256 条 40 B `actor/sequence/operation/delta/reserved`，路由信封不算入 32 B 逻辑业务请求。先完整校验精确长度/路由/字段，再装载可信产物。
+
+Wings 核对实际提交的长度/计数器/ID/32 B 前缀，完整 padding 沿已测 Bytes 原语而不是全量导出；BEAM 在活 actor 停止前检查全部 padding。失败旧值与逻辑资源归零另行核对，不等同 RSS。OTP 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 32768 +Q 1024`，每 actor 的 `max_heap_size=262144` words 仍非 OS 内存硬隔离。v2 输出最多 1 MiB，业务 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 deadline 3 秒；仅经 Python 限制器执行，不裸跑 escript。真实 BEAM 显式启用，未安装时失败、不回退成模型通过：
+
+```sh
+cargo build --workspace --locked --bins --examples
+cargo test --locked -p wings-vm --example beam_multi_counter
+python3 scripts/verify_multi_counter.py
+python3 scripts/verify_multi_counter.py --compare-beam
+cargo build --release --workspace --locked --bins --examples
+WINGS_PROFILE=release python3 scripts/verify_multi_counter.py --compare-beam
+```
+
+默认完整受限 AOT 接入 Wings/Python；`--artifact <目录>` 复用匹配产物。该套件是闭环正确性，不生成吞吐、尾延迟或整机内存结果，仍未覆盖两个真实发送者和热点/过载性能。
+
+## 后续代表性负载冻结条件（开环尚未实现）
 
 这些是未来同业务对照的固定小集合，不展开整个笛卡尔积，不由当前脚本接受参数或执行。普通 Idle 与活跃场景都保持 32 B 逻辑请求/成功回复；逻辑 state 仍包含计数器与 actor ID。actor ID 为 `1..N`，活动集合取前 `A` 个；其余保留状态但不处理业务消息，不冬眠。更大 actor 数、其他 payload、冬眠与 M:N 另立协议版本。
 
@@ -81,7 +102,7 @@ Wings 驱动位于 [`beam_counter.rs`](../crates/wings-vm/examples/beam_counter.
 
 Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目归零只证明逻辑清理，不证明 RSS。
 
-当前套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无多 actor/开环到达、热点、心跳、过载性能或吞吐/整机内存结果。
+v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无开环到达、热点、心跳、过载性能或吞吐/整机内存结果。
 
 原 BEAM 独立 oracle 仍可单独运行：
 

@@ -110,6 +110,88 @@ fn byte_state_diagnostics_copy_only_committed_data_without_resource_leases() {
 }
 
 #[test]
+fn scheduler_byte_state_snapshots_preserve_committed_data_without_leases() {
+    let [vm, tenant, account] = accounts();
+    let mut module = module();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::BytesRef;
+    data.initializer = byte_initialize;
+    data.entries[1] = byte_candidate;
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            capacity: 2,
+            requests: 2,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let pid = handle
+        .spawn_with_heap(&module, limits(8 << 20), 2, 4)
+        .unwrap();
+    let baseline = vm.used();
+    let first = handle.byte_state_snapshot(pid).unwrap().unwrap();
+    assert_eq!(
+        first,
+        ByteStateSnapshot {
+            length: 40,
+            prefix: [5; 32]
+        }
+    );
+    assert_eq!(vm.used(), baseline);
+    let handler = module.handler("Bump").unwrap();
+    for value in [7, 99] {
+        let mut request = handle
+            .request(pid, &handler, &[value], 128, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            request.wait(Duration::from_secs(5)).unwrap(),
+            Some(if value == 7 {
+                RequestOutcome::Reply(7)
+            } else {
+                RequestOutcome::Failed
+            })
+        );
+        if value == 7 {
+            assert_eq!(
+                handle.byte_state_snapshot(pid).unwrap().unwrap().prefix,
+                [7; 32]
+            );
+        }
+    }
+    let exit = handle.last_exit().unwrap();
+    assert_eq!(
+        exit.byte_state,
+        Some(ByteStateSnapshot {
+            length: 40,
+            prefix: [7; 32]
+        })
+    );
+    assert_eq!(exit.committed_state, None);
+    assert_eq!(
+        exit.execution.unwrap().fault,
+        Some(ExecutionFault::DivisionByZero)
+    );
+    assert!(handle.byte_state_snapshot(pid).is_err());
+    let replacement = handle
+        .spawn_with_heap(&module, limits(8 << 20), 2, 4)
+        .unwrap();
+    assert_ne!(pid, replacement);
+    assert!(handle.byte_state_snapshot(pid).is_err());
+    assert_eq!(
+        handle.byte_state_snapshot(replacement).unwrap(),
+        Some(first)
+    );
+    drop(scheduler);
+    assert!(handle.byte_state_snapshot(replacement).is_err());
+    drop((handle, module, handler, account, tenant));
+    assert_eq!(vm.used(), Resources::default());
+    assert_eq!(first.prefix, [5; 32]);
+    assert_eq!(exit.byte_state.unwrap().prefix, [7; 32]);
+}
+
+#[test]
 fn byte_state_diagnostics_reject_other_types_and_zero_pad_short_buffers() {
     let [vm, tenant, account] = accounts();
     let module = module();

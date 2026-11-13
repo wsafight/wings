@@ -33,6 +33,14 @@ impl ScalarProcess {
 }
 
 impl DetachedProcess {
+    pub(crate) fn byte_state_snapshot(&self) -> Option<crate::ByteStateSnapshot> {
+        let image = self.image.as_ref()?;
+        if image.module.manifest().state != wings_abi::ValueType::BytesRef {
+            return None;
+        }
+        image.heap.as_deref()?.byte_state_snapshot()
+    }
+
     pub fn attach(&mut self, pool: &StackPool) -> Result<ScalarProcess, String> {
         let image = self
             .image

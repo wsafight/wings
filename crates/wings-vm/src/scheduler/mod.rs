@@ -83,6 +83,7 @@ pub struct SchedulerExitSnapshot {
     pub execution: Option<ExecutionSnapshot>,
     pub state_type: wings_abi::ValueType,
     pub committed_state: Option<i64>,
+    pub byte_state: Option<crate::ByteStateSnapshot>,
     pub queued: usize,
     pub resources_before_cleanup: Resources,
     handler: [u8; 256],
@@ -145,6 +146,7 @@ struct Actor {
     migrations: u64,
     execution: Option<ExecutionSnapshot>,
     committed_state: Option<i64>,
+    byte_state: Option<crate::ByteStateSnapshot>,
     stopping: bool,
     cancellation: CancellationToken,
     capability: i64,
@@ -399,16 +401,19 @@ impl SchedulerHandle {
             drop(initialization_charge);
             let committed_state =
                 (!module.manifest().state.is_reference()).then_some(process.state);
+            let image = process.detach();
+            let byte_state = image.byte_state_snapshot();
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
-                image: Some(process.detach()),
+                image: Some(image),
                 owner: None,
                 starting: false,
                 last_worker: None,
                 migrations: 0,
                 execution: None,
                 committed_state,
+                byte_state,
                 stopping: false,
                 cancellation: CancellationToken::default(),
                 capability: next_identity(&NEXT_CAPABILITY)? as i64,
@@ -552,6 +557,19 @@ impl SchedulerHandle {
 
     pub fn last_exit(&self) -> Option<SchedulerExitSnapshot> {
         self.shared.lock().last_exit
+    }
+
+    pub fn byte_state_snapshot(
+        &self,
+        pid: SchedulerPid,
+    ) -> Result<Option<crate::ByteStateSnapshot>, String> {
+        let state = self.shared.lock();
+        state.open()?;
+        let actor = state.actor(self.shared.identity, pid)?;
+        if actor.owner.is_some() {
+            return Err("byte state snapshot requires an idle actor".into());
+        }
+        Ok(actor.byte_state)
     }
 }
 

@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0062](adr/0062-sparse-ready-scheduler.md) 去除全 actor 派发与本地空执行槽扫描，使用固定 intrusive 就绪 FIFO、本地活栈 FIFO 和空槽链；actor 容量扩至 16384，请求表各最多 256 不变。1000/10000 actor 标量稀疏功能探测接入完整受限 AOT，仍需完整 Bytes 多 actor 同业务、开环/热点/公平性、自适应负载、原生最新双平台及 BEAM 吞吐/整机内存双门禁；不因容量可创建而称 MVP 完成。
+[ADR-0063](adr/0063-multi-actor-byte-counter.md) 补齐代表性 actor 数量的完整 Bytes Counter 闭环正确性：三端核对各目标状态/FIFO/失败与清理，未改变 ABI 或语法。仍缺双发送者、开环/热点/公平性、完整业务值/资源账本、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁，MVP 未完成。
+
+[ADR-0062](adr/0062-sparse-ready-scheduler.md) 去除全 actor 派发与本地空执行槽扫描，使用固定 intrusive 就绪 FIFO、本地活栈 FIFO 和空槽链；actor 容量扩至 16384，请求表各最多 256 不变。1000/10000 actor 标量稀疏功能探测接入完整受限 AOT，完整 Bytes 多 actor 正确性见 ADR-0063；开环/热点/公平性、自适应负载、原生最新双平台及 BEAM 吞吐/整机内存双门禁仍待推进，不因容量可创建而称 MVP 完成。
 
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 消除逐 worker 全 actor 容量的空闲栈映射，保留完整单栈/guard 及借入前三级准入、活栈线程固定和最多两个已返回栈的缓存。冷启动准入失败仍保留原 FIFO，额度释放后重试；未降低同时活栈上限。后续扫描/容量由 ADR-0062 改进，逻辑预留减少不替代代表性同业务 BEAM 吞吐/整机内存门禁。
 
@@ -128,7 +130,7 @@ OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接�
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList 消息根按 ADR-0049/0051 接入，但引用回复和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
-BEAM 对照已固化 [v1 最小协议与 oracle](beam-workloads.md)，并由 ADR-0059 接入 Wings 固定字节等价端：本机三端检查有界 Counter 的 i64、FIFO 和失败退出，代表负载组合与采样要求单独列明。多 actor、超时/过载同业务对照及开环性能采样尚待实现，不因单 actor 正确性通过而称 BEAM 基线全部完成。
+BEAM 对照已固化 [v1/v2 正确性协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值。它们仍是有界单发送者闭环；双发送者、超时/过载同业务对照及开环性能采样尚待实现，不因正确性通过而称 BEAM 基线全部完成。
 
 [ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
 

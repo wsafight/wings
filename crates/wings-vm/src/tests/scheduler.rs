@@ -302,11 +302,13 @@ fn scheduler_pins_live_stack_bounds_mailbox_and_stops_without_starving_other_act
     let module = spinning_module();
     let busy = handle.spawn(&module, quota(), 1).unwrap();
     let healthy = handle.spawn(&module, quota(), 8).unwrap();
+    assert_eq!(handle.byte_state_snapshot(healthy).unwrap(), None);
     handle
         .send(busy, &module.handler("Spin").unwrap(), &[], u64::MAX)
         .unwrap();
     wait_until(|| handle.snapshot(busy).unwrap().execution.is_some());
     let owner = handle.snapshot(busy).unwrap().owner.unwrap();
+    assert!(handle.byte_state_snapshot(busy).is_err());
     let queued = handle
         .request(
             busy,
@@ -684,6 +686,7 @@ fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserve
     data.manifest.state = ValueType::Ref;
     data.initializer = super::persistent_state::record_initializer;
     let pid = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
+    assert_eq!(handle.byte_state_snapshot(pid).unwrap(), None);
     let failed = handle
         .request(
             pid,
@@ -697,6 +700,7 @@ fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserve
     let diagnostic = handle.last_exit().unwrap();
     assert_eq!(diagnostic.state_type, ValueType::Ref);
     assert_eq!(diagnostic.committed_state, None);
+    assert_eq!(diagnostic.byte_state, None);
     assert!(diagnostic.execution.unwrap().heap.is_some());
     let busy = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
     handle

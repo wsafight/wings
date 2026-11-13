@@ -70,6 +70,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0060](0060-shared-scheduler-reply-table.md) | 调度实例共享宿主结果容量、逐目标请求计费与空闲 actor 元数据回归 | 已采纳；部分替代 0054 的宿主结果表 |
 | [0061](0061-on-demand-scheduler-stacks.md) | worker 按需 guarded stack、借入前三级准入与有界缓存 | 已采纳；部分替代 0054 的栈预留 |
 | [0062](0062-sparse-ready-scheduler.md) | 固定就绪/活栈 FIFO、空槽链及 16384 actor 容量 | 已采纳；部分替代 0054 的扫描与容量 |
+| [0063](0063-multi-actor-byte-counter.md) | 多 actor 完整 Bytes Counter 与无租约提交状态副本 | 已采纳（有界正确性切片） |
 
 ## 维护方式
 

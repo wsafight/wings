@@ -229,6 +229,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     let committed_state =
         (!process.module().manifest().state.is_reference()).then_some(process.state);
     let image = process.detach();
+    let byte_state = image.byte_state_snapshot();
     let mut state = shared.lock();
     let closed = state.closed;
     let actor = state
@@ -250,6 +251,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
             execution: snapshot,
             state_type: actor.module.manifest().state,
             committed_state,
+            byte_state,
             queued: actor.mailbox.count,
             resources_before_cleanup: actor.account.used(),
             handler,
@@ -262,6 +264,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     actor.image = Some(image);
     actor.execution = snapshot;
     actor.committed_state = committed_state;
+    actor.byte_state = byte_state;
     if failed {
         if let Some(publisher) = actor.termination.as_mut() {
             publisher.set(if closed {

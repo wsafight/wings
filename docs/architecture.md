@@ -1,12 +1,14 @@
 # 架构设计
 
+[ADR-0063](adr/0063-multi-actor-byte-counter.md) 将已提交 Bytes 的定长副本诊断扩至 Scheduler。初始化及 handler 返回后在 detached image 上复制长度/最多 32 B 前缀，锁内只发布副本；owner 存在时拒绝读取，不访问挂起栈/候选。普通快照不暴露前缀，显式接口仅供可信宿主；退出副本不保留资源租约。测试宿主接入多 actor Counter，不改变 ABI v14 或语言语法。
+
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 用槽内 intrusive FIFO 和固定 worker 本地活栈 FIFO 代替全 actor 派发扫描；空槽链 O(1) 分配、退役移除旧就绪成员，成员/代次/唯一 owner 在同 registry 锁下更新。actor 上限 16384，宿主结果和语言 pending 仍各最多 256；后者有界扫描保留。首次派发按 slot 分布，返回后固定编号迁移不变，不宣称自适应窃取、无锁或性能门禁完成。
 
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 规定 Scheduler worker 的业务栈按需创建：池构造只准入控制和至多两个缓存槽，冷借入在映射前向原 process/tenant/VM 预留完整栈加 guard；复用缓存净转移票据，归还时有界缓存或先解除映射再归还额度。活跃/挂起栈保持原 worker 独占至正常返回，默认固定池不变。不再按空闲 actor 上限预映射所有栈，但不承诺冷借入一定成功，也不将逻辑预留变化称为物理内存结果。
 
 [ADR-0060](adr/0060-shared-scheduler-reply-table.md) 让 Scheduler 在 tenant 启动准入时创建唯一宿主 ReplyTable，固定容量 `config.requests`，不再逐 actor 创建三类型表。Int/Bool/Unit 共用槽、handle 按请求保留类型，schema 校验不变；语言 pending 表独立。每槽的请求票据向目标 process 的原三级路径预留，表只接受原账户或直属子账户。结果不持 Shared/actor/模块，关闭后可消费终态，表控制计费直到最后结果 handle 释放。ABI/语法与线程执行权不变，完整业务计费和大规模调度仍待完成。
 
-[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 增加测试宿主 `beam_counter`，以现有 AOT/Bytes/单 worker 执行固定字节 Counter，不扩展受管 ABI 或服务协议。`ByteStateSnapshot` 只复制已提交 Bytes 的长度/最多 32 B 前缀，无引用或资源租约；宿主读取只在无活跃调用时允许，失败诊断在 actor 清理前复制旧提交根，不读取候选或悬挂栈。多 worker 快照不变，外部诊断授权/脱敏另行设计。
+[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 增加测试宿主 `beam_counter`，以现有 AOT/Bytes/单 worker 执行固定字节 Counter，不扩展受管 ABI 或服务协议。`ByteStateSnapshot` 只复制已提交 Bytes 的长度/最多 32 B 前缀，无引用或资源租约；宿主读取只在无活跃调用时允许，失败诊断在 actor 清理前复制旧提交根，不读取候选或悬挂栈。多 worker 扩展见 ADR-0063，外部诊断授权/脱敏另行设计。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 用独立固定终态票据接入 SchedulerSupervisor，不依赖可覆盖的最近失败缓存。actor 发布端位于最后释放字段，旧镜像/mailbox/控制票据先清理，终态才可消费；票据及重启历史在 tenant 准入。poll 在锁外初始化新实例，沿用已有有限滚动窗口，不增加后台线程或业务 ABI。
 

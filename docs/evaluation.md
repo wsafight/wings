@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0063](adr/0063-multi-actor-byte-counter.md) 的 `verify_multi_counter.py --compare-beam` 用真实 Wings Scheduler/OTP 29/独立 Python 模型验证多 actor Bytes Counter：10000×256 B、1000×4 KiB、100×64 KiB 均保留完整状态，每目标不同 ID，100 个活跃目标、最多 256 请求及总窗口 32。另覆盖单目标、空输入、跨窗口 FIFO、并发目标失败、溢出优先、旧提交状态和清理。Wings 读取长度/32 B 前缀，不声称完整 padding 导出；默认完整 AOT 只运行 Wings/模型。业务 CPU 5 秒/墙钟 10 秒/actor 总 deadline 3 秒不变，仍是单发送者闭环，不替代开环、超时/过载或性能/整机内存采样。
+
 [ADR-0062](adr/0062-sparse-ready-scheduler.md) 的完整受限 AOT 增加 `scheduler_sparse`：1000/10000 个标量 Counter、2 worker、100 个活跃 actor，固定 32 条以内宿主请求窗口，各 actor 两条连续请求共三轮、共 600 次成功回复，核对状态独立、FIFO、五次边界迁移、空闲状态、表满无部分准入、旧 Pid/代次及最终归零。队列单测覆盖去重、头/中/尾摘链、跨 worker 归属和旧成员清理；保留暂停/取消、并发生产者、语言消息/完成、启动失败及监督回归。此处是标量功能探测，不是完整 Bytes 同业务状态或开环/RSS/BEAM 性能门禁，原 CPU 20 秒/墙钟 30 秒/禁 core 不变。
 
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 的按需栈验证包含冷借入前三级准入、失败无半槽、缓存净转移、祖先额度满时复用与冷借入的不同结果、活栈独占及最终清理；完整 AOT 增加同时挂起三个 actor（超过两个缓存上限），原 owner 不变且其他 actor 可推进，继续覆盖语言 spawn/GC、迁移和监督。密度探测沿用相同 actor/worker/队列/请求容量，增加空表不超过 12 MiB 的回归，报告空表/填满逻辑预留；单测另报当前已映射栈，不把空闲预留减少当 RSS、BEAM 对照或性能门禁通过。
@@ -94,7 +96,7 @@ M0 确定 Erlang/OTP 版本、JIT 状态、调度器数量、堆与 GC 配置，
 
 ## 负载矩阵与基线
 
-可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；Linux OTP oracle 尚待执行，多 actor/开环性能采样尚未接入，不能当作性能达标。
+可执行的最小正确性 oracle 与代表组合见 [BEAM 工作负载协议 v1/v2](beam-workloads.md)。`python3 scripts/verify_beam_workload.py` 在受限 OS 子进程运行 OTP 29 的 checked i64 Counter，检查异步 request/reply、单发送者 FIFO、失败不提交及退出。当前本机 macOS 通过 11 个业务和 23 个输入拒绝用例，ADR-0059 的真实 Wings/BEAM/Python 三端另通过 45 组业务及边界拒绝；多 actor 正确性见 ADR-0063。Linux OTP oracle 尚待执行，开环性能采样尚未接入，不能当作性能达标。
 
 - **内存维度**：逻辑 state 为 `0B/256B/4KiB/64KiB`，编码大小另报；mailbox 深度为 `0/1/100`，消息 payload 为 `32B/1KiB/64KiB`，活跃比例为 `0%/1%/10%/100%`。选代表性交叉组合并公开选择原因，不只挑 tiny state。
 - **行为维度**：Idle、冬眠、正常计算、被抢占挂起、request/回复、超时/取消、热点收件人、spawn 风暴和关系 fan-out；空闲会话与同时执行的进程分开报告。
