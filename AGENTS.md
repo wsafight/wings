@@ -4,9 +4,11 @@
 
 ## 项目现状
 
-- ADR-0061 将 Scheduler worker 的业务栈改为按需 guarded mapping，冷借入前完整 process/tenant/VM 准入，缓存净转移计费且最多两个；活栈仍原线程独占至正常返回。公开固定池不变，按需模式统计已映射容量而非潜在上限，均非 RSS。容量上限仍为 256 actor，语法草案待审，BEAM 双目标与 MVP 不因空闲预留减少而完成。
+- ADR-0062 将 Scheduler 改为固定 intrusive 就绪队列、本地活栈 FIFO 和空槽链，容量上限 16384 actor；宿主结果与语言 pending 仍各最多 256，mailbox 仍最多 64。首次派发按 slot 分布，返回后固定编号迁移，不是自适应窃取；每轮最多认领一个 handler 并恢复一个时间片。`scheduler_sparse` 的 1000/10000 标量探测不替代完整 Bytes 同业务、开环或 BEAM 双门禁。
 
-- ADR-0060 将 Scheduler 宿主 Int/Bool/Unit 请求结果改为实例共享的 `config.requests` 总槽数，不再逐 actor/类型预留；语言 pending 表仍独立。每个请求票据仍向原目标 process 三级计费，最后结果 handle 可保留表控制租约但不保留 actor/模块。`scheduler_density` 只测逻辑预留，后续栈安排见 ADR-0061，256 actor 上限与 BEAM 双目标仍待推进。
+- ADR-0061 将 Scheduler worker 的业务栈改为按需 guarded mapping，冷借入前完整 process/tenant/VM 准入，缓存净转移计费且最多两个；活栈仍原线程独占至正常返回。公开固定池不变，按需模式统计已映射容量而非潜在上限，均非 RSS。后续容量见 ADR-0062，语法草案待审，BEAM 双目标与 MVP 不因空闲预留减少而完成。
+
+- ADR-0060 将 Scheduler 宿主 Int/Bool/Unit 请求结果改为实例共享的 `config.requests` 总槽数，不再逐 actor/类型预留；语言 pending 表仍独立。每个请求票据仍向原目标 process 三级计费，最后结果 handle 可保留表控制租约但不保留 actor/模块。`scheduler_density` 只测逻辑预留，后续栈/调度安排见 ADR-0061/0062，BEAM 双目标仍待推进。
 
 - ADR-0059 接入固定字节 Counter 的 Wings/BEAM 正确性测试和单 worker 已提交 Bytes 的固定前缀副本诊断；默认 AOT 只跑 Wings/独立模型，真实 OTP 对照须显式 `--compare-beam`。不把逻辑状态/账目清理或有界闭环测试当作性能、RSS、多 actor/开环或 MVP 完成。
 

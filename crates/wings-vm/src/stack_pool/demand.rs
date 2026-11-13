@@ -18,11 +18,11 @@ impl StackPool {
     ) -> Result<Self, String> {
         wings_abi::host_target()?;
         if tenant.level() != ResourceLevel::Tenant
-            || !(1..=MAX_POOL_SLOTS).contains(&capacity)
+            || !(1..=16384).contains(&capacity)
             || max_cached > capacity
         {
             return Err(
-                "on-demand stacks require a tenant, 1..=2048 slots and bounded cache".into(),
+                "on-demand stacks require a tenant, 1..=16384 slots and bounded cache".into(),
             );
         }
         let page_bytes = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })

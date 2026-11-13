@@ -11,6 +11,7 @@ use crate::{
     StackPool,
 };
 
+mod ready;
 mod run;
 mod state;
 mod supervisor;
@@ -21,7 +22,8 @@ pub use supervisor::{
 #[cfg(test)]
 mod tests;
 
-const MAX_ACTORS: usize = 256;
+const MAX_ACTORS: usize = 16384;
+const MAX_REQUESTS: usize = 256;
 const THREAD_STACK: usize = 2 << 20;
 const INVOCATION_BYTES: u64 = 4096;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
@@ -119,12 +121,18 @@ struct State {
     last_exit: Option<SchedulerExitSnapshot>,
     slots: Box<[Slot]>,
     requests: Box<[RequestSlot]>,
+    ready: Box<[ready::ReadyQueue]>,
+    free: Option<usize>,
 }
 
 struct Slot {
     generation: u32,
     creating: bool,
     actor: Option<Actor>,
+    free_next: Option<usize>,
+    ready_previous: Option<usize>,
+    ready_next: Option<usize>,
+    ready_worker: Option<usize>,
 }
 
 struct Actor {
@@ -198,16 +206,17 @@ impl Scheduler {
         if tenant.level() != ResourceLevel::Tenant
             || !(1..=16).contains(&config.workers)
             || !(1..=MAX_ACTORS).contains(&config.capacity)
-            || !(1..=MAX_ACTORS).contains(&config.requests)
+            || !(1..=MAX_REQUESTS).contains(&config.requests)
             || config.slice_steps == 0
             || config.quantum.is_zero()
             || config.quantum > Duration::from_secs(1)
         {
-            return Err("scheduler requires a tenant, 1..=16 workers, 1..=256 actor/request slots and nonzero bounded slices".into());
+            return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots and nonzero bounded slices".into());
         }
         let bytes = std::mem::size_of::<Shared>()
             + config.capacity * std::mem::size_of::<Slot>()
             + config.requests * std::mem::size_of::<RequestSlot>()
+            + config.workers * std::mem::size_of::<ready::ReadyQueue>()
             + 256;
         let charge = tenant.reserve(Resources {
             bytes: bytes as u64,
@@ -222,19 +231,29 @@ impl Scheduler {
             ..Resources::default()
         })?;
         let identity = next_identity(&NEXT_SCHEDULER)?;
+        let mut next_slot = 0;
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 closed: false,
                 last_exit: None,
-                slots: storage(config.capacity, || Slot {
-                    generation: 1,
-                    creating: false,
-                    actor: None,
+                slots: storage(config.capacity, || {
+                    next_slot += 1;
+                    Slot {
+                        generation: 1,
+                        creating: false,
+                        actor: None,
+                        free_next: (next_slot < config.capacity).then_some(next_slot),
+                        ready_previous: None,
+                        ready_next: None,
+                        ready_worker: None,
+                    }
                 })?,
                 requests: storage(config.requests, || RequestSlot {
                     generation: 1,
                     pending: None,
                 })?,
+                ready: storage(config.workers, ready::ReadyQueue::default)?,
+                free: Some(0),
             }),
             changed: Condvar::new(),
             tenant: tenant.clone(),
@@ -346,12 +365,7 @@ impl SchedulerHandle {
         let pid = {
             let mut state = self.shared.lock();
             state.open()?;
-            let index = state
-                .slots
-                .iter()
-                .position(|slot| slot.generation != 0 && !slot.creating && slot.actor.is_none())
-                .ok_or("scheduler process table full")?;
-            state.slots[index].creating = true;
+            let index = state.reserve_slot()?;
             state.pid(self.shared.identity, index)
         };
         let result = (|| {
@@ -418,11 +432,15 @@ impl SchedulerHandle {
                 Ok(pid)
             }
             Ok(actor) => {
+                state.release_slot(pid.slot as usize);
                 drop(state);
                 drop(actor);
                 Err("scheduler is closed".into())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                state.release_slot(pid.slot as usize);
+                Err(error)
+            }
         }
     }
 
@@ -451,6 +469,7 @@ impl SchedulerHandle {
             Reply::None,
         )?;
         actor.mailbox.push(message)?;
+        state.enqueue(pid);
         drop(state);
         self.shared.changed.notify_all();
         Ok(())
@@ -492,6 +511,7 @@ impl SchedulerHandle {
         let (request, publisher) = self.shared.replies.start(deadline, &actor.account, reply)?;
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
+        state.enqueue(pid);
         drop(state);
         self.shared.changed.notify_all();
         Ok(request)

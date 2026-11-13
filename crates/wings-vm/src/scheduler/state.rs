@@ -48,9 +48,11 @@ impl State {
         if self.actor(identity, pid).is_err() {
             return None;
         }
+        self.remove_ready(pid.slot as usize);
         let slot = &mut self.slots[pid.slot as usize];
         let actor = slot.actor.take();
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
+        self.release_slot(pid.slot as usize);
         for request in &mut self.requests {
             if let Some(pending) = &mut request.pending {
                 if pending.owner == pid {
@@ -142,6 +144,7 @@ impl State {
                 .mailbox
                 .push(message)
                 .expect("reserved completion slot");
+            self.enqueue(pending.owner);
         }
     }
 
@@ -274,6 +277,7 @@ impl Shared {
                             .actor_mut(self.identity, target)?
                             .mailbox
                             .push(message)?;
+                        state.enqueue(target);
                         return Ok(0);
                     }
                     if schema.reply != Some(wings_abi::ValueType::Int)
@@ -336,6 +340,7 @@ impl Shared {
                         .mailbox
                         .push(message)?;
                     state.requests[index].pending = Some(pending);
+                    state.enqueue(target);
                     Ok(capability)
                 }
                 _ => Err("unsupported scheduler effect".into()),

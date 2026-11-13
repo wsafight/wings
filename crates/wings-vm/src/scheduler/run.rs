@@ -1,6 +1,7 @@
 use super::*;
 use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarTask};
+use std::collections::VecDeque;
 
 pub(super) struct Running {
     pid: SchedulerPid,
@@ -39,10 +40,16 @@ pub(super) fn worker(
             2.min(shared.config.capacity),
         )?;
         let timer = DeadlineTimer::new(&shared.tenant, &preemption)?;
-        let local = storage(shared.config.capacity, || None)?;
+        let mut local = VecDeque::new();
+        local
+            .try_reserve_exact(shared.config.capacity)
+            .map_err(|_| "scheduler active queue allocation failed")?;
+        if local.capacity() != shared.config.capacity {
+            return Err("allocator changed scheduler active queue capacity".into());
+        }
         Ok::<_, String>((pool, timer, local))
     })();
-    let (pool, timer, mut local): (_, _, Box<[Option<Running>]>) = match setup {
+    let (pool, timer, mut local): (_, _, VecDeque<Running>) = match setup {
         Ok(value) => {
             let _ = ready.send(Ok(()));
             value
@@ -52,83 +59,68 @@ pub(super) fn worker(
             return;
         }
     };
-    let mut cursor = index % shared.config.capacity;
     loop {
         let mut progress = false;
-        for _ in 0..local.len() {
-            let slot = cursor;
-            cursor = (cursor + 1) % local.len();
-            let claim = {
-                let mut state = shared.lock();
-                state.maintain(shared.identity);
-                if state.closed {
-                    None
-                } else if local[slot].is_none() {
-                    let pid = state.pid(shared.identity, slot);
-                    state.slots[slot]
-                        .actor
-                        .as_mut()
-                        .filter(|actor| {
-                            !actor.stopping
-                                && actor.owner.is_none()
-                                && actor.mailbox.count > 0
-                                && actor.last_worker.is_none_or(|previous| {
-                                    (previous + 1) % shared.config.workers == index
-                                })
-                        })
-                        .map(|actor| {
-                            actor.owner = Some(index);
-                            actor.starting = true;
-                            Claim {
-                                pid,
-                                image: actor.image.take().expect("unowned actor image"),
-                                message: actor.mailbox.pop(),
-                                account: actor.account.clone(),
-                                cancellation: actor.cancellation.clone(),
-                            }
-                        })
-                } else {
-                    None
-                }
-            };
-            if let Some(claim) = claim {
-                local[slot] = start(&shared, index, claim, &pool, &preemption);
+        let claim = {
+            let mut state = shared.lock();
+            state.maintain(shared.identity);
+            if state.closed {
+                None
+            } else if let Some(slot) = state.pop_ready(index) {
+                let pid = state.pid(shared.identity, slot);
+                let actor = state.slots[slot].actor.as_mut().expect("ready actor");
+                assert!(!actor.stopping && actor.owner.is_none() && actor.mailbox.count > 0);
+                actor.owner = Some(index);
+                actor.starting = true;
+                Some(Claim {
+                    pid,
+                    image: actor.image.take().expect("unowned actor image"),
+                    message: actor.mailbox.pop(),
+                    account: actor.account.clone(),
+                    cancellation: actor.cancellation.clone(),
+                })
+            } else {
+                None
             }
-            if let Some(mut active) = local[slot].take() {
-                progress = true;
-                let status = match Instant::now()
-                    .checked_add(shared.config.quantum)
-                    .and_then(|deadline| timer.arm(deadline).ok())
-                {
-                    Some(()) => {
-                        let result = active.task.resume(shared.config.slice_steps);
-                        timer.disarm();
-                        result
-                    }
-                    None => Err("scheduler timer failure".into()),
-                };
-                match status {
-                    Ok(ExecutionStatus::Suspended) => {
-                        if let Some(effect) = active.task.take_effect() {
-                            let (status, value) =
-                                shared.effect(active.pid, effect, active.message.max_steps, &pool);
-                            active.task.acknowledge_effect(status, value);
-                        }
-                        let mut state = shared.lock();
-                        if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
-                            actor.execution = active.task.snapshot();
-                        }
-                        local[slot] = Some(active);
-                    }
-                    Ok(ExecutionStatus::Complete(reply)) => {
-                        finish(&shared, index, active, Ok(reply))
-                    }
-                    Err(error) => finish(&shared, index, active, Err(error)),
+        };
+        if let Some(claim) = claim {
+            if let Some(active) = start(&shared, index, claim, &pool, &preemption) {
+                assert!(local.len() < shared.config.capacity);
+                local.push_back(active);
+            }
+        }
+        if let Some(mut active) = local.pop_front() {
+            progress = true;
+            let status = match Instant::now()
+                .checked_add(shared.config.quantum)
+                .and_then(|deadline| timer.arm(deadline).ok())
+            {
+                Some(()) => {
+                    let result = active.task.resume(shared.config.slice_steps);
+                    timer.disarm();
+                    result
                 }
+                None => Err("scheduler timer failure".into()),
+            };
+            match status {
+                Ok(ExecutionStatus::Suspended) => {
+                    if let Some(effect) = active.task.take_effect() {
+                        let (status, value) =
+                            shared.effect(active.pid, effect, active.message.max_steps, &pool);
+                        active.task.acknowledge_effect(status, value);
+                    }
+                    let mut state = shared.lock();
+                    if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
+                        actor.execution = active.task.snapshot();
+                    }
+                    local.push_back(active);
+                }
+                Ok(ExecutionStatus::Complete(reply)) => finish(&shared, index, active, Ok(reply)),
+                Err(error) => finish(&shared, index, active, Err(error)),
             }
         }
         let mut state = shared.lock();
-        if state.closed && local.iter().all(Option::is_none) {
+        if state.closed && local.is_empty() {
             break;
         }
         if !progress {
@@ -215,6 +207,7 @@ fn start(
             } else {
                 None
             };
+            state.enqueue(claim.pid);
             drop(state);
             drop(claim.account);
             drop(claim.cancellation);
@@ -300,6 +293,7 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     } else {
         None
     };
+    state.enqueue(pid);
     state.maintain(shared.identity);
     drop(state);
     drop(message);

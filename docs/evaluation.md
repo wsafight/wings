@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0062](adr/0062-sparse-ready-scheduler.md) 的完整受限 AOT 增加 `scheduler_sparse`：1000/10000 个标量 Counter、2 worker、100 个活跃 actor，固定 32 条以内宿主请求窗口，各 actor 两条连续请求共三轮、共 600 次成功回复，核对状态独立、FIFO、五次边界迁移、空闲状态、表满无部分准入、旧 Pid/代次及最终归零。队列单测覆盖去重、头/中/尾摘链、跨 worker 归属和旧成员清理；保留暂停/取消、并发生产者、语言消息/完成、启动失败及监督回归。此处是标量功能探测，不是完整 Bytes 同业务状态或开环/RSS/BEAM 性能门禁，原 CPU 20 秒/墙钟 30 秒/禁 core 不变。
+
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 的按需栈验证包含冷借入前三级准入、失败无半槽、缓存净转移、祖先额度满时复用与冷借入的不同结果、活栈独占及最终清理；完整 AOT 增加同时挂起三个 actor（超过两个缓存上限），原 owner 不变且其他 actor 可推进，继续覆盖语言 spawn/GC、迁移和监督。密度探测沿用相同 actor/worker/队列/请求容量，增加空表不超过 12 MiB 的回归，报告空表/填满逻辑预留；单测另报当前已映射栈，不把空闲预留减少当 RSS、BEAM 对照或性能门禁通过。
 
 [ADR-0060](adr/0060-shared-scheduler-reply-table.md) 增加多 actor 混合回复共享容量、满表拒绝账目不变、消费后复用、关闭后结果及三级请求准入测试。完整受限 AOT 的 `scheduler_density` 使用 2 worker、64 宿主结果槽、mailbox 1 和 16/64/256 空闲 Counter，验证每 actor 控制增量不超过 4096 B、退出回到空表和最终零预留。该指标仅为逻辑计费；原逐 worker 全容量栈安排由 ADR-0061 替代，不是 RSS/BEAM 密度或吞吐门禁，真实业务对照与原 CPU/墙钟限制不变。

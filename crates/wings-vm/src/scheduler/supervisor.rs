@@ -106,7 +106,7 @@ struct Child {
 impl SchedulerSupervisor {
     pub fn new(tenant: &ResourceAccount, config: SchedulerConfig) -> Result<Self, String> {
         if tenant.level() != ResourceLevel::Tenant || !(1..=MAX_ACTORS).contains(&config.capacity) {
-            return Err("scheduler supervisor requires tenant and 1..=256 child slots".into());
+            return Err("scheduler supervisor requires tenant and 1..=16384 child slots".into());
         }
         let charge = tenant.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()

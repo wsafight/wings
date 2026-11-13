@@ -419,6 +419,10 @@ fn scheduler_configuration_and_startup_admission_roll_back() {
             ..SchedulerConfig::default()
         },
         SchedulerConfig {
+            capacity: 16385,
+            ..SchedulerConfig::default()
+        },
+        SchedulerConfig {
             requests: 257,
             ..SchedulerConfig::default()
         },

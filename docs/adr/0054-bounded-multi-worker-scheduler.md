@@ -5,6 +5,7 @@
 - 扩展：[ADR-0020](0020-single-worker-mailbox.md)、[ADR-0040](0040-language-request-events.md)、[ADR-0053](0053-detached-process-images.md)
 - 部分替代：[ADR-0060](0060-shared-scheduler-reply-table.md) 将逐 actor 三类型宿主结果表改为实例共享总容量；下文保留原切片背景，当前容量和计费契约以新决策为准。
 - 部分替代：[ADR-0061](0061-on-demand-scheduler-stacks.md) 将 worker 全容量预建栈改为按需映射及借入前三级准入，固定活栈与迁移契约保留。
+- 部分替代：[ADR-0062](0062-sparse-ready-scheduler.md) 将全 actor 派发扫描改为固定就绪/活栈 FIFO、空槽链并扩至 16384 actor；请求容量仍为 256，返回后固定编号迁移保留。
 
 ## 决定与理由
 

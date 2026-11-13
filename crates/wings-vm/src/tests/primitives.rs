@@ -286,7 +286,7 @@ fn demand_stack_cache_reuses_net_charge_at_full_ancestors_and_rejects_low_proces
 #[test]
 fn demand_stack_configuration_and_cache_control_admission_roll_back() {
     let [vm, tenant, process] = accounts();
-    for (capacity, cached) in [(0, 0), (2049, 0), (usize::MAX, 0), (1, 2)] {
+    for (capacity, cached) in [(0, 0), (16385, 0), (usize::MAX, 0), (1, 2)] {
         assert!(StackPool::new_on_demand(&tenant, capacity, cached).is_err());
         assert_eq!(vm.used(), Resources::default());
     }
@@ -294,6 +294,12 @@ fn demand_stack_configuration_and_cache_control_admission_roll_back() {
     assert!(StackPool::new_on_demand(&process, 1, 0).is_err());
     let low = vm.tenant(limits(1)).unwrap();
     assert!(StackPool::new_on_demand(&low, 1, 0).is_err());
+    assert_eq!(vm.used(), Resources::default());
+    let pool = StackPool::new_on_demand(&tenant, 16384, 2).unwrap();
+    assert_eq!(pool.stats().capacity, 16384);
+    assert_eq!(pool.stats().reserved_bytes, 0);
+    assert!(pool.stats().charged_bytes < 4096);
+    drop(pool);
     assert_eq!(vm.used(), Resources::default());
 }
 

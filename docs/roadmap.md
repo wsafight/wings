@@ -1,8 +1,10 @@
 # 风险与里程碑
 
-[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 消除逐 worker 全 actor 容量的空闲栈映射，保留完整单栈/guard 及借入前三级准入、活栈线程固定和最多两个已返回栈的缓存。冷启动准入失败仍保留原 FIFO，额度释放后重试；未降低同时活栈上限。256 actor 限制、固定 registry 扫描、负载自适应公平性与代表性多 actor/开环尚未完成，逻辑预留减少不替代 BEAM 吞吐/整机内存门禁。
+[ADR-0062](adr/0062-sparse-ready-scheduler.md) 去除全 actor 派发与本地空执行槽扫描，使用固定 intrusive 就绪 FIFO、本地活栈 FIFO 和空槽链；actor 容量扩至 16384，请求表各最多 256 不变。1000/10000 actor 标量稀疏功能探测接入完整受限 AOT，仍需完整 Bytes 多 actor 同业务、开环/热点/公平性、自适应负载、原生最新双平台及 BEAM 吞吐/整机内存双门禁；不因容量可创建而称 MVP 完成。
 
-[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。该切片后的逐 worker 全容量栈池另由 ADR-0061 改进；固定 registry 扫描及 256 actor 上限仍不能承载代表性 1000/10000 actor 负载，不据此宣布 M:N、M0 或 MVP 完成。
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 消除逐 worker 全 actor 容量的空闲栈映射，保留完整单栈/guard 及借入前三级准入、活栈线程固定和最多两个已返回栈的缓存。冷启动准入失败仍保留原 FIFO，额度释放后重试；未降低同时活栈上限。后续扫描/容量由 ADR-0062 改进，逻辑预留减少不替代代表性同业务 BEAM 吞吐/整机内存门禁。
+
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。后续栈安排及扫描/容量由 ADR-0061/0062 改进，不据此宣布 M:N、M0 或 MVP 完成。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 接入 Wings/BEAM v1 的同协议正确性对照：真实固定字节 state、有限异步请求窗口、FIFO、checked i64、失败退出与清理，不再用标量/列表替代业务。独立模型与真实 OTP 结果另行核对，未完成多 actor/开环、热点/公平性、原生双平台最新 CI 或同负载性能/整机内存门禁，MVP 状态不变。
 
@@ -14,7 +16,7 @@
 
 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 补第 6 项的跨 worker 最近失败定位，不保留旧堆/栈/账户，也不把可覆盖缓存当可靠恢复事件。有界终态交接与宿主恢复由 ADR-0056 独立接入；该切片不改变 MVP 验收门槛。
 
-[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 实现第 5 项的有界 M:N 集成切片：稳定 Pid、唯一活栈 owner、返回后迁移和跨 worker 语言消息/请求。采用固定扫描/编号轮转，没有自适应窃取；单 worker Supervisor 尚未接入。原生双平台最新验证、完整资源与业务值、故障恢复集成和同负载 BEAM 双目标仍是独立门禁，不能据此宣布 M0/MVP 完成。
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 实现第 5 项的有界 M:N 集成切片：稳定 Pid、唯一活栈 owner、返回后迁移和跨 worker 语言消息/请求。初始扫描/容量由 ADR-0062 替代，仍无自适应窃取；宿主监督集成见 ADR-0056。原生双平台最新验证、完整资源与业务值和同负载 BEAM 双目标仍是独立门禁，不能据此宣布 M0/MVP 完成。
 
 [ADR-0053](adr/0053-detached-process-images.md) 提供无活栈进程镜像的独占线程转交，验证原 state/堆/额度在目标同账户栈池继续执行；镜像本身不携带 worker Pid/mailbox/request，不转交挂起活栈。调度集成由 ADR-0054 扩展，完整第 5 项仍未验收。
 

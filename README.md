@@ -26,11 +26,13 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无 Bytes 消息、引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无 Bytes 消息、引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
 
 ## 开发
 
-[ADR-0061](docs/adr/0061-on-demand-scheduler-stacks.md) 将 Scheduler worker 的业务栈改为按需 guarded mapping，映射前完整三级准入，活栈原线程保留至正常返回，最多缓存两个已返回栈。沿用完整受限 AOT 与 `scheduler_density` 回归，不缩小单栈、不更改 ABI/语法，不把逻辑预留减少称为 RSS 或 BEAM 内存结果；256 actor 上限与代表性多 actor/开环门禁仍待推进。
+[ADR-0062](docs/adr/0062-sparse-ready-scheduler.md) 将全 actor 派发扫描改成固定就绪/活栈 FIFO 和空槽链，容量上限为 16384 actor，请求表各最多 256。完整受限 AOT 的 `scheduler_sparse` 检查 1000/10000 标量 actor、100 活跃、FIFO、边界迁移和清理。构建使用下列 workspace/示例命令，不需额外依赖；这不是完整 Bytes 同业务、开环或 BEAM 性能/内存结果。
+
+[ADR-0061](docs/adr/0061-on-demand-scheduler-stacks.md) 将 Scheduler worker 的业务栈改为按需 guarded mapping，映射前完整三级准入，活栈原线程保留至正常返回，最多缓存两个已返回栈。沿用完整受限 AOT 与 `scheduler_density` 回归，不缩小单栈、不更改 ABI/语法，不把逻辑预留减少称为 RSS 或 BEAM 内存结果；后续容量/调度安排见 ADR-0062。
 
 [ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 结果总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；后续栈安排见 ADR-0061。
 
@@ -44,7 +46,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 [ADR-0055](docs/adr/0055-multi-worker-exit-diagnostics.md) 增加 `SchedulerHandle::last_exit`：固定单槽按值保留最近失败的旧 Pid、worker、handler、ABI 故障、已提交标量 state、预算/GC 和清理前账目。失败 actor 仍立即清理；成功、stop 和关闭不覆盖该值，不提供可靠监督事件或无界历史。
 
-[ADR-0054](docs/adr/0054-bounded-multi-worker-scheduler.md) 增加 `Scheduler` / `SchedulerHandle`：固定 1..=16 个 worker 调度最多 256 个 actor，活栈固定在 owner 线程，正常返回后按 worker 编号迁移。共享 registry 保持 Pid 和 FIFO，语言消息、异步请求与 GC 沿原 ABI；宿主 handle 可跨线程投递标量请求。`examples/scheduler.wings` 与 `multi_worker` 覆盖 N > M、列表/记录复制和忙 actor 共存。不是自适应 work stealing；宿主监督另见 ADR-0056，完整资源账本及 BEAM 双目标仍待完成。
+[ADR-0054](docs/adr/0054-bounded-multi-worker-scheduler.md) 增加 `Scheduler` / `SchedulerHandle`：固定 1..=16 个 worker，活栈固定在 owner 线程，正常返回后按 worker 编号迁移；后续容量与就绪派发见 ADR-0062。共享 registry 保持 Pid 和 FIFO，语言消息、异步请求与 GC 沿原 ABI；宿主 handle 可跨线程投递标量请求。`examples/scheduler.wings` 与 `multi_worker` 覆盖 N > M、列表/记录复制和忙 actor 共存。不是自适应 work stealing；宿主监督另见 ADR-0056，完整资源账本及 BEAM 双目标仍待完成。
 
 [ADR-0053](docs/adr/0053-detached-process-images.md) 增加宿主 `ScalarProcess::detach` / `DetachedProcess::attach`：无活栈时消费进程并独占转交 state/堆，目标线程绑定同 process 账户的本地池，不重跑 initializer。镜像不可 Clone、不含协程或执行接口；镜像本身不含 worker/mailbox/Pid，也不转交活栈，后续调度由 ADR-0054 接入。`detached_process` 验证 IntList 状态跨线程转交与取消后失败保留。
 

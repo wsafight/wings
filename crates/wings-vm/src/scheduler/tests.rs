@@ -166,6 +166,100 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
 }
 
 #[test]
+fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 8,
+        messages: 16,
+        requests: 4,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 6,
+            requests: 4,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = module();
+    let pids: Vec<_> = (0..6)
+        .map(|_| handle.spawn(&module, limits, 1).unwrap())
+        .collect();
+    let mut state = handle.shared.lock();
+    for pid in &pids {
+        let message = envelope(
+            state.actor(handle.shared.identity, *pid).unwrap(),
+            &module.handler("Drop").unwrap(),
+            &[],
+            32,
+            0,
+            ListPayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        state
+            .actor_mut(handle.shared.identity, *pid)
+            .unwrap()
+            .mailbox
+            .push(message)
+            .unwrap();
+        state.enqueue(*pid);
+        state.enqueue(*pid);
+    }
+    state.remove_ready(2);
+    assert_eq!(state.pop_ready(0), Some(0));
+    assert_eq!(state.pop_ready(0), Some(4));
+    assert_eq!(state.pop_ready(0), None);
+    state.remove_ready(5);
+    state.remove_ready(1);
+    assert_eq!(state.pop_ready(1), Some(3));
+    assert_eq!(state.pop_ready(1), None);
+    state.enqueue(pids[2]);
+    state.enqueue(pids[4]);
+    let retired = state.retire(handle.shared.identity, pids[2]).unwrap();
+    assert_eq!(state.pop_ready(0), Some(4));
+    assert_eq!(state.pop_ready(0), None);
+    assert_eq!(state.reserve_slot().unwrap(), 2);
+    let replacement = state.pid(handle.shared.identity, 2);
+    assert_ne!(replacement, pids[2]);
+    state.slots[2].actor = Some(retired);
+    state.slots[2].creating = false;
+    state.enqueue(pids[2]);
+    assert_eq!(state.pop_ready(0), None);
+    state.enqueue(replacement);
+    assert_eq!(state.pop_ready(0), Some(2));
+    assert_eq!(state.pop_ready(0), None);
+    let actor = state
+        .actor_mut(handle.shared.identity, replacement)
+        .unwrap();
+    actor.owner = Some(0);
+    state.enqueue(replacement);
+    assert_eq!(state.pop_ready(0), None);
+    let actor = state
+        .actor_mut(handle.shared.identity, replacement)
+        .unwrap();
+    actor.owner = None;
+    actor.last_worker = Some(0);
+    state.enqueue(replacement);
+    assert_eq!(state.pop_ready(1), Some(2));
+    state
+        .actor_mut(handle.shared.identity, replacement)
+        .unwrap()
+        .stopping = true;
+    state.enqueue(replacement);
+    assert_eq!(state.pop_ready(1), None);
+    drop(state);
+    drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn cold_stack_process_denial_preserves_fifo_until_quota_is_released() {
     let limits = Resources {
         bytes: 32 << 20,

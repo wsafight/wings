@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0062](adr/0062-sparse-ready-scheduler.md) 用槽内 intrusive FIFO 和固定 worker 本地活栈 FIFO 代替全 actor 派发扫描；空槽链 O(1) 分配、退役移除旧就绪成员，成员/代次/唯一 owner 在同 registry 锁下更新。actor 上限 16384，宿主结果和语言 pending 仍各最多 256；后者有界扫描保留。首次派发按 slot 分布，返回后固定编号迁移不变，不宣称自适应窃取、无锁或性能门禁完成。
+
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 规定 Scheduler worker 的业务栈按需创建：池构造只准入控制和至多两个缓存槽，冷借入在映射前向原 process/tenant/VM 预留完整栈加 guard；复用缓存净转移票据，归还时有界缓存或先解除映射再归还额度。活跃/挂起栈保持原 worker 独占至正常返回，默认固定池不变。不再按空闲 actor 上限预映射所有栈，但不承诺冷借入一定成功，也不将逻辑预留变化称为物理内存结果。
 
 [ADR-0060](adr/0060-shared-scheduler-reply-table.md) 让 Scheduler 在 tenant 启动准入时创建唯一宿主 ReplyTable，固定容量 `config.requests`，不再逐 actor 创建三类型表。Int/Bool/Unit 共用槽、handle 按请求保留类型，schema 校验不变；语言 pending 表独立。每槽的请求票据向目标 process 的原三级路径预留，表只接受原账户或直属子账户。结果不持 Shared/actor/模块，关闭后可消费终态，表控制计费直到最后结果 handle 释放。ABI/语法与线程执行权不变，完整业务计费和大规模调度仍待完成。
