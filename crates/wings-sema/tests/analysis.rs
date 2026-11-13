@@ -396,7 +396,7 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
 }
 
 #[test]
-fn accepts_record_state_but_rejects_reference_messages_and_replies() {
+fn accepts_record_state_and_message_fields_but_rejects_reference_replies() {
     checked(
         "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
     );
@@ -411,12 +411,15 @@ fn accepts_record_state_but_rejects_reference_messages_and_replies() {
         "expected RecordInt",
     );
     for source in [
-        "process P { state n: Int = 0; on Get(value: RecordInt) {} }",
+        "process P { state n: Int = 0; on Get(value: IntList) {} }",
         "process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }",
     ] {
         assert_error(source, "T011", "not supported in message");
     }
     checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
+    checked(
+        "process P { state n: Int = 0; on Put(value: RecordInt) { collect(); n = read_int(value) } on Get(value: RecordInt) -> Int { collect(); read_int(value) } }",
+    );
 }
 
 #[test]

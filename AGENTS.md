@@ -6,7 +6,7 @@
 
 - 项目名为 Wings，对外称 Wings VM，定位是微进程虚拟机；核心目标是在相同业务负载下，性能高于 BEAM、内存占用低于 BEAM。
 - VM 用 Rust 实现，独立运行；执行引擎包与命令叫 `wings-vm`，编译工具叫 `wings-compile`，语言服务器叫 `wings-lsp`。`wings-lang` 是业务语言名，不是聚合 crate。名称尚未完成重名与商标核查。
-- 当前处于 M0：已有前端、LSP 和可信本机 AOT 原型；语言支持局部/持久 RecordInt/IntList、精确引用条件合流/state while、有界非递归 fn 受管调用帧及受限内建，仍无引用消息/回复、递归/动态派发或通用业务值。未发布源码使用 ABI v10，每层薄入口在业务帧前检查剩余栈；compiler 发布跨帧精确活跃根及候选状态，循环外活跃根延长至回边，宿主持久根保活已提交状态，opt-in 计费堆接入非移动 GC，堆实例同步/显式执行均使用同 process 计费栈池。另有强制原子取消/让出检查、总预算、同线程活栈恢复及有限宿主 worker/mailbox/request/监督和语言自发送/同模块创建与发送（局部 Pid）/整数异步请求与系统完成事件（局部 RequestId）；worker/supervisor 可显式 spawn_with_heap，新实例不保留旧状态。worker 计费 OS 等待可重查就绪/deadline，宿主有单 actor 单入口的有界跨线程标量 ingress，仍无完整 reactor；可选计时线程只请求原子让出，不访问 actor。CLI --heap-records 显式开堆，不是网络 VM。已发布 `0.0.2` 仍是 v1。同步、初始化与活栈调用统一使用禁用 unwind 的 corosensei guarded stack，丢弃挂起调用必须先正常取消返回。完整受管执行、消息根、M:N、通用业务值与基准尚未完成，不把切片称为完整 VM 或 MVP。
+- 当前处于 M0：已有前端、LSP 和可信本机 AOT 原型；语言支持局部/持久 RecordInt/IntList、精确引用条件合流/state while、有界非递归 fn 受管调用帧及受限内建，已有 RecordInt 语言消息复制，仍无列表消息/引用回复、递归/动态派发或通用业务值。未发布源码使用 ABI v11，每层薄入口在业务帧前检查剩余栈；compiler 发布跨帧精确活跃根及候选状态，循环外活跃根延长至回边，宿主持久根保活已提交状态，opt-in 计费堆接入非移动 GC，堆实例同步/显式执行均使用同 process 计费栈池。另有强制原子取消/让出检查、总预算、同线程活栈恢复及有限宿主 worker/mailbox/request/监督和语言自发送/同模块创建与发送（局部 Pid）/整数异步请求与系统完成事件（局部 RequestId）；worker/supervisor 可显式 spawn_with_heap，新实例不保留旧状态。worker 计费 OS 等待可重查就绪/deadline，宿主有单 actor 单入口的有界跨线程标量 ingress，仍无完整 reactor；可选计时线程只请求原子让出，不访问 actor。CLI --heap-records 显式开堆，不是网络 VM。已发布 `0.0.2` 仍是 v1。同步、初始化与活栈调用统一使用禁用 unwind 的 corosensei guarded stack，丢弃挂起调用必须先正常取消返回。完整受管执行、通用消息根、M:N、通用业务值与基准尚未完成，不把切片称为完整 VM 或 MVP。
 - 只处理当前任务涉及的内容。文档整理任务不顺带创建代码骨架、依赖、分支或 Git 仓库。
 - 受管 GC 已按 ADR-0043 拆成最多 16 节点/根的工作块，每块检查并扣 runtime 预算，允许原栈暂停/取消；heap_stats 为常量时间计数。仅同 actor 不重入的非移动收集，不是并发 GC；其他 runtime 长操作、全部分配计费和双平台性能门禁仍未完成。
 - 模块按 ADR-0044 持有 Library 租约，最后一个代码所有者释放后交还装载器引用；load_accounted 在解析/装载前向 VM 预留逻辑预算并校验计费执行的 VM 归属。旧 load_trusted 是不计费工具入口；不提供热更新，不把文件大小预算当 RSS 或动态装载器实际内存。
@@ -14,6 +14,7 @@
 - 宿主按 ADR-0046 提供单 actor 单标量入口的有界跨线程 ingress；消息发布后 WakeFailed 仍是已接收，不能盲目重试。关闭清理消息，控制/ring/通知计费租约保留至最后 sender；actor/代码租约仍不跨线程，不是通用 reactor 或服务 I/O。
 - ADR-0047 可将外部入口配置为固定标量请求模式，IngressRequest 唯一消费结果，超时/取消/Drop 不撤回消息；结果槽/requests 票据在调用者结束且发布者完成后归还。外部等待不允许进入受管 handler，不改语言 RequestId 或 ABI。
 - ADR-0048 的 tcp_counter 是真实 loopback TCP 验证示例，单计费适配线程、固定 32 B 帧、有限连接/帧与绝对 I/O 截止时间，退出先停止/join。不是生产网络 VM、通用 reactor 或 BEAM 等价性能负载，不改变语言语法或 MVP 门槛。
+- ADR-0049 使用 ABI v11 的 record_mask 将 RecordInt 语言消息复制为固定标量载荷，目标在原栈按预算导入并以最多 64 个宿主入口根保活；普通宿主/JSON/ingress 仍拒绝引用整数，列表消息/引用回复未开放，类型拼写不变。
 - 功能开发围绕同一组业务负载的吞吐与整机内存双目标逐步推进。先完成可验证的功能切片，再测量瓶颈、单独优化并保留回归；优先消除重复元数据、对象分配和间接访问，不为自研而重写已验证的底层组件。自研栈池不等于栈成本消失，局部微基准不等于已领先 BEAM。
 
 ## 文档入口

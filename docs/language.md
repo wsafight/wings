@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息、引用回复、外部宿主/JSON/ingress 原 handle 仍拒绝。示例 `examples/record-messages.wings`。
+
 `examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。
 
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 仅扩展宿主标量请求入口，保留无 `->` 的单向消息与 `-> Unit` 的请求确认区别；外部线程可以等待结果，业务 handler 仍不支持阻塞 receive/await/call。
@@ -24,7 +26,7 @@ handler 内 `send_self(Message, args...)` 以本 process 单向入口为静态�
 
 process 内可按 [ADR-0042](adr/0042-managed-function-frames.md) 声明有显式参数/返回类型的 `fn`：只访问参数/局部和更早函数，不访问 state，禁止递归/while。私有受管调用支持记录/列表参数与返回、collect，逐帧保留精确根；每函数最多 4096 IR 操作、全程序最多 65536 操作，聚合根和剩余栈也须准入。
 
-持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；消息字段和回复仍禁止 RecordInt。执行必须显式配置计费堆，不接受外部 handle。
+持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；RecordInt 可作语言消息字段，回复仍禁止，复制边界见 ADR-0049。执行必须显式配置计费堆，不接受外部 handle。
 
 条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量、RecordInt 及 IntList，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
 
@@ -111,7 +113,7 @@ process Records {
 }
 ```
 
-该子集可检查并 AOT 编译运行，CLI 需显式传 `--heap-records`；宿主/worker 分别用 `instantiate_with_heap`/`spawn_with_heap`。消息字段和回复的 `RecordInt` 类型仍静态拒绝。堆容量固定，分配不足从 compiler 活跃根和宿主已提交状态根收集一次，仍不足则受管失败且不提交状态/成功回复。候选状态保活到出口，旧状态直到正常返回并验证输出后才替换；单槽堆不能在替换前回收旧状态，二槽堆可在后续调用收集旧对象。原生栈不保守扫描，不因局部名字仍在作用域就保留已无后续用途的记录。嵌套内建和括号内换行受既有表达式限制约束；不允许任意用户函数调用。契约见 [ADR-0026](adr/0026-language-temporary-records.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)，持久状态示例为 `examples/record-state.wings`。
+该子集可检查并 AOT 编译运行，CLI 需显式传 `--heap-records`；宿主/worker 分别用 `instantiate_with_heap`/`spawn_with_heap`。语言消息字段允许 `RecordInt`，但宿主/JSON/ingress 不能提交原 handle，引用回复仍静态拒绝。堆容量固定，分配不足从 compiler 活跃根和宿主已提交状态根收集一次，仍不足则受管失败且不提交状态/成功回复。候选状态保活到出口，旧状态直到正常返回并验证输出后才替换；单槽堆不能在替换前回收旧状态，二槽堆可在后续调用收集旧对象。原生栈不保守扫描，不因局部名字仍在作用域就保留已无后续用途的记录。嵌套内建和括号内换行受既有表达式限制约束；不允许任意用户函数调用。契约见 [ADR-0026](adr/0026-language-temporary-records.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)，持久状态示例为 `examples/record-state.wings`。
 
 业务值不可变，状态绑定可以替换。`count = next` 表示替换本次 handler 的候选状态，不代表对象字段可变，也不暴露共享可变引用。后续语句读取更新后的候选值。
 
@@ -163,7 +165,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v10 不兼容已发布 `0.0.2` 及旧源码 v2–v9 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足或记录堆耗尽属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v11 不兼容已发布 `0.0.2` 及旧源码 v2–v10 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 

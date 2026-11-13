@@ -83,12 +83,13 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
     assert_eq!(offset_of!(EffectRequest, count), 24);
     assert_eq!(offset_of!(EffectRequest, callback), 32);
     assert_eq!(offset_of!(EffectRequest, timeout_ms), 40);
-    assert_eq!(size_of::<EffectRequest>(), 48);
+    assert_eq!(offset_of!(EffectRequest, record_mask), 48);
+    assert_eq!(size_of::<EffectRequest>(), 56);
 }
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 10);
+    assert_eq!(SCALAR_ABI_VERSION, 11);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);

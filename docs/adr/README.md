@@ -56,6 +56,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0046](0046-bounded-cross-thread-ingress.md) | 固定跨线程入口、计费消息与 OS 通知租约 | 已采纳（外部事件前置切片） |
 | [0047](0047-cross-thread-ingress-requests.md) | 固定外部请求结果表、超时/取消与双端租约 | 已采纳（外部请求切片） |
 | [0048](0048-bounded-loopback-service.md) | 有限 loopback TCP、绝对 I/O 截止时间与服务清理 | 已采纳（真实 I/O 验证切片） |
+| [0049](0049-record-message-copies.md) | ABI v11、RecordInt 语言消息按值复制与目标入口根 | 已采纳（引用消息切片） |
 
 ## 维护方式
 

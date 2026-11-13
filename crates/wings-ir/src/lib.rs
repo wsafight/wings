@@ -183,7 +183,10 @@ impl Program {
         }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_reference)
-                || handler.parameters.iter().any(|(_, ty)| ty.is_reference())
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::ListRef)
         }) {
             return Err("record references cannot cross scalar IR boundaries".into());
         }
@@ -413,7 +416,13 @@ impl Function {
                         && arguments.len() <= MAX_PARAMETERS
                         && arguments.iter().all(|register| {
                             types.get(*register).is_some_and(|ty| {
-                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                                matches!(
+                                    ty,
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Ref
+                                )
                             })
                         })
                 }
@@ -430,7 +439,13 @@ impl Function {
                         && arguments.len() <= MAX_PARAMETERS
                         && arguments.iter().all(|register| {
                             types.get(*register).is_some_and(|ty| {
-                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                                matches!(
+                                    ty,
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Ref
+                                )
                             })
                         })
                 }
@@ -449,7 +464,13 @@ impl Function {
                         && arguments.len() <= MAX_PARAMETERS
                         && arguments.iter().all(|register| {
                             types.get(*register).is_some_and(|ty| {
-                                matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit)
+                                matches!(
+                                    ty,
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Ref
+                                )
                             })
                         })
                 }

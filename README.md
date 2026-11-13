@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；已接入自发送及同 worker 同模块创建/单向发送、异步整数请求事件，尚无引用消息、递归/动态派发或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList 分支、比较、state while、有界非递归 fn 调用帧与临时/持久记录及列表。另有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；已接入自发送及同 worker 同模块创建/单向发送、异步整数请求事件，已有 RecordInt 语言消息复制，尚无列表消息/引用回复、递归/动态派发或 M:N。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-13。
 
 ## 开发
+
+ABI v11 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 允许语言消息参数携带 RecordInt：发送点复制 Int 字段，目标堆重新分配并以入口根保活；源失败不撤回已接受消息。示例 `examples/record-messages.wings` 及 `record_messages`；JSON/宿主/ingress 不接受原 handle，列表消息和引用回复仍不支持。
 
 受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。
 

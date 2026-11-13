@@ -454,6 +454,22 @@ fn compile_body(
                     _ => unreachable!(),
                 };
                 let request = effect_arguments.expect("effect argument storage");
+                let record_mask =
+                    arguments
+                        .iter()
+                        .enumerate()
+                        .fold(0u64, |mask, (index, register)| {
+                            mask | (u64::from(
+                                function.instructions[*register].ty == wings_abi::ValueType::Ref,
+                            ) << index)
+                        });
+                let record_mask = builder.ins().iconst(types::I64, record_mask as i64);
+                builder.ins().store(
+                    MemFlags::new(),
+                    record_mask,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, record_mask) as i32,
+                );
                 let buffer = builder
                     .ins()
                     .iadd_imm(request, i64::from(EFFECT_ARGUMENT_OFFSET));

@@ -20,6 +20,7 @@ pub(crate) struct AotHeap {
     empty_list: RecordLayout,
     cons_list: RecordLayout,
     committed: Option<HeapRef>,
+    incoming: [Option<HeapRef>; 64],
     _metadata: Reservation,
 }
 
@@ -49,6 +50,7 @@ impl AotHeap {
                 empty_list,
                 cons_list,
                 committed: None,
+                incoming: [None; 64],
                 _metadata: metadata,
             })
         };
@@ -97,7 +99,7 @@ impl AotHeap {
     }
 
     unsafe fn prepare_roots(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
-        let mut references = [None; MAX_SHADOW_ROOTS + 1];
+        let mut references = [None; MAX_SHADOW_ROOTS + 65];
         let mut count = 0;
         let mut depth = 0;
         while !frame.is_null() {
@@ -123,6 +125,11 @@ impl AotHeap {
             references[count] = Some(committed);
             count += 1;
         }
+        for reference in self.incoming.iter().flatten() {
+            self.heap.import_reference(reference.encoded())?;
+            references[count] = Some(*reference);
+            count += 1;
+        }
         self.roots.replace(&references[..count]);
         Ok(())
     }
@@ -133,6 +140,58 @@ impl AotHeap {
         self.heap.collect(&self.roots)?;
         Ok(())
     }
+
+    pub(crate) fn clear_incoming(&mut self) {
+        self.incoming.fill(None);
+    }
+
+    pub(crate) fn record_value(&self, encoded: i64) -> Result<i64, u32> {
+        let reference = self
+            .heap
+            .import_reference(encoded as u64)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        if !self
+            .heap
+            .has_layout(reference, self.layout)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+        {
+            return Err(STATUS_INVALID_ROOT);
+        }
+        match self
+            .heap
+            .get(reference, 0)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+        {
+            RecordValue::Int(value) => Ok(value),
+            _ => Err(STATUS_INVALID_ROOT),
+        }
+    }
+}
+
+pub(crate) unsafe fn import_arguments(
+    context: &mut ScalarContext,
+    arguments: &mut [i64],
+    mask: u64,
+) -> Result<(), u32> {
+    for (index, argument) in arguments.iter_mut().enumerate() {
+        if mask & (1u64 << index) == 0 {
+            continue;
+        }
+        if context.heap_data.is_null() {
+            return Err(STATUS_HEAP_EXHAUSTED);
+        }
+        crate::execution::runtime_checkpoint(context, true)?;
+        let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.layout;
+        let encoded = unsafe { allocate_managed(context, layout, &[RecordValue::Int(*argument)]) }?;
+        let heap = unsafe { &mut *context.heap_data.cast::<AotHeap>() };
+        let reference = heap
+            .heap
+            .import_reference(encoded)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        heap.incoming[index] = Some(reference);
+        *argument = encoded as i64;
+    }
+    Ok(())
 }
 
 unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
@@ -303,6 +362,100 @@ mod tests {
         let tenant = vm.tenant(limits).unwrap();
         let account = tenant.process(limits).unwrap();
         (vm, AotHeap::new(&account, capacity).unwrap())
+    }
+
+    #[test]
+    fn imports_all_64_record_parameters_including_the_highest_mask_bit() {
+        let (vm, mut heap) = fixture(64);
+        let cancellation = std::sync::atomic::AtomicU32::new(0);
+        let mut context = ScalarContext {
+            cancellation: &cancellation,
+            remaining_steps: 256,
+            yield_request: &cancellation,
+            slice_remaining: 256,
+            slow_path: None,
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: None,
+            heap_data: std::ptr::from_mut(&mut *heap).cast(),
+            effect_call: None,
+        };
+        let mut arguments = std::array::from_fn::<_, 64, _>(|index| index as i64 - 32);
+        unsafe { import_arguments(&mut context, &mut arguments, u64::MAX) }.unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 64);
+        assert_eq!(context.remaining_steps, 192);
+        for (index, argument) in arguments.iter().enumerate() {
+            assert_eq!(heap.record_value(*argument), Ok(index as i64 - 32));
+        }
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn incoming_parameters_survive_gc_before_entry_and_later_parameter_allocation() {
+        let (vm, mut heap) = fixture(3);
+        let committed = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(7)])
+            .unwrap();
+        heap.commit(committed.encoded() as i64).unwrap();
+        heap.heap
+            .allocate(heap.layout, &[RecordValue::Int(8)])
+            .unwrap();
+        heap.heap
+            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .unwrap();
+        let cancellation = std::sync::atomic::AtomicU32::new(0);
+        let yielding = std::sync::atomic::AtomicU32::new(0);
+        let mut context = ScalarContext {
+            cancellation: &cancellation,
+            remaining_steps: 128,
+            yield_request: &yielding,
+            slice_remaining: 128,
+            slow_path: None,
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: None,
+            heap_data: std::ptr::from_mut(&mut *heap).cast(),
+            effect_call: None,
+        };
+        let mut arguments = [11, 22];
+        unsafe { import_arguments(&mut context, &mut arguments, 3) }.unwrap();
+        assert_eq!(heap.record_value(arguments[0]), Ok(11));
+        assert_eq!(heap.record_value(arguments[1]), Ok(22));
+        let first = heap.heap.import_reference(arguments[0] as u64).unwrap();
+        let second = heap.heap.import_reference(arguments[1] as u64).unwrap();
+        heap.incoming =
+            std::array::from_fn(|index| Some(if index % 2 == 0 { first } else { second }));
+        let frame_slots = [arguments[1] as u64; MAX_SHADOW_ROOTS];
+        let frame = ShadowFrame {
+            previous: std::ptr::null(),
+            slots: frame_slots.as_ptr(),
+            count: frame_slots.len(),
+        };
+        unsafe { heap.collect(&frame) }.unwrap();
+        assert_eq!(heap.stats().allocated, 3);
+        assert_eq!(heap.record_value(arguments[0]), Ok(11));
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 1);
+        assert_eq!(heap.record_value(arguments[0]), Err(STATUS_INVALID_ROOT));
+        let list = heap
+            .heap
+            .allocate(heap.empty_list, &[RecordValue::Unit])
+            .unwrap();
+        assert_eq!(
+            heap.record_value(list.encoded() as i64),
+            Err(STATUS_INVALID_ROOT)
+        );
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]

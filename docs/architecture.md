@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0049](adr/0049-record-message-copies.md) 升至 ABI v11，在 EffectRequest 末尾新增 u64 record_mask，结构从 48 到 56 字节，context/入口不变。源堆仅在 callback 内校验并复制 RecordInt 字段，目标进入业务前按预算重建，固定宿主入口根覆盖 GC/暂停；无共享堆或外部 handle 注入。
+
 [ADR-0048](adr/0048-bounded-loopback-service.md) 的 loopback TCP Counter 由一个有预算的外部适配线程接收固定帧，经有界请求入口交给原 worker；native I/O 不进入业务线程。线程/连接数、缓冲及等待有明确上限，错误先停止并 join，再释放 VM；该示例不是通用 reactor 或可部署的网络执行引擎。
 
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 在固定外部入口上增加标量请求模式：结果表无模块/actor 引用，调用者与消息发布者共同持有有界槽位和资源票据；worker 提交 state 后才发布回复。外部 Condvar 等待不进入受管 handler，不修改 ABI 或 M:N 执行权。
@@ -12,7 +14,7 @@
 
 [ADR-0041](adr/0041-worker-deadline-parking.md) 用计费 parker 集成空闲等待与请求 deadline；ADR-0046 仅经有界 ingress 提供通知，不导出裸 notifier，也不是完整 reactor。
 
-[ADR-0040](adr/0040-language-request-events.md) 的 ABI v10 扩展固定 EffectRequest，整数请求使用静态完成事件；完成消息预留随 pending 保留、入队时净转移，普通外部入口不能伪造 RequestId。
+[ADR-0040](adr/0040-language-request-events.md) 在 ABI v10 扩展固定 EffectRequest，整数请求使用静态完成事件；完成消息预留随 pending 保留、入队时净转移，普通外部入口不能伪造 RequestId。当前记录消息扩展使用 ABI v11。
 
 [ADR-0039](adr/0039-local-process-capabilities.md) 的 ABI v9 以固定 EffectRequest 和结果槽扩展 effect 回调；局部 Pid 能力按 worker/module 校验，同模块创建继承资源上限而非状态，无跨 worker 迁移。
 
@@ -20,21 +22,21 @@
 
 [ADR-0037](adr/0037-immutable-int-lists.md) 升至 ABI v7，在原有 context/回调签名中增加有类型 ListRef、不可变 IntList 节点与传递 GC；旧 v6 产物须重编译。列表仍不跨消息边界，不改变非移动 GC。
 
-源码业务函数按 [ADR-0042](adr/0042-managed-function-frames.md) 编译为私有非递归受管调用：四参数协议复用 ABI v10，每层薄入口检查实际剩余栈，caller/callee 链接精确根，失败逐层正常返回。最多 32 层函数链、64 个聚合根；不开放递归或动态派发，不等于完整 M0。
+源码业务函数按 [ADR-0042](adr/0042-managed-function-frames.md) 编译为私有非递归受管调用：四参数协议复用 ABI v11，每层薄入口检查实际剩余栈，caller/callee 链接精确根，失败逐层正常返回。最多 32 层函数链、64 个聚合根；不开放递归或动态派发，不等于完整 M0。
 
-受管返回状态与输出校验按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 分类，固定退出快照不持有模块、业务引用或资源所有权；ABI v10 与既有事件形状不变。
+受管返回状态与输出校验按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 分类，固定退出快照不持有模块、业务引用或资源所有权；ABI v11 与既有事件形状不变。
 
-[ADR-0032](adr/0032-safe-point-diagnostics.md) 规定宿主诊断只传递开始/让出/返回边界的值快照，不保存悬挂 context 或跨线程读取 actor；不改变 ABI v10 与现有协程所有权。
+[ADR-0032](adr/0032-safe-point-diagnostics.md) 规定宿主诊断只传递开始/让出/返回边界的值快照，不保存悬挂 context 或跨线程读取 actor；不改变 ABI v11 与现有协程所有权。
 
-当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v10 沿用新增 effect 回调后的 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；普通参数与回复仍限定标量，系统完成事件首参额外允许 RequestId。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
+当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v11 沿用新增 effect 回调后的 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；普通参数与回复仍限定标量，系统完成事件首参额外允许 RequestId。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
 
 宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
 
-有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；[ADR-0033](adr/0033-record-conditional-roots.md) 增加 RecordInt 合流，恢复外层路径根并在合流检查前发布选中结果。ABI v10 不变，尚无臂内语句或任意引用 phi；state while 另见 ADR-0031/0034。
+有界条件表达式按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 降为真实分支，只执行选中臂；[ADR-0033](adr/0033-record-conditional-roots.md) 增加 RecordInt 合流，恢复外层路径根并在合流检查前发布选中结果。ABI v11 不变，尚无臂内语句或任意引用 phi；state while 另见 ADR-0031/0034。
 
-标量比较使用显式类型化 IR 与 Cranelift signed compare，不通过可能溢出的相减模拟顺序；根、检查点、ABI v10 及消息边界不变。见 [ADR-0030](adr/0030-scalar-comparisons.md)。
+标量比较使用显式类型化 IR 与 Cranelift signed compare，不通过可能溢出的相减模拟顺序；根、检查点、ABI v11 及消息边界不变。见 [ADR-0030](adr/0030-scalar-comparisons.md)。
 
-state 循环使用结构化 Loop/While/EndLoop、header/exit 块参数与回边强制检查；[ADR-0034](adr/0034-record-state-loops.md) 开放唯一 RecordInt state 携带值，检查前发布 header、回边保活候选、出口恢复外层根。ABI v10、固定栈和预算不变；无任意引用 phi，基础标量契约见 [ADR-0031](adr/0031-scalar-state-loops.md)。
+state 循环使用结构化 Loop/While/EndLoop、header/exit 块参数与回边强制检查；[ADR-0034](adr/0034-record-state-loops.md) 开放唯一 RecordInt state 携带值，检查前发布 header、回边保活候选、出口恢复外层根。ABI v11、固定栈和预算不变；无任意引用 phi，基础标量契约见 [ADR-0031](adr/0031-scalar-state-loops.md)。
 
 [文档目录](../docs.md) · [项目概览](../README.md)
 
@@ -79,7 +81,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
-未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确活跃根，[ADR-0026](adr/0026-language-temporary-records.md) 开放语言单 Int 字段记录，[ADR-0027](adr/0027-persistent-record-state.md) 增加持久状态根；尚无引用消息/回复根与通用业务值，下面的完整受管契约仍待实现。
+未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确活跃根，[ADR-0026](adr/0026-language-temporary-records.md) 开放语言单 Int 字段记录，[ADR-0027](adr/0027-persistent-record-state.md) 增加持久状态根；已有 RecordInt 复制消息/入口根，尚无列表消息、引用回复根与通用业务值，下面的完整受管契约仍待实现。
 
 首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 
@@ -100,9 +102,9 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码 ABI v10 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。普通参数与回复只允许 Int/Bool/Unit，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆与无效根错误均以状态码返回，不 trap 或 unwind。
+未发布源码 ABI v11 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。普通宿主参数与回复只允许 Int/Bool/Unit；语言消息参数额外允许 RecordInt 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆与无效根错误均以状态码返回，不 trap 或 unwind。
 
-薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；无调用及 GC 的 N 条直线 IR 指令成功需 N+1 步。源码函数逐帧计算，受管 GC 另按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 每块扣一步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码 v2–v9 均与当前 v10 拒绝混用，须使用匹配的编译器和 VM。
+薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；无调用及 GC 的 N 条直线 IR 指令成功需 N+1 步。源码函数逐帧计算，受管 GC 另按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 每块扣一步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码 v2–v10 均与当前 v11 拒绝混用，须使用匹配的编译器和 VM。
 
 `start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 与 initializer 也借用池内栈，正常返回立即归还；worker 通过 `instantiate_in_pool` 将初始化栈计入进程额度，额度不足在 spawn 时回滚。池不代替 compiler 根、GC 或完整资源账本，当前栈检查见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，原栈恢复与池契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 和 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
@@ -116,7 +118,7 @@ CLI 路径没有计时线程、actor 调度、mailbox 或监督，不能运行�
 
 ## 低层实现范围
 
-当前 ABI v10 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，使用 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref/ListRef，候选状态保活至出口，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 个 compiler 根，另加一个宿主持久状态根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。状态提交契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
+当前 ABI v11 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，使用 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref/ListRef，候选状态保活至出口，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 个 compiler 根，另加一个宿主持久状态根及最多 64 个已导入消息参数根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。状态提交契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 宿主调度入口 `ScalarWorker` 将模块实例化为 generation Pid，使用有界 mailbox 与计费栈池轮转执行；固定 pending 表提供异步请求及轮询 deadline。`spawn` 默认无堆，`spawn_with_heap` 在初始化前建立进程计费堆；`instantiate_with_heap` 要求传入同 process 绑定池，实例的同步调用复用该池，显式传入其他账户或未计费池则执行前拒绝。CLI 可用 `--heap-records`，不改变标量 JSON 消息协议，不将它当作语言内消息或完整受管执行。契约见 [ADR-0020](adr/0020-single-worker-mailbox.md)、[ADR-0021](adr/0021-bounded-requests.md) 与 [ADR-0026](adr/0026-language-temporary-records.md)。
 

@@ -31,6 +31,7 @@ pub(crate) struct ProcessEffect {
     pub count: usize,
     pub callback: usize,
     pub timeout_ms: i64,
+    pub record_mask: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +121,7 @@ pub(crate) fn initialize(
         pool.acquire()?,
         &mut heap,
         false,
+        0,
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
         CoroutineResult::Return((status, output, heap, _)) => Ok((status, output, heap)),
@@ -217,6 +219,7 @@ impl ScalarProcess {
             preemption,
             &pool,
             false,
+            0,
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -244,6 +247,7 @@ impl ScalarProcess {
             preemption,
             pool,
             false,
+            0,
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -323,6 +327,7 @@ impl ScalarTask {
             preemption,
             pool,
             false,
+            0,
         )
     }
 
@@ -336,13 +341,14 @@ impl ScalarTask {
         preemption: &PreemptionToken,
         pool: &StackPool,
         system: bool,
+        record_mask: u64,
     ) -> Result<(), String> {
         if self.is_active() {
             return Err("scalar task already has an active invocation".into());
         }
-        let handler = self
-            .process
-            .validate_handler_kind(handler, arguments, system)?;
+        let handler =
+            self.process
+                .validate_handler_payload(handler, arguments, system, record_mask)?;
         self.invocation = Some(Invocation::new(
             &mut self.process,
             handler,
@@ -352,6 +358,7 @@ impl ScalarTask {
             preemption,
             pool,
             self.effects_enabled,
+            record_mask,
         )?);
         Ok(())
     }
@@ -385,6 +392,7 @@ impl Invocation {
         preemption: &PreemptionToken,
         pool: &StackPool,
         effects_enabled: bool,
+        record_mask: u64,
     ) -> Result<Self, String> {
         process.module.validate_pool(pool)?;
         if process
@@ -412,6 +420,7 @@ impl Invocation {
             pool.acquire()?,
             &mut process.heap,
             effects_enabled,
+            record_mask,
         )?;
         Ok(Self {
             handler,
@@ -434,6 +443,7 @@ fn new_coroutine(
     stack: PooledStack,
     heap: &mut Option<Box<AotHeap>>,
     effects_enabled: bool,
+    record_mask: u64,
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
     let mut owned_arguments = Vec::new();
@@ -473,7 +483,12 @@ fn new_coroutine(
             }),
             effect_call: effects_enabled.then_some(send_self as wings_abi::EffectCall),
         };
-        let status = unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) };
+        let status = match unsafe {
+            crate::aot_heap::import_arguments(&mut context, &mut owned_arguments, record_mask)
+        } {
+            Ok(()) => unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) },
+            Err(status) => status,
+        };
         let status = if context.roots.is_null() {
             status
         } else {
@@ -484,6 +499,9 @@ fn new_coroutine(
             heap: heap.as_deref().map(AotHeap::stats),
             effect: None,
         };
+        if let Some(heap) = &mut heap {
+            heap.clear_incoming();
+        }
         (status, output, heap, checkpoint)
     });
     Ok(coroutine)
@@ -641,13 +659,37 @@ unsafe extern "C" fn send_self(
     };
     let count = request.count;
     let arguments = request.arguments;
-    if output.is_null() || count > 64 || (count != 0 && arguments.is_null()) {
+    if output.is_null()
+        || count > 64
+        || (count != 0 && arguments.is_null())
+        || (request.record_mask != 0
+            && !matches!(
+                request.operation,
+                wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
+            ))
+    {
         return wings_abi::STATUS_INVALID_CONTROL;
     }
     let context = unsafe { &mut *context };
     let mut copied = [0; 64];
     if count != 0 {
         copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
+    }
+    if count < 64 && request.record_mask >> count != 0 {
+        return wings_abi::STATUS_INVALID_CONTROL;
+    }
+    if request.record_mask != 0 {
+        let Some(heap) = (unsafe { context.heap_data.cast::<AotHeap>().as_ref() }) else {
+            return wings_abi::STATUS_INVALID_ROOT;
+        };
+        for (index, argument) in copied[..count].iter_mut().enumerate() {
+            if request.record_mask & (1u64 << index) != 0 {
+                match heap.record_value(*argument) {
+                    Ok(value) => *argument = value,
+                    Err(status) => return status,
+                }
+            }
+        }
     }
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
@@ -660,6 +702,7 @@ unsafe extern "C" fn send_self(
             count,
             callback: request.callback as usize,
             timeout_ms: request.timeout_ms,
+            record_mask: request.record_mask,
         }),
     };
     let yielder = unsafe { &*context.data.cast::<Yielder<ResumeCommand, Checkpoint>>() };
@@ -680,6 +723,66 @@ unsafe extern "C" fn send_self(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_record_mask_rejects_missing_heap_and_out_of_range_bits_before_yield() {
+        let cancelled = AtomicU32::new(0);
+        let mut context = ScalarContext {
+            cancellation: &cancelled,
+            remaining_steps: 1,
+            yield_request: &cancelled,
+            slice_remaining: 1,
+            slow_path: None,
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: None,
+            heap_data: std::ptr::null_mut(),
+            effect_call: None,
+        };
+        let arguments = [1];
+        let mut request = wings_abi::EffectRequest {
+            operation: wings_abi::EFFECT_SEND,
+            handler: 0,
+            target: 0,
+            arguments: arguments.as_ptr(),
+            count: 1,
+            callback: 0,
+            timeout_ms: 0,
+            record_mask: 2,
+        };
+        let mut output = 777;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.record_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_ROOT
+        );
+        let all_arguments = [1; 64];
+        request.arguments = all_arguments.as_ptr();
+        request.count = 64;
+        request.record_mask = u64::MAX;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_ROOT
+        );
+        for operation in [
+            wings_abi::EFFECT_SELF_PID,
+            wings_abi::EFFECT_SPAWN_SELF,
+            wings_abi::EFFECT_CANCEL_REQUEST,
+            u32::MAX,
+        ] {
+            request.operation = operation;
+            assert_eq!(
+                unsafe { send_self(&mut context, &request, &mut output) },
+                wings_abi::STATUS_INVALID_CONTROL
+            );
+        }
+        assert_eq!(output, 777);
+    }
 
     unsafe extern "C" fn resume_runtime_chunk(context: *mut ScalarContext) -> u32 {
         let context = unsafe { &mut *context };

@@ -118,7 +118,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
         rejects(&manifest, "unsupported artifact format");
         assert!(manifest.encode().is_err());
     }
-    for version in [0, 1, 2, 3, 4, 5, SCALAR_ABI_VERSION + 1, u32::MAX] {
+    for version in (0..SCALAR_ABI_VERSION).chain([SCALAR_ABI_VERSION + 1, u32::MAX]) {
         let mut manifest = manifest();
         manifest.abi = version;
         rejects(&manifest, "scalar ABI version");
@@ -126,7 +126,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn accepts_record_state_but_rejects_reference_messages_and_replies() {
+fn accepts_record_state_and_copied_record_parameters_but_not_reference_replies_or_lists() {
     for ty in [ValueType::Ref, ValueType::ListRef] {
         let mut with_state = manifest();
         with_state.state = ty;
@@ -140,7 +140,11 @@ fn accepts_record_state_but_rejects_reference_messages_and_replies() {
                     .push(("reference".into(), ty)),
                 _ => manifest.handlers[0].reply = Some(ty),
             }
-            rejects(&manifest, "cannot cross scalar artifact boundaries");
+            if ty == ValueType::Ref && boundary == 1 {
+                manifest.validate().unwrap();
+            } else {
+                rejects(&manifest, "cannot cross scalar artifact boundaries");
+            }
         }
     }
 }

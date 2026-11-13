@@ -446,7 +446,7 @@ impl ShadowRoots {
     }
 
     pub(crate) fn with_state_root(heap: &RecordHeap) -> Result<Self, String> {
-        Self::allocate(heap, MAX_ROOTS + 1)
+        Self::allocate(heap, MAX_ROOTS + 65)
     }
 
     fn allocate(heap: &RecordHeap, capacity: usize) -> Result<Self, String> {

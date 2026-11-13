@@ -160,6 +160,16 @@ impl ScalarProcess {
         arguments: &[i64],
         system: bool,
     ) -> Result<usize, String> {
+        self.validate_handler_payload(handler, arguments, system, 0)
+    }
+
+    fn validate_handler_payload(
+        &self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        system: bool,
+        record_mask: u64,
+    ) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
         }
@@ -170,12 +180,22 @@ impl ScalarProcess {
         if schema.is_completion() != system {
             return Err("completion events require the worker system path".into());
         }
-        if arguments.len() != schema.parameters.len()
+        let expected_mask = schema
+            .parameters
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, (_, ty))| {
+                mask | (u64::from(*ty == ValueType::Ref) << index)
+            });
+        if record_mask != expected_mask
+            || arguments.len() != schema.parameters.len()
             || arguments
                 .iter()
                 .zip(&schema.parameters)
                 .any(|(value, (_, ty))| {
-                    !ty.accepts(*value) && !(system && *ty == ValueType::RequestId && *value > 0)
+                    !ty.accepts(*value)
+                        && *ty != ValueType::Ref
+                        && !(system && *ty == ValueType::RequestId && *value > 0)
                 })
         {
             return Err("handler argument count or scalar type mismatch".into());

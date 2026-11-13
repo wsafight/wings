@@ -164,6 +164,7 @@ struct Message {
     request: Option<RequestId>,
     system: bool,
     external: Option<ReplyPublisher>,
+    record_mask: u64,
     _charge: Reservation,
 }
 
@@ -556,6 +557,18 @@ impl ScalarWorker {
         max_steps: u64,
         request: Option<RequestId>,
     ) -> Result<(), String> {
+        self.enqueue_payload(pid, handler, arguments, max_steps, request, 0)
+    }
+
+    fn enqueue_payload(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+        record_mask: u64,
+    ) -> Result<(), String> {
         let actor = self.actor_mut(pid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
             return Err("handler ID belongs to a different module".into());
@@ -567,12 +580,20 @@ impl ScalarWorker {
         if schema.reply.is_some() != request.is_some() {
             return Err("send requires a one-way handler; request requires a reply handler".into());
         }
-        if arguments.len() != schema.parameters.len()
+        let expected_mask = schema
+            .parameters
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, (_, ty))| {
+                mask | (u64::from(*ty == wings_abi::ValueType::Ref) << index)
+            });
+        if record_mask != expected_mask
+            || arguments.len() != schema.parameters.len()
             || arguments.len() > MAX_ARGUMENTS
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| !ty.accepts(*value))
+                .any(|(value, (_, ty))| *ty != wings_abi::ValueType::Ref && !ty.accepts(*value))
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
@@ -594,6 +615,7 @@ impl ScalarWorker {
             request,
             system: false,
             external: None,
+            record_mask,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -628,6 +650,7 @@ impl ScalarWorker {
                             request: None,
                             system: false,
                             external: envelope.reply,
+                            record_mask: 0,
                             _charge: envelope.charge,
                         });
                         actor.mailbox.count += 1;
@@ -653,6 +676,7 @@ impl ScalarWorker {
                     &self.preemption,
                     &actor.pool,
                     message.system,
+                    message.record_mask,
                 )?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .take()
@@ -872,12 +896,13 @@ impl ScalarWorker {
                             .map(|handler| (target, handler))
                     })
                     .is_some_and(|(target, handler)| {
-                        self.enqueue(
+                        self.enqueue_payload(
                             target,
                             &handler,
                             &effect.arguments[..effect.count],
                             budget,
                             None,
+                            effect.record_mask,
                         )
                         .is_ok()
                     });
@@ -1061,12 +1086,13 @@ impl ScalarWorker {
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
             .ok_or("request deadline overflow")?;
-        self.enqueue(
+        self.enqueue_payload(
             target,
             &handler,
             &effect.arguments[..effect.count],
             budget,
             Some(request),
+            effect.record_mask,
         )?;
         self.requests[index].pending = Some(PendingRequest {
             target,
@@ -1125,6 +1151,7 @@ impl ScalarWorker {
                 request: None,
                 system: true,
                 external: None,
+                record_mask: 0,
                 _charge: completion.charge,
             };
             let actor = self.actor_mut(owner).expect("completion recipient");

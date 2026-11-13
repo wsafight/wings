@@ -317,6 +317,40 @@ fn invalid_arguments_and_names_do_not_poison_a_process() {
 }
 
 #[test]
+fn record_message_masks_must_match_schema_without_poisoning_the_process() {
+    let mut module = module();
+    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[0].parameters = vec![
+        ("first".into(), ValueType::Ref),
+        ("flag".into(), ValueType::Bool),
+        ("second".into(), ValueType::Ref),
+    ];
+    module.manifest().validate().unwrap();
+    let process = module.instantiate().unwrap();
+    let handler = module.handler("Add").unwrap();
+    for mask in [0, 1, 2, 3, 4, 6, 7, 8, u64::MAX] {
+        assert!(
+            process
+                .validate_handler_payload(&handler, &[i64::MIN, 1, i64::MAX], false, mask)
+                .is_err()
+        );
+    }
+    assert!(
+        process
+            .validate_handler_payload(&handler, &[i64::MIN, 1, i64::MAX], false, 5)
+            .is_ok()
+    );
+    for arguments in [&[7, 2, 9][..], &[7, 1][..], &[7, 1, 9, 0][..]] {
+        assert!(
+            process
+                .validate_handler_payload(&handler, arguments, false, 5)
+                .is_err()
+        );
+    }
+    assert!(!process.failed);
+    assert_eq!(process.state, 0);
+}
+
+#[test]
 fn cancellation_is_shared_between_clones_and_thread_safe() {
     let token = CancellationToken::default();
     let clone = token.clone();

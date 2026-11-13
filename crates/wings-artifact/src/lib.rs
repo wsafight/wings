@@ -78,7 +78,10 @@ impl Manifest {
         }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_reference)
-                || handler.parameters.iter().any(|(_, ty)| ty.is_reference())
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::ListRef)
         }) {
             return Err("record references cannot cross scalar artifact boundaries".into());
         }
