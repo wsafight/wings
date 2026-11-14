@@ -130,6 +130,8 @@ struct PendingRequest {
     deadline: Instant,
     outcome: Option<RequestOutcome>,
     completion: Option<Completion>,
+    result_taken: bool,
+    publisher: bool,
     _charge: Reservation,
 }
 
@@ -524,6 +526,8 @@ impl ScalarWorker {
             deadline,
             outcome: None,
             completion: None,
+            result_taken: false,
+            publisher: true,
             _charge: charge,
         });
         Ok(request)
@@ -531,25 +535,34 @@ impl ScalarWorker {
 
     pub fn take_reply(&mut self, request: RequestId) -> Result<Option<RequestOutcome>, String> {
         self.expire_requests();
+        if self.pending(request)?.result_taken {
+            return Err("stale or consumed request ID".into());
+        }
         if self.pending(request)?.completion.is_some() {
             return Err("language request results require completion events".into());
         }
         let outcome = self.pending(request)?.outcome;
         if outcome.is_some() {
             let slot = &mut self.requests[request.slot as usize];
-            slot.pending.take();
-            slot.generation = slot.generation.checked_add(1).unwrap_or(0);
+            slot.pending
+                .as_mut()
+                .expect("validated request")
+                .result_taken = true;
+            retire_request(slot);
         }
         Ok(outcome)
     }
 
     pub fn cancel_request(&mut self, request: RequestId) -> Result<(), String> {
         self.expire_requests();
+        if self.pending(request)?.result_taken {
+            return Err("stale or consumed request ID".into());
+        }
         if self.pending(request)?.completion.is_some() {
             return Err("language request cancellation requires its owner".into());
         }
         self.pending(request)?;
-        self.finish_request(request, RequestOutcome::Cancelled);
+        self.select_request(request, RequestOutcome::Cancelled);
         Ok(())
     }
 
@@ -908,7 +921,7 @@ impl ScalarWorker {
                         })
                 });
                 if let Some(request) = request {
-                    self.finish_request(request, RequestOutcome::Cancelled);
+                    self.select_request(request, RequestOutcome::Cancelled);
                     (wings_abi::STATUS_OK, 0)
                 } else {
                     (wings_abi::STATUS_REQUEST_REJECTED, 0)
@@ -1004,21 +1017,27 @@ impl ScalarWorker {
     fn remove(&mut self, index: usize) {
         let pid = self.pid(index);
         for slot in &mut self.requests {
-            if slot
-                .pending
-                .as_ref()
-                .and_then(|pending| pending.completion.as_ref())
-                .is_some_and(|completion| completion.owner == pid)
-            {
-                slot.pending.take();
-                slot.generation = slot.generation.checked_add(1).unwrap_or(0);
-                continue;
-            }
             if let Some(pending) = &mut slot.pending {
-                if pending.target == pid && pending.outcome.is_none() {
-                    pending.outcome = Some(RequestOutcome::Failed);
+                if pending
+                    .completion
+                    .as_ref()
+                    .is_some_and(|completion| completion.owner == pid)
+                {
+                    pending.completion.take();
+                    pending.result_taken = true;
+                }
+                if pending.target == pid {
+                    pending.publisher = false;
+                    if pending.outcome.is_none() {
+                        pending.outcome = Some(if Instant::now() >= pending.deadline {
+                            RequestOutcome::TimedOut
+                        } else {
+                            RequestOutcome::Failed
+                        });
+                    }
                 }
             }
+            retire_request(slot);
         }
         self.slots[index].actor.take();
         self.slots[index].generation = self.slots[index].generation.checked_add(1).unwrap_or(0);
@@ -1035,15 +1054,28 @@ impl ScalarWorker {
             .ok_or_else(|| "stale or consumed request ID".into())
     }
 
-    fn finish_request(&mut self, request: RequestId, outcome: RequestOutcome) {
+    fn select_request(&mut self, request: RequestId, outcome: RequestOutcome) {
         if self.pending(request).is_ok() {
             let pending = self.requests[request.slot as usize]
                 .pending
                 .as_mut()
                 .expect("validated request");
             if pending.outcome.is_none() {
-                pending.outcome = Some(outcome);
+                pending.outcome = Some(if Instant::now() >= pending.deadline {
+                    RequestOutcome::TimedOut
+                } else {
+                    outcome
+                });
             }
+        }
+    }
+
+    fn finish_request(&mut self, request: RequestId, outcome: RequestOutcome) {
+        self.select_request(request, outcome);
+        if self.pending(request).is_ok() {
+            let slot = &mut self.requests[request.slot as usize];
+            slot.pending.as_mut().expect("validated request").publisher = false;
+            retire_request(slot);
         }
     }
 
@@ -1162,6 +1194,8 @@ impl ScalarWorker {
                 budget,
                 charge: event_charge,
             }),
+            result_taken: false,
+            publisher: true,
             _charge: charge,
         });
         Ok(capability)
@@ -1185,13 +1219,13 @@ impl ScalarWorker {
             if actor.mailbox.count == actor.mailbox.slots.len() {
                 continue;
             }
-            let mut pending = self.requests[index]
+            let pending = self.requests[index]
                 .pending
-                .take()
+                .as_mut()
                 .expect("completed request");
             let completion = pending.completion.take().expect("completion route");
-            self.requests[index].generation =
-                self.requests[index].generation.checked_add(1).unwrap_or(0);
+            pending.result_taken = true;
+            retire_request(&mut self.requests[index]);
             let mut arguments = [0; MAX_ARGUMENTS];
             arguments[0] = completion.capability;
             (arguments[1], arguments[2]) = match outcome {
@@ -1218,6 +1252,17 @@ impl ScalarWorker {
             actor.mailbox.slots[tail] = Some(message);
             actor.mailbox.count += 1;
         }
+    }
+}
+
+fn retire_request(slot: &mut RequestSlot) {
+    if slot
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.result_taken && !pending.publisher)
+    {
+        slot.pending.take();
+        slot.generation = slot.generation.checked_add(1).unwrap_or(0);
     }
 }
 
@@ -1434,6 +1479,8 @@ mod wait_tests {
                 deadline,
                 outcome: None,
                 completion: None,
+                result_taken: false,
+                publisher: false,
                 _charge: tenant
                     .reserve(Resources {
                         requests: 1,

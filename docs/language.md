@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0078](adr/0078-request-publisher-lifetimes.md) 保留异步请求的早期超时/取消事件，但完成事件入队或发起方退出不再提前归还仍排队/执行请求的额度；目标消息结束后才可复用请求槽。已入队事件的能力不可取消，超时结果不撤回对端副作用；满表继续返回 RequestRejected。类型拼写与 ABI v15 不变。
+
 [ADR-0076](adr/0076-accounted-byte-messages.md) 为现有 `send_self`、`send` 和异步 `request` 开放 Bytes 参数，可与 RecordInt、IntList 和标量混用，单条消息所有 Bytes 合计最多 65536 字节。复制的是独立字节值，源后续替换/GC/失败不改变已接受消息；超限或准入失败在发布前拒绝，目标堆不足则目标受管失败。示例 [`examples/byte-messages.wings`](../examples/byte-messages.wings) 沿用 `Int/Bool/Unit`，不改变待审的大小写方案，执行须配置计费堆。引用回复、JSON 原 handle 注入仍不支持，ABI v15 的细节见架构/运行时契约。
 
 [`examples/beam-fairness.wings`](../examples/beam-fairness.wings) 用现有声明顺序非递归 `fn`，以六层、每层十次调用执行恰好百万次 checked `+1`；`Cpu` 正常返回才替换 Bytes state。它没有引入可变局部、fn 内 while 或新类型拼写，也不在每次加法时复制 state。单 worker 的突发心跳功能验证见 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md)，不等同公平性性能门禁。基础类型小写仍待独立语法评审，不在该负载中修改。

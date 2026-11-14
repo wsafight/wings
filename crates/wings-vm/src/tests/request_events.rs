@@ -211,7 +211,7 @@ fn full_completion_mailbox_retains_result_and_prepaid_message_until_space_exists
 }
 
 #[test]
-fn requester_exit_frees_pending_without_retracting_target_message_or_notifying_reused_slot() {
+fn requester_exit_retains_request_ticket_until_target_finishes_without_notifying_reused_slot() {
     let module = fixture();
     let vm = ResourceAccount::vm(limits(32 << 20));
     let tenant = vm.tenant(limits(32 << 20)).unwrap();
@@ -235,14 +235,66 @@ fn requester_exit_frees_pending_without_retracting_target_message_or_notifying_r
         worker.take_reply(ticket).unwrap(),
         Some(RequestOutcome::Failed)
     );
-    assert_eq!(vm.used().requests, 0);
+    assert_eq!(vm.used().requests, 1);
     let replacement = worker.spawn(&module, limits(8 << 20), 1).unwrap();
     for _ in 0..8 {
         worker.tick(128).unwrap();
     }
     assert_eq!(worker.queued(replacement).unwrap(), 0);
     assert_eq!(worker.committed_state(replacement).unwrap(), 0);
+    assert_eq!(vm.used().requests, 0);
     drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn timeout_event_can_queue_before_target_starts_without_releasing_request_ticket() {
+    let module = fixture();
+    let vm = ResourceAccount::vm(limits(32 << 20));
+    let tenant = vm.tenant_accounted(limits(32 << 20)).unwrap();
+    let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
+    worker.enable_wait().unwrap();
+    let owner = worker.spawn(&module, limits(8 << 20), 1).unwrap();
+    let target = worker.spawn(&module, limits(8 << 20), 1).unwrap();
+    let target_id = capability(&mut worker, &module, target);
+    let ticket = worker
+        .request(
+            owner,
+            &module.handler("Ack").unwrap(),
+            &[target_id, 0, 0],
+            128,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(owner));
+    assert_eq!(worker.queued(target).unwrap(), 1);
+    assert_eq!(worker.wait(Duration::ZERO).unwrap(), WorkerWait::Ready);
+    assert_eq!(worker.queued(owner).unwrap(), 1);
+    assert_eq!(worker.resources(owner).unwrap().requests, 2);
+    let baseline = vm.used();
+    assert!(
+        worker
+            .request(
+                target,
+                &module.handler("Get").unwrap(),
+                &[],
+                128,
+                Duration::ZERO
+            )
+            .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    worker.stop(owner).unwrap();
+    assert_eq!(
+        worker.take_reply(ticket).unwrap(),
+        Some(RequestOutcome::Failed)
+    );
+    assert_eq!(vm.used().requests, 1);
+    assert_eq!(vm.used().messages, 1);
+    worker.stop(target).unwrap();
+    assert_eq!(vm.used().requests, 0);
+    assert_eq!(vm.used().messages, 0);
+    drop((worker, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
 

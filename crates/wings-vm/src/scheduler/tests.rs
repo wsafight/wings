@@ -46,10 +46,15 @@ fn module() -> ScalarModule {
                         parameters: vec![],
                         reply: None,
                     },
+                    Handler {
+                        name: "Read".into(),
+                        parameters: vec![],
+                        reply: Some(ValueType::Int),
+                    },
                 ],
             },
             initializer: entry,
-            entries: vec![entry as wings_abi::ScalarEntry; 3].into_boxed_slice(),
+            entries: vec![entry as wings_abi::ScalarEntry; 4].into_boxed_slice(),
             _library: None,
             lease: None,
         }),
@@ -150,6 +155,231 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
 }
 
 #[test]
+fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
+    for workers in [1, 2] {
+        for cancel in [false, true] {
+            for stop_target in [false, true] {
+                let limits = Resources {
+                    bytes: 32 << 20,
+                    processes: 4,
+                    messages: 8,
+                    requests: 4,
+                };
+                let vm = ResourceAccount::vm(limits);
+                let tenant = vm.tenant_accounted(limits).unwrap();
+                let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+                let scheduler = Scheduler::new(
+                    &tenant,
+                    SchedulerConfig {
+                        workers,
+                        capacity: 2,
+                        requests: 1,
+                        ..SchedulerConfig::default()
+                    },
+                )
+                .unwrap();
+                let handle = scheduler.handle();
+                let module = module();
+                let process_limit = Resources {
+                    bytes: 8 << 20,
+                    ..limits
+                };
+                let owner = handle.spawn(&module, process_limit, 1).unwrap();
+                let target = handle.spawn(&module, process_limit, 1).unwrap();
+                let (account, target_capability) = {
+                    let state = handle.shared.lock();
+                    let actor = state.actor(handle.shared.identity, target).unwrap();
+                    (actor.account.clone(), actor.capability)
+                };
+                let guard = account
+                    .reserve(Resources {
+                        bytes: account.limit().bytes
+                            - account.used().bytes
+                            - std::mem::size_of::<Envelope>() as u64,
+                        ..Resources::default()
+                    })
+                    .unwrap();
+                let effect = || crate::execution::ProcessEffect {
+                    operation: wings_abi::EFFECT_REQUEST,
+                    target: target_capability,
+                    handler: 3,
+                    arguments: [0; 64],
+                    count: 0,
+                    callback: 0,
+                    timeout_ms: if cancel { 60000 } else { 0 },
+                    record_mask: 0,
+                    lists: ListPayload::default(),
+                    bytes: BytePayload::default(),
+                };
+                let (status, capability) = handle.shared.effect(owner, effect(), 32, &pool);
+                assert_eq!(status, wings_abi::STATUS_OK);
+                if cancel {
+                    handle.shared.lock().cancel(owner, capability).unwrap();
+                    handle.shared.changed.notify_all();
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    let mut state = handle.shared.lock();
+                    if state.requests[0]
+                        .pending
+                        .as_ref()
+                        .unwrap()
+                        .completion
+                        .is_none()
+                    {
+                        assert!(state.requests[0].pending.as_ref().unwrap().publisher);
+                        assert!(state.cancel(owner, capability).is_err());
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "early completion was not delivered"
+                    );
+                    drop(state);
+                    std::thread::yield_now();
+                }
+                assert_eq!(vm.used().requests, 1);
+                assert_eq!(
+                    handle.shared.effect(owner, effect(), 32, &pool).0,
+                    wings_abi::STATUS_REQUEST_REJECTED
+                );
+                handle.stop(owner).unwrap();
+                assert_eq!(vm.used().requests, 1);
+                if stop_target {
+                    handle.stop(target).unwrap();
+                }
+                drop(guard);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while vm.used().requests != 0 {
+                    assert!(
+                        Instant::now() < deadline,
+                        "target publisher was not retired"
+                    );
+                    std::thread::yield_now();
+                }
+                drop((scheduler, handle, pool, account, tenant));
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+}
+
+#[test]
+fn requester_exit_and_completion_delivery_retain_target_ticket_until_publication_ends() {
+    for workers in [1, 2] {
+        for deliver in [false, true] {
+            for self_request in [false, true] {
+                let limits = Resources {
+                    bytes: 32 << 20,
+                    processes: 4,
+                    messages: 8,
+                    requests: 4,
+                };
+                let vm = ResourceAccount::vm(limits);
+                let tenant = vm.tenant_accounted(limits).unwrap();
+                let scheduler = Scheduler::new(
+                    &tenant,
+                    SchedulerConfig {
+                        workers,
+                        capacity: 2,
+                        requests: 1,
+                        ..SchedulerConfig::default()
+                    },
+                )
+                .unwrap();
+                let handle = scheduler.handle();
+                let module = module();
+                let owner = handle.spawn(&module, limits, 1).unwrap();
+                let target = if self_request {
+                    owner
+                } else {
+                    handle.spawn(&module, limits, 1).unwrap()
+                };
+                let mut state = handle.shared.lock();
+                let account = state
+                    .actor(handle.shared.identity, owner)
+                    .unwrap()
+                    .account
+                    .clone();
+                let request_charge = account
+                    .reserve(Resources {
+                        requests: 1,
+                        ..Resources::default()
+                    })
+                    .unwrap();
+                let completion_charge = account
+                    .reserve(Resources {
+                        messages: 1,
+                        bytes: std::mem::size_of::<Envelope>() as u64,
+                        ..Resources::default()
+                    })
+                    .unwrap();
+                let key = RequestKey {
+                    slot: 0,
+                    generation: 1,
+                };
+                state.requests[0].pending = Some(Pending {
+                    owner,
+                    target,
+                    capability: 19,
+                    deadline: Instant::now(),
+                    outcome: None,
+                    publisher: true,
+                    completion: Some(Completion {
+                        handler: module.handler("Done").unwrap(),
+                        max_steps: 32,
+                        charge: completion_charge,
+                    }),
+                    _charge: request_charge,
+                });
+                if deliver {
+                    state.maintain(handle.shared.identity);
+                    assert_eq!(account.used().requests, 1);
+                    assert!(
+                        state.requests[0]
+                            .pending
+                            .as_ref()
+                            .unwrap()
+                            .completion
+                            .is_none()
+                    );
+                    assert!(state.cancel(owner, 19).is_err());
+                    let actor = state.actor_mut(handle.shared.identity, owner).unwrap();
+                    let message = actor.mailbox.pop();
+                    assert_eq!(&message.arguments[..3], &[19, 1, 0]);
+                    drop(message);
+                }
+                let retired = state.retire(handle.shared.identity, owner).unwrap();
+                drop(retired);
+                assert_eq!(account.used().messages, 0);
+                assert!(state.actor(handle.shared.identity, owner).is_err());
+                assert_eq!(account.used().requests, u64::from(!self_request));
+                if !self_request {
+                    assert!(
+                        state.requests[0]
+                            .pending
+                            .as_ref()
+                            .unwrap()
+                            .completion
+                            .is_none()
+                    );
+                    assert_eq!(state.requests[0].generation, 1);
+                    let retired = state.retire(handle.shared.identity, target).unwrap();
+                    drop(retired);
+                }
+                assert!(state.requests[0].pending.is_none());
+                assert_eq!(state.requests[0].generation, 2);
+                state.finish(key, RequestOutcome::Reply(99));
+                assert_eq!(account.used().requests, 0);
+                drop((state, account));
+                drop((scheduler, handle, tenant));
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+}
+
+#[test]
 fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_generation() {
     let limits = Resources {
         bytes: 32 << 20,
@@ -216,15 +446,17 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         owner: pid,
         target: pid,
         capability: 17,
-        handler: module.handler("Done").unwrap(),
         deadline: Instant::now() + Duration::from_secs(10),
-        max_steps: 32,
         outcome: None,
-        completion_charge: completion,
+        publisher: true,
+        completion: Some(Completion {
+            handler: module.handler("Done").unwrap(),
+            max_steps: 32,
+            charge: completion,
+        }),
         _charge: charge,
     });
-    state.finish(key, RequestOutcome::Cancelled);
-    state.finish(key, RequestOutcome::Reply(99));
+    state.requests[0].pending.as_mut().unwrap().outcome = Some(RequestOutcome::Cancelled);
     state.maintain(handle.shared.identity);
     assert_eq!(
         state.requests[0].pending.as_ref().unwrap().outcome,
@@ -240,15 +472,43 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         .unwrap()
         .starting = false;
     state.maintain(handle.shared.identity);
-    assert!(state.requests[0].pending.is_none());
-    assert_eq!(state.requests[0].generation, 0);
-    state.finish(key, RequestOutcome::Reply(99));
+    assert!(
+        state.requests[0]
+            .pending
+            .as_ref()
+            .unwrap()
+            .completion
+            .is_none()
+    );
+    assert_eq!(state.requests[0].generation, u64::MAX);
+    assert_eq!(
+        state
+            .actor(handle.shared.identity, pid)
+            .unwrap()
+            .account
+            .used()
+            .requests,
+        1
+    );
+    assert!(state.cancel(pid, 17).is_err());
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let completion = actor.mailbox.pop();
     assert_eq!(&completion.arguments[..completion.count], &[17, 2, 0]);
-    assert_eq!(actor.account.used().requests, 0);
     drop(completion);
     assert_eq!(actor.account.used().messages, 0);
+    state.finish(key, RequestOutcome::Reply(99));
+    assert!(state.requests[0].pending.is_none());
+    assert_eq!(state.requests[0].generation, 0);
+    state.finish(key, RequestOutcome::Reply(100));
+    assert_eq!(
+        state
+            .actor(handle.shared.identity, pid)
+            .unwrap()
+            .account
+            .used()
+            .requests,
+        0
+    );
     state.slots[pid.slot as usize].generation = u32::MAX;
     let last = state.pid(handle.shared.identity, pid.slot as usize);
     let retired = state.retire(handle.shared.identity, last).unwrap();

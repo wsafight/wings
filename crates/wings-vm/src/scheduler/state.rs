@@ -56,16 +56,20 @@ impl State {
         for request in &mut self.requests {
             if let Some(pending) = &mut request.pending {
                 if pending.owner == pid {
-                    request.pending.take();
-                    request.generation = request.generation.checked_add(1).unwrap_or(0);
-                } else if pending.target == pid && pending.outcome.is_none() {
-                    pending.outcome = Some(if Instant::now() >= pending.deadline {
-                        RequestOutcome::TimedOut
-                    } else {
-                        RequestOutcome::Failed
-                    });
+                    pending.completion.take();
+                }
+                if pending.target == pid {
+                    pending.publisher = false;
+                    if pending.outcome.is_none() {
+                        pending.outcome = Some(if Instant::now() >= pending.deadline {
+                            RequestOutcome::TimedOut
+                        } else {
+                            RequestOutcome::Failed
+                        });
+                    }
                 }
             }
+            retire_request(request);
         }
         actor
     }
@@ -86,7 +90,30 @@ impl State {
                     outcome
                 });
             }
+            pending.publisher = false;
         }
+        retire_request(slot);
+    }
+
+    pub(super) fn cancel(&mut self, owner: SchedulerPid, capability: i64) -> Result<(), String> {
+        let pending = self
+            .requests
+            .iter_mut()
+            .filter_map(|slot| slot.pending.as_mut())
+            .find(|pending| {
+                pending.owner == owner
+                    && pending.capability == capability
+                    && pending.completion.is_some()
+            })
+            .ok_or("invalid request capability")?;
+        if pending.outcome.is_none() {
+            pending.outcome = Some(if Instant::now() >= pending.deadline {
+                RequestOutcome::TimedOut
+            } else {
+                RequestOutcome::Cancelled
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn maintain(&mut self, identity: u64) {
@@ -102,10 +129,17 @@ impl State {
             let Some(pending) = self.requests[index].pending.as_ref() else {
                 continue;
             };
+            if pending.completion.is_none() {
+                continue;
+            }
             let Ok(actor) = self.actor(identity, pending.owner) else {
-                self.requests[index].pending.take();
-                self.requests[index].generation =
-                    self.requests[index].generation.checked_add(1).unwrap_or(0);
+                self.requests[index]
+                    .pending
+                    .as_mut()
+                    .expect("pending completion")
+                    .completion
+                    .take();
+                retire_request(&mut self.requests[index]);
                 continue;
             };
             if pending.outcome.is_none()
@@ -116,10 +150,9 @@ impl State {
             }
             let pending = self.requests[index]
                 .pending
-                .take()
+                .as_mut()
                 .expect("ready completion");
-            self.requests[index].generation =
-                self.requests[index].generation.checked_add(1).unwrap_or(0);
+            let completion = pending.completion.take().expect("completion route");
             let (status, value) = match pending.outcome.expect("terminal completion") {
                 RequestOutcome::Reply(value) => (0, value),
                 RequestOutcome::TimedOut => (1, 0),
@@ -128,24 +161,26 @@ impl State {
             };
             let mut arguments = [0; 64];
             arguments[..3].copy_from_slice(&[pending.capability, status, value]);
+            let owner = pending.owner;
+            retire_request(&mut self.requests[index]);
             let message = Envelope {
-                handler: pending.handler,
+                handler: completion.handler,
                 arguments,
                 count: 3,
-                max_steps: pending.max_steps,
+                max_steps: completion.max_steps,
                 record_mask: 0,
                 lists: ListPayload::default(),
                 bytes: BytePayload::default(),
                 system: true,
                 reply: Reply::None,
-                _charge: pending.completion_charge,
+                _charge: completion.charge,
             };
-            self.actor_mut(identity, pending.owner)
+            self.actor_mut(identity, owner)
                 .expect("completion owner")
                 .mailbox
                 .push(message)
                 .expect("reserved completion slot");
-            self.enqueue(pending.owner);
+            self.enqueue(owner);
         }
     }
 
@@ -160,6 +195,17 @@ impl State {
             })
             .map(|(index, _)| self.pid(identity, index))
             .ok_or_else(|| "invalid scheduler capability".into())
+    }
+}
+
+fn retire_request(slot: &mut RequestSlot) {
+    if slot
+        .pending
+        .as_ref()
+        .is_some_and(|pending| !pending.publisher && pending.completion.is_none())
+    {
+        slot.pending.take();
+        slot.generation = slot.generation.checked_add(1).unwrap_or(0);
     }
 }
 
@@ -221,19 +267,7 @@ impl Shared {
             match effect.operation {
                 wings_abi::EFFECT_SELF_PID if effect.count == 0 => Ok(actor.capability),
                 wings_abi::EFFECT_CANCEL_REQUEST => {
-                    let pending = state
-                        .requests
-                        .iter_mut()
-                        .filter_map(|slot| slot.pending.as_mut())
-                        .find(|pending| pending.owner == pid && pending.capability == effect.target)
-                        .ok_or("invalid request capability")?;
-                    if pending.outcome.is_none() {
-                        pending.outcome = Some(if Instant::now() >= pending.deadline {
-                            RequestOutcome::TimedOut
-                        } else {
-                            RequestOutcome::Cancelled
-                        });
-                    }
+                    state.cancel(pid, effect.target)?;
                     Ok(0)
                 }
                 wings_abi::EFFECT_SEND
@@ -330,13 +364,16 @@ impl Shared {
                         owner: pid,
                         target,
                         capability,
-                        handler: callback,
                         deadline: Instant::now()
                             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
                             .ok_or("request deadline overflow")?,
-                        max_steps: budget,
                         outcome: None,
-                        completion_charge,
+                        publisher: true,
+                        completion: Some(Completion {
+                            handler: callback,
+                            max_steps: budget,
+                            charge: completion_charge,
+                        }),
                         _charge: request_charge,
                     };
                     state

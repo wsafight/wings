@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（单 worker 语言交互切片）
 - 补充：[ADR-0021](0021-bounded-requests.md)、[ADR-0039](0039-local-process-capabilities.md)
+- 部分替代：[ADR-0078](0078-request-publisher-lifetimes.md) 修正完成事件入队或发起方退出后的提前回收；事件预留仍可转移/释放，requests 票据保持到目标消息结束。下文保留原决定的背景。
 
 ## 决定与理由
 

@@ -28,7 +28,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0018](0018-bounded-record-heap.md) | 有界不可变记录、精确 mark-sweep 与作用域根帧原语 | 已采纳（独立原型，未接入 AOT） |
 | [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳（单线程接入契约） |
 | [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
-| [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳（宿主请求切片） |
+| [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳；提前回收部分由 0078 替代 |
 | [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
 | [0023](0023-bounded-host-supervision.md) | 宿主 one-for-one 恢复、有限重启窗口与新实例身份 | 已采纳（单 worker 恢复切片） |
 | [0024](0024-scalar-stack-boundary.md) | ABI v4、业务帧前剩余栈检查及统一池内入口 | 已采纳；context 由 0025 扩展，栈边界保留 |
@@ -47,7 +47,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0037](0037-immutable-int-lists.md) | ABI v7、不可变 IntList 节点、类型边界及传递根 | 已采纳（M0/M1 业务值切片） |
 | [0038](0038-self-send-effects.md) | ABI v8、静态自发送、按值 effect 交接与调用点准入 | 已采纳（消息副作用前置切片） |
 | [0039](0039-local-process-capabilities.md) | ABI v9、局部 Pid 能力、同模块创建与跨进程发送 | 已采纳（跨进程副作用切片） |
-| [0040](0040-language-request-events.md) | ABI v10、异步整数请求、完成事件预留与唯一终结 | 已采纳（语言交互切片） |
+| [0040](0040-language-request-events.md) | ABI v10、异步整数请求、完成事件预留与唯一终结 | 已采纳；提前回收部分由 0078 替代 |
 | [0041](0041-worker-deadline-parking.md) | 私有计费 OS 等待、就绪重查与请求 deadline | 已采纳（等待集成切片） |
 | [0042](0042-managed-function-frames.md) | 私有受管函数、逐帧栈检查与聚合精确根上界 | 已采纳（调用栈切片） |
 | [0043](0043-chunked-runtime-gc.md) | 固定块 GC、runtime 预算/取消及常量时间堆快照 | 已采纳（runtime 长操作切片） |
@@ -61,7 +61,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0051](0051-bounded-int-list-messages.md) | ABI v12、有界列表序列信封、目标重建与入口根 | 已采纳（列表消息切片） |
 | [0052](0052-cross-thread-module-leases.md) | 线程安全只读代码租约、并行独立 worker 与末持有者清理 | 已采纳（多 worker 前置切片） |
 | [0053](0053-detached-process-images.md) | 无活栈独占进程镜像、线程转交与同账户重绑定 | 已采纳（迁移前置切片） |
-| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳；结果表/栈/扫描/容量由 0060–0062、0066 部分替代 |
+| [0054](0054-bounded-multi-worker-scheduler.md) | 固定多 worker、稳定路由、唯一执行权与 handler 边界迁移 | 已采纳；由 0060–0062、0066、0078 部分替代 |
 | [0055](0055-multi-worker-exit-diagnostics.md) | 多 worker 最近失败的固定按值诊断，不延长业务资源租约 | 已采纳（有界诊断切片） |
 | [0056](0056-multi-worker-supervision.md) | 独立终态票据与多 worker 有界 one-for-one 宿主重启 | 已采纳；创建/查询/停止扫描由 0064 替代 |
 | [0057](0057-accounted-immutable-bytes.md) | ABI v13、计费不可变字节叶节点与有界构造/复制 | 已采纳（业务值集成切片） |
@@ -85,6 +85,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0075](0075-platform-memory-observation.md) | 长测原生分口径内存、PID 身份、缺失/null 与观测成本 | 已采纳（平台内存采样入口） |
 | [0076](0076-accounted-byte-messages.md) | Bytes 消息暂存计费、目标净转移、分块导入与入口根 | 已采纳（有界业务消息切片） |
 | [0077](0077-streamed-fairness-measurement.md) | 连续 CPU/突发心跳长测、流式重放、每 actor 与让出时基 | 已采纳（长测入口；公平性门禁未通过） |
+| [0078](0078-request-publisher-lifetimes.md) | 内部请求槽/票据保持到结果端与目标消息端都结束 | 已采纳（请求资源生命周期修正） |
 
 ## 维护方式
 

@@ -1093,7 +1093,112 @@ fn completed_reply_holds_pending_capacity_and_charge_until_taken() {
 }
 
 #[test]
-fn zero_timeout_does_not_retract_message_or_overwrite_reused_request_slot() {
+fn consumed_timeout_retains_request_capacity_until_target_message_finishes() {
+    let module = module();
+    let vm = ResourceAccount::vm(limits(32 << 20));
+    let tenant = vm.tenant_accounted(limits(32 << 20)).unwrap();
+    let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 1).unwrap();
+    let pid = worker.spawn(&module, limits(8 << 20), 2).unwrap();
+    let handler = module.handler("Bump").unwrap();
+    let request = worker
+        .request(pid, &handler, &[4], 128, Duration::ZERO)
+        .unwrap();
+    assert_eq!(
+        worker.take_reply(request).unwrap(),
+        Some(RequestOutcome::TimedOut)
+    );
+    assert_eq!(worker.resources(pid).unwrap().requests, 1);
+    let baseline = vm.used();
+    for _ in 0..4 {
+        assert!(
+            worker
+                .request(pid, &handler, &[6], 128, Duration::ZERO)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(worker.queued(pid).unwrap(), 1);
+    }
+    assert!(worker.take_reply(request).is_err());
+    assert!(worker.cancel_request(request).is_err());
+    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 4);
+    assert_eq!(worker.resources(pid).unwrap().requests, 0);
+    let next = worker
+        .request(pid, &handler, &[6], 128, Duration::from_secs(60))
+        .unwrap();
+    assert_ne!(next, request);
+    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(
+        worker.take_reply(next).unwrap(),
+        Some(RequestOutcome::Reply(10))
+    );
+    drop((worker, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn consumed_terminal_results_keep_all_three_request_limits_until_message_cleanup() {
+    for level in [
+        ResourceLevel::Process,
+        ResourceLevel::Tenant,
+        ResourceLevel::Vm,
+    ] {
+        for cancel in [false, true] {
+            for stop in [false, true] {
+                let mut vm_limit = limits(32 << 20);
+                let mut tenant_limit = vm_limit;
+                let mut process_limit = limits(8 << 20);
+                match level {
+                    ResourceLevel::Vm => vm_limit.requests = 1,
+                    ResourceLevel::Tenant => tenant_limit.requests = 1,
+                    ResourceLevel::Process => process_limit.requests = 1,
+                }
+                let vm = ResourceAccount::vm(vm_limit);
+                let tenant = vm.tenant_accounted(tenant_limit).unwrap();
+                let module = module();
+                let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 2).unwrap();
+                let pid = worker.spawn(&module, process_limit, 2).unwrap();
+                let handler = module.handler("Bump").unwrap();
+                let timeout = if cancel {
+                    Duration::from_secs(60)
+                } else {
+                    Duration::ZERO
+                };
+                let request = worker.request(pid, &handler, &[4], 128, timeout).unwrap();
+                if cancel {
+                    worker.cancel_request(request).unwrap();
+                }
+                let expected = if cancel {
+                    RequestOutcome::Cancelled
+                } else {
+                    RequestOutcome::TimedOut
+                };
+                assert_eq!(worker.take_reply(request).unwrap(), Some(expected));
+                let baseline = vm.used();
+                assert!(
+                    worker
+                        .request(pid, &handler, &[6], 128, Duration::ZERO)
+                        .is_err()
+                );
+                assert_eq!(vm.used(), baseline);
+                assert_eq!(worker.queued(pid).unwrap(), 1);
+                if stop {
+                    worker.stop(pid).unwrap();
+                } else {
+                    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+                    assert_eq!(worker.committed_state(pid).unwrap(), 4);
+                }
+                assert_eq!(vm.used().requests, 0);
+                assert!(worker.take_reply(request).is_err());
+                drop((worker, tenant));
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_timeout_retains_slot_until_late_message_finishes_then_reuses_generation() {
     let (_vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
     let bump = module.handler("Bump").unwrap();
     let old = worker.request(pid, &bump, &[5], 4, Duration::ZERO).unwrap();
@@ -1102,12 +1207,14 @@ fn zero_timeout_does_not_retract_message_or_overwrite_reused_request_slot() {
         Some(RequestOutcome::TimedOut)
     );
     assert_eq!(worker.queued(pid).unwrap(), 1);
+    assert!(worker.request(pid, &bump, &[7], 4, Duration::ZERO).is_err());
+    worker.tick(4).unwrap();
+    assert_eq!(worker.committed_state(pid).unwrap(), 5);
     let new = worker
         .request(pid, &bump, &[7], 4, Duration::from_secs(60))
         .unwrap();
     assert_ne!(old, new);
-    worker.tick(4).unwrap();
-    assert_eq!(worker.committed_state(pid).unwrap(), 5);
+    assert!(worker.take_reply(old).is_err());
     assert_eq!(worker.take_reply(new).unwrap(), None);
     worker.tick(4).unwrap();
     assert_eq!(

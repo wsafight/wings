@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正内部请求提前归还额度：ScalarWorker 宿主结果被取走、语言完成事件入队或发起方退出后，仍排队/执行的目标消息继续占请求槽和原账户 requests 票据。两端都结束才递增槽代次并归还；已消费 ID/已入队事件的能力不可取消。事件路由和消息预留可先移出/清理，目标消息完成、失败或 stop 后结束发布端。该规则与 ingress/Scheduler 宿主结果双端租约一致，具体容量及身份仍分别管理；ABI v15 和取消不撤回消息的语义不变。
+
 [ADR-0076](adr/0076-accounted-byte-messages.md) 增加 Bytes 的计费消息副本：单条消息合计至多 65536 字节，发送方暂存先准入，发布时转至目标账户，导入时目标副本另行预留；每至多 256 字节检查预算/取消/让出。队列保留原生命周期，超时不释放仍排队的字节；部分导入参数由入口根保活，失败/stop/取消完整清理。消息 mask 和账目细节见 ADR，原语法及标量回复边界不变。
 
 [ADR-0074](adr/0074-bounded-concurrent-recovery.md) 回归现有超时/取消只决定宿主结果、不撤回已接受消息的契约：仍存活的 publisher 保留请求额度，stop/取消竞争选择一个终态，失败保留旧提交 Bytes，监督重启不重放旧队列。用一/双 worker 真实 AOT 和固定屏障回复表测试验证，不新增消息撤回或事务。
@@ -204,11 +206,11 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 每次 `tick` 至多开始/恢复一个入口的一片，挂起时保留原栈、候选不提交；成功才提交并归还消息/执行预留。受管失败返回退出事件并清理该实例和队列，其他实例可继续。开始前额度不足不丢队首；外部收到错误后可继续驱动其他 actor。`stop` 不经过普通队列，挂起时先正常取消退出，满队列也可清理。宿主可读已提交标量 state 和账目用于诊断，不能取得可变实例。
 
-宿主异步请求按 [ADR-0021](adr/0021-bounded-requests.md) 接入固定 pending 表。`request` 只接受回复入口（包括 Unit），消息与 requests 额度全部满足才入队；`take_reply` 非阻塞，结果取走前一直占用槽位和 requests 额度。每次 tick/take/cancel 及 handler 返回后按单调时钟检查 deadline，超时、取消、回复或目标退出只选择一个终结结果。超时/取消不撤回已接受消息，迟到回复必须匹配完整 generation ID，不能覆盖复用槽位。目标退出仍保留已完成未取走结果的计费，直到取走或 worker 销毁。
+宿主异步请求按 [ADR-0021](adr/0021-bounded-requests.md) 接入固定 pending 表，回收契约由 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正。`request` 只接受回复入口（包括 Unit），消息与 requests 额度全部满足才入队；`take_reply` 非阻塞，结果端和目标消息端都结束才回收槽位及 requests 额度。结果取走后 ID 立即不可再次消费/取消，消息仍排队/执行时继续背压。每次 tick/take/cancel 及 handler 返回后按单调时钟检查 deadline，超时、取消、回复或目标退出只选择一个终结结果。超时/取消不撤回已接受消息，迟到回复必须匹配完整 generation ID，不能覆盖终态或新代次。目标退出仍保留已完成未取走结果的计费，直到取走或 worker 销毁。
 
 `enable_timer` 可选启动一个计费控制线程，`tick_timed` 在非零单调 deadline 到达时原子请求让出，仍由下一个强制 safepoint 挂起，不重置总预算。arm/disarm 与计时请求在同一控制锁串行，撤销后不把旧 deadline 泄漏到普通 tick；没有 deadline 时不周期轮询，Drop 唤醒并 join。该线程不持有 actor、账户或活栈，不提供迁移，容量及验证限制见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。默认 worker 不创建线程，当前每 worker 一个的形式不作为 M:N 的既定方案。
 
-该宿主切片后来由 ADR-0038/0039/0040 接入语言自发送、同模块创建/发送和整数异步请求；deadline 由 tick、查询或显式 wait 推进，无自动 I/O reactor。worker 默认不带堆，spawn_with_heap 显式配置计费堆；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留采用保守 4096 字节容量，模块另按 ADR-0044 预留，不含系统 allocator/动态装载器内部元数据，完整内存账本仍待补齐。
+该宿主切片后来由 ADR-0038/0039/0040 接入语言自发送、同模块创建/发送和整数异步请求；deadline 由 tick、查询或显式 wait 推进，无自动 I/O reactor。worker 默认不带堆，spawn_with_heap 显式配置计费堆；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留按 ADR-0076 统一为保守 4352 字节容量，模块另按 ADR-0044 预留，不含系统 allocator/动态装载器内部元数据，完整内存账本仍待补齐。
 
 ### 分层
 

@@ -202,12 +202,17 @@ struct Pending {
     owner: SchedulerPid,
     target: SchedulerPid,
     capability: i64,
-    handler: HandlerId,
     deadline: Instant,
-    max_steps: u64,
     outcome: Option<crate::RequestOutcome>,
-    completion_charge: Reservation,
+    publisher: bool,
+    completion: Option<Completion>,
     _charge: Reservation,
+}
+
+struct Completion {
+    handler: HandlerId,
+    max_steps: u64,
+    charge: Reservation,
 }
 
 impl Scheduler {

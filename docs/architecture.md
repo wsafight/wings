@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0078](adr/0078-request-publisher-lifetimes.md) 在原固定请求表中分别记录结果端与消息发布端结束，不为每个请求新增堆对象。完成路由移出即释放其代码/事件租约，requests 票据保留到两端结束；退出账户可因仍接受的目标消息继续存活，槽代次只在完整回收时推进。单/多 worker 使用相同生命周期，不改变 ABI v15、活栈唯一执行权或消息准入上限。
+
 [ADR-0076](adr/0076-accounted-byte-messages.md) 将受管 ABI 升至 v15：EffectRequest 为 72 字节，独立 bytes_mask 与记录/列表 mask 互斥；context 的 88 字节布局不变。Bytes 消息通过计费动态载荷复制，不传源 heap handle，接收端独立堆导入与入口根沿现有唯一执行权运行。单 worker/Scheduler 执行控制区统一预留 4352 字节，原资源上限不提高。
 
 [ADR-0072](adr/0072-scheduler-yield-observation.md) 给 Scheduler 增加每 worker 独立、可选预先计费的 token/FIFO，只有真实切回宿主后才附 Pid/worker 发布。默认关闭；诊断锁不跨受管代码，计时线程不访问 actor，受管 ABI v14、强制检查点和执行 owner 不变。固定 FIFO 满丢新样本并计数，不新增无界事件队列。

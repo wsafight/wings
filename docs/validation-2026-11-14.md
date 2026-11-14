@@ -268,6 +268,33 @@ Wings 共 2999709 次按时回复、291 次 mailbox 满、无超时或 pending_f
 
 最终源码本机 debug/release all-targets 各 503 项及完整原限 AOT 再通过，见 `/tmp/wings-fairness-long-close-{tests,aot}-{debug,release}.log`。当前 verifier 再重放一份默认 Wings、一份默认 BEAM 和独立观测，核对原结果及补充拒绝/超时比例、按时回复率；58 个原始文件与证据 JSON hash 一致，见 `/tmp/wings-fairness-long-current-replay.log`。check/clippy/fmt/MSRV、依赖隔离、禁止 unwind feature、Python AST、94 份 Markdown 路径/围栏和 diff 空白检查通过。语法评审草案继续未采纳、不 stage；未推送或发布。
 
+## 请求发布端生命周期：ADR-0078
+
+基于 `3ab76f3`，按 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正内部请求提前回收。此前 ScalarWorker 宿主取走超时/取消结果、语言完成事件入队或发起方退出，会释放仍排队/执行请求的槽和 requests 票据；代次虽避免串回包，仍可反复超时绕过请求容量。新规则只在结果端与消息发布端都结束后回收。事件可先投递、目标副作用继续，ABI v15、现行类型拼写、容量及原时限不变。
+
+### 复现与修正
+
+新增单槽测试先在旧实现运行，`consumed_timeout_retains_request_capacity_until_target_message_finishes` 实际失败：取走零超时结果后 requests 为 0，预期 1；记录在 `/tmp/wings-request-lifetimes-before.log`。修复后目标仍排队/挂起时保留原账户票据，反复请求拒绝且队列/账目零变化；正常完成/stop 后才释放并推进代次。结果只消费一次，旧 ID 的再次消费/取消拒绝，不等待目标完成才报告超时。
+
+- 单 worker 保留独立结果端/发布端标志；取消只选择终态，不能结束发布端。三级 requests 单额度、固定单槽分别验证背压；超时/取消、正常完成/stop 两种清理及最终归零均覆盖。
+- 语言事件仍使用原预留直接入 mailbox；路由移出后不保留 HandlerId/事件票据，请求票据等到目标消息结束。发起方退出清理事件，目标继续排队，旧进程槽复用不接旧事件；自请求清理一次结束两端。
+- Scheduler 固定表核对事件队满/starting 保留、事件先投递但 publisher 未结束、终态不覆盖、已入队能力取消拒绝及代次耗尽。另一组实际一/双 worker 测试用目标进程字节额度暂时阻止 start：超时或取消事件已投递，目标仍排队，请求表继续拒绝；发起方退出后仍保留票据，目标恢复/stop 后才归零。每阶段仍限 3 秒，不在 handler 内增加阻塞屏障。
+- 真实 AOT `scalar_requests` 检查排队及活栈超时/取消后的背压、旧 ID 拒绝、迟到消息继续提交 state 与完整回收。`request_events` 新增四组事件已入队后的发起方/目标 stop 或正常推进，核对剩余请求/消息额度及最终状态。现有多 worker、并发恢复、消息复制、GC、监督及 Drop 回归继续执行。
+
+### macOS AArch64
+
+Rust 1.99.1；workspace check、all-target clippy `-D warnings`、fmt、Rust 1.85.0 all-target check、依赖隔离与禁止 unwind feature 全部通过。debug/release all-targets 各 81 个 harness、508 项测试通过；两种构建的 doc-tests 和完整受限 AOT 均通过。新增 5 项测试，未放宽已有断言或额度；原复用测试改为目标消息结束后才准入下一请求。日志见 `/tmp/wings-request-lifetimes-final-{clippy,msrv,fmt,tests-debug}.log`、`/tmp/wings-request-lifetimes-tests-release.log`、`/tmp/wings-request-lifetimes-doctests-{debug,release}.log` 和 `/tmp/wings-request-lifetimes-aot-{debug,release}.log`。
+
+debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性对照：v1 45 组业务、28 JSON/14 桥接拒绝，v2 18 组业务、49 JSON/17 桥接拒绝全部通过。业务保留 CPU 5 秒/墙钟 10 秒、原 3 秒阶段；只验证业务与清理，没有重跑 30s/60s 五对测量，不声称吞吐或内存改进。见 `/tmp/wings-request-lifetimes-beam-v{1,2}-{debug,release}.log`。
+
+### Linux x86-64 隔离仿真
+
+沿用 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载；macOS 交叉构建 release，客体 GCC 13.3 链接并执行真实 AOT `.so`。冻结包 `/tmp/wings-request-lifetimes-linux.tar.gz` 含 301 份源码、81 个 harness 和 59 个工具/示例，不含待审语法稿；客体执行前以及完整 AOT 后复核全部 441 项 hash。81 个独立测试 OS 子进程共 508 项全部通过，完整受限 release AOT 通过；测试/AOT 均保持 CPU 20 秒/墙钟 30 秒/禁 core，业务阶段与原配额不变。日志见 `/tmp/wings-request-lifetimes-linux-{tests,aot,hashes}.log`，本节为随后补写的验证记录。
+
+交叉 linker 保留 `ignoring deprecated linker optimization setting '1'` 工具链警告，没有为通过测试改变 linker 参数。没有原生 Linux debug/clippy/MSRV/doc-tests 或真实 Linux BEAM 数据；TCG 功能回归不替代原生双平台验收。验证后停止客体，见 `/tmp/wings-request-lifetimes-linux-stop.log`。
+
+语法评审稿继续未采纳、未 stage；未推送或发布。完整业务值、全部资源账本、公平性、CPU 硬配额和同负载 BEAM 吞吐/整机内存门禁仍待完成，MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

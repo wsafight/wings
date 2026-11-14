@@ -32,10 +32,82 @@ fn read(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid) -> i64 {
     panic!("read did not finish");
 }
 
+fn verify_early_completion_lifetime(module: &ScalarModule) {
+    for stop_owner in [false, true] {
+        for stop_target in [false, true] {
+            let vm = ResourceAccount::vm(limits());
+            let tenant = vm.tenant_accounted(limits()).unwrap();
+            let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
+            worker.enable_wait().unwrap();
+            let owner = worker.spawn(module, limits(), 2).unwrap();
+            let request = worker
+                .request(
+                    owner,
+                    &module.handler("Start").unwrap(),
+                    &[0, 0, 0],
+                    256,
+                    Duration::from_secs(60),
+                )
+                .unwrap();
+            assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(owner));
+            let target = worker.pids().find(|pid| *pid != owner).unwrap();
+            assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(owner));
+            assert_eq!(worker.queued(target).unwrap(), 1);
+            worker.wait(Duration::ZERO).unwrap();
+            assert_eq!(worker.queued(owner).unwrap(), 1);
+            assert_eq!(worker.resources(owner).unwrap().requests, 2);
+            let baseline = vm.used();
+            assert!(
+                worker
+                    .request(
+                        target,
+                        &module.handler("Read").unwrap(),
+                        &[],
+                        128,
+                        Duration::ZERO
+                    )
+                    .is_err()
+            );
+            assert_eq!(vm.used(), baseline);
+            if stop_owner {
+                worker.stop(owner).unwrap();
+                assert_eq!(
+                    worker.take_reply(request).unwrap(),
+                    Some(RequestOutcome::Failed)
+                );
+                assert_eq!(vm.used().requests, 1);
+                assert_eq!(vm.used().messages, 1);
+            }
+            if stop_target {
+                worker.stop(target).unwrap();
+                assert_eq!(vm.used().requests, u64::from(!stop_owner));
+            }
+            for _ in 0..64 {
+                worker.tick(128).unwrap();
+            }
+            if !stop_owner {
+                assert_eq!(
+                    worker.take_reply(request).unwrap(),
+                    Some(RequestOutcome::Reply(9))
+                );
+                assert_eq!(worker.committed_state(owner).unwrap(), 100);
+            }
+            if !stop_target {
+                assert_eq!(worker.committed_state(target).unwrap(), 7);
+            }
+            assert_eq!(vm.used().requests, 0);
+            assert_eq!(vm.used().messages, 0);
+            drop((worker, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let module = unsafe { ScalarModule::load_trusted(Path::new(&arguments[1])) }.unwrap();
+    verify_early_completion_lifetime(&module);
     for (timeout, cancel, fail, expected) in [
         (60000, 0, 0, 7),
         (0, 0, 0, 100),

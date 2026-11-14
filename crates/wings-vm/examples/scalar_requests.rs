@@ -426,13 +426,22 @@ fn verify_zero_timeout(module: &ScalarModule) {
     assert_eq!(worker.committed_state(pid), Ok(0));
     assert_eq!(worker.queued(pid), Ok(1));
     assert_eq!(tenant.used().messages, 1);
+    assert_eq!(tenant.used().requests, 1);
+    let before = snapshot(&worker, &[pid], &vm, &tenant);
+    assert!(
+        worker
+            .request(pid, &bump, &[6], MAX_STEPS, TIMEOUT)
+            .is_err()
+    );
+    assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
+    assert_stale(&mut worker, expired);
+    deliver(&mut worker, pid, 0, 4);
     assert_eq!(tenant.used().requests, 0);
     let next = worker
         .request(pid, &bump, &[6], MAX_STEPS, TIMEOUT)
-        .expect("reuse timed-out slot");
+        .expect("reuse after timed-out message finishes");
     assert!(next != expired);
     assert_stale(&mut worker, expired);
-    deliver(&mut worker, pid, 0, 4);
     assert_eq!(
         worker.take_reply(next),
         Ok(None),
@@ -480,15 +489,24 @@ fn verify_suspended_terminal(module: &ScalarModule) {
             RequestOutcome::TimedOut
         };
         assert_eq!(worker.take_reply(first), Ok(Some(outcome)));
-        assert_eq!(tenant.used().requests, 0);
+        assert_eq!(tenant.used().requests, 1);
         assert_eq!(tenant.used().messages, 1);
         assert_eq!(worker.committed_state(pid), Ok(0));
-        let next = worker
-            .request(pid, &bump, &[2], MAX_STEPS, TIMEOUT)
-            .expect("reuse while old call is suspended");
-        assert!(first != next);
+        let before = snapshot(&worker, &[pid], &vm, &tenant);
+        assert!(
+            worker
+                .request(pid, &bump, &[2], MAX_STEPS, TIMEOUT)
+                .is_err()
+        );
+        assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
         assert_stale(&mut worker, first);
         deliver(&mut worker, pid, 0, 5);
+        assert_eq!(tenant.used().requests, 0);
+        let next = worker
+            .request(pid, &bump, &[2], MAX_STEPS, TIMEOUT)
+            .expect("reuse after suspended call completes");
+        assert!(first != next);
+        assert_stale(&mut worker, first);
         assert_eq!(
             worker.take_reply(next),
             Ok(None),

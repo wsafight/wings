@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（单 worker 标量请求切片）
 - 补充：[有限 mailbox](0020-single-worker-mailbox.md)
+- 部分替代：[ADR-0078](0078-request-publisher-lifetimes.md) 修正超时/取消结果取走后的提前回收；当前槽/票据保持到结果端与消息发布端都结束。下文保留原决定的背景。
 
 ## 决定
 
