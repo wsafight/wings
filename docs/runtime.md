@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0092](adr/0092-concurrent-failure-counter.md) 增加双 sender 下的失败提交前缀回归：已接受请求因目标失败终结，关闭后的投递不重试，健康 sibling 完成；每 child 终态保留旧提交状态。运行时契约和原资源限额不变，超时/取消、恢复及长时边界仍独立验证。
+
 [ADR-0091](adr/0091-manifest-string-preflight.md) 在原模块加载预留内对清单的 JSON 键/字符串先做 256 UTF-8 字节、无控制字符校验，长输入返回固定错误，之后继续原类型/语义检查。此处收敛已复现的清单来源放大，不代表其他错误 String 的生命周期或完整资源账本已经完成。
 
 [ADR-0090](adr/0090-bounded-cli-reporting.md) 在 tenant/process 创建前预留 VM 级 8 KiB 控制输出额度，含固定 4 KiB 诊断缓冲；帮助写失败返回 1，参数/运行错误的 stderr 写失败保留原 2/1，均不递归打印或 panic。超过缓冲的诊断在 UTF-8 边界截断并加标记，业务成功回复与已提交副作用不回滚。

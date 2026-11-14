@@ -1,4 +1,4 @@
-# BEAM 工作负载协议 v1–v7
+# BEAM 工作负载协议 v1–v9
 
 本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。
 
@@ -193,6 +193,27 @@ WINGS_PROFILE=release python3 scripts/measure_fairness.py --artifact target/long
 ```
 
 增加 `--observe` 会为五对中的 Wings 启用原 64 槽计费 FIFO；仪器模式单列，不能写成默认性能结果。两次观测的请求时间各自单调、返回时间各自单调，但后继请求可能先于上一轮确认到达，不能据区间重叠拒绝合法记录。`measurement_elapsed_ns` 保留业务循环退出时间，完整采样窗不得早于 90 秒，即便最后一批心跳计划在 89.99 秒。运行器冻结源/runner/产物/BEAM/验证器与 hash，沿用 CPU 240 秒/墙钟 130 秒/业务阶段 120 秒/禁 core、文件与 observed RSS 安全停止和分口径平台内存采样。全局 `tail_candidate_pass` 仅按既有候选规则展示，`fairness_gate_proven` 始终 false：CPU 硬配额、监测开销、过载/非过载分组、原生双平台及同负载吞吐/整机内存双目标仍须验收，不因某轮分位较好或全部正常退出判定 MVP。
+
+## v9：双发送者的并发失败前缀
+
+[ADR-0092](adr/0092-concurrent-failure-counter.md) 使用两个真实宿主线程/BEAM 进程直接向目标投递，各自窗口 16、最多 128 条输入，1..100 actor、mailbox 32、三种完整 Bytes/binary 状态。输入为 `{version:9, actors, state_bytes, initial, streams:[[{actor,delta,fail}], [...]]}`，字段全部必填、不接受未知/重复字段。delta 只接受所有交错均在 i64 内的集合；正常请求更新 counter 和该 sender 的连续目标序号，显式 fail 在构造候选后失败，保留最后提交值与序号。独立的 AOT 业务用 overflow 区分非法序号，不将协议错误伪装为 division-by-zero 注入。
+
+Wings 可信桥接为 48 B 头 `version/state_bytes/initial/actors/count1/count2`，之后每条流的 32 B `actor/sequence/delta/operation`，operation 为 1/2；每目标每发送者序号从 1 连续。完整 state 的前 32 B 与 v3 相同，保留 counter、actor ID 和两个已提交目标序号，其余零填充。Wings 从实际状态或每 child 的有界监督终态读取长度/32 B 前缀；BEAM 检查完整 padding，使用 ADR-0067 的容量 32 CAS gate，开始归还、失败关闭并在全部退出后核对关闭。两 sender 的 32 总窗口不允许队满；关闭可来自 gate 或 monitor，拒绝不重试。两端不复用已失败目标、不重启或重发。
+
+输出包括每输入恰一次的 `{sender,actor,seq,status,value}`，status 为已接受成功的 `reply`、已接受但失败的 `failed`、投递前已观察关闭的 `closed`；无成功回复时 value 为 null。另报告每目标 committed、sequences、失败原因和清理回执。两端观察关闭及线程交错可以不同，不按 JSON 完全相等验收。独立 Python 检查成功连续前缀和合法 FIFO 交错、全部真实值、失败边界上存在一个已接受的显式 fail、候选不泄漏、健康目标全部完成及结果守恒；Wings 清理须回到非零计费根基线。
+
+沿用业务 CPU 5 秒/墙钟 10 秒/core 0、共享三秒 actor 阶段、64 KiB 输入和 1 MiB 输出。Wings 为两 worker、共享 32 结果槽、VM/tenant 256 MiB/process 4 MiB；BEAM 固定两个 scheduler、有限 heap，parent/两个 sender 独立 monitor，按实际 reply/DOWN 次序收集。所有失败 actor 和 sender 终结、健康 actor 停止后才报告。此处没有 timeout/cancel、恢复、长时负载或性能门禁，不能代替 ADR-0074 及其余验收。
+
+```sh
+cargo build --workspace --locked --bins --examples
+cargo test --locked -p wings-vm --example beam_failure_counter
+python3 scripts/verify_concurrent_failure.py
+python3 scripts/verify_concurrent_failure.py --compare-beam
+cargo build --release --workspace --locked --bins --examples
+WINGS_PROFILE=release python3 scripts/verify_concurrent_failure.py --compare-beam
+```
+
+默认完整 AOT 包含 Wings/模型；仅显式 `--compare-beam` 执行 OTP 29，缺少则失败。三种状态分别覆盖空流、单/双 sender 注入、竞争失败、健康 sibling、跨窗口关闭、100 目标及 i64 边界；枚举小流全部交错生成模型正例，再拒绝伪造前缀、假失败、错误状态、重复/丢失终态和非法输入。不据此宣称完整并发故障或 MVP 完成。
 
 ## 代表性负载与性能验收冻结条件
 

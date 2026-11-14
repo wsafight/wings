@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0092](docs/adr/0092-concurrent-failure-counter.md) 增加双发送者失败前缀的独立 Wings/BEAM 对照，验证候选不提交、每条请求终态与健康目标推进；不改变 ABI 或语法，超时/恢复、原生双平台和性能/内存门禁仍须独立验收。
+
 [ADR-0091](docs/adr/0091-manifest-string-preflight.md) 在产物文件解码前检查全部 JSON 字符串/键的既有 256 字节和字符边界，避免长输入先放大为类型错误；原格式、语义检查和模块预留不变，其他错误来源与完整账本仍须收敛。
 
 [ADR-0090](docs/adr/0090-bounded-cli-reporting.md) 为 CLI 控制输出从原 VM 额度预留 8 KiB，帮助/诊断使用独立描述符且断管正常失败；诊断最多 4096 B，来源错误构造与完整宿主账本仍须收敛。

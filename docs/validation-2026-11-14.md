@@ -521,10 +521,22 @@ macOS AArch64 的 debug/release 各 82 个 harness、550 项测试及两种构�
 
 Linux 冻结包 `/tmp/wings-open-loop-init-linux.tar.gz` 含 321 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。在上述隔离仿真配置中，550 项 release 测试和完整受限 AOT 通过；交付的未插桩开环驱动另以原 sparse-256、100ms、1000/s、三秒总阶段执行八次独立子进程，全部完成实际回复、最终状态和资源回执核对，CPU 五秒/墙钟十秒/core 0 未变。测试后全部 463 项源码/执行文件 hash 一致，宿主与冻结源码仅本节后补验证记录不同；日志为 `/tmp/wings-open-loop-init-linux-{tests,aot,repeat,hashes,stop}.log` 和 `/tmp/wings-open-loop-init-host-sources.log`。客体已确认 Stopped。有限重复通过不消除前述启动早期失败，也不替代最新源码的原生 Linux CI、完整时序稳定性或 BEAM 吞吐/整机内存双门禁，MVP 未完成。
 
+## 双发送者的并发失败前缀：ADR-0092
+
+基于 `5b42034`，新增 [ADR-0092](adr/0092-concurrent-failure-counter.md) 的独立 v9：两个真实宿主线程/BEAM 进程各有 16 窗口，使用三种完整 Bytes/binary 状态和逐目标序号，显式 fail 在候选构造后失败。保留每条输入的 reply/failed/closed 终态、每目标旧提交值/两 sender 提交前缀及健康 sibling；Wings 使用每 child 的监督终态而非可覆盖最近退出缓存，BEAM 使用容量 32 CAS gate 和独立 monitors，失败关闭、不重启或重发。原 3 秒阶段、业务 CPU 5 秒/墙钟 10 秒/core 0、AOT 20/30 秒、ABI v15 和类型拼写不变；待审语法稿不纳入提交。
+
+独立模型检查实际回复存在合法 FIFO 成功前缀、fail 不成功、前缀边界有已接受的注入、关闭后不得再次接受、每条输入恰一结果、最终 counter/序号准确。枚举两条小流的交错及 fail 位置，96 个历史通过、24 个伪造历史拒绝；27 组真实工作负载覆盖空流、单/双 sender 失败、竞争失败、独立目标、跨窗口关闭、100 目标和 i64 两端；18 个非法桥接和 51 个非法 JSON 拒绝。真实 CLI 另验证每 sender 的跳号/零序号报 overflow，合法序号注入报 division-by-zero，候选失败不输出成功值。此处仍未覆盖 timeout/cancel、恢复或长时并发故障，不替代完整性能门禁。
+
+macOS AArch64 的 debug/release 各 83 个 harness、551 项测试、doc-tests 及完整受限 AOT 通过；新示例单测及 Wings/模型入口已进入既有双平台 CI，但本次未运行远端 CI。workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离、禁 unwind、Python 语法和 109 份 Markdown/1072 个相对链接及围栏检查通过。两种构建显式 OTP 29 的 v9 三端均通过全部 27/96/24/18/51 场景，见 `/tmp/wings-concurrent-failure-{tests,aot}-debug.log`、对应 release 日志和 `/tmp/wings-concurrent-failure-beam-{debug-final,release}.log`；本片未重跑 v1–v8 的显式 BEAM 或 v6/v8 长测，不沿用它们为本片的新性能证据。
+
+另选 64 KiB 状态下的双 sender 竞争失败和三目标跨窗口失败两组，每组八次，保留原 CPU/墙钟/三秒阶段；debug/release 的 Wings 和 BEAM 各 16 次独立子进程全部通过。64 份原始输入/输出保留于 `target/concurrent-failure-repeat-{debug,release}`，重复脚本在 `/tmp/wings-concurrent-failure-repeat.py`。实际提交前缀存在差异，两种构建中 Wings 分别出现五/八组、BEAM 各两组，均由同一模型逐份重放核对；次数与交错差异只证明这些有限执行，不能作为完整并发状态空间或长时稳定性证明。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-concurrent-failure-linux.tar.gz` 包含 326 份源码、83 个 harness 和 61 个工具/示例，排除语法评审稿；551 项 release 测试、完整受限 AOT（含 v9 Wings/模型全部场景）及上述两组各八次独立执行通过。新一轮未安装或执行 BEAM。全部 470 项 source/harness/binary hash 在结束后一致；326 份冻结源码与宿主仅后补本验证记录不同。16 份原始结果已复制至 `target/concurrent-failure-repeat-linux` 并在宿主独立重放通过。日志为 `/tmp/wings-concurrent-failure-linux-{tests,aot,repeat,hashes,stop}.log` 和 `/tmp/wings-concurrent-failure-host-sources-final.log`，客体已确认 Stopped。TCG 不算最新原生 Linux CI，也不作为吞吐/整机内存、长时故障或完整 MVP 证据。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
-- 并发失败、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，仍缺完整性能验收。
+- 长时并发故障、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，ADR-0092 增加并发失败前缀，仍缺完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 与 mixed-4k 各五对 30s/60s 只补长时集成；mixed-4k 两端均有拒绝/超时，仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 - TCP 运行期间缓冲边界已接入有限示例，但握手期内核容量、完整账本与原生平台硬配额仍不在该回归覆盖内。

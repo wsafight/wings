@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0092](adr/0092-concurrent-failure-counter.md) 推进第 3/6/7 项的双发送者并发失败对照，检查合法成功前缀、候选不提交和健康目标推进。此处不包含 timeout/cancel、重启或长时故障；完整业务值/账本、最新原生双平台与同负载 BEAM 双目标仍未完成。
+
 [ADR-0091](adr/0091-manifest-string-preflight.md) 推进第 4/6 项的产物错误来源边界，在原控制预算内预检字符串，消除已复现的长清单错误放大；其他错误来源/生命周期、完整业务值/账本和原生双平台 BEAM 门禁仍未完成。
 
 [ADR-0090](adr/0090-bounded-cli-reporting.md) 继续第 4/6 项的控制输出资源与失败诊断：帮助/诊断有独立预算、固定输出上限和断管处理；来源错误构造、可信启动存储、完整业务值/账本及原生双平台 BEAM 门禁仍待完成。
@@ -188,7 +190,7 @@ OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接�
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList 消息根按 ADR-0049/0051 接入，但引用回复和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
-BEAM 对照已固化 [v1–v8 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测。正确性和部分测量仍不等同完整基线；并发失败、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
+BEAM 对照已固化 [v1–v9 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测，ADR-0092 补双发送者并发失败前缀。正确性和部分测量仍不等同完整基线；长时并发故障、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
 
 [ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
 
