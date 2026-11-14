@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0086](docs/adr/0086-accounted-cli-json.md) 将 CLI 行缓冲、JSON 解析暂存和取消控制纳入原 16 MiB 三级额度，使用固定参数解析与回复结构；重复字段和嵌套参数在执行前拒绝，原行/参数上限不变。
+
 [ADR-0085](docs/adr/0085-module-path-admission.md) 将原 2 MiB 模块控制预留前移到路径解析之前，库页随后按原公式追加；总预算和可信装载边界不变，失败归还两部分预留。
 
 [ADR-0084](docs/adr/0084-accounted-root-module-admission.md) 要求计费根接入的模块具有本 VM 的计费租约；未计费工具模块在初始化、调用、spawn 或镜像接回前拒绝，独立工具路径仍可使用。
@@ -157,6 +159,8 @@ cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.mes
 Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。
 
 此 CLI 路径验证原生执行与状态提交，不驱动宿主 mailbox 或监督。资源账户已接入堆、栈及有限宿主 worker，但未覆盖全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
+
+CLI 每行接受一个仅含 `message` 和 `args` 的 JSON 对象，两个字段各出现一次、顺序不限；参数至多 64 个，只能是符合 handler 签名的 i64 整数、布尔或 null。行长至多 64 KiB（包含换行），允许末行无换行；重复/未知字段、嵌套参数和浮点数在执行前拒绝。单向消息输出 `{"accepted":true}`，请求输出 `{"reply":...}`。输入解析与控制按 [ADR-0086](docs/adr/0086-accounted-cli-json.md) 从原三级额度中预留，标准 I/O 全局存储仍不在完整账本保证内。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 

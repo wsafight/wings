@@ -862,6 +862,52 @@ def verify_cli_module_admission(parent):
         assert "resource_exhausted at Vm" in result.stderr, result.stderr
 
 
+def verify_cli_input(counter, parent):
+    prefix = json.dumps(message("Inc", 7)) + "\n"
+    invalid = [
+        '{"message":"Missing","message":"Inc","args":[99]}',
+        '{"message":"Inc","args":[99],"args":[1]}',
+        '{"message":"Inc","mess\\u0061ge":"Inc","args":[99]}',
+        '{"message":"Inc","args":[99],"extra":0}',
+        '{"message":"Inc"}',
+        '{"args":[99]}',
+        '{"message":"Inc","args":[1.0]}',
+        '{"message":"Inc","args":[1e0]}',
+        '{"message":"Inc","args":[9223372036854775808]}',
+        '{"message":"Inc","args":[-9223372036854775809]}',
+        '{"message":"Inc","args":["99"]}',
+        '{"message":"Inc","args":[{}]}',
+        '{"message":"Inc","args":[[]]}',
+        '{"message":"Inc","args":[99]} {}',
+        '{"message":"Inc","args":[' + ",".join(["1"] * 65) + "]}",
+        '{"message":"' + "x" * 257 + '","args":[]}',
+        '{"message":"' + "\\u0061" * 10000 + '","args":[]}',
+        '{"message":"Inc","args":[' + "[" * 2000 + "0" + "]" * 2000 + "]}",
+        '"' + "\x7f" * 60000 + '"',
+        '{"message":"Inc","args":"' + "\x7f" * 60000 + '"}',
+    ]
+    for options in [[], ["--heap-records", 4]]:
+        for text in invalid:
+            result = command([VM, "run", "--trusted", counter, *options], prefix + text + "\n", expected=1)
+            assert result.stdout == '{"reply":7}\n', (options, text[:128], result.stdout, result.stderr)
+            assert result.stderr
+            assert len(result.stderr) < 1024, (options, len(result.stderr))
+        exact = '{"args":[],"mess\\u0061ge":"\\u0047et"}'
+        line = exact + " " * (64 * 1024 - len(exact) - 1) + "\n"
+        result = command([VM, "run", "--trusted", counter, *options], prefix + line + exact)
+        assert [json.loads(item) for item in result.stdout.splitlines()] == [
+            {"reply": 7}, {"reply": 7}, {"reply": 7},
+        ]
+    source = parent / "cli-many-arguments.wings"
+    parameters = ",".join(f"value_{index}: Int" for index in range(64))
+    source.write_text(f"process Many {{ state count: Int = 0; on Sum({parameters}) -> Int {{ value_0 + value_63 }} }}")
+    artifact = parent / "cli-many-arguments"
+    command([COMPILER, "build", source, "-o", artifact])
+    result = invoke(artifact, [message("Sum", *range(64))])
+    assert json.loads(result.stdout) == {"reply": 63}
+    assert not invoke(artifact, [message("Sum", *range(65))], expected=1).stdout
+
+
 def main():
     if not COMPILER.is_file() or not VM.is_file():
         raise SystemExit("Build wings-compile and wings-vm for the selected WINGS_PROFILE first")
@@ -870,6 +916,7 @@ def main():
         verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
+        verify_cli_input(counter, parent)
         for count in (16, 64, 256):
             density = json.loads(example("scheduler_density", counter, count).stdout)
             assert density["actors"] == count and density["workers"] == 2

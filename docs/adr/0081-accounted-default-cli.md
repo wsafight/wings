@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（CLI 资源集成切片）
+- 后续：[ADR-0086](0086-accounted-cli-json.md) 将请求行缓冲、JSON 暂存和取消控制接入原资源树，以固定 visitor 代替通用 Value。
 - 部分替代：[ADR-0044](0044-native-module-leases.md)、[ADR-0079](0079-accounted-vm-bootstrap.md) 中标量 CLI 默认仍走未计费工具入口的安排。
 - 沿用：[ADR-0080](0080-central-execution-admission.md) 的执行控制准入、显式池保留，以及堆 CLI 原 16 MiB 三级字节上限。
 

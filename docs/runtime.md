@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0086](adr/0086-accounted-cli-json.md) 为 CLI 请求缓冲、转义解析增长及固定控制预留 264 KiB，沿 process/tenant/VM 准入并保持至适配器存储释放。重复/未知字段和嵌套参数在 handler 前拒绝；输出失败不回滚已完成 handler，原 16 MiB 和 64 KiB 行上限不变。
+
 [ADR-0085](adr/0085-module-path-admission.md) 要求计费加载先预留原 2 MiB 控制容量，额度不足优先于目录错误；追加库页或后续解析/装载失败时归还已持有预留。模块、handler、实例和活栈仍共享一次总预算。
 
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 在现有 VM 身份校验中拒绝未计费模块接入计费根，先于业务入口、堆/进程分配、调度槽占用与镜像消费；失败后原工具实例和镜像仍可使用。

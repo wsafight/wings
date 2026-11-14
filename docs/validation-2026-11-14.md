@@ -431,6 +431,18 @@ Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG �
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-module-path-linux.tar.gz` 含 309 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿；原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 521 项通过，完整受限 AOT 通过。执行后全部 451 项 source/harness/binary hash 一致，冻结源码与宿主实现一致，随后停止客体；见 `/tmp/wings-module-path-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-module-path-host-sources.log`。交叉 linker 警告保留；不将这些功能证据当作原生 Linux CI、完整账本或 BEAM 吞吐/整机内存验收。
 
+## CLI 请求缓冲与有界解析：ADR-0086
+
+基于 `2814571`，按 [ADR-0086](adr/0086-accounted-cli-json.md) 将 CLI 的复用行缓冲、JSON 转义暂存和固定控制先预留到 process/tenant/VM 的原 16 MiB 树中。真实旧 CLI 接受重复 message/args，各输出 `{"reply":7}`；新增拒绝断言实际失败，见 `/tmp/wings-cli-input-before.log`。原 Value 折叠字段后已执行当前 handler；新 visitor 明确拒绝重复字段，不把这项行为变化写成原路径已有保证。
+
+复用 workspace 已锁定 serde，不增加第三方包或版本；取消通用 Value/Map，固定 256 B 消息名、64 个标量槽及回复结构。原 64 KiB 行限制、参数数量、业务步数、ABI v15 与类型拼写不变。准入先于取消标志、行分配和 initializer；264 KiB 是含转义 Vec 增长暂存的保守逻辑容量，不是标准 I/O 全局存储或 OS 内存硬限制。回归覆盖三级零/少一字节/精确边界、账目零变化、缓冲复用、最大行/末行/CRLF、转义/Unicode、数值范围、重复/缺失/未知字段、嵌套/字符串/65 参数和读写失败。完整 AOT 增加默认/堆两模式拒绝当前非法请求、保留此前合法输出，以及真实 64 参数 handler。
+
+首次完整本机 debug/release 的 529 项测试与完整 AOT、BEAM v1/v2 正确性通过后，审计发现 serde 默认 Unexpected::Str 错误格式化会展开输入：60,003 B 的 DEL 字符 JSON 字符串产生约 360 KiB stderr，超过暂存余量，见 `/tmp/wings-cli-input-error-size-before.log`。初次 Linux 冻结包仅完成交叉构建与客体启动，未执行功能验收；停止客体后为顶层/args 错误字符串增加固定诊断，单测与真实 AOT 加入两项长字符串错误大小检查。后续最终冻结及全部回归以修正版本为准，保留最初失败证据。
+
+最终 macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、529 项测试及完整受限 AOT 通过。显式 Wings/BEAM/Python v1 的 45 组业务、28 项 JSON/14 项桥接拒绝和 v2 的 18 组业务、17 项桥接/49 项 JSON 拒绝在 debug/release 全部通过，见 `/tmp/wings-cli-input-final-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 与 `/tmp/wings-cli-input-final-beam-v{1,2}-{debug,release}.log`。长 DEL 字符串最终分别为 60,003/60,028 B 输入、56 B stderr，见 `/tmp/wings-cli-input-focused-aot-bounded-errors.log`；8 项适配器单测通过，读取/输出错误仍保留票据至适配器销毁。依赖隔离、协程禁 unwind、Python AST、103 份 Markdown 的 1010 条相对路径/围栏和 diff 检查通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。修正版本冻结包 `/tmp/wings-cli-input-final-linux.tar.gz` 含 311 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿，显式包含新增 CLI 源文件。原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 529 项通过，完整受限 release AOT 通过；执行后全部 453 项 source/harness/binary hash 一致，冻结源码与宿主实现一致。日志为 `/tmp/wings-cli-input-final-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-input-final-host-sources.log`。客体已停止；保留交叉 linker 警告，不把功能验证视为原生 Linux CI、完整资源账本或 BEAM 吞吐/整机内存验收。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

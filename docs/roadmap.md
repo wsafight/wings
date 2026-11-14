@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0086](adr/0086-accounted-cli-json.md) 推进第 4 项的 CLI 请求适配层计费和有界解析，保留原额度与协议正常路径；启动参数、标准 I/O 全局对象及完整宿主账本仍须收敛，MVP 门槛不变。
+
 [ADR-0085](adr/0085-module-path-admission.md) 继续推进第 4 项：路径解析先准入原控制预算，库页追加失败完整回滚；原生双平台、完整账本与 BEAM 双门禁仍未完成。
 
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 推进第 4 项，禁止计费根接收未计费工具模块；保持独立工具入口、资源上限和 MVP 验收门槛不变。

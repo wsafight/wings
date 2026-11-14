@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0086](adr/0086-accounted-cli-json.md) 的 CLI 适配器先预留 264 KiB，再创建复用行缓冲和取消标志；serde visitor 仅生成固定消息名和至多 64 个标量，输出直接序列化固定结构。标准 I/O 全局对象和完整宿主账本仍未闭环。
+
 [ADR-0085](adr/0085-module-path-admission.md) 将计费加载拆为路径解析前的原控制预留与元数据检查后的库页预留，同一模块租约持有两部分，保留原总额和末持有者释放顺序。
 
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 补齐反向组合检查：计费根及后代只接收本 VM 的计费模块，不自动补租约；旧工具树保持原用途。
