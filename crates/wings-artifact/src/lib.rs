@@ -24,12 +24,21 @@ pub struct Handler {
 
 impl Handler {
     pub fn is_completion(&self) -> bool {
-        self.reply.is_none()
-            && self.parameters.iter().map(|(_, ty)| *ty).eq([
-                ValueType::RequestId,
-                ValueType::Int,
-                ValueType::Int,
-            ])
+        self.completion_reply().is_some()
+    }
+
+    pub fn completion_reply(&self) -> Option<ValueType> {
+        match (self.reply, self.parameters.as_slice()) {
+            (
+                None,
+                [
+                    (_, ValueType::RequestId),
+                    (_, ValueType::Int),
+                    (_, ty @ (ValueType::Int | ValueType::Bool | ValueType::Unit)),
+                ],
+            ) => Some(*ty),
+            _ => None,
+        }
     }
 }
 

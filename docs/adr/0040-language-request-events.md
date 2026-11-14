@@ -2,6 +2,7 @@
 
 - 日期：2026-11-13
 - 状态：已采纳（单 worker 语言交互切片）
+- 后续：[ADR-0095](0095-typed-scalar-request-events.md) 扩展为类型匹配的 Int/Bool/Unit 回复与完成第三参数，原请求生命周期保留。
 - 补充：[ADR-0021](0021-bounded-requests.md)、[ADR-0039](0039-local-process-capabilities.md)
 - 部分替代：[ADR-0078](0078-request-publisher-lifetimes.md) 修正完成事件入队或发起方退出后的提前回收；事件预留仍可转移/释放，requests 票据保持到目标消息结束。下文保留原决定的背景。
 

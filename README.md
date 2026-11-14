@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0095](docs/adr/0095-typed-scalar-request-events.md) 将语言异步请求扩展为 Int/Bool/Unit 回复，完成入口第三参数精确匹配目标回复，系统事件仍不能伪造。真实示例见 [`examples/scalar-completions.wings`](examples/scalar-completions.wings)，沿用既有语法、ABI v15 和请求生命周期；引用回复和完整 MVP 门禁仍未完成。
+
 [ADR-0094](docs/adr/0094-typed-host-message-values.md) 为 ScalarWorker、ScalarSupervisor 和 SchedulerHandle 增加 `send_values`/`request_values`，使用 `MessageValue` 传入独立的记录内容、列表和字节副本。完整受限 AOT 已接入 [`examples/host-values.wings`](examples/host-values.wings)，宿主用法见[运行时](docs/runtime.md)。原始整数/JSON/IngressSender 及回复仍遵守原边界；语法评审稿尚未采纳。
 
 [ADR-0093](docs/adr/0093-scheduler-ready-before-park.md) 修正 Scheduler 空认领与等待之间的就绪发布竞争，保留原准入失败退避；另补非零 deadline 的发布/等待/取消竞争验证，不改变请求期限或强制检查。
@@ -154,7 +156,7 @@ process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_i
 
 标量、RecordInt 或 IntList state 的 handler 可用 `while`，每轮更新候选状态、正常返回才提交；循环体局部不逃逸，空循环也有强制预算/让出检查。尚无 break/continue 或任意引用 phi，见 `examples/loops.wings`、`examples/record-loops.wings`、[ADR-0031](docs/adr/0031-scalar-state-loops.md) 和 [ADR-0034](docs/adr/0034-record-state-loops.md)。
 
-需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
+需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。开发构建仅为 Cranelift 代码生成与 regalloc2 开启二级优化，并显式保留其 debug assertions 与溢出检查，以控制原 AOT 压力回归的编译耗时；workspace 自有代码仍使用默认开发配置，release 配置不变。检查命令只验证当前语法子集，不生成机器码：
 
 ```sh
 cargo check --workspace

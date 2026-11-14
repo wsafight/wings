@@ -1,5 +1,18 @@
 # wings-lang
 
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 为语言异步 `request` 接入 Int/Bool/Unit 回复。完成入口第三参数必须与目标回复类型精确匹配，status 仍为 Int；非成功终态分别携带 0/false/()，须先判 status。无箭头入口不能请求，`-> Unit` 仍有回复。语法拼写、引用回复限制和待审语法稿保持。可检查/AOT 运行的完整示例见 [`examples/scalar-completions.wings`](../examples/scalar-completions.wings)：
+
+```wings
+on ComputeBool(value: Bool, fail: Bool) -> Bool {
+  if fail { 1 / 0 == 0 } else { value }
+}
+on CompletedBool(id: RequestId, status: Int, value: Bool) {
+  count = if status == 0 { if value { 1 } else { 0 } } else { 0 }
+}
+```
+
+上述片段置于具备 Int state `count` 的 process 中，发起方在 handler 内使用 `request(target, ComputeBool, CompletedBool, 1000, true, false)`。Unit 回复相应使用 `on CompletedUnit(id: RequestId, status: Int, value: Unit)`。已投递为完成事件的 RequestId 不再可取消；跨 worker 回复抢先时，取消可能沿原规则使发起 handler 受管 RequestRejected，同一 actor 自请求取消则在目标开始前确定选择 Cancelled。
+
 [ADR-0094](adr/0094-typed-host-message-values.md) 的直接宿主类型化消息使用现有参数类型及复制导入语义，不改变源码拼写、消息入口或回复类型。语法评审稿仍待审核；JSON 与原始整数接口不能据此注入引用。
 
 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 保留异步请求的早期超时/取消事件，但完成事件入队或发起方退出不再提前归还仍排队/执行请求的额度；目标消息结束后才可复用请求槽。已入队事件的能力不可取消，超时结果不撤回对端副作用；满表继续返回 RequestRejected。类型拼写与 ABI v15 不变。
@@ -32,7 +45,7 @@
 
 宿主可用 worker `wait` 推进空闲时的 deadline/完成事件准入，不必 sleep 轮询；仍不在 wait 内执行 handler，也无自动外部 I/O 事件泵，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
 
-`request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: Int)`；status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3，仅接受 Int 回复。`cancel_request(id)` 不撤回目标消息，静态/额度/队满契约见 [ADR-0040](adr/0040-language-request-events.md)。
+`request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: T)`；T 精确匹配目标的 Int/Bool/Unit 回复，status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3。仅 status=0 的 value 为结果，其他状态分别为 0/false/()。`cancel_request(id)` 不撤回目标消息，静态类型契约见 [ADR-0095](adr/0095-typed-scalar-request-events.md)，额度/队满及能力有效期沿 [ADR-0040](adr/0040-language-request-events.md)。
 
 `self_pid()` / `spawn_self()` 返回局部 Pid，`send(pid, Message, args...)` 向同 worker 同模块的单向入口投递；仅 handler 可调用。Pid 暂不允许 state、消息、回复或比较。创建继承资源配置、不继承状态，细节见 [ADR-0039](adr/0039-local-process-capabilities.md)。
 
@@ -151,7 +164,7 @@ send(counter, Reset)
 let id = request(counter, Inc, Completed, 1000, 2)
 ```
 
-`send` 面向单向入口，`request` 当前仅面向 `-> Int` 入口；Completed 必须是 `(RequestId, Int, Int)` 的单向系统完成入口，不可由普通发送伪造。发送前检查静态协议，装载/动态边界再次校验。准入失败为受管 RequestRejected，不伪装成功；未来可恢复错误值另行设计。
+`send` 面向单向入口，`request` 面向显式 `-> Int`、`-> Bool` 或 `-> Unit` 入口；Completed 必须是 `(RequestId, Int, 回复类型)` 的单向系统完成入口，不可由普通发送伪造。发送前检查静态协议，装载/动态边界再次校验。准入失败为受管 RequestRejected，不伪装成功；未来可恢复错误值另行设计。
 
 `request` 成功返回局部 `RequestId`，不返回业务结果，handler 随后正常返回；回复/超时/取消/对端退出通过完成事件给出 id、status 和 value。每个请求只选一次结果，迟到回复不覆盖；队满时保留结果及已预留消息，空位可用后入队。当前 id 不能保存到 state 或转成整数，关联 state 是后续能力。取消不撤回目标消息或副作用。
 

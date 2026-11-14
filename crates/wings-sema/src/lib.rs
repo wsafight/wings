@@ -290,11 +290,14 @@ pub fn analyze(text: &str) -> Analysis {
                 .collect();
             if parameters.iter().any(|(_, ty)| *ty == Type::RequestId)
                 && !(handler.reply_type.is_none()
-                    && parameters.iter().map(|(_, ty)| ty).eq([
-                        &Type::RequestId,
-                        &Type::Int,
-                        &Type::Int,
-                    ]))
+                    && matches!(
+                        parameters.as_slice(),
+                        [
+                            (_, Type::RequestId),
+                            (_, Type::Int),
+                            (_, Type::Int | Type::Bool | Type::Unit)
+                        ]
+                    ))
             {
                 checker.error(
                     "T011",
@@ -551,11 +554,15 @@ impl Checker {
                         .iter()
                         .map(|argument| self.expression(argument, scope))
                         .collect();
+                    let reply_type = match &target {
+                        Some(Type::Message { reply, .. }) => reply.as_deref().cloned(),
+                        _ => None,
+                    };
                     if let Some(Type::Message { parameters, reply }) = target {
-                        if reply.as_deref() != Some(&Type::Int) {
+                        if !matches!(reply.as_deref(), Some(Type::Int | Type::Bool | Type::Unit)) {
                             self.error(
                                 "T018",
-                                "request requires an Int reply handler",
+                                "request requires an Int, Bool or Unit reply handler",
                                 arguments[1].span,
                             );
                         }
@@ -568,11 +575,14 @@ impl Checker {
                             self.require(actual, expected, value.span);
                         }
                     }
-                    if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.iter().map(|(_, ty)| ty).eq([&Type::RequestId, &Type::Int, &Type::Int]))
+                    if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.len() == 3
+                        && parameters[0].1 == Type::RequestId && parameters[1].1 == Type::Int
+                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit)
+                        && Some(&parameters[2].1) == reply_type.as_ref())
                     {
                         self.error(
                             "T018",
-                            "request completion requires one-way (RequestId, Int, Int)",
+                            "request completion requires one-way (RequestId, Int, reply type)",
                             arguments[2].span,
                         );
                     }

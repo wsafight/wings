@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 按第 3 项补齐语言请求的既有标量回复和匹配完成签名，具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、完整业务值/账本、长时公平/故障、最新原生双平台及同负载 BEAM 双门禁不因此完成。
+
 [ADR-0094](adr/0094-typed-host-message-values.md) 按第 3/4 项补齐直接宿主向既有 RecordInt/IntList/Bytes 消息的类型化复制入口，保留原语法、ABI、合计上限及请求生命周期；具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、字符串/通用记录、完整账本、原生双平台及同负载 BEAM 双门禁仍未完成。
 
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 推进第 3/5 项，消除 Scheduler 空认领后已有本地就绪项仍进入有界等待的窗口，保留准入失败退避；非零请求期限竞争另有单测证据。长时公平性、完整业务值/账本、原生双平台及同负载 BEAM 双门禁仍未完成。

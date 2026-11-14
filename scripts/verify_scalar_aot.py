@@ -1366,6 +1366,14 @@ def main():
         command([COMPILER, "build", ROOT / "examples/request-events.wings", "-o", request_events])
         example("request_events", request_events)
         example("worker_wait", request_events)
+        scalar_completions = parent / "scalar-completions"
+        command([COMPILER, "build", ROOT / "examples/scalar-completions.wings", "-o", scalar_completions])
+        result = example("scalar_completions", scalar_completions)
+        assert "72 bounded Bool/Unit scenarios" in result.stdout
+        print(result.stdout.strip())
+        for name, value in [("CompletedBool", False), ("CompletedUnit", None)]:
+            result = invoke(scalar_completions, [message(name, 1, 0, value)], expected=1)
+            assert not result.stdout and "not JSON arguments" in result.stderr
         request_roots = parent / "request-roots"
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])

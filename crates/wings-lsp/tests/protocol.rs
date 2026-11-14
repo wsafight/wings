@@ -202,6 +202,35 @@ fn request_ids_and_completion_names_use_shared_analysis() {
 }
 
 #[test]
+fn scalar_completion_hover_and_diagnostics_share_request_reply_types() {
+    for (ty, literal) in [("Bool", "false"), ("Unit", "()")] {
+        let mut typed_server = server();
+        let text = format!(
+            "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {ty} {{ {literal} }} on Done(id: RequestId, status: Int, value: {ty}) {{ let saved = value }} }}"
+        );
+        assert_eq!(
+            open(&mut typed_server, URI, 1, &text)[0]["params"]["diagnostics"],
+            json!([])
+        );
+        let offset = text.rfind("value").unwrap() as u32;
+        assert_eq!(
+            query(&mut typed_server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+            format!("value: {ty}")
+        );
+        let mut server = server();
+        let mismatched = text.replace(&format!("value: {ty}"), "value: Int");
+        let diagnostics = open(&mut server, URI, 1, &mismatched);
+        assert!(
+            diagnostics[0]["params"]["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["code"] == "T018")
+        );
+    }
+}
+
+#[test]
 fn function_calls_share_signature_definition_and_keyword_completion() {
     let mut server = server();
     let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";

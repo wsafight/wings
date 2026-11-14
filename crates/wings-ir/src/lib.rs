@@ -102,12 +102,21 @@ pub struct Handler {
 
 impl Handler {
     pub fn is_completion(&self) -> bool {
-        self.reply.is_none()
-            && self.parameters.iter().map(|(_, ty)| *ty).eq([
-                ValueType::RequestId,
-                ValueType::Int,
-                ValueType::Int,
-            ])
+        self.completion_reply().is_some()
+    }
+
+    pub fn completion_reply(&self) -> Option<ValueType> {
+        match (self.reply, self.parameters.as_slice()) {
+            (
+                None,
+                [
+                    (_, ValueType::RequestId),
+                    (_, ValueType::Int),
+                    (_, ty @ (ValueType::Int | ValueType::Bool | ValueType::Unit)),
+                ],
+            ) => Some(*ty),
+            _ => None,
+        }
     }
 }
 
@@ -240,8 +249,10 @@ impl Program {
                         .handlers
                         .get(*callback)
                         .ok_or("invalid request completion")?;
-                    if target.reply != Some(ValueType::Int)
-                        || !callback.is_completion()
+                    if !matches!(
+                        target.reply,
+                        Some(ValueType::Int | ValueType::Bool | ValueType::Unit)
+                    ) || callback.completion_reply() != target.reply
                         || target.parameters.len() != arguments.len()
                         || arguments
                             .iter()
@@ -251,7 +262,7 @@ impl Program {
                             })
                     {
                         return Err(
-                            "request requires Int reply, completion event and matching parameters"
+                            "request requires scalar reply, matching completion event and matching parameters"
                                 .into(),
                         );
                     }

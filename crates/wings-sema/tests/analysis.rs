@@ -152,12 +152,16 @@ fn process_capabilities_are_local_typed_values_and_effects_are_handler_only() {
 }
 
 #[test]
-fn language_requests_require_typed_system_completions_and_int_replies() {
+fn language_requests_require_typed_system_completions_and_scalar_replies() {
     checked(include_str!("../../../examples/request-events.wings"));
     for (body, code, fragment) in [
         ("request()", "T013", "requires pid"),
         ("request(1, Get, Done, 10)", "T005", "expected Pid"),
-        ("request(self_pid(), Notify, Done, 10)", "T018", "Int reply"),
+        (
+            "request(self_pid(), Notify, Done, 10)",
+            "T018",
+            "reply handler",
+        ),
         (
             "request(self_pid(), Get, Notify, 10)",
             "T018",
@@ -193,6 +197,33 @@ fn language_requests_require_typed_system_completions_and_int_replies() {
         "process P { state count: Int = 0; on Wrong -> RequestId { request() } }",
     ] {
         assert!(!analyze(text).diagnostics.is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn request_completion_values_match_all_scalar_replies_without_coercion() {
+    for (reply, literal) in [("Int", "7"), ("Bool", "true"), ("Unit", "()")] {
+        for completion in ["Int", "Bool", "Unit"] {
+            let text = format!(
+                "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {reply} {{ {literal} }} on Done(id: RequestId, status: Int, value: {completion}) {{ () }} }}"
+            );
+            if reply == completion {
+                checked(&text);
+            } else {
+                assert_error(&text, "T018", "reply type");
+            }
+        }
+    }
+    for value in ["Bool", "Unit"] {
+        let text = format!(
+            "process P {{ state n: Int = 0; on Wrong(id: RequestId, status: Bool, value: {value}) {{ () }} }}"
+        );
+        assert_error(&text, "T011", "completion event");
+        let text = format!(
+            "process P {{ state n: Int = 0; on Start {{ send_self(Done, 1, 0, {literal}) }} on Done(id: RequestId, status: Int, value: {value}) {{ () }} }}",
+            literal = if value == "Bool" { "false" } else { "()" }
+        );
+        assert_error(&text, "T018", "cannot be sent directly");
     }
 }
 

@@ -571,6 +571,22 @@ macOS AArch64 debug/release 各 84 个 harness、561 项测试、doc-tests 及�
 
 Linux x86-64 在原 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体中通过 84 个 release harness、561 项测试、完整受限 AOT 和 16 次独立定向进程。三种构建合计 48 次定向进程、144 次新单测执行，不能据有限重复宣称完整并发状态空间覆盖。冻结包 `/tmp/wings-host-values-linux.tar.gz` 包含 331 份源码、84 个 harness、62 个工具/示例，排除语法评审稿；结束后 477 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-host-values-linux-{tests,repeat,aot,hashes,stop}.log`，状态回执 `/tmp/wings-host-values-linux-status.json`；宿主核对为 `/tmp/wings-host-values-host-sources.log`，冻结后仅追加本验证记录。静态检查覆盖 111 份 Markdown、1102 个相对链接及围栏。TCG 只提供功能证据，最新原生 Linux CI、完整业务值/账本、长时故障与公平性和同平台同负载 BEAM 吞吐/整机内存双门禁仍未完成。
 
+## 类型匹配的标量请求完成事件：ADR-0095
+
+基于 `2a972be`，按 [ADR-0095](adr/0095-typed-scalar-request-events.md) 将语言异步请求补齐为 Int/Bool/Unit 回复，完成入口第三参数精确匹配目标回复。status 仍为 0/1/2/3，非成功结果规范为 0/false/()；前端、IR、Manifest 与两种 runtime 分别检查输入边界，不接受单向目标、隐式类型转换或外部伪造系统完成事件。沿用原语法、ABI v15、取消能力有效期、发布票据、三级准入和清理顺序，引用回复与完整 MVP 门禁不变。
+
+新增与扩展回归覆盖 3×3 标量匹配/错配、错误 status/引用参数、LSP 悬停与共享诊断，以及可信手写 effect 的发布前拒绝和账目/队列不变。非法 Bool/Unit 输出 2 与候选状态 77 必须导致 InvalidOutput，保留旧状态 0，完成处理收到 Failed 和规范默认值。新真实 AOT 在手动 worker 和一/二 Scheduler worker 中执行 72 组 Bool false/true、Unit、自请求/子目标、正常/零超时/取消/目标失败，核对完成值、完成处理副作用与最终根基线；手动 worker 另核对子目标仍执行及旧提交状态。自请求取消先于目标开始；子目标取消允许原有 Reply/Cancelled 竞争，已入队事件使发起 handler 受管 RequestRejected 时须保留旧状态，不能将任意失败算作通过。
+
+开发期失败保留：worker fixture 初次漏放当前 active message，触发 `request active message`，修正预算来源后通过；LSP 新测试曾遮蔽 server helper，编译失败后修正。首次 release 全 AOT 已通过 72 组新场景，但新 JSON 拒绝断言错误地期待 completion 文本；CLI 实际先拒绝 RequestId，随后按原边界改为检查 `not JSON arguments` 和空业务输出，Bool/Unit 参数也改为正确的 false/null。此处没有修改 CLI 或放宽拒绝。日志为 `/tmp/wings-scalar-completions-tests-debug-initial.log` 和 `/tmp/wings-scalar-completions-aot-release-initial.log`。
+
+首次完整 debug AOT 在旧 `frame_limits` 以 -24/SIGXCPU 失败；同参数独立复现通过但墙钟 18.886755s、CPU 约 17.98s，接近原 20s CPU 上限。第二次完整回归在原 32 层、每层 32 绑定的 managed-stack 编译以 -24 失败，独立复现和仅优化 regalloc2 的对照仍超限；采样主要落在 Cranelift 代码生成/寄存器分配，不能只据采样断定全部耗时来源。为控制开发构建的后端耗时，Cargo 仅为 `cranelift-codegen` 和 `regalloc2` 开启 opt-level 2，显式保留 debug assertions 与 overflow checks；自有 crate 的 dev 配置和全部 release 配置不变。相同栈负载随后退出 0，墙钟 2.036203s、CPU 约 0.60s；相同帧压力退出 0，墙钟 0.425322s、CPU 约 0.45s。这是编译工具开发配置的对照，不是 VM 执行业务或 BEAM 性能结果。帧探针首次漏传必需输出目录、退出 101 的工具调用也保留，随后用原完整参数重跑。
+
+上述原始证据分别在 `/tmp/wings-scalar-completions-aot-debug-initial.log`、`aot-debug-final.log`、`frame-focused.log`、`stack-focused.log`、`stack-profile.log`、`stack-sample.txt`、`stack-optimized.log`、`codegen-build.log`、`stack-codegen-optimized.log`、`frame-probe-missing-argument.log` 与 `frame-codegen-optimized.log`，除首个完整路径外均使用同一 `/tmp/wings-scalar-completions-` 前缀。后端优化没有提高 CPU 20s/墙钟 30s/core 0 上限，没有缩减压力负载、移除编译器检查或提高业务三秒阶段。
+
+macOS AArch64 最终 debug/release 各 85 个 harness、566 项测试及完整受限 AOT 通过；workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和两种构建的 doc-tests 通过。最终配置的 debug 重新构建并执行全部 harness；每种构建再做八次两项 runtime 回归与八次 72 组真实 AOT，先 `--list` 核对确实选中两项测试，拒绝零测试成功。日志前缀 `/tmp/wings-scalar-completions-`，最终测试为 `tests-debug-final.log`、`tests-release.log`，完整 AOT 为 `aot-debug-complete.log`、`aot-release-final.log`，重复为 `repeat-debug-final.log`、`repeat-release.log`；检查分别保留 `check-final.log`、`clippy-final.log`、`msrv-final.log`、`fmt-final.log` 和 `doctests-{debug-final,release}.log`。本轮没有新增 BEAM 长测或性能/整机内存结果。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。85 个 release harness、566 项测试、完整受限 AOT 和同限额的八次 runtime/八次真实 AOT 独立进程均通过；与 macOS 两种构建合计 48 次定向进程、48 次 runtime 测试执行和 1728 组真实 AOT 场景，有限重复不代表完整并发状态空间覆盖。冻结包 `/tmp/wings-scalar-completions-linux.tar.gz` 含 334 份源码、85 个 harness、63 个工具/示例，显式包含新示例与 ADR，排除语法评审稿；结束后全部 482 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-scalar-completions-linux-{tests,repeat,aot,hashes,stop}.log`，状态回执为 `linux-status.json`；宿主源码核对为 `host-sources-final.log`，冻结后仅补本验证记录，最终静态检查为 `static-final.log`，均沿相同前缀。TCG 只提供功能证据；最新原生 Linux CI、完整业务值/账本、长时公平/故障及同平台同负载 BEAM 吞吐/整机内存双门禁仍未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

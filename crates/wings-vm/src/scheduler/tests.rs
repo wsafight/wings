@@ -62,6 +62,140 @@ pub(super) fn module() -> ScalarModule {
     }
 }
 
+unsafe extern "C" fn invalid_scalar_reply(
+    _state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        *output = ScalarOutput {
+            state: 77,
+            reply: 2,
+        };
+    }
+    wings_abi::STATUS_OK
+}
+
+unsafe extern "C" fn scalar_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        *output = ScalarOutput {
+            state: *arguments.add(1) * 100 + *arguments.add(2),
+            reply: 0,
+        };
+    }
+    wings_abi::STATUS_OK
+}
+
+#[test]
+fn scalar_request_protocol_checks_callback_before_publication_and_preserves_failed_state() {
+    for workers in [1, 2] {
+        for reply in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+            for callback in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+                for corrupt in [false, true] {
+                    if corrupt && (reply == ValueType::Int || callback != reply) {
+                        continue;
+                    }
+                    let limits = Resources {
+                        bytes: 32 << 20,
+                        processes: 2,
+                        messages: 4,
+                        requests: 2,
+                    };
+                    let vm = ResourceAccount::vm(limits);
+                    let tenant = vm.tenant_accounted(limits).unwrap();
+                    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+                    let scheduler = Scheduler::new(
+                        &tenant,
+                        SchedulerConfig {
+                            workers,
+                            capacity: 2,
+                            requests: 2,
+                            ..SchedulerConfig::default()
+                        },
+                    )
+                    .unwrap();
+                    let handle = scheduler.handle();
+                    let mut module = module();
+                    let data = Arc::get_mut(&mut module.inner).unwrap();
+                    data.manifest.handlers[0].parameters[2].1 = callback;
+                    data.manifest.handlers[3].reply = Some(reply);
+                    data.entries[0] = scalar_completion;
+                    if corrupt {
+                        data.entries[3] = invalid_scalar_reply;
+                    }
+                    data.manifest.validate().unwrap();
+                    let owner = handle.spawn(&module, limits, 1).unwrap();
+                    let target = handle.spawn(&module, limits, 1).unwrap();
+                    let target_capability = handle
+                        .shared
+                        .lock()
+                        .actor(handle.shared.identity, target)
+                        .unwrap()
+                        .capability;
+                    let baseline = vm.used();
+                    let effect = crate::execution::ProcessEffect {
+                        operation: wings_abi::EFFECT_REQUEST,
+                        target: target_capability,
+                        handler: 3,
+                        arguments: [0; 64],
+                        count: 0,
+                        callback: 0,
+                        timeout_ms: 60000,
+                        record_mask: 0,
+                        lists: ListPayload::default(),
+                        bytes: BytePayload::default(),
+                    };
+                    let result = handle.shared.effect(owner, effect, 128, &pool);
+                    if callback != reply {
+                        assert_eq!(result, (wings_abi::STATUS_REQUEST_REJECTED, 0));
+                        assert_eq!(vm.used(), baseline);
+                        assert_eq!(handle.snapshot(owner).unwrap().queued, 0);
+                        assert_eq!(handle.snapshot(target).unwrap().queued, 0);
+                    } else {
+                        assert_eq!(result.0, wings_abi::STATUS_OK);
+                        assert!(result.1 > 0);
+                        let end = Instant::now() + Duration::from_secs(3);
+                        loop {
+                            let state = handle.shared.lock();
+                            let actor = state.actor(handle.shared.identity, owner).unwrap();
+                            if state.requests.iter().all(|slot| slot.pending.is_none())
+                                && actor.owner.is_none()
+                                && actor.mailbox.count == 0
+                            {
+                                assert_eq!(
+                                    actor.committed_state,
+                                    Some(if corrupt { 300 } else { 0 })
+                                );
+                                break;
+                            }
+                            assert!(Instant::now() < end, "scalar completion deadline");
+                            drop(state);
+                            std::thread::yield_now();
+                        }
+                        if corrupt {
+                            let exit = handle.last_exit().unwrap();
+                            assert_eq!(exit.pid, target);
+                            assert_eq!(exit.committed_state, Some(0));
+                            assert_eq!(
+                                exit.reason,
+                                SchedulerExitReason::Managed(ExecutionFault::InvalidOutput)
+                            );
+                        }
+                    }
+                    drop((scheduler, handle, pool, tenant));
+                    assert_eq!(vm.used(), Resources::default());
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn typed_host_preparation_cannot_publish_to_stopped_reused_or_closed_targets() {
     for workers in [1, 2] {

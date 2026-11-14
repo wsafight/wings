@@ -1,0 +1,39 @@
+process ScalarCompletions {
+  state count: Int = 0
+
+  on Start(kind: Bool, value: Bool, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
+    let target = if same { self_pid() } else { spawn_self() }
+    let pending = if kind {
+      request(target, ComputeBool, CompletedBool, timeout, value, fail)
+    } else {
+      request(target, ComputeUnit, CompletedUnit, timeout, fail)
+    }
+    if cancel { cancel_request(pending) } else { () }
+    count = 9
+    count
+  }
+
+  on ComputeBool(value: Bool, fail: Bool) -> Bool {
+    count = count + 1
+    if fail { 1 / 0 == 0 } else { value }
+  }
+
+  on ComputeUnit(fail: Bool) -> Unit {
+    count = count + 1
+    let checked = 1 / if fail { 0 } else { 1 }
+    ()
+  }
+
+  on CompletedBool(id: RequestId, status: Int, value: Bool) {
+    count = status * 1000 + if value { 11 } else { 7 }
+    send_self(Add, 10000)
+  }
+
+  on CompletedUnit(id: RequestId, status: Int, value: Unit) {
+    count = status * 1000 + 13
+    send_self(Add, 10000)
+  }
+
+  on Add(value: Int) { count = count + value }
+  on Read -> Int { count }
+}

@@ -204,6 +204,47 @@ fn request_ids_only_enter_exact_one_way_completion_signatures() {
 }
 
 #[test]
+fn completion_signatures_round_trip_all_scalar_values_and_reject_other_types() {
+    for ty in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+        let mut manifest = manifest();
+        manifest.handlers[0].parameters = vec![
+            ("id".into(), ValueType::RequestId),
+            ("status".into(), ValueType::Int),
+            ("value".into(), ty),
+        ];
+        manifest.handlers[0].reply = None;
+        assert_eq!(manifest.handlers[0].completion_reply(), Some(ty));
+        let decoded = Directory::new()
+            .read_json(&serde_json::from_slice(&manifest.encode().unwrap()).unwrap())
+            .unwrap();
+        assert_eq!(decoded.handlers[0].completion_reply(), Some(ty));
+        for wrong in [
+            ValueType::Bool,
+            ValueType::Unit,
+            ValueType::Ref,
+            ValueType::RequestId,
+        ] {
+            let mut invalid = manifest.clone();
+            invalid.handlers[0].parameters[1].1 = wrong;
+            assert!(!invalid.handlers[0].is_completion());
+            assert!(invalid.validate().is_err());
+        }
+        for wrong in [
+            ValueType::Ref,
+            ValueType::ListRef,
+            ValueType::BytesRef,
+            ValueType::Pid,
+            ValueType::RequestId,
+        ] {
+            let mut invalid = manifest.clone();
+            invalid.handlers[0].parameters[2].1 = wrong;
+            assert_eq!(invalid.handlers[0].completion_reply(), None);
+            assert!(invalid.validate().is_err());
+        }
+    }
+}
+
+#[test]
 fn rejects_foreign_or_unrecognized_targets() {
     for target in [
         "",

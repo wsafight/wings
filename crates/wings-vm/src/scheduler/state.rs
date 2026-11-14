@@ -317,8 +317,14 @@ impl Shared {
                         state.enqueue(target);
                         return Ok(0);
                     }
-                    if schema.reply != Some(wings_abi::ValueType::Int)
-                        || !(0..=86_400_000).contains(&effect.timeout_ms)
+                    if !matches!(
+                        schema.reply,
+                        Some(
+                            wings_abi::ValueType::Int
+                                | wings_abi::ValueType::Bool
+                                | wings_abi::ValueType::Unit
+                        )
+                    ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {
                         return Err("invalid language request".into());
                     }
@@ -326,7 +332,7 @@ impl Shared {
                         .manifest()
                         .handlers
                         .get(effect.callback)
-                        .filter(|handler| handler.is_completion())
+                        .filter(|callback| callback.completion_reply() == schema.reply)
                         .ok_or("invalid completion handler")?;
                     let callback = module.handler(&callback.name)?;
                     let index = state

@@ -1198,14 +1198,19 @@ impl ScalarWorker {
             .handlers
             .get(effect.handler)
             .ok_or("invalid request handler")?;
-        if schema.reply != Some(wings_abi::ValueType::Int) {
-            return Err("request requires Int reply".into());
+        if !matches!(
+            schema.reply,
+            Some(
+                wings_abi::ValueType::Int | wings_abi::ValueType::Bool | wings_abi::ValueType::Unit
+            )
+        ) {
+            return Err("request requires a scalar reply".into());
         }
         let callback = module
             .manifest()
             .handlers
             .get(effect.callback)
-            .filter(|schema| schema.is_completion())
+            .filter(|callback| callback.completion_reply() == schema.reply)
             .ok_or("invalid request completion")?;
         let handler = module.handler(&schema.name)?;
         let callback = module.handler(&callback.name)?;
@@ -1363,6 +1368,130 @@ fn storage<Value>(
 #[cfg(test)]
 mod payload_tests {
     use super::*;
+
+    unsafe extern "C" fn invalid_scalar_reply(
+        _state: i64,
+        _arguments: *const i64,
+        output: *mut wings_abi::ScalarOutput,
+        _context: *mut wings_abi::ScalarContext,
+    ) -> u32 {
+        unsafe {
+            *output = wings_abi::ScalarOutput {
+                state: 77,
+                reply: 2,
+            };
+        }
+        wings_abi::STATUS_OK
+    }
+
+    unsafe extern "C" fn scalar_completion(
+        _state: i64,
+        arguments: *const i64,
+        output: *mut wings_abi::ScalarOutput,
+        _context: *mut wings_abi::ScalarContext,
+    ) -> u32 {
+        unsafe {
+            *output = wings_abi::ScalarOutput {
+                state: *arguments.add(1) * 100 + *arguments.add(2),
+                reply: 0,
+            };
+        }
+        wings_abi::STATUS_OK
+    }
+
+    #[test]
+    fn scalar_request_protocol_rejects_mismatches_before_admission_and_canonicalizes_failure() {
+        use wings_abi::ValueType;
+        for reply in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+            for callback in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+                for corrupt in [false, true] {
+                    if corrupt && (reply == ValueType::Int || callback != reply) {
+                        continue;
+                    }
+                    let limits = Resources {
+                        bytes: 32 << 20,
+                        processes: 4,
+                        messages: 8,
+                        requests: 4,
+                    };
+                    let vm = ResourceAccount::vm(limits);
+                    let tenant = vm.tenant_accounted(limits).unwrap();
+                    let mut module = crate::tests::module();
+                    let data = Arc::get_mut(&mut module.inner).unwrap();
+                    data.manifest.handlers[2].reply = Some(reply);
+                    data.manifest.handlers.push(wings_artifact::Handler {
+                        name: "Completed".into(),
+                        reply: None,
+                        parameters: vec![
+                            ("id".into(), ValueType::RequestId),
+                            ("status".into(), ValueType::Int),
+                            ("value".into(), callback),
+                        ],
+                    });
+                    let mut entries = data.entries.to_vec();
+                    if corrupt {
+                        entries[2] = invalid_scalar_reply;
+                    }
+                    entries.push(scalar_completion);
+                    data.entries = entries.into_boxed_slice();
+                    data.manifest.validate().unwrap();
+                    let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
+                    let owner = worker.spawn(&module, limits, 1).unwrap();
+                    let target = worker.spawn(&module, limits, 1).unwrap();
+                    worker
+                        .send(owner, &module.handler("Add").unwrap(), &[0], 128)
+                        .unwrap();
+                    let actor = worker.actor_mut(owner).unwrap();
+                    let message = actor.mailbox.slots[actor.mailbox.head].take().unwrap();
+                    actor.mailbox.count = 0;
+                    actor.active = Some(ActiveMessage { message });
+                    let baseline = vm.used();
+                    let effect = crate::execution::ProcessEffect {
+                        operation: wings_abi::EFFECT_REQUEST,
+                        target: worker.actor(target).unwrap().capability,
+                        handler: 2,
+                        arguments: [0; 64],
+                        count: 0,
+                        callback: 8,
+                        timeout_ms: 60000,
+                        record_mask: 0,
+                        lists: ListPayload::default(),
+                        bytes: BytePayload::default(),
+                    };
+                    let result = worker.language_request(owner, effect);
+                    if callback != reply {
+                        assert!(result.is_err());
+                        assert_eq!(vm.used(), baseline);
+                        assert_eq!(worker.queued(owner).unwrap(), 0);
+                        assert_eq!(worker.queued(target).unwrap(), 0);
+                    } else {
+                        assert!(result.unwrap() > 0);
+                        worker.actor_mut(owner).unwrap().active.take();
+                        for _ in 0..8 {
+                            worker.tick(128).unwrap();
+                        }
+                        assert_eq!(
+                            worker.committed_state(owner).unwrap(),
+                            if corrupt { 300 } else { 0 }
+                        );
+                        if corrupt {
+                            assert!(worker.committed_state(target).is_err());
+                            let exit = worker.last_exit().unwrap();
+                            assert_eq!(exit.committed_state, Some(0));
+                            assert_eq!(
+                                exit.execution.fault,
+                                Some(crate::ExecutionFault::InvalidOutput)
+                            );
+                        }
+                        assert_eq!(vm.used().requests, 0);
+                        assert_eq!(vm.used().messages, 0);
+                    }
+                    drop((worker, tenant));
+                    assert_eq!(vm.used(), Resources::default());
+                }
+            }
+        }
+    }
 
     #[test]
     fn typed_host_queues_keep_copies_and_request_tickets_through_cancel_and_rejection() {

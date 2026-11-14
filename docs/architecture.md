@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 扩展语言请求与系统完成签名的标量类型检查。ABI v15 的布局和编码保持，旧 Int 产物仍兼容；旧 runtime 会拒绝新增 Bool/Unit 完成签名。前端、IR、Manifest 和 runtime 各检查自己的输入边界，不以共享检查器代替执行入口防线。
+
 [ADR-0094](adr/0094-typed-host-message-values.md) 扩展直接宿主消息的类型化复制入口。复用现有 record/list/bytes 载荷、入口根和受管导入，不暴露堆引用整数，不改变 ABI v15 或源码拼写；宿主准备阶段持目标账户租约，在 registry 锁外复制，发布时重新验证 Pid/generation。接口与生命周期集中在[运行时](runtime.md)。
 
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 在实际 parking 的 registry 锁内重查本 worker 队头，避免空认领后已发布工作仍等待下一次通知。启动准入失败仍按原一毫秒退避，不改固定队列归属、活栈 owner 或迁移协议。

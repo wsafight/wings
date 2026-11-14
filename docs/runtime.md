@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 补语言请求的 Bool/Unit 回复。单 worker 与 Scheduler 在预留/发布前核对目标回复与完成第三参数类型；成功输出沿原规范编码检查，非成功完成使用类型默认值。原 status、唯一终态、超时/取消保留、队满背压、预算、计费与清理顺序保持。
+
 [ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数、JSON 和 IngressSender 仍按原标量边界处理。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
 
 宿主调用示例（针对 [`examples/host-values.wings`](../examples/host-values.wings) 的 `Compute`，须先用本 VM 的计费模块创建带堆目标；以下 `handle` 为 SchedulerHandle）：

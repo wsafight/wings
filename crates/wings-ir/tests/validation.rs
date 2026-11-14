@@ -390,7 +390,7 @@ fn cross_process_send_requires_local_pid_and_matching_static_one_way_protocol() 
 }
 
 #[test]
-fn requests_require_int_reply_local_id_and_exact_completion_protocol() {
+fn requests_require_scalar_reply_local_id_and_exact_completion_protocol() {
     let mut program = valid_program();
     program.handlers.push(Handler {
         name: "Done".into(),
@@ -427,6 +427,25 @@ fn requests_require_int_reply_local_id_and_exact_completion_protocol() {
         .instructions
         .push(instruction(ValueType::Unit, Operation::CancelRequest(4)));
     program.validate().unwrap();
+    for reply in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+        let mut typed = program.clone();
+        let register = typed.handlers[0].function.instructions.len();
+        typed.handlers[0]
+            .function
+            .instructions
+            .push(instruction(reply, Operation::Constant(0)));
+        typed.handlers[0].function.reply = register;
+        typed.handlers[0].reply = Some(reply);
+        typed.handlers[1].parameters[2].1 = reply;
+        assert_eq!(typed.handlers[1].completion_reply(), Some(reply));
+        typed.validate().unwrap();
+        for other in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+            if other != reply {
+                typed.handlers[1].parameters[2].1 = other;
+                rejects(&typed, "matching completion event");
+            }
+        }
+    }
     for (target, handler, callback, timeout, arguments, error) in [
         (2, 0, 1, 2, vec![1], "invalid scalar IR"),
         (3, usize::MAX, 1, 2, vec![1], "invalid request handler"),
