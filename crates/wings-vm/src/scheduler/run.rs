@@ -86,6 +86,7 @@ pub(super) fn worker(
                 None
             }
         };
+        let attempted = claim.is_some();
         if let Some(claim) = claim {
             if let Some(active) = start(&shared, index, claim, &pool, &preemption) {
                 assert!(local.len() < shared.config.capacity);
@@ -129,7 +130,7 @@ pub(super) fn worker(
         if state.closed && local.is_empty() {
             break;
         }
-        if !progress {
+        if state.should_park(index, progress, attempted) {
             state = shared
                 .changed
                 .wait_timeout(state, Duration::from_millis(1))

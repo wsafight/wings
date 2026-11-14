@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0093](adr/0093-scheduler-ready-before-park.md) 在实际 parking 的 registry 锁内重查本 worker 队头，避免空认领后已发布工作仍等待下一次通知。启动准入失败仍按原一毫秒退避，不改固定队列归属、活栈 owner 或迁移协议。
+
 [ADR-0092](adr/0092-concurrent-failure-counter.md) 用独立对照驱动检查双发送者的失败前缀，复用既有候选提交、逐 child 监督终态与有限回复表，不改执行引擎、ABI 或语法。对照协议集中在 [v9](beam-workloads.md#v9双发送者的并发失败前缀)，不扩张为超时/恢复或性能结论。
 
 [ADR-0091](adr/0091-manifest-string-preflight.md) 为 Manifest 文件读取增加不构建对象树的字符串预检，预检暂存在原类型解码前销毁；原 serde 表示、语义检查、64 KiB 输入和 2 MiB 模块控制预留不变。不用 CLI 末端截断代替来源分配约束。

@@ -63,6 +63,63 @@ fn module() -> ScalarModule {
 }
 
 #[test]
+fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retry_backoff() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 2,
+        messages: 4,
+        requests: 2,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 2,
+            requests: 2,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = module();
+    let pid = handle.spawn(&module, limits, 1).unwrap();
+    let handler = module.handler("Drop").unwrap();
+    let mut state = handle.shared.lock();
+    assert!(state.pop_ready(0).is_none());
+    assert!(state.should_park(0, false, false));
+    let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+    let message = envelope(
+        actor,
+        &handler,
+        &[],
+        32,
+        0,
+        ListPayload::default(),
+        BytePayload::default(),
+        false,
+        Reply::None,
+    )
+    .unwrap();
+    actor.mailbox.push(message).unwrap();
+    state.enqueue(pid);
+    handle.shared.changed.notify_all();
+    assert!(!state.should_park(0, false, false));
+    assert!(state.should_park(1, false, false));
+    assert!(state.should_park(0, false, true));
+    assert!(!state.should_park(0, true, true));
+    assert!(!state.should_park(1, true, false));
+    assert_eq!(state.pop_ready(0), Some(pid.slot as usize));
+    assert!(state.pop_ready(0).is_none());
+    assert!(state.should_park(0, false, false));
+    state.enqueue(pid);
+    drop(state);
+    drop((scheduler, handle, handler, module, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
     let limits = Resources {
         bytes: 32 << 20,

@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0093](adr/0093-scheduler-ready-before-park.md) 要求 Scheduler 在等待锁内重查本 worker 的 ready：空认领后新发布的工作立即进入下一轮，其他 worker 的队列不触发自旋，已认领但启动失败仍保留原有界退避。请求期限、预算及超时不撤回业务的契约不变。
+
 [ADR-0092](adr/0092-concurrent-failure-counter.md) 增加双 sender 下的失败提交前缀回归：已接受请求因目标失败终结，关闭后的投递不重试，健康 sibling 完成；每 child 终态保留旧提交状态。运行时契约和原资源限额不变，超时/取消、恢复及长时边界仍独立验证。
 
 [ADR-0091](adr/0091-manifest-string-preflight.md) 在原模块加载预留内对清单的 JSON 键/字符串先做 256 UTF-8 字节、无控制字符校验，长输入返回固定错误，之后继续原类型/语义检查。此处收敛已复现的清单来源放大，不代表其他错误 String 的生命周期或完整资源账本已经完成。

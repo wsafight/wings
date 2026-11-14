@@ -100,6 +100,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0090](0090-bounded-cli-reporting.md) | CLI 帮助/诊断的 VM 级预留、有界输出和断管处理 | 已采纳（CLI 控制输出切片） |
 | [0091](0091-manifest-string-preflight.md) | 清单字符串在类型错误构造前按既有名称边界预检 | 已采纳（产物错误来源边界修正） |
 | [0092](0092-concurrent-failure-counter.md) | 双发送者失败前缀、逐请求终态与独立 BEAM 对照 | 已采纳（并发失败正确性切片） |
+| [0093](0093-scheduler-ready-before-park.md) | 等待锁内重查本 worker 的 ready，保留启动失败退避 | 已采纳（等待竞争修正） |
 
 ## 维护方式
 

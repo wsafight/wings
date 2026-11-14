@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0093](docs/adr/0093-scheduler-ready-before-park.md) 修正 Scheduler 空认领与等待之间的就绪发布竞争，保留原准入失败退避；另补非零 deadline 的发布/等待/取消竞争验证，不改变请求期限或强制检查。
+
 [ADR-0092](docs/adr/0092-concurrent-failure-counter.md) 增加双发送者失败前缀的独立 Wings/BEAM 对照，验证候选不提交、每条请求终态与健康目标推进；不改变 ABI 或语法，超时/恢复、原生双平台和性能/内存门禁仍须独立验收。
 
 [ADR-0091](docs/adr/0091-manifest-string-preflight.md) 在产物文件解码前检查全部 JSON 字符串/键的既有 256 字节和字符边界，避免长输入先放大为类型错误；原格式、语义检查和模块预留不变，其他错误来源与完整账本仍须收敛。

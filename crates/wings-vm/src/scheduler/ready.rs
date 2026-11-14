@@ -7,6 +7,10 @@ pub(super) struct ReadyQueue {
 }
 
 impl State {
+    pub(super) fn should_park(&self, worker: usize, progress: bool, attempted: bool) -> bool {
+        !progress && (attempted || self.ready[worker].head.is_none())
+    }
+
     pub(super) fn reserve_slot(&mut self) -> Result<usize, String> {
         let index = self.free.ok_or("scheduler process table full")?;
         let slot = &mut self.slots[index];

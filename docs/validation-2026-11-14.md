@@ -533,6 +533,20 @@ macOS AArch64 的 debug/release 各 83 个 harness、551 项测试、doc-tests �
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-concurrent-failure-linux.tar.gz` 包含 326 份源码、83 个 harness 和 61 个工具/示例，排除语法评审稿；551 项 release 测试、完整受限 AOT（含 v9 Wings/模型全部场景）及上述两组各八次独立执行通过。新一轮未安装或执行 BEAM。全部 470 项 source/harness/binary hash 在结束后一致；326 份冻结源码与宿主仅后补本验证记录不同。16 份原始结果已复制至 `target/concurrent-failure-repeat-linux` 并在宿主独立重放通过。日志为 `/tmp/wings-concurrent-failure-linux-{tests,aot,repeat,hashes,stop}.log` 和 `/tmp/wings-concurrent-failure-host-sources-final.log`，客体已确认 Stopped。TCG 不算最新原生 Linux CI，也不作为吞吐/整机内存、长时故障或完整 MVP 证据。
 
+## 等待前重查就绪与非零期限：ADR-0093
+
+基于 `8803a83`，检查非零请求期限路径时发现 Scheduler 空认领与停车的两次加锁之间存在就绪发布窗口。先等价提取原 `!progress` 决定，再以同一 registry 锁内的空认领、入队/通知、停车决定复现：已有本 worker 队头仍选择等待，确定性回归实际失败，见 `/tmp/wings-scheduler-park-before.log`。旧路径至多增加原一毫秒等待，不描述成无限死锁，也不据此认定此前所有偶发超时的根因。
+
+按 [ADR-0093](adr/0093-scheduler-ready-before-park.md)，在实际等待持有的锁内重查本 worker 队头；空认领后已有就绪工作则直接进入下一轮，其他 worker 的队列不触发本 worker 自旋。已认领但 attach/start 准入失败仍保留原一毫秒退避；活栈 owner、每轮认领/时间片、固定迁移、quota、quantum、请求 deadline、强制检查、ABI v15 和语法均不变。回归另核对单次认领、空队列/外来队列、失败退避及最终清理。
+
+回复表补实际正一毫秒 deadline 的 wait/发布/失败与取消竞争，以已知单调截止时间和操作前后边界判定合法终态，不强求某个线程获胜。迟到发布不得覆盖超时、先选定的回复不被后续取消/过期改写，每个结果只消费一次。晚发布分组在超时已取走后暂留 publisher，核对原单槽/请求额度仍满、再准入拒绝且账目不变，释放后新代次恢复。可信 Rust fixture 不冒充生成代码 safepoint，也不把有限竞争覆盖写成长时稳定性或性能验收。
+
+定向重复脚本首次在 release 的 Cargo JSON 顺序中误选同名 CLI harness，实际运行零个目标测试，计数断言立即拒绝，见 `/tmp/wings-scheduler-park-repeat-release-initial.log`；不计为通过。脚本修正为宿主明确匹配 lib target，并在宿主/客体执行前列出和核对两个非零期限测试，要求唯一匹配且每次实际通过数为一/二，保留原独立子进程限制。
+
+macOS AArch64 的 debug/release 各 83 个 harness、554 项测试、doc-tests 及完整受限 AOT 通过；workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离、禁 unwind、Python 语法与 Markdown 链接/围栏检查通过。两种构建的三项新回归分别做 32 次独立子进程重复（16 次停车决定、16 次同时执行两个期限测试），每进程 CPU 20 秒/墙钟 30 秒/core 0，均实际执行目标数量并通过。真实 AOT 包含原生成代码/GC/失败和监督全部场景；显式 OTP 29 的 v5 六组计划到达/十个配置拒绝和 v9 全部 27/96/24/18/51 场景在两种构建中通过，原始 v5 输出在 `target/scheduler-park-open-loop-{debug,release}`。日志为 `/tmp/wings-scheduler-park-{tests,repeat,aot,beam}-debug.log`、对应 release 和 `/tmp/wings-scheduler-park-v9-beam-{debug,release}.log`；汇总检查为 `/tmp/wings-scheduler-park-evidence.log`。本片未重跑 v6/v8 长测，不把正确性通过写成 p99、吞吐或整机内存改进。
+
+Linux x86-64 使用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-scheduler-park-linux.tar.gz` 包含 327 份源码、83 个 harness 与 61 个工具/示例，排除语法评审稿；554 项 release 测试、完整受限 AOT 和同参数的 32 次独立定向进程通过。与 macOS 两种构建合计 96 次定向进程，含 48 次停车决定回归及 96 次正期限测试执行；有限次数不作为完整并发状态空间证明。结束后全部 471 项 source/harness/binary hash 一致，宿主源码仅后补本验证记录不同，日志为 `/tmp/wings-scheduler-park-linux-{tests,aot,repeat,hashes,stop}.log` 与 `/tmp/wings-scheduler-park-host-sources-final.log`。客体已确认 Stopped；Linux 此轮无 BEAM，不把 TCG 或交叉构建计为最新原生 Linux CI、同负载性能/内存或完整 MVP 门禁。最终静态检查覆盖 110 份 Markdown、1082 个相对链接及围栏。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

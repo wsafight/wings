@@ -291,6 +291,172 @@ mod tests {
     use super::*;
 
     #[test]
+    fn positive_deadline_wait_and_publication_respect_operation_bounds_and_reuse() {
+        for complete in [false, true] {
+            for late in [false, true] {
+                let limits = Resources {
+                    bytes: 8192,
+                    requests: 1,
+                    ..Resources::default()
+                };
+                let account = ResourceAccount::vm(limits);
+                let table = ReplyTable::new(&account, 1).unwrap();
+                for _ in 0..16 {
+                    let deadline = Instant::now() + Duration::from_millis(1);
+                    let (mut request, publisher) =
+                        table.start(deadline, &account, ValueType::Int).unwrap();
+                    let race = std::sync::Barrier::new(2);
+                    let released = std::sync::Barrier::new(2);
+                    let (terminal, before, after, observed) = std::thread::scope(|scope| {
+                        let race = &race;
+                        let released = &released;
+                        let producer = scope.spawn(move || {
+                            race.wait();
+                            if late {
+                                while Instant::now() < deadline {
+                                    std::thread::yield_now();
+                                }
+                                released.wait();
+                            }
+                            let before = Instant::now();
+                            if complete {
+                                publisher.complete(7);
+                            } else {
+                                drop(publisher);
+                            }
+                            (before, Instant::now())
+                        });
+                        race.wait();
+                        let terminal = request.wait(Duration::from_secs(1)).unwrap().unwrap();
+                        let observed = Instant::now();
+                        if late {
+                            assert_eq!(terminal, RequestOutcome::TimedOut);
+                            assert_eq!(account.used().requests, 1);
+                            let before = account.used();
+                            assert!(table.start(deadline, &account, ValueType::Int).is_err());
+                            assert_eq!(account.used(), before);
+                            released.wait();
+                        }
+                        let (before, after) = producer.join().unwrap();
+                        (terminal, before, after, observed)
+                    });
+                    let published = if complete {
+                        RequestOutcome::Reply(7)
+                    } else {
+                        RequestOutcome::Failed
+                    };
+                    if after < deadline {
+                        assert_eq!(terminal, published);
+                    } else if before >= deadline {
+                        assert_eq!(terminal, RequestOutcome::TimedOut);
+                    } else {
+                        assert!(terminal == published || terminal == RequestOutcome::TimedOut);
+                    }
+                    if terminal == RequestOutcome::TimedOut {
+                        assert!(observed >= deadline);
+                    }
+                    assert!(request.try_take().is_err());
+                    assert!(request.cancel().is_err());
+                    assert_eq!(account.used().requests, 0);
+                    let (mut next, publisher) = table
+                        .start(
+                            Instant::now() + Duration::from_secs(60),
+                            &account,
+                            ValueType::Int,
+                        )
+                        .unwrap();
+                    assert_eq!(next.try_take().unwrap(), None);
+                    publisher.complete(11);
+                    assert_eq!(next.try_take().unwrap(), Some(RequestOutcome::Reply(11)));
+                    assert_eq!(account.used().requests, 0);
+                }
+                drop(table);
+                assert_eq!(account.used(), Resources::default());
+            }
+        }
+    }
+
+    #[test]
+    fn positive_deadline_cancel_publication_races_keep_a_legal_first_terminal() {
+        let limits = Resources {
+            bytes: 8192,
+            requests: 1,
+            ..Resources::default()
+        };
+        let account = ResourceAccount::vm(limits);
+        let table = ReplyTable::new(&account, 1).unwrap();
+        for late in [false, true] {
+            for _ in 0..32 {
+                let deadline = Instant::now() + Duration::from_millis(1);
+                let (mut request, publisher) =
+                    table.start(deadline, &account, ValueType::Int).unwrap();
+                let race = std::sync::Barrier::new(2);
+                let (
+                    terminal,
+                    published_before,
+                    published_after,
+                    cancelled_before,
+                    cancelled_after,
+                    observed,
+                ) = std::thread::scope(|scope| {
+                    let race = &race;
+                    let producer = scope.spawn(move || {
+                        race.wait();
+                        if late {
+                            while Instant::now() < deadline {
+                                std::thread::yield_now();
+                            }
+                        }
+                        let before = Instant::now();
+                        publisher.complete(7);
+                        (before, Instant::now())
+                    });
+                    race.wait();
+                    if late {
+                        while Instant::now() < deadline {
+                            std::thread::yield_now();
+                        }
+                    }
+                    let cancelled_before = Instant::now();
+                    request.cancel().unwrap();
+                    let cancelled_after = Instant::now();
+                    let terminal = request.try_take().unwrap().unwrap();
+                    let observed = Instant::now();
+                    let (published_before, published_after) = producer.join().unwrap();
+                    (
+                        terminal,
+                        published_before,
+                        published_after,
+                        cancelled_before,
+                        cancelled_after,
+                        observed,
+                    )
+                });
+                match terminal {
+                    RequestOutcome::Reply(7) => assert!(published_before < deadline),
+                    RequestOutcome::Cancelled => assert!(cancelled_before < deadline),
+                    RequestOutcome::TimedOut => assert!(observed >= deadline),
+                    unexpected => panic!("unexpected terminal: {unexpected:?}"),
+                }
+                if published_after < deadline && published_after < cancelled_before {
+                    assert_eq!(terminal, RequestOutcome::Reply(7));
+                }
+                if cancelled_after < deadline && cancelled_after < published_before {
+                    assert_eq!(terminal, RequestOutcome::Cancelled);
+                }
+                if published_before >= deadline && cancelled_before >= deadline {
+                    assert_eq!(terminal, RequestOutcome::TimedOut);
+                }
+                assert!(request.try_take().is_err());
+                assert!(request.cancel().is_err());
+                assert_eq!(account.used().requests, 0);
+            }
+        }
+        drop(table);
+        assert_eq!(account.used(), Resources::default());
+    }
+
+    #[test]
     fn concurrent_result_cancel_publish_and_drop_keep_one_terminal_and_release_each_slot() {
         for expired in [false, true] {
             for complete in [false, true] {
