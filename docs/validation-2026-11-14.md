@@ -509,6 +509,18 @@ macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-scheduler-diagnostic-linux.tar.gz` 含 321 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿；原独立子进程限额下 550 项 release 测试通过，目标测试另外 32 次独立重复通过，与本机合计 96 次。测试后全部 463 项 source/harness/binary hash 一致，321 份冻结源码与宿主工作区一致，随后仅补本验证记录；日志为 `/tmp/wings-scheduler-diagnostic-linux-{tests,repeat,hashes,stop}.log` 与 `/tmp/wings-scheduler-diagnostic-host-sources.log`。客体已停止；没有重跑 AOT/BEAM，不将 TCG 功能或固定重复次数当作原生 Linux CI、完整时序稳定性或性能/内存双门禁证据。
 
+## 开环初始化栈池复用：ADR-0073
+
+基于 `b1f1243`，调查前一片保留的 sparse-256 三秒阶段超时。v5/v6 仍逐 actor 使用默认 `spawn_with_heap`，每次构造和销毁一槽初始化池；这与已按 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 接入复用的 v2 不同。交付版本在原 3/120 秒阶段开始后创建同 tenant 的一槽、最多缓存一槽计费池，每次仍绑定目标 process，全部创建后立即销毁池，再配置全部 actor 和开始原计划时钟。原输入、actor/状态/mailbox、256 pending、业务步数、额度及 CPU/墙钟限制不变。阶段耗尽的错误标明执行环节，配置失败保留实际终态；ABI v15 和待审语法不变。
+
+独立临时探针仅插入阶段记录，并先比较每次独立池和同一池复用；探针中的复用池保留到退出，交付版本缩短至批量创建结束。Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 客体中，固定 sparse-256、100ms、1000/s、总阶段三秒，子进程 CPU 五秒/墙钟十秒/core 0，交替次序各执行八次。旧版五次失败、复用版四次失败；失败均在启动/配置，保留全部记录 `/tmp/wings-open-loop-phase-linux.log`，不能将后续成功回写为全通过。成功尝试中，旧版创建阶段 1.559–1.668 秒、清理完成累计 2.723–2.813 秒；复用版分别为 0.448–0.462 秒和 1.543–1.637 秒。这些数值只是该仿真环境的阶段定位，未控制为原生性能实验，不证明冷启动稳定性、持续吞吐或整机内存领先。探针、构建和执行脚本保留于 `/tmp/wings-open-loop-phase-{probe,run}.py` 及对应生成源码。
+
+本机首次完整 release AOT 在既有 TCP 普通业务场景的五秒启动等待处失败，见 `/tmp/wings-open-loop-init-aot-release.log`；本片未改 TCP 实现、场景或时限，原参数独立 TCP 套件随后通过，见 `/tmp/wings-open-loop-init-tcp-release-focused.log`。该失败没有保留子进程的启动位置，不能由重跑通过或系统负载观察认定根因已解决。
+
+macOS AArch64 的 debug/release 各 82 个 harness、550 项测试及两种构建的 doc-tests 通过，每个测试进程仍为 CPU 20 秒/墙钟 30 秒/core 0。最终源码的 workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离、禁 unwind、Python 语法与 108 份 Markdown/1061 个相对链接及围栏检查通过。完整 AOT 的 debug 与后续 release 均通过，日志分别为 `/tmp/wings-open-loop-init-aot-debug.log`、`/tmp/wings-open-loop-init-aot-release-final.log`；两种构建显式 OTP 29 的 v5 Wings/BEAM/Python 均通过六组原始到达及十个配置拒绝，日志为 `/tmp/wings-open-loop-init-beam-{debug,release}.log`，原始输出在 `target/open-loop-init-{debug,release}`。本片未重跑 v6/v8 的 90 秒长测，不回写历史性能记录。
+
+Linux 冻结包 `/tmp/wings-open-loop-init-linux.tar.gz` 含 321 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。在上述隔离仿真配置中，550 项 release 测试和完整受限 AOT 通过；交付的未插桩开环驱动另以原 sparse-256、100ms、1000/s、三秒总阶段执行八次独立子进程，全部完成实际回复、最终状态和资源回执核对，CPU 五秒/墙钟十秒/core 0 未变。测试后全部 463 项源码/执行文件 hash 一致，宿主与冻结源码仅本节后补验证记录不同；日志为 `/tmp/wings-open-loop-init-linux-{tests,aot,repeat,hashes,stop}.log` 和 `/tmp/wings-open-loop-init-host-sources.log`。客体已确认 Stopped。有限重复通过不消除前述启动早期失败，也不替代最新源码的原生 Linux CI、完整时序稳定性或 BEAM 吞吐/整机内存双门禁，MVP 未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

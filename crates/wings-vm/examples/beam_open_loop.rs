@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig,
+    SchedulerConfig, StackPool,
 };
 
 const PENDING: usize = 256;
@@ -165,10 +165,10 @@ impl Recorder {
     }
 }
 
-fn remaining(deadline: Instant) -> Result<Duration, String> {
+fn remaining(deadline: Instant, stage: &str) -> Result<Duration, String> {
     let duration = deadline.saturating_duration_since(Instant::now());
     if duration.is_zero() {
-        Err("open-loop stage deadline".into())
+        Err(format!("open-loop {stage} deadline"))
     } else {
         Ok(duration)
     }
@@ -256,10 +256,11 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     let configure = module.handler("Configure")?;
     let apply = module.handler("Apply")?;
     let deadline = Instant::now() + Duration::from_secs(if workload.measure { 120 } else { 3 });
+    let initializer_pool = StackPool::new_accounted(&tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);
     for _ in 0..workload.actors {
-        remaining(deadline)?;
-        pids.push(handle.spawn_with_heap(
+        remaining(deadline, "spawn")?;
+        pids.push(handle.spawn_with_heap_in_pool(
             &module,
             Resources {
                 bytes: 4 << 20,
@@ -268,8 +269,10 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             },
             workload.mailbox,
             4,
+            &initializer_pool,
         )?);
     }
+    drop(initializer_pool);
     for (batch, group) in pids.chunks(32).enumerate() {
         let mut initializing = Vec::with_capacity(32);
         for (offset, pid) in group.iter().enumerate() {
@@ -282,12 +285,13 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
                     (batch * 32 + offset + 1) as i64,
                 ],
                 4096,
-                remaining(deadline)?,
+                remaining(deadline, "configure")?,
             )?);
         }
         for mut request in initializing {
-            if request.wait(remaining(deadline)?)? != Some(RequestOutcome::Reply(0)) {
-                return Err("open-loop configure".into());
+            let outcome = request.wait(remaining(deadline, "configure")?)?;
+            if outcome != Some(RequestOutcome::Reply(0)) {
+                return Err(format!("open-loop configure reply: {outcome:?}"));
             }
         }
     }
@@ -307,7 +311,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     let mut next = 0;
     let mut sampling = false;
     while next < workload.count || !pending.is_empty() {
-        remaining(deadline)?;
+        remaining(deadline, "arrival/reply")?;
         collect(&mut pending, &mut recorder, workload, start, &mut cursor)?;
         if workload.measure && !sampling && elapsed(start) >= 30_000_000_000 {
             println!(
@@ -335,7 +339,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
                 &apply,
                 &[index as i64 + 1, 1, 1, 0],
                 4096,
-                remaining(deadline)?,
+                remaining(deadline, "apply")?,
             ) {
                 Ok(request) => {
                     committed[target] += 1;
@@ -366,7 +370,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     }
     for (index, pid) in pids.iter().enumerate() {
         loop {
-            remaining(deadline)?;
+            remaining(deadline, "verify/stop")?;
             if handle.snapshot(*pid)?.owner.is_some() {
                 std::thread::yield_now();
                 continue;
