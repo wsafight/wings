@@ -487,6 +487,18 @@ macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-report-linux.tar.gz` 含 319 份源码、82 个 harness 和 60 个工具/示例，显式包含新控制输出模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 546 项测试通过，完整受限 AOT 通过，包括帮助/诊断断管、默认/堆两模式非法产物的 4096 B 边界与原参数/JSON/I/O/业务回归。执行后全部 461 项 source/harness/binary hash 一致，319 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-cli-report-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-report-host-sources.log`。客体已停止，交叉 linker 警告保留；不替代来源错误分配、完整宿主账本、原生 Linux CI 或同负载 BEAM 吞吐/整机内存验收。
 
+## 产物清单字符串的来源错误边界：ADR-0091
+
+基于 `783b71b`，按 [ADR-0091](adr/0091-manifest-string-preflight.md) 收敛清单错误构造。独立全局 allocator 探针在 CPU 20s/墙钟 30s/core 0 子进程调用真实计费模块加载：60,002 B 非法 JSON 产生 360,072 B 错误文本，返回后持有 720,098 B，模块预留已归还；错误销毁后存储归零。累计分配请求为 2,391,068 B，不作为同时峰值或 RSS，见 `/tmp/wings-artifact-error-before.log`。空库未执行，错误发生在清单阶段。
+
+文件读取在原 64 KiB 和 2 MiB 模块控制预留内增加无对象树的字符串预检，所有 JSON 键/字符串须符合既有至多 256 UTF-8 字节、无控制字符边界；保留原 serde 类型解码和语义检查。修复后同一探针文本 61 B、返回后存储 76 B、累计请求 131,874 B，销毁后存储与账目回到基线，见 `/tmp/wings-artifact-error-after.log`；返回短错误仍属于调用方控制路径，不把该探针写成所有来源错误计费完成。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 与 debug/release doc-tests 通过；两种构建各 82 个 harness、550 项测试及完整受限 AOT 通过。产物套件共 27 项，新增四项覆盖顶层/字段/类型/handler/参数/未知键的长字符串、控制/转义/UTF-8 边界和短非 ASCII 错误，原对象/序列/单元枚举表示及缺省 reply 保持，语法/递归/尾随拒绝不变。真实默认/堆 CLI 的该清单错误不超过 256 B，不含末端截断标记；输出截断仍由固定缓冲单测独立验证，断管和原 JSON/I/O/业务继续通过。显式 Wings/BEAM/Python v1 的 45 组业务、v2 的 18 组业务与原 JSON/桥接拒绝在两种构建全部通过，未新增长时性能结果。日志为 `/tmp/wings-artifact-error-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 和 `/tmp/wings-artifact-error-verify_{counter_equivalence,multi_counter}-{debug,release}.log`。依赖隔离、协程禁 unwind、Python AST、108 份 Markdown 的 1058 条相对路径/围栏和 diff 检查通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-artifact-error-linux.tar.gz` 含 321 份源码、82 个 harness 和 60 个工具/示例，显式包含预检模块与 ADR，排除语法评审稿。首次测试在既有 scheduler 诊断回归的两次账目读取间遇到后台消息清理：bytes 从 5,435,856 降至 5,434,488、messages 从 1 降至 0，固定快照相等断言失败，见 `/tmp/wings-artifact-error-linux-tests-initial.log`；原参数的定向回归与全部 550 项测试随后通过。首次完整 AOT 又在既有 sparse-256 开环三秒阶段截止失败，见 `/tmp/wings-artifact-error-linux-aot-initial.log`；原参数独立开环和完整 AOT 随后通过，见 `/tmp/wings-artifact-error-linux-{scheduler-focused,open-loop-focused,tests,aot}.log`。首次失败均保留，不计为通过；本片没有修改调度实现/断言、容量或 CPU/墙钟/阶段时限，不能从重跑通过推出时序问题已解决。
+
+最终各 harness 保留 CPU 20s/墙钟 30s/core 0，完整受限 AOT 包含新清单来源拒绝与原 JSON/I/O/业务；执行后全部 463 项 source/harness/binary hash 一致，321 份冻结源码与宿主工作区一致，随后仅补本验证记录。见 `/tmp/wings-artifact-error-linux-{hashes,stop}.log` 与 `/tmp/wings-artifact-error-host-sources.log`。客体已停止，交叉 linker 警告保留；不将 TCG 功能回归替代原生 Linux CI、完整资源账本、时序稳定性或同负载 BEAM 吞吐/整机内存门禁。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

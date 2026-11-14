@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0091](docs/adr/0091-manifest-string-preflight.md) 在产物文件解码前检查全部 JSON 字符串/键的既有 256 字节和字符边界，避免长输入先放大为类型错误；原格式、语义检查和模块预留不变，其他错误来源与完整账本仍须收敛。
+
 [ADR-0090](docs/adr/0090-bounded-cli-reporting.md) 为 CLI 控制输出从原 VM 额度预留 8 KiB，帮助/诊断使用独立描述符且断管正常失败；诊断最多 4096 B，来源错误构造与完整宿主账本仍须收敛。
 
 [ADR-0089](docs/adr/0089-bounded-cli-startup-arguments.md) 为 CLI 启动参数预留 20 KiB，借用原生 argv 并限制最多七个参数、含 NUL 总计 16 KiB；只复制目录字节，非 UTF-8 参数沿正常错误路径处理，不调用会提前复制全部参数的迭代器。

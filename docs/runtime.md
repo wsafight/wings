@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0091](adr/0091-manifest-string-preflight.md) 在原模块加载预留内对清单的 JSON 键/字符串先做 256 UTF-8 字节、无控制字符校验，长输入返回固定错误，之后继续原类型/语义检查。此处收敛已复现的清单来源放大，不代表其他错误 String 的生命周期或完整资源账本已经完成。
+
 [ADR-0090](adr/0090-bounded-cli-reporting.md) 在 tenant/process 创建前预留 VM 级 8 KiB 控制输出额度，含固定 4 KiB 诊断缓冲；帮助写失败返回 1，参数/运行错误的 stderr 写失败保留原 2/1，均不递归打印或 panic。超过缓冲的诊断在 UTF-8 边界截断并加标记，业务成功回复与已提交副作用不回滚。
 
 [ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 将 CLI 自有启动参数纳入原 16 MiB 三级额度的 20 KiB 预留，持有至 run 退出且目录销毁后；参数数量或含 NUL 总字节超限在模块装载前固定报错，OS 已有 argv/环境仍属于可信启动边界。

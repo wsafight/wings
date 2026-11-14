@@ -473,6 +473,107 @@ fn reader_uses_only_manifest_json_under_the_requested_directory() {
 }
 
 #[test]
+fn reader_rejects_long_strings_at_every_error_position_without_echoing_input() {
+    let directory = Directory::new();
+    let base = serde_json::to_value(manifest()).unwrap();
+    let oversized = "\x7f".repeat(60000);
+    let mut cases = vec![json!(oversized), json!({oversized.clone(): null})];
+    for pointer in [
+        "/format",
+        "/abi",
+        "/target",
+        "/process",
+        "/state",
+        "/handlers/0/name",
+        "/handlers/0/parameters/0/0",
+        "/handlers/0/parameters/0/1",
+        "/handlers/0/reply",
+    ] {
+        let mut changed = base.clone();
+        *changed.pointer_mut(pointer).unwrap() = json!(oversized);
+        cases.push(changed);
+    }
+    let mut changed = base.clone();
+    changed["handlers"][0]
+        .as_object_mut()
+        .unwrap()
+        .insert(oversized.clone(), Value::Null);
+    cases.push(changed);
+    for value in cases {
+        let error = directory.read_json(&value).unwrap_err();
+        assert!(
+            error.starts_with("artifact JSON string exceeds 256 bytes"),
+            "{error}"
+        );
+        assert!(error.len() < 256 && !error.contains("truncated"));
+    }
+}
+
+#[test]
+fn reader_preserves_utf8_name_boundaries_and_bounds_short_type_errors() {
+    let directory = Directory::new();
+    for name in ["x".repeat(256), "é".repeat(128)] {
+        let mut value = serde_json::to_value(manifest()).unwrap();
+        value["process"] = json!(name);
+        assert_eq!(directory.read_json(&value).unwrap().process, name);
+    }
+    for name in [
+        "x".repeat(257),
+        "é".repeat(129),
+        "a\n".into(),
+        "a\x7f".into(),
+    ] {
+        let mut value = serde_json::to_value(manifest()).unwrap();
+        value["process"] = json!(name);
+        assert!(directory.read_json(&value).unwrap_err().len() < 256);
+    }
+    for value in [
+        json!("\u{ad}".repeat(128)),
+        json!({"\u{ad}".repeat(128): null}),
+    ] {
+        assert!(directory.read_json(&value).unwrap_err().len() <= 2048);
+    }
+    let mut value = serde_json::to_value(manifest()).unwrap();
+    value["format"] = json!("\u{ad}".repeat(128));
+    assert!(directory.read_json(&value).unwrap_err().len() <= 2048);
+}
+
+#[test]
+fn reader_preserves_existing_serde_sequence_and_unit_enum_representations() {
+    let directory = Directory::new();
+    let value = json!([FORMAT_VERSION, SCALAR_ABI_VERSION, host_target().unwrap(), "Counter", {"Int": null},
+                       [["Add", [["amount", {"Int": null}]], {"Int": null}]]]);
+    let expected: Manifest = serde_json::from_value(value.clone()).unwrap();
+    let decoded = directory.read_json(&value).unwrap();
+    assert_eq!(decoded.encode().unwrap(), expected.encode().unwrap());
+    let mut object = serde_json::to_value(manifest()).unwrap();
+    object["handlers"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("reply");
+    assert!(
+        directory.read_json(&object).unwrap().handlers[0]
+            .reply
+            .is_none()
+    );
+}
+
+#[test]
+fn reader_preflight_retains_syntax_recursion_and_trailing_data_checks() {
+    let directory = Directory::new();
+    for text in [
+        format!("{}0{}", "[".repeat(129), "]".repeat(129)),
+        "[1,".into(),
+        "{\"a\":\"\\uD800\"}".into(),
+        "{} {}".into(),
+        "[1e9999]".into(),
+    ] {
+        fs::write(directory.path().join("manifest.json"), text).unwrap();
+        assert!(Manifest::read(directory.path()).unwrap_err().len() <= 2048);
+    }
+}
+
+#[test]
 fn library_and_symbols_are_fixed_independently_of_source_names() {
     assert_eq!(INITIALIZER_SYMBOL, "wings_scalar_init");
     assert_eq!(handler_symbol(0), "wings_scalar_handler_0");

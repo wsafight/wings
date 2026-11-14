@@ -6,6 +6,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use wings_abi::{SCALAR_ABI_VERSION, ValueType, host_target};
 
+mod preflight;
+
+const MAX_NAME_BYTES: usize = 256;
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
@@ -120,6 +123,7 @@ impl Manifest {
         if bytes.len() as u64 > MAX_MANIFEST_BYTES {
             return Err("artifact manifest exceeds 64 KiB".into());
         }
+        preflight::check(&bytes)?;
         let manifest: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         manifest.validate()?;
         Ok(manifest)
@@ -127,5 +131,5 @@ impl Manifest {
 }
 
 fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+    !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control)
 }

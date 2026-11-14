@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0091](adr/0091-manifest-string-preflight.md) 为 Manifest 文件读取增加不构建对象树的字符串预检，预检暂存在原类型解码前销毁；原 serde 表示、语义检查、64 KiB 输入和 2 MiB 模块控制预留不变。不用 CLI 末端截断代替来源分配约束。
+
 [ADR-0090](adr/0090-bounded-cli-reporting.md) 的 VM 级控制输出先预留 8 KiB，再复制 stderr 描述符；帮助按需复制 stdout，直接写静态内容。固定 4 KiB 诊断缓冲限制格式化输出，控制对象保留至最后诊断结束；来源错误 String 不因此自动计费。
 
 [ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 的启动读取只借用原生 argv，先由计费 process 预留 20 KiB，再按固定数量/总字节边界扫描并复制目录。macOS 使用 libc 参数入口，Linux glibc init-array 只保存指针；正常 Rust 运行时和模块装载顺序保留。

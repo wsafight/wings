@@ -4,6 +4,7 @@
 - 状态：已采纳（CLI 控制输出切片）
 - 部分替代：[ADR-0088](0088-owned-cli-stdio.md) 与 [ADR-0089](0089-bounded-cli-startup-arguments.md) 保留的帮助/stderr 全局输出路径。
 - 沿用：原帮助内容、正常错误前缀与退出码、16 MiB 限额、业务 I/O、ABI v15 和执行预算。
+- 后续：[ADR-0091](0091-manifest-string-preflight.md) 在清单来源消除已复现的长字符串错误放大，控制输出预算与上限保留。
 
 ## 决定与理由
 

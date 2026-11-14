@@ -82,7 +82,8 @@ def verify_cli_reporting(directory, parent):
     for options in ([], ["--heap-records", "2"]):
         result = command([VM, "run", "--trusted", artifact, *options], expected=1)
         assert not result.stdout and result.stderr.startswith("wings-vm: "), result
-        assert result.stderr.endswith("... [truncated]\n") and len(result.stderr.encode()) <= 4096, len(result.stderr.encode())
+        assert "artifact JSON string exceeds 256 bytes" in result.stderr and len(result.stderr.encode()) <= 256, len(result.stderr.encode())
+        assert "truncated" not in result.stderr
         assert "panicked" not in result.stderr
     print("Bounded CLI reporting verified: broken help/diagnostic pipes, preserved exits and 4096-byte diagnostics; source error allocation remains separate")
 
