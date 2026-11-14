@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0080](adr/0080-central-execution-admission.md) 将原 4352 字节控制容量统一放到 initializer/Invocation 核心预留，覆盖直接调用、owned task 及单/多 worker；活栈挂起时保留，正常返回/受管失败/正常取消清理后归还。worker 外层重复票据移除。标量 `instantiate_in_pool` 保存显式池，后续同步调用不退回默认未计费池。VM 已满且没有控制余量时拒绝；栈票据的净转移不能替代控制分配准入。旧未计费工具池及完整账本边界仍保留。
+
 [ADR-0079](adr/0079-accounted-vm-bootstrap.md) 增加 `ResourceAccount::vm_accounted`：两次 Arc 分配前检查根、共享准入门闩与引用计数的逻辑字节，used 从启动成本开始；存活根在业务清理后回到该基线。此根下 `tenant`/`process` 自动计费控制节点，不能借旧入口绕过；旧 `vm` 工具模型保持原零基线。CLI 堆模式与 TCP 服务使用计费根，TCP 报告启动/剩余字节相等才标记业务预留已释放；没有完成所有入口、allocator/装载器内部成本或完整资源账本。
 
 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正内部请求提前归还额度：ScalarWorker 宿主结果被取走、语言完成事件入队或发起方退出后，仍排队/执行的目标消息继续占请求槽和原账户 requests 票据。两端都结束才递增槽代次并归还；已消费 ID/已入队事件的能力不可取消。事件路由和消息预留可先移出/清理，目标消息完成、失败或 stop 后结束发布端。该规则与 ingress/Scheduler 宿主结果双端租约一致，具体容量及身份仍分别管理；ABI v15 和取消不撤回消息的语义不变。
@@ -164,7 +166,7 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 [ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt 与有界 IntList 按值复制消息，仍不支持引用回复或后台收集。
 
-[ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主消息/request 只接受标量，语言 RecordInt/IntList 消息按 ADR-0049/0051 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
+[ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。[ADR-0080](adr/0080-central-execution-admission.md) 将保存显式池的行为扩至标量初始化，计费调用/初始化都由核心预留控制容量。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主消息/request 只接受标量，语言 RecordInt/IntList 消息按 ADR-0049/0051 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
 
 独立原语不自动接入业务根；当前 AOT 路径已覆盖 RecordInt/IntList 局部、状态、消息入口及 safepoint 根，仍缺引用回复和通用值布局，不是完整业务 GC。原语边界见 [ADR-0018](adr/0018-bounded-record-heap.md)，集成契约见 ADR-0025–0027。
 
@@ -212,7 +214,7 @@ BEAM 的 [`erlang:hibernate/3`](https://www.erlang.org/doc/apps/erts/erlang.html
 
 `enable_timer` 可选启动一个计费控制线程，`tick_timed` 在非零单调 deadline 到达时原子请求让出，仍由下一个强制 safepoint 挂起，不重置总预算。arm/disarm 与计时请求在同一控制锁串行，撤销后不把旧 deadline 泄漏到普通 tick；没有 deadline 时不周期轮询，Drop 唤醒并 join。该线程不持有 actor、账户或活栈，不提供迁移，容量及验证限制见 [ADR-0022](adr/0022-worker-deadline-preemption.md)。默认 worker 不创建线程，当前每 worker 一个的形式不作为 M:N 的既定方案。
 
-该宿主切片后来由 ADR-0038/0039/0040 接入语言自发送、同模块创建/发送和整数异步请求；deadline 由 tick、查询或显式 wait 推进，无自动 I/O reactor。worker 默认不带堆，spawn_with_heap 显式配置计费堆；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 的预留按 ADR-0076 统一为保守 4352 字节容量，模块另按 ADR-0044 预留，不含系统 allocator/动态装载器内部元数据，完整内存账本仍待补齐。
+该宿主切片后来由 ADR-0038/0039/0040 接入语言自发送、同模块创建/发送和整数异步请求；deadline 由 tick、查询或显式 wait 推进，无自动 I/O reactor。worker 默认不带堆，spawn_with_heap 显式配置计费堆；不是完整 M0/M1，也不是下述 M:N 实现。参数/token/control 沿用 ADR-0076 的保守 4352 字节容量，由 ADR-0080 在执行核心统一准入，模块另按 ADR-0044 预留；不含系统 allocator/动态装载器内部元数据，完整内存账本仍待补齐。
 
 ### 分层
 

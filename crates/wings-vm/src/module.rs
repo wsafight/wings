@@ -176,7 +176,7 @@ impl ScalarModule {
             state: output.state,
             failed: false,
             heap,
-            pool: None,
+            pool: Some(pool.clone()),
         })
     }
 
@@ -191,9 +191,7 @@ impl ScalarModule {
             return Err("AOT heap requires a stack pool bound to the same process account".into());
         }
         let heap = crate::aot_heap::AotHeap::new(account, capacity)?;
-        let mut process = self.instantiate_owned(pool, Some(heap))?;
-        process.pool = Some(pool.clone());
-        Ok(process)
+        self.instantiate_owned(pool, Some(heap))
     }
 }
 

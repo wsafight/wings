@@ -13,6 +13,7 @@ const MAX_TICKS: usize = 128;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const LONG_SLICE: Duration = Duration::from_secs(1);
 const SHORT_SLICE: Duration = Duration::from_nanos(1);
+const CONTROL_BYTES: u64 = 4352;
 
 fn limits() -> Resources {
     Resources {
@@ -328,11 +329,25 @@ fn verify_start_failure(module: &ScalarModule) {
         .expect("stack geometry")
         .stats()
         .reserved_bytes as u64;
+    let before = snapshot(&worker, &[], &vm, &tenant);
+    assert!(
+        worker
+            .spawn(
+                module,
+                Resources {
+                    bytes: actor_bytes + stack_bytes,
+                    ..limits()
+                },
+                1,
+            )
+            .is_err()
+    );
+    assert_eq!(snapshot(&worker, &[], &vm, &tenant), before);
     let pid = worker
         .spawn(
             module,
             Resources {
-                bytes: actor_bytes + stack_bytes,
+                bytes: actor_bytes + stack_bytes + CONTROL_BYTES,
                 ..limits()
             },
             1,

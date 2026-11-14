@@ -2,6 +2,7 @@
 
 - 日期：2026-11-13
 - 状态：已采纳（M0/M1 有界语言切片）
+- 后续：[ADR-0080](0080-central-execution-admission.md) 将显式池保存行为扩至标量实例，统一初始化/所有计费调用的控制预留；堆原账户校验保持。
 - 后续：[ADR-0049](0049-record-message-copies.md) 以复制载荷和目标入口根开放 RecordInt 消息参数，引用回复仍不支持。
 - 补充：[ADR-0025](0025-aot-record-roots.md)、[ADR-0020](0020-single-worker-mailbox.md)
 - 后续：[ADR-0027](0027-persistent-record-state.md) 开放持久 RecordInt 状态，替代局部限制并升至 ABI v6；消息与回复限制保留。

@@ -1436,8 +1436,19 @@ fn tick_start_quota_failure_preserves_mailbox_and_committed_state() {
     let actor_bytes = worker.resources(probe).unwrap().bytes;
     worker.stop(probe).unwrap();
     let stack_bytes = StackPool::new(1, 0).unwrap().stats().reserved_bytes as u64;
+    let before = vm.used();
+    assert!(
+        worker
+            .spawn(&module, limits(actor_bytes + stack_bytes), 1)
+            .is_err()
+    );
+    assert_eq!(vm.used(), before);
     let pid = worker
-        .spawn(&module, limits(actor_bytes + stack_bytes), 1)
+        .spawn(
+            &module,
+            limits(actor_bytes + stack_bytes + crate::execution::INVOCATION_OVERHEAD),
+            1,
+        )
         .unwrap();
     worker
         .send(pid, &module.handler("Add").unwrap(), &[1], 4)

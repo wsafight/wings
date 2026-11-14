@@ -5,6 +5,8 @@ use wings_vm::{
     StackPool,
 };
 
+const CONTROL_BYTES: u64 = 4352;
+
 fn limit(bytes: u64) -> Resources {
     Resources {
         bytes,
@@ -14,10 +16,73 @@ fn limit(bytes: u64) -> Resources {
     }
 }
 
+fn verify_direct_entries(module: &ScalarModule) {
+    for level in [
+        wings_vm::ResourceLevel::Process,
+        wings_vm::ResourceLevel::Tenant,
+        wings_vm::ResourceLevel::Vm,
+    ] {
+        let vm = ResourceAccount::vm_accounted(limit(4 << 20)).unwrap();
+        let bootstrap = vm.used();
+        let tenant = vm.tenant(limit(3 << 20)).unwrap();
+        let account = tenant.process(limit(1 << 20)).unwrap();
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let mut process = module.instantiate_in_pool(&bound).unwrap();
+        let owner = match level {
+            wings_vm::ResourceLevel::Process => &account,
+            wings_vm::ResourceLevel::Tenant => &tenant,
+            wings_vm::ResourceLevel::Vm => &vm,
+        };
+        let fill = owner
+            .reserve(Resources {
+                bytes: owner.limit().bytes - owner.used().bytes - CONTROL_BYTES + 1,
+                ..Resources::default()
+            })
+            .unwrap();
+        let before = vm.used();
+        let slots = pool.stats();
+        assert!(module.instantiate_in_pool(&bound).is_err());
+        assert_eq!(vm.used(), before);
+        assert_eq!(pool.stats(), slots);
+        assert!(process.invoke("Inc", &[7]).is_err());
+        assert_eq!(vm.used(), before);
+        assert_eq!(pool.stats(), slots);
+        drop(fill);
+        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
+        assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+        let baseline = vm.used();
+        let stack_bytes =
+            (pool.stats().usable_bytes_per_stack + pool.stats().guard_bytes_per_stack) as u64;
+        let mut execution = process
+            .start_controlled(
+                "Inc",
+                &[2],
+                128,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+            )
+            .unwrap();
+        assert_eq!(account.used().bytes, stack_bytes + CONTROL_BYTES);
+        assert_eq!(vm.used().bytes, baseline.bytes + CONTROL_BYTES);
+        assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
+        assert_eq!(account.used().bytes, stack_bytes + CONTROL_BYTES);
+        assert_eq!(
+            execution.resume(128).unwrap(),
+            ExecutionStatus::Complete(Some(9))
+        );
+        drop(execution);
+        assert_eq!(vm.used(), baseline);
+        drop((process, bound, pool, account, tenant));
+        assert_eq!(vm.used(), bootstrap);
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let module = unsafe { ScalarModule::load_trusted(Path::new(&arguments[1])) }.expect("module");
+    verify_direct_entries(&module);
     let vm = ResourceAccount::vm(limit(4 * 1024 * 1024));
     let tenant = vm.tenant(vm.limit()).expect("tenant");
     let process_account = tenant.process(vm.limit()).expect("process");
@@ -57,12 +122,28 @@ fn main() {
             ..Resources::default()
         })
         .expect("fill common root");
+    let before = pool.stats();
+    assert!(
+        process
+            .start_in_pool("Inc", &[3], 4, &cancellation, &preemption, &owner_pool)
+            .is_err()
+    );
+    assert_eq!(pool.stats(), before);
+    assert_eq!(vm.used().bytes, vm.limit().bytes);
+    assert_eq!(process_account.used(), Resources::default());
+    drop(fill);
+    let fill = vm
+        .reserve(Resources {
+            bytes: vm.limit().bytes - charged - CONTROL_BYTES,
+            ..Resources::default()
+        })
+        .expect("leave exact execution control capacity");
     {
         let mut execution = process
             .start_in_pool("Inc", &[3], 4, &cancellation, &preemption, &owner_pool)
             .expect("net transfer with full VM");
-        assert_eq!(process_account.used().bytes, slot_bytes);
-        assert_eq!(tenant.used().bytes, charged);
+        assert_eq!(process_account.used().bytes, slot_bytes + CONTROL_BYTES);
+        assert_eq!(tenant.used().bytes, charged + CONTROL_BYTES);
         assert_eq!(vm.used().bytes, vm.limit().bytes);
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
         assert_eq!(
@@ -97,7 +178,7 @@ fn main() {
             if started {
                 assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
             }
-            assert_eq!(process_account.used().bytes, slot_bytes);
+            assert_eq!(process_account.used().bytes, slot_bytes + CONTROL_BYTES);
         }
         assert_eq!(process_account.used(), Resources::default());
         assert_eq!(tenant.used().bytes, charged);
@@ -121,7 +202,7 @@ fn main() {
         .expect("live ownership");
     assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
     drop(owner_pool);
-    assert_eq!(tenant.used().bytes, charged);
+    assert_eq!(tenant.used().bytes, charged + CONTROL_BYTES);
     assert_eq!(
         execution.resume(100),
         Ok(ExecutionStatus::Complete(Some(7)))

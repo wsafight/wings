@@ -1,5 +1,6 @@
 use super::*;
 use crate::RequestOutcome;
+use crate::execution::INVOCATION_OVERHEAD as INVOCATION_BYTES;
 use crate::module::ModuleData;
 use wings_abi::{ScalarContext, ScalarOutput, ValueType};
 use wings_artifact::{Handler, Manifest};

@@ -6,6 +6,7 @@ use wings_vm::{
 
 const MAX_STEPS: u64 = 128;
 const MAX_TICKS: usize = 128;
+const CONTROL_BYTES: u64 = 4352;
 
 fn limits() -> Resources {
     Resources {
@@ -398,16 +399,29 @@ fn verify_limits(module: &ScalarModule) {
         .expect("stack geometry")
         .stats()
         .reserved_bytes as u64;
+    assert!(
+        worker
+            .spawn(
+                module,
+                Resources {
+                    bytes: actor_bytes + stack_bytes,
+                    ..limits()
+                },
+                1,
+            )
+            .is_err()
+    );
+    assert_eq!(tenant.used(), empty);
     let small_stack = worker
         .spawn(
             module,
             Resources {
-                bytes: actor_bytes + stack_bytes,
+                bytes: actor_bytes + stack_bytes + CONTROL_BYTES,
                 ..limits()
             },
             1,
         )
-        .expect("initializer fits without queued message charge");
+        .expect("initializer fits with stack and control capacity");
     let healthy = worker.spawn(module, limits(), 1).expect("healthy actor");
     worker
         .send(small_stack, &add, &[3], MAX_STEPS)
@@ -418,7 +432,7 @@ fn verify_limits(module: &ScalarModule) {
     let before = snapshot(&worker, &[small_stack, healthy], &vm, &tenant);
     assert!(
         worker.tick(1).is_err(),
-        "queued message leaves insufficient stack allowance"
+        "queued message leaves insufficient execution allowance"
     );
     assert_eq!(
         snapshot(&worker, &[small_stack, healthy], &vm, &tenant),

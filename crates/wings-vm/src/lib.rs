@@ -106,12 +106,8 @@ impl ScalarProcess {
     }
 
     pub fn invoke(&mut self, name: &str, arguments: &[i64]) -> Result<Option<i64>, String> {
-        self.invoke_controlled(
-            name,
-            arguments,
-            DEFAULT_MAX_STEPS,
-            &CancellationToken::default(),
-        )
+        let index = self.validate_invocation(name, arguments)?;
+        self.invoke_index(index, arguments, DEFAULT_MAX_STEPS, None)
     }
 
     pub fn invoke_controlled(
@@ -122,7 +118,7 @@ impl ScalarProcess {
         cancellation: &CancellationToken,
     ) -> Result<Option<i64>, String> {
         let index = self.validate_invocation(name, arguments)?;
-        self.invoke_index(index, arguments, max_steps, cancellation)
+        self.invoke_index(index, arguments, max_steps, Some(cancellation))
     }
 
     pub fn invoke_handler(
@@ -133,7 +129,7 @@ impl ScalarProcess {
         cancellation: &CancellationToken,
     ) -> Result<Option<i64>, String> {
         let index = self.validate_handler(handler, arguments)?;
-        self.invoke_index(index, arguments, max_steps, cancellation)
+        self.invoke_index(index, arguments, max_steps, Some(cancellation))
     }
 
     fn invoke_index(
@@ -141,15 +137,14 @@ impl ScalarProcess {
         index: usize,
         arguments: &[i64],
         max_steps: u64,
-        cancellation: &CancellationToken,
+        cancellation: Option<&CancellationToken>,
     ) -> Result<Option<i64>, String> {
-        let mut execution = self.start_index(
-            index,
-            arguments,
-            max_steps,
-            cancellation,
-            &PreemptionToken::default(),
-        )?;
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (
+                cancellation.cloned().unwrap_or_default(),
+                PreemptionToken::default(),
+            )
+        })?;
         loop {
             match execution.resume(u64::MAX)? {
                 ExecutionStatus::Complete(reply) => return Ok(reply),

@@ -18,7 +18,6 @@ static NEXT_REQUEST_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
-use crate::execution::INVOCATION_OVERHEAD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pid {
@@ -157,7 +156,6 @@ struct Actor {
 
 struct ActiveMessage {
     message: Message,
-    _execution_charge: Reservation,
 }
 
 struct Message {
@@ -713,10 +711,6 @@ impl ScalarWorker {
                 if actor.mailbox.count == 0 {
                     continue;
                 }
-                let execution_charge = actor.account.reserve(Resources {
-                    bytes: INVOCATION_OVERHEAD,
-                    ..Resources::default()
-                })?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .as_mut()
                     .expect("mailbox head");
@@ -724,8 +718,7 @@ impl ScalarWorker {
                     &message.handler,
                     &message.arguments[..message.count],
                     message.max_steps,
-                    &CancellationToken::default(),
-                    &self.preemption,
+                    || (CancellationToken::default(), self.preemption.clone()),
                     &actor.pool,
                     message.system,
                     message.record_mask,
@@ -737,10 +730,7 @@ impl ScalarWorker {
                     .expect("started message");
                 actor.mailbox.head = (actor.mailbox.head + 1) % actor.mailbox.slots.len();
                 actor.mailbox.count -= 1;
-                actor.active = Some(ActiveMessage {
-                    message,
-                    _execution_charge: execution_charge,
-                });
+                actor.active = Some(ActiveMessage { message });
             }
             let status = actor.task.resume(slice_steps);
             self.expire_requests();
@@ -1417,8 +1407,7 @@ mod payload_tests {
                     &handler,
                     &[ListPayload::encode(0, 8)],
                     4096,
-                    &CancellationToken::default(),
-                    &PreemptionToken::default(),
+                    || (CancellationToken::default(), PreemptionToken::default()),
                     &bound,
                     false,
                     0,
@@ -1437,8 +1426,7 @@ mod payload_tests {
                 &handler,
                 &[ListPayload::encode(0, 8)],
                 4096,
-                &CancellationToken::default(),
-                &PreemptionToken::default(),
+                || (CancellationToken::default(), PreemptionToken::default()),
                 &bound,
                 false,
                 0,

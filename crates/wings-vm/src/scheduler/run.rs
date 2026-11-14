@@ -7,7 +7,6 @@ pub(super) struct Running {
     pid: SchedulerPid,
     task: ScalarTask,
     message: Envelope,
-    _charge: Reservation,
 }
 
 struct Claim {
@@ -149,10 +148,6 @@ fn start(
     preemption: &PreemptionToken,
 ) -> Option<Running> {
     let result = (|| {
-        let charge = claim.account.reserve(Resources {
-            bytes: INVOCATION_BYTES,
-            ..Resources::default()
-        })?;
         let bound = pool.for_process(&claim.account)?;
         let process = claim.image.attach(&bound)?;
         let mut task = ScalarTask::new(process);
@@ -161,15 +156,14 @@ fn start(
             &claim.message.handler,
             &claim.message.arguments[..claim.message.count],
             claim.message.max_steps,
-            &claim.cancellation,
-            preemption,
+            || (claim.cancellation.clone(), preemption.clone()),
             &bound,
             claim.message.system,
             claim.message.record_mask,
             &claim.message.lists,
             &mut claim.message.bytes,
         ) {
-            Ok(()) => Ok((task, charge)),
+            Ok(()) => Ok(task),
             Err(error) => {
                 claim.image = task.into_process().detach();
                 Err(error)
@@ -177,7 +171,7 @@ fn start(
         }
     })();
     match result {
-        Ok((task, charge)) => {
+        Ok(task) => {
             let mut state = shared.lock();
             let actor = state
                 .actor_mut(shared.identity, claim.pid)
@@ -192,7 +186,6 @@ fn start(
                 pid: claim.pid,
                 task,
                 message: claim.message,
-                _charge: charge,
             })
         }
         Err(_) => {
@@ -230,7 +223,6 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
         pid,
         task,
         mut message,
-        _charge: charge,
     } = active;
     let snapshot = task.snapshot();
     let process = task.into_process();
@@ -308,7 +300,6 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
     state.maintain(shared.identity);
     drop(state);
     drop(message);
-    drop(charge);
     drop(retired);
     shared.changed.notify_all();
 }

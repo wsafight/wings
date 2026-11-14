@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0080](docs/adr/0080-central-execution-admission.md) 将初始化和所有计费执行入口的控制预留统一到核心，补直接调用漏计并删除 worker 重复票据。标量实例保留显式池，控制额度不足先拒绝，原 4352 字节和 ABI v15 不变；`accounted_stacks` 随完整受限 AOT 回归。
+
 [ADR-0079](docs/adr/0079-accounted-vm-bootstrap.md) 为 VM 根与准入门闩增加启动计费入口，并强制该树的子节点预留控制存储。CLI 堆模式与 TCP 使用此入口；业务清理回到存活根基线。`vm_bootstrap` 已接完整 AOT，旧工具模型及其余资源边界仍待完成。
 
 [ADR-0078](docs/adr/0078-request-publisher-lifetimes.md) 修正内部请求资源生命周期：超时/取消结果取走、完成事件入队或发起方退出后，仍排队/执行的目标消息继续占请求额度，两端都结束才回收槽位。原容量、类型拼写和 ABI v15 不变；回归随 workspace 测试与完整受限 AOT 执行。

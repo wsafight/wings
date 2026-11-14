@@ -2,6 +2,7 @@
 
 - 日期：2026-11-12
 - 状态：已采纳（单线程栈池接入契约）
+- 部分替代：[ADR-0080](0080-central-execution-admission.md) 在执行核心补初始化/直接调用的控制与参数预留；原栈池净转移及末持有者清理保留。
 - 补充：[有界栈池](0012-bounded-stack-pool.md)、[资源预留](0014-resource-reservations.md)
 
 ## 背景与决定

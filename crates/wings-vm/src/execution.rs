@@ -9,8 +9,8 @@ use crate::aot_heap::AotHeap;
 use crate::message_values::{BytePayload, ListPayload};
 use crate::stack_pool::PooledStack;
 use crate::{
-    CancellationToken, HandlerId, HeapStats, PreemptionToken, ScalarModule, ScalarProcess,
-    StackPool,
+    CancellationToken, HandlerId, HeapStats, PreemptionToken, Reservation, ResourceLevel,
+    Resources, ScalarModule, ScalarProcess, StackPool,
 };
 
 thread_local! {
@@ -126,6 +126,7 @@ pub(crate) fn initialize(
     pool: &StackPool,
     mut heap: Option<Box<AotHeap>>,
 ) -> Result<(u32, ScalarOutput, Option<Box<AotHeap>>), String> {
+    let _charge = reserve_control(pool)?;
     let mut coroutine = new_coroutine(
         entry,
         0,
@@ -186,6 +187,7 @@ struct Invocation {
     effect: Option<ProcessEffect>,
     acknowledgement: Option<(u32, i64)>,
     preemption: PreemptionToken,
+    _charge: Option<Reservation>,
 }
 
 impl ScalarProcess {
@@ -198,7 +200,9 @@ impl ScalarProcess {
         preemption: &PreemptionToken,
     ) -> Result<ScalarExecution<'_>, String> {
         let handler = self.validate_invocation(name, arguments)?;
-        self.start_index(handler, arguments, max_steps, cancellation, preemption)
+        self.start_index(handler, arguments, max_steps, || {
+            (cancellation.clone(), preemption.clone())
+        })
     }
 
     pub(crate) fn start_index(
@@ -206,8 +210,7 @@ impl ScalarProcess {
         handler: usize,
         arguments: &[i64],
         max_steps: u64,
-        cancellation: &CancellationToken,
-        preemption: &PreemptionToken,
+        controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
     ) -> Result<ScalarExecution<'_>, String> {
         let pool = match self.pool.as_ref() {
             Some(pool) => pool.clone(),
@@ -218,8 +221,7 @@ impl ScalarProcess {
             handler,
             arguments,
             max_steps,
-            cancellation,
-            preemption,
+            controls,
             &pool,
             false,
             0,
@@ -248,8 +250,7 @@ impl ScalarProcess {
             handler,
             arguments,
             max_steps,
-            cancellation,
-            preemption,
+            || (cancellation.clone(), preemption.clone()),
             pool,
             false,
             0,
@@ -337,8 +338,7 @@ impl ScalarTask {
             handler,
             arguments,
             max_steps,
-            cancellation,
-            preemption,
+            || (cancellation.clone(), preemption.clone()),
             pool,
             false,
             0,
@@ -353,8 +353,7 @@ impl ScalarTask {
         handler: &HandlerId,
         arguments: &[i64],
         max_steps: u64,
-        cancellation: &CancellationToken,
-        preemption: &PreemptionToken,
+        controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
         system: bool,
         record_mask: u64,
@@ -377,8 +376,7 @@ impl ScalarTask {
             handler,
             arguments,
             max_steps,
-            cancellation,
-            preemption,
+            controls,
             pool,
             self.effects_enabled,
             record_mask,
@@ -413,8 +411,7 @@ impl Invocation {
         handler: usize,
         arguments: &[i64],
         max_steps: u64,
-        cancellation: &CancellationToken,
-        preemption: &PreemptionToken,
+        controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
         effects_enabled: bool,
         record_mask: u64,
@@ -429,6 +426,7 @@ impl Invocation {
         {
             return Err("AOT heap execution requires its process-accounted stack pool".into());
         }
+        let charge = reserve_control(pool)?;
         let snapshot = ExecutionSnapshot {
             phase: ExecutionPhase::Ready,
             fault: None,
@@ -436,14 +434,16 @@ impl Invocation {
             remaining_steps: max_steps,
             heap: process.heap_stats(),
         };
+        let stack = pool.acquire()?;
+        let (cancellation, preemption) = controls();
         let coroutine = new_coroutine(
             process.module.inner.entries[handler],
             process.state,
             arguments,
             max_steps,
-            cancellation,
-            preemption,
-            pool.acquire()?,
+            &cancellation,
+            &preemption,
+            stack,
             &mut process.heap,
             effects_enabled,
             record_mask,
@@ -456,9 +456,24 @@ impl Invocation {
             snapshot,
             effect: None,
             acknowledgement: None,
-            preemption: preemption.clone(),
+            preemption,
+            _charge: charge,
         })
     }
+}
+
+fn reserve_control(pool: &StackPool) -> Result<Option<Reservation>, String> {
+    pool.account()
+        .map(|account| {
+            if account.level() != ResourceLevel::Process {
+                return Err("accounted stack pool must be bound to a process".into());
+            }
+            account.reserve(Resources {
+                bytes: INVOCATION_OVERHEAD,
+                ..Resources::default()
+            })
+        })
+        .transpose()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -794,7 +809,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_worker_invocation_reservation_covers_owned_payload_and_control() {
+    fn fixed_core_invocation_reservation_covers_owned_payload_and_control() {
         let maximum = std::mem::size_of::<Invocation>()
             + std::mem::size_of::<ExecutionCoroutine>()
             + std::mem::size_of::<Checkpoint>()

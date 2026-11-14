@@ -28,7 +28,6 @@ const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
 const MAX_MAILBOX: usize = 256;
 const THREAD_STACK: usize = 2 << 20;
-const INVOCATION_BYTES: u64 = crate::execution::INVOCATION_OVERHEAD;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
 static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 
@@ -459,16 +458,11 @@ impl SchedulerHandle {
                 &temporary
             };
             let bound = pool.for_process(&account)?;
-            let initialization_charge = account.reserve(Resources {
-                bytes: INVOCATION_BYTES,
-                ..Resources::default()
-            })?;
             let process = if let Some(records) = heap_records {
                 module.instantiate_with_heap(&bound, &account, records)?
             } else {
                 module.instantiate_in_pool(&bound)?
             };
-            drop(initialization_charge);
             let committed_state =
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();

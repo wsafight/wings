@@ -3,6 +3,7 @@
 - 日期：2026-11-14
 - 状态：已采纳（有界业务消息切片，MVP 尚未完成）
 - 扩展：[ADR-0051](0051-bounded-int-list-messages.md)、[ADR-0057](0057-accounted-immutable-bytes.md)
+- 部分替代：[ADR-0080](0080-central-execution-admission.md) 将相同 4352 字节控制准入移入执行核心，补直接调用/初始化并移除 worker 外层重复票据；Bytes 消息契约不变。
 
 ## 决定
 

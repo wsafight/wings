@@ -1,4 +1,5 @@
 use super::*;
+use crate::message_values::{BytePayload, ListPayload};
 
 unsafe extern "C" fn check_stack(
     state: i64,
@@ -59,6 +60,239 @@ fn initializer_sync_and_resumable_calls_use_bounded_stacks() {
         )
         .unwrap();
     assert_eq!(execution.resume(64), Ok(ExecutionStatus::Complete(Some(0))));
+}
+
+#[test]
+fn direct_accounted_execution_retains_control_capacity_while_its_stack_is_live() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = module();
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    let baseline = vm.used();
+    let stack_bytes =
+        (pool.stats().usable_bytes_per_stack + pool.stats().guard_bytes_per_stack) as u64;
+    let mut execution = process
+        .start_in_pool(
+            "Bump",
+            &[7],
+            128,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+            &bound,
+        )
+        .unwrap();
+    assert_eq!(
+        account.used().bytes,
+        stack_bytes + crate::execution::INVOCATION_OVERHEAD
+    );
+    assert_eq!(
+        vm.used().bytes,
+        baseline.bytes + crate::execution::INVOCATION_OVERHEAD
+    );
+    assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
+    assert_eq!(
+        account.used().bytes,
+        stack_bytes + crate::execution::INVOCATION_OVERHEAD
+    );
+    drop(execution);
+    assert_eq!(vm.used(), baseline);
+    assert_eq!(pool.stats().active, 0);
+    assert_eq!(account.used(), Resources::default());
+    assert_eq!(process.state, 0);
+    drop((process, bound, pool));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn direct_initialization_and_calls_reject_each_control_quota_before_borrowing_a_stack() {
+    for level in [
+        ResourceLevel::Process,
+        ResourceLevel::Tenant,
+        ResourceLevel::Vm,
+    ] {
+        let [vm, tenant, account] = accounts();
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let module = module();
+        let mut process = module.instantiate_in_pool(&bound).unwrap();
+        let owner = match level {
+            ResourceLevel::Process => &account,
+            ResourceLevel::Tenant => &tenant,
+            ResourceLevel::Vm => &vm,
+        };
+        let fill = owner
+            .reserve(Resources {
+                bytes: owner.limit().bytes
+                    - owner.used().bytes
+                    - crate::execution::INVOCATION_OVERHEAD
+                    + 1,
+                ..Resources::default()
+            })
+            .unwrap();
+        let baseline = vm.used();
+        let slots = pool.stats();
+        assert!(
+            module
+                .instantiate_in_pool(&bound)
+                .err()
+                .unwrap()
+                .contains(&format!("{level:?}"))
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(pool.stats(), slots);
+        assert!(
+            process
+                .invoke("Bump", &[7])
+                .err()
+                .unwrap()
+                .contains(&format!("{level:?}"))
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(pool.stats(), slots);
+        assert!(!process.failed);
+        assert_eq!(process.state, 0);
+        let mut task = ScalarTask::new(process);
+        let control_creations = std::cell::Cell::new(0);
+        let controls = || {
+            control_creations.set(control_creations.get() + 1);
+            (CancellationToken::default(), PreemptionToken::default())
+        };
+        assert!(
+            task.start_kind(
+                &module.handler("Bump").unwrap(),
+                &[7],
+                128,
+                controls,
+                &bound,
+                false,
+                0,
+                &ListPayload::default(),
+                &mut BytePayload::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(control_creations.get(), 0);
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(pool.stats(), slots);
+        assert!(!task.is_active());
+        drop(fill);
+        let stack = bound.acquire().unwrap();
+        let busy = vm.used();
+        assert!(
+            task.start_kind(
+                &module.handler("Bump").unwrap(),
+                &[7],
+                128,
+                controls,
+                &bound,
+                false,
+                0,
+                &ListPayload::default(),
+                &mut BytePayload::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(control_creations.get(), 0);
+        assert_eq!(vm.used(), busy);
+        assert!(!task.is_active());
+        drop(stack);
+        task.start_kind(
+            &module.handler("Bump").unwrap(),
+            &[7],
+            128,
+            controls,
+            &bound,
+            false,
+            0,
+            &ListPayload::default(),
+            &mut BytePayload::default(),
+        )
+        .unwrap();
+        assert_eq!(control_creations.get(), 1);
+        assert_eq!(
+            task.resume(128).unwrap(),
+            ExecutionStatus::Complete(Some(7))
+        );
+        assert_eq!(account.used(), Resources::default());
+        drop((task, bound, pool));
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
+fn scalar_initialization_keeps_explicit_pool_for_subsequent_default_calls() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = module();
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    let baseline = vm.used();
+    drop(bound);
+    let stack = pool.for_process(&account).unwrap().acquire().unwrap();
+    let active = vm.used();
+    assert!(process.invoke("Bump", &[7]).is_err());
+    assert_eq!(vm.used(), active);
+    assert!(!process.failed);
+    assert_eq!(process.state, 0);
+    drop(stack);
+    assert_eq!(vm.used(), baseline);
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    assert_eq!(vm.used(), baseline);
+    drop(pool);
+    assert!(vm.used().bytes > 0);
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+    drop(process);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+thread_local! {
+    static EXECUTION_ACCOUNT: std::cell::RefCell<Option<ResourceAccount>> = const { std::cell::RefCell::new(None) };
+}
+
+unsafe extern "C" fn observed_control_account(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    EXECUTION_ACCOUNT.with(|slot| {
+        let slot = slot.borrow();
+        let Some(account) = slot.as_ref() else {
+            return STATUS_INVALID_CONTROL;
+        };
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: account.used().bytes as i64,
+            };
+        }
+        STATUS_OK
+    })
+}
+
+#[test]
+fn initializer_and_sync_handler_observe_one_control_reservation_inside_trusted_entries() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = with_entry(observed_control_account);
+    EXECUTION_ACCOUNT.with(|slot| *slot.borrow_mut() = Some(account.clone()));
+    let expected = (pool.stats().usable_bytes_per_stack + pool.stats().guard_bytes_per_stack)
+        as u64
+        + crate::execution::INVOCATION_OVERHEAD;
+    let (status, output, heap) =
+        crate::execution::initialize(observed_control_account, &bound, None).unwrap();
+    assert_eq!(status, STATUS_OK);
+    assert_eq!(output.reply, expected as i64);
+    assert!(heap.is_none());
+    assert_eq!(account.used(), Resources::default());
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(expected as i64));
+    assert_eq!(account.used(), Resources::default());
+    EXECUTION_ACCOUNT.with(|slot| slot.borrow_mut().take());
+    drop((process, bound, pool));
+    assert_eq!(vm.used(), Resources::default());
 }
 
 #[test]

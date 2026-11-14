@@ -26,7 +26,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0016](0016-worker-wakeup.md) | epoll/eventfd 与 kqueue 用户事件的单 waiter 通知 | 已采纳（M0 实现契约） |
 | [0017](0017-scalar-frame-admission.md) | 机器码生成后、写产物前的标量编译帧准入 | 已采纳（M0 有界标量切片） |
 | [0018](0018-bounded-record-heap.md) | 有界不可变记录、精确 mark-sweep 与作用域根帧原语 | 已采纳（独立原型，未接入 AOT） |
-| [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳（单线程接入契约） |
+| [0019](0019-accounted-stack-pools.md) | 租户预留栈池容量、活栈净转移到进程及缓存计费 | 已采纳；控制准入由 0080 扩展 |
 | [0020](0020-single-worker-mailbox.md) | 有限标量 mailbox、generation Pid 与单线程轮转执行 | 已采纳（宿主调度切片） |
 | [0021](0021-bounded-requests.md) | 固定 pending 表、generation 请求 ID、回复与超时终结 | 已采纳；提前回收部分由 0078 替代 |
 | [0022](0022-worker-deadline-preemption.md) | 可选 worker 计时线程、单调 deadline 与原子让出 | 已采纳（标量计时切片） |
@@ -87,6 +87,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0077](0077-streamed-fairness-measurement.md) | 连续 CPU/突发心跳长测、流式重放、每 actor 与让出时基 | 已采纳（长测入口；公平性门禁未通过） |
 | [0078](0078-request-publisher-lifetimes.md) | 内部请求槽/票据保持到结果端与目标消息端都结束 | 已采纳（请求资源生命周期修正） |
 | [0079](0079-accounted-vm-bootstrap.md) | VM 根/准入门闩启动计费、强制子节点准入及基线清理 | 已采纳（VM 控制资源切片） |
+| [0080](0080-central-execution-admission.md) | 执行核心统一控制准入、显式标量池保留与准备失败回滚 | 已采纳（执行资源准入修正） |
 
 ## 维护方式
 

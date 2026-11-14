@@ -323,6 +323,34 @@ debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性对照：
 
 没有改语言类型拼写或 ABI v15，没有重新发布包或回写冻结的长测结果。完整业务值、其余资源入口、公平性、CPU 硬配额和同负载 BEAM 吞吐/整机内存门禁仍未完成，MVP 状态不变。
 
+## 初始化与执行核心统一控制准入：ADR-0080
+
+基于 `4165829`，按 [ADR-0080](adr/0080-central-execution-admission.md) 将原 4352 字节控制预留移入 initializer 和 Invocation。直接同步/受控/owned task 与 worker 使用相同准入，单/多 worker 删除外层重复票据。显式标量初始化保留池，后续默认调用继续使用该池。内部默认 token 延迟到控制准入和借栈成功后创建；宿主传入的 token 仍由宿主拥有。没有改变 ABI v15、语言拼写、控制上界或业务预算。
+
+### 缺陷复现与边界回归
+
+新增直接执行回归先在旧实现实际失败：process 活栈只计 278528 B，预期栈加控制为 282880 B，差额恰为 4352 B。失败保留在 `/tmp/wings-execution-admission-before.log`；该数字是本机逻辑预留，不是 RSS。
+
+新增 4 项执行边界测试，覆盖三级各仅剩 4351 B 时初始化/同步/task 拒绝、栈与账户零变化、默认调用保留显式池、ready/挂起/Drop/完成清理，以及可信 Rust ABI fixture 在初始化/同步入口内部观察真实控制票据。该 fixture 不冒充生成代码证据。三级拒绝与池满时延迟工厂调用次数为零，成功后恰一次。`accounted_stacks` 另用真实编译产物核对三级拒绝、默认 task、活栈与控制守恒及最后回到计费根基线。
+
+两次完整 debug AOT 首先暴露 `scalar_worker`、随后 `worker_timer` 旧 fixture 只保留 actor 加栈、却期待初始化成功的假设。原失败日志 `/tmp/wings-execution-admission-aot-debug.log` 和 `/tmp/wings-execution-admission-aot-debug-rerun.log` 保留。两处及原单测均先保留旧小额度并验证初始化拒绝/零变化，再构造含原控制容量的精确初始化正边界；入队后仍因消息占用拒绝 handler，队首、旧状态、请求未完成和 timer 失败清理继续验证。满 VM 栈净转移用减少填充票据的方式留出控制容量，并新增完全满额拒绝断言，没有提高父级上限、栈池容量、mailbox/request 容量或超时。
+
+### macOS AArch64
+
+Rust 1.99.1；workspace check、all-target clippy `-D warnings`、fmt 和 Rust 1.85.0 all-target check 通过。最终 debug/release all-targets 各 82 个 harness、516 项测试通过，两种构建 doc-tests 通过。日志为 `/tmp/wings-execution-admission-close-{check,clippy,msrv,fmt,tests-debug}.log`、`/tmp/wings-execution-admission-tests-release.log` 和 `/tmp/wings-execution-admission-doctests-{debug,release}.log`。
+
+最终 debug/release 完整受限 AOT 均通过，包含新直接计费回归、原单/多 worker、消息/请求/GC/监督、CLI 堆/TCP 全场景。内部默认 token 的延迟创建修正后重新执行完整两种构建；最终日志为 `/tmp/wings-execution-admission-controls-aot-debug.log` 和 `/tmp/wings-execution-admission-aot-release.log`。每个 AOT 子进程 CPU 20 秒/墙钟 30 秒/禁 core，业务 CPU 5 秒/墙钟 10 秒、原 3 秒阶段均不变。
+
+debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性回归：v1 的 45 组业务、28 JSON/14 桥接拒绝和 v2 的 18 组业务、49 JSON/17 桥接拒绝全部通过，见 `/tmp/wings-execution-admission-beam-v{1,2}-{debug,release}.log`。没有重跑五对长测或据逻辑控制账目推断性能/内存改进。
+
+依赖隔离、禁止协程 unwind feature、Python AST、97 份 Markdown 的 943 条相对文件路径和代码围栏、diff 空白检查通过，见 `/tmp/wings-execution-admission-static-final.log` 与 `/tmp/wings-execution-admission-docs-final.log`。语法评审稿仍未采纳、未 stage。
+
+### Linux x86-64 隔离仿真
+
+沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 客体，macOS 交叉构建 release；客体 GCC 13.3 链接/执行真实 AOT。冻结包 `/tmp/wings-execution-admission-linux.tar.gz` 含 304 份源码、82 个 harness 和 60 个工具/示例，排除待审语法稿。验证前核对并复用编译工具的绝对路径别名；执行前及完整 AOT 后全部 446 项 hash 一致，全部实现源码与宿主最终工作区一致，验证记录在测试后补写。82 个有独立资源限制的测试子进程共 516 项通过，完整原限 release AOT 通过，见 `/tmp/wings-execution-admission-linux-tests-verified-aliases.log`、`/tmp/wings-execution-admission-linux-aot.log`、`/tmp/wings-execution-admission-linux-hashes.log` 和 `/tmp/wings-execution-admission-linux-host-sources.log`。
+
+保留既有交叉 linker 的 `ignoring deprecated linker optimization setting '1'` 警告，没有更改工具链参数来消除日志；客体测试后停止。没有新增原生 Linux CI、debug/clippy/MSRV/doc-tests 或 Linux BEAM 数据，TCG 功能验证不替代原生双平台或性能/内存门禁。旧未计费工具入口、CLI 适配层、完整业务值/账本、公平性及 BEAM 双门禁仍需完成，MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
