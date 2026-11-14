@@ -199,6 +199,7 @@ unsafe extern "C" fn effect_without_checkpoint(
         timeout_ms: 0,
         record_mask: 0,
         list_mask: 0,
+        bytes_mask: 0,
         handler: 0,
         target: 0,
         arguments: std::ptr::null(),

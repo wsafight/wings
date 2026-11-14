@@ -92,6 +92,7 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 sequence as u64,
                 0,
                 ListPayload::default(),
+                BytePayload::default(),
                 false,
                 Reply::None,
             )
@@ -109,6 +110,7 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 999,
                 0,
                 ListPayload::default(),
+                BytePayload::default(),
                 false,
                 Reply::None
             )
@@ -128,6 +130,7 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 sequence as u64,
                 0,
                 ListPayload::default(),
+                BytePayload::default(),
                 false,
                 Reply::None,
             )
@@ -193,6 +196,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         32,
         0,
         ListPayload::default(),
+        BytePayload::default(),
         false,
         Reply::None,
     )
@@ -289,6 +293,7 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
             32,
             0,
             ListPayload::default(),
+            BytePayload::default(),
             false,
             Reply::None,
         )
@@ -473,11 +478,44 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
         mask: 2,
         ..ListPayload::default()
     };
-    assert!(validate(actor, &store, &arguments, false, 1, &lists).is_ok());
+    assert!(
+        validate(
+            actor,
+            &store,
+            &arguments,
+            false,
+            1,
+            &lists,
+            &BytePayload::default()
+        )
+        .is_ok()
+    );
     for mask in [0, 2, 3, u64::MAX] {
-        assert!(validate(actor, &store, &arguments, false, mask, &lists).is_err());
+        assert!(
+            validate(
+                actor,
+                &store,
+                &arguments,
+                false,
+                mask,
+                &lists,
+                &BytePayload::default()
+            )
+            .is_err()
+        );
     }
-    assert!(validate(actor, &store, &[7, -1], false, 1, &lists).is_err());
+    assert!(
+        validate(
+            actor,
+            &store,
+            &[7, -1],
+            false,
+            1,
+            &lists,
+            &BytePayload::default()
+        )
+        .is_err()
+    );
     assert!(
         validate(
             actor,
@@ -485,7 +523,8 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &[1, 0, 2],
             false,
             0,
-            &ListPayload::default()
+            &ListPayload::default(),
+            &BytePayload::default()
         )
         .is_err()
     );
@@ -496,11 +535,143 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &[1, 0, 2],
             true,
             0,
-            &ListPayload::default()
+            &ListPayload::default(),
+            &BytePayload::default()
         )
         .is_ok()
     );
     drop(state);
     drop((scheduler, handle, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_publish() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 4,
+        messages: 8,
+        requests: 4,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let source = tenant.process_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 1,
+            capacity: 1,
+            requests: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let mut module = module();
+    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[1].parameters = vec![
+        ("first".into(), ValueType::BytesRef),
+        ("flag".into(), ValueType::Bool),
+        ("record".into(), ValueType::Ref),
+        ("list".into(), ValueType::ListRef),
+        ("last".into(), ValueType::BytesRef),
+    ];
+    let store = module.handler("Store").unwrap();
+    let mut quota = limits;
+    quota.bytes = 1 << 20;
+    let pid = handle.spawn(&module, quota, 1).unwrap();
+    let arguments = [
+        ListPayload::encode(0, 4),
+        1,
+        7,
+        ListPayload::encode(0, 2),
+        ListPayload::encode(4, 4),
+    ];
+    assert!(handle.send(pid, &store, &arguments, 4096).is_err());
+    let lists = ListPayload {
+        mask: 8,
+        count: 2,
+        ..ListPayload::default()
+    };
+    let mut state = handle.shared.lock();
+    let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+    let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
+    bytes.data.extend_from_slice(b"abcdefgh");
+    assert!(validate(actor, &store, &arguments, false, 4, &lists, &bytes).is_ok());
+    for mask in [0, 1, 5, 17] {
+        assert!(validate(actor, &store, &arguments, false, mask, &lists, &bytes).is_err());
+    }
+    let filler = actor
+        .account
+        .reserve(Resources {
+            bytes: quota.bytes - actor.account.used().bytes,
+            ..Resources::default()
+        })
+        .unwrap();
+    let baseline = vm.used();
+    assert!(
+        envelope(
+            actor,
+            &store,
+            &arguments,
+            4096,
+            4,
+            lists,
+            bytes,
+            false,
+            Reply::None
+        )
+        .is_err()
+    );
+    assert_eq!(vm.used().bytes, baseline.bytes - 8);
+    assert_eq!(actor.mailbox.count, 0);
+    assert_eq!(source.used(), Resources::default());
+    drop(filler);
+    let actor_baseline = actor.account.used();
+    let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
+    bytes.data.extend_from_slice(b"abcdefgh");
+    let message = envelope(
+        actor,
+        &store,
+        &arguments,
+        4096,
+        4,
+        lists,
+        bytes,
+        false,
+        Reply::None,
+    )
+    .unwrap();
+    actor.mailbox.push(message).unwrap();
+    assert_eq!(source.used(), Resources::default());
+    assert_eq!(
+        actor.account.used().bytes,
+        actor_baseline.bytes + 8 + std::mem::size_of::<Envelope>() as u64
+    );
+    let baseline = vm.used();
+    let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
+    bytes.data.extend_from_slice(b"ijklmnop");
+    assert!(
+        envelope(
+            actor,
+            &store,
+            &arguments,
+            4096,
+            4,
+            lists,
+            bytes,
+            false,
+            Reply::None
+        )
+        .is_err()
+    );
+    assert_eq!(vm.used(), baseline);
+    assert_eq!(
+        actor.mailbox.slots[0].as_ref().unwrap().bytes.data,
+        b"abcdefgh"
+    );
+    drop(state);
+    handle.stop(pid).unwrap();
+    assert_eq!(tenant.used().messages, 0);
+    drop((source, handle, scheduler, tenant));
     assert_eq!(vm.used(), Resources::default());
 }

@@ -182,7 +182,10 @@ def verify(artifact, compare_beam, output):
         output.mkdir(parents=True, exist_ok=True)
     for name, duration, rate in workloads:
         for runtime, command in commands:
-            code, result = invoke([*command, name, duration, rate], b"")
+            try:
+                code, result = invoke([*command, name, duration, rate], b"")
+            except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+                raise RuntimeError(f"{runtime} {name} {duration}ms {rate}/s: {error}") from error
             if output:
                 (output / f"{runtime}-{name}-{duration}-{rate}.json").write_text(json.dumps(result) + "\n")
             require(code == 0, f"{runtime} exit {code}: {result}")

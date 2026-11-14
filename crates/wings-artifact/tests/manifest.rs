@@ -65,7 +65,7 @@ fn manifest() -> Manifest {
 }
 
 #[test]
-fn bytes_state_round_trips_but_message_and_reply_handles_are_rejected() {
+fn bytes_state_and_message_schema_round_trip_but_reply_handles_are_rejected() {
     let mut manifest = manifest();
     manifest.state = ValueType::BytesRef;
     manifest.validate().unwrap();
@@ -75,7 +75,12 @@ fn bytes_state_round_trips_but_message_and_reply_handles_are_rejected() {
         ValueType::BytesRef
     );
     manifest.handlers[0].parameters[0].1 = ValueType::BytesRef;
-    rejects(&manifest, "Bytes message parameters");
+    manifest.validate().unwrap();
+    let value: Value = serde_json::from_slice(&manifest.encode().unwrap()).unwrap();
+    assert_eq!(
+        Directory::new().read_json(&value).unwrap().handlers[0].parameters[0].1,
+        ValueType::BytesRef
+    );
     manifest.handlers[0].parameters[0].1 = ValueType::Int;
     manifest.handlers[0].reply = Some(ValueType::BytesRef);
     rejects(&manifest, "references cannot cross");

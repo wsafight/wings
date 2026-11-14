@@ -64,6 +64,8 @@ fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
         assert!(bad.validate().is_err());
     }
     program.handlers[0].parameters[0].1 = ValueType::BytesRef;
+    program.validate().unwrap();
+    program.handlers[0].reply = Some(ValueType::BytesRef);
     assert!(program.validate().is_err());
 }
 

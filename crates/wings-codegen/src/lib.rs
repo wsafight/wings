@@ -493,6 +493,23 @@ fn compile_body(
                     request,
                     std::mem::offset_of!(wings_abi::EffectRequest, list_mask) as i32,
                 );
+                let bytes_mask =
+                    arguments
+                        .iter()
+                        .enumerate()
+                        .fold(0u64, |mask, (index, register)| {
+                            mask | (u64::from(
+                                function.instructions[*register].ty
+                                    == wings_abi::ValueType::BytesRef,
+                            ) << index)
+                        });
+                let bytes_mask = builder.ins().iconst(types::I64, bytes_mask as i64);
+                builder.ins().store(
+                    MemFlags::new(),
+                    bytes_mask,
+                    request,
+                    std::mem::offset_of!(wings_abi::EffectRequest, bytes_mask) as i32,
+                );
                 let buffer = builder
                     .ins()
                     .iadd_imm(request, i64::from(EFFECT_ARGUMENT_OFFSET));

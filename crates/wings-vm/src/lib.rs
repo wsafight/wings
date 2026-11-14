@@ -182,6 +182,7 @@ impl ScalarProcess {
             system,
             0,
             &message_values::ListPayload::default(),
+            &message_values::BytePayload::default(),
         )
     }
 
@@ -192,6 +193,7 @@ impl ScalarProcess {
         system: bool,
         record_mask: u64,
         lists: &message_values::ListPayload,
+        bytes: &message_values::BytePayload,
     ) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
@@ -217,17 +219,24 @@ impl ScalarProcess {
             .fold(0u64, |mask, (index, (_, ty))| {
                 mask | (u64::from(*ty == ValueType::ListRef) << index)
             });
+        let bytes_mask = schema
+            .parameters
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, (_, ty))| {
+                mask | (u64::from(*ty == ValueType::BytesRef) << index)
+            });
         if record_mask != expected_mask
             || !lists.valid(arguments, list_mask)
+            || !bytes.valid(arguments, bytes_mask)
             || arguments.len() != schema.parameters.len()
             || arguments
                 .iter()
                 .zip(&schema.parameters)
                 .any(|(value, (_, ty))| {
-                    *ty == ValueType::BytesRef
-                        || (!ty.accepts(*value)
-                            && !ty.is_reference()
-                            && !(system && *ty == ValueType::RequestId && *value > 0))
+                    !ty.accepts(*value)
+                        && !ty.is_reference()
+                        && !(system && *ty == ValueType::RequestId && *value > 0)
                 })
         {
             return Err("handler argument count or scalar type mismatch".into());

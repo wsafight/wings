@@ -6,7 +6,7 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
 
 use crate::aot_heap::AotHeap;
-use crate::message_values::ListPayload;
+use crate::message_values::{BytePayload, ListPayload};
 use crate::stack_pool::PooledStack;
 use crate::{
     CancellationToken, HandlerId, HeapStats, PreemptionToken, ScalarModule, ScalarProcess,
@@ -17,10 +17,11 @@ thread_local! {
     static DEFAULT_STACK_POOL: std::cell::RefCell<Option<StackPool>> = const { std::cell::RefCell::new(None) };
 }
 
+pub(crate) const INVOCATION_OVERHEAD: u64 = 4352;
+
 type InvocationResult = (u32, ScalarOutput, Option<Box<AotHeap>>, Checkpoint);
 type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
 
-#[derive(Clone, Copy)]
 struct Checkpoint {
     remaining_steps: u64,
     heap: Option<HeapStats>,
@@ -33,7 +34,6 @@ struct InvocationControl<'scope> {
     preemption: &'scope PreemptionToken,
 }
 
-#[derive(Clone, Copy)]
 pub(crate) struct ProcessEffect {
     pub operation: u32,
     pub target: i64,
@@ -44,6 +44,7 @@ pub(crate) struct ProcessEffect {
     pub timeout_ms: i64,
     pub record_mask: u64,
     pub lists: ListPayload,
+    pub bytes: BytePayload,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +138,7 @@ pub(crate) fn initialize(
         false,
         0,
         ListPayload::default(),
+        &mut BytePayload::default(),
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
         CoroutineResult::Return((status, output, heap, _)) => Ok((status, output, heap)),
@@ -222,6 +224,7 @@ impl ScalarProcess {
             false,
             0,
             &ListPayload::default(),
+            &mut BytePayload::default(),
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -251,6 +254,7 @@ impl ScalarProcess {
             false,
             0,
             &ListPayload::default(),
+            &mut BytePayload::default(),
         )?;
         Ok(ScalarExecution {
             process: self,
@@ -339,6 +343,7 @@ impl ScalarTask {
             false,
             0,
             &ListPayload::default(),
+            &mut BytePayload::default(),
         )
     }
 
@@ -354,6 +359,7 @@ impl ScalarTask {
         system: bool,
         record_mask: u64,
         lists: &ListPayload,
+        bytes: &mut BytePayload,
     ) -> Result<(), String> {
         if self.is_active() {
             return Err("scalar task already has an active invocation".into());
@@ -364,6 +370,7 @@ impl ScalarTask {
             system,
             record_mask,
             lists,
+            bytes,
         )?;
         self.invocation = Some(Invocation::new(
             &mut self.process,
@@ -376,6 +383,7 @@ impl ScalarTask {
             self.effects_enabled,
             record_mask,
             lists,
+            bytes,
         )?);
         Ok(())
     }
@@ -411,6 +419,7 @@ impl Invocation {
         effects_enabled: bool,
         record_mask: u64,
         lists: &ListPayload,
+        bytes: &mut BytePayload,
     ) -> Result<Self, String> {
         process.module.validate_pool(pool)?;
         if process
@@ -439,6 +448,7 @@ impl Invocation {
             effects_enabled,
             record_mask,
             *lists,
+            bytes,
         )?;
         Ok(Self {
             handler,
@@ -464,6 +474,7 @@ fn new_coroutine(
     effects_enabled: bool,
     record_mask: u64,
     lists: ListPayload,
+    bytes: &mut BytePayload,
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
     let mut owned_arguments = Vec::new();
@@ -474,6 +485,7 @@ fn new_coroutine(
     let cancellation = cancellation.clone();
     let preemption = preemption.clone();
     let mut heap = heap.take();
+    let bytes = std::mem::take(bytes);
     let coroutine = Coroutine::with_stack(stack, move |yielder, command| {
         let mut output = ScalarOutput::default();
         let ResumeCommand::Run(slice_remaining) = command else {
@@ -506,14 +518,17 @@ fn new_coroutine(
             }),
             effect_call: effects_enabled.then_some(send_self as wings_abi::EffectCall),
         };
-        let status = match unsafe {
+        let imported = unsafe {
             crate::aot_heap::import_arguments(
                 &mut context,
                 &mut owned_arguments,
                 record_mask,
                 &lists,
+                &bytes,
             )
-        } {
+        };
+        drop(bytes);
+        let status = match imported {
             Ok(()) => unsafe { entry(state, owned_arguments.as_ptr(), &mut output, &mut context) },
             Err(status) => status,
         };
@@ -695,7 +710,7 @@ unsafe extern "C" fn send_self(
     if output.is_null()
         || count > 64
         || (count != 0 && arguments.is_null())
-        || ((request.record_mask | request.list_mask) != 0
+        || ((request.record_mask | request.list_mask | request.bytes_mask) != 0
             && !matches!(
                 request.operation,
                 wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
@@ -708,8 +723,10 @@ unsafe extern "C" fn send_self(
     if count != 0 {
         copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
     }
-    if request.record_mask & request.list_mask != 0
-        || (count < 64 && (request.record_mask | request.list_mask) >> count != 0)
+    if request.record_mask & (request.list_mask | request.bytes_mask) != 0
+        || request.list_mask & request.bytes_mask != 0
+        || (count < 64
+            && (request.record_mask | request.list_mask | request.bytes_mask) >> count != 0)
     {
         return wings_abi::STATUS_INVALID_CONTROL;
     }
@@ -732,6 +749,12 @@ unsafe extern "C" fn send_self(
         Ok(lists) => lists,
         Err(status) => return status,
     };
+    let bytes = match unsafe {
+        crate::aot_heap::export_bytes(context, &mut copied[..count], request.bytes_mask)
+    } {
+        Ok(bytes) => bytes,
+        Err(status) => return status,
+    };
     let checkpoint = Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
@@ -745,6 +768,7 @@ unsafe extern "C" fn send_self(
             timeout_ms: request.timeout_ms,
             record_mask: request.record_mask,
             lists,
+            bytes,
         }),
         yield_requested: None,
     };
@@ -776,9 +800,13 @@ mod tests {
             + std::mem::size_of::<Checkpoint>()
             + std::mem::size_of::<InvocationControl<'_>>()
             + std::mem::size_of::<ListPayload>()
+            + std::mem::size_of::<BytePayload>()
             + 64 * std::mem::size_of::<i64>()
             + 256;
-        assert!(maximum <= 4096, "invocation control needs {maximum} bytes");
+        assert!(
+            maximum as u64 <= INVOCATION_OVERHEAD,
+            "invocation control needs {maximum} bytes"
+        );
     }
 
     #[test]
@@ -808,6 +836,7 @@ mod tests {
             timeout_ms: 0,
             record_mask: 2,
             list_mask: 0,
+            bytes_mask: 0,
         };
         let mut output = 777;
         assert_eq!(
@@ -825,6 +854,30 @@ mod tests {
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_CONTROL
         );
+        request.record_mask = 0;
+        request.list_mask = 0;
+        request.bytes_mask = 2;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.bytes_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_ROOT
+        );
+        for (record, list) in [(1, 0), (0, 1), (1, 1)] {
+            request.record_mask = record;
+            request.list_mask = list;
+            assert_eq!(
+                unsafe { send_self(&mut context, &request, &mut output) },
+                wings_abi::STATUS_INVALID_CONTROL
+            );
+        }
+        request.bytes_mask = 0;
+        request.record_mask = 0;
+        context.remaining_steps = 8;
+        context.slice_remaining = 8;
         request.list_mask = 1;
         assert_eq!(
             unsafe { send_self(&mut context, &request, &mut output) },

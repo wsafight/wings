@@ -278,7 +278,10 @@ pub fn analyze(text: &str) -> Analysis {
                 .map(|parameter| {
                     (parameter.name.text.clone(), {
                         let ty = checker.declared_type(&parameter.ty);
-                        if !matches!(ty, Type::RequestId | Type::RecordInt | Type::IntList) {
+                        if !matches!(
+                            ty,
+                            Type::RequestId | Type::RecordInt | Type::IntList | Type::Bytes
+                        ) {
                             checker.external_type(&ty, parameter.ty.span);
                         }
                         ty

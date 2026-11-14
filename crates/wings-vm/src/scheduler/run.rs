@@ -167,6 +167,7 @@ fn start(
             claim.message.system,
             claim.message.record_mask,
             &claim.message.lists,
+            &mut claim.message.bytes,
         ) {
             Ok(()) => Ok((task, charge)),
             Err(error) => {

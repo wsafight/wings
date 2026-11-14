@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0076](adr/0076-accounted-byte-messages.md) 增加 Bytes 的计费消息副本：单条消息合计至多 65536 字节，发送方暂存先准入，发布时转至目标账户，导入时目标副本另行预留；每至多 256 字节检查预算/取消/让出。队列保留原生命周期，超时不释放仍排队的字节；部分导入参数由入口根保活，失败/stop/取消完整清理。消息 mask 和账目细节见 ADR，原语法及标量回复边界不变。
+
 [ADR-0074](adr/0074-bounded-concurrent-recovery.md) 回归现有超时/取消只决定宿主结果、不撤回已接受消息的契约：仍存活的 publisher 保留请求额度，stop/取消竞争选择一个终态，失败保留旧提交 Bytes，监督重启不重放旧队列。用一/双 worker 真实 AOT 和固定屏障回复表测试验证，不新增消息撤回或事务。
 
 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 为宿主批量创建增加显式初始化池借用：只接受同 tenant 计费池，同步绑定目标 process 并转移完整栈额度，返回后归还；满池、错误账户、额度或 initializer 失败按原路径回滚。Scheduler/supervisor 不持有该池，后续 handler 与自动重启路径不变，缓存由调用者 drop/trim，不把缓存计费与 RSS 混同。
@@ -34,7 +36,7 @@
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的八字节读取固定有界、不分配；替换仍沿 Bytes 原账户、精确源根、每块最多 256 字节和取消清理契约，需同时容纳旧/新对象。先验证完整范围，再预留/复制，不从负数或极端 offset 形成越界访问。ABI v14 复用原 scratch/context，未开放原 handle 消息或原生沙箱。
 
-[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；消息/回复、字符串和完整业务值仍未完成。
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；Bytes 复制消息见 ADR-0076，引用回复、字符串和完整业务值仍未完成。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 的 SchedulerSupervisor 通过固定子表与每实例唯一终态票据实现宿主 one-for-one 恢复。poll 一次至多消费一个退出，受管失败且滚动窗口仍准入时创建全新 state/堆和 Pid，旧请求已终结、旧消息不重放。并发失败不能互相覆盖终态；stop/关闭不重启，初始化/资源拒绝或强度超限不自动重试。host handle 的结果租约仍可延长旧账户，但票据不持有业务资源。需显式 poll，不提供语言 supervision/link/monitor。
 

@@ -1,0 +1,82 @@
+process ByteMessages {
+  state saved: Bytes = fill_bytes(8, 0)
+
+  fn score(value: Bytes) -> Int {
+    bytes_len(value) * 512 + if bytes_len(value) == 0 { 0 } else {
+      byte_at(value, 0) + byte_at(value, bytes_len(value) - 1)
+    }
+  }
+
+  on Start(length: Int, value: Int, fail: Bool) -> Int {
+    let child = spawn_self()
+    let data = fill_bytes(length, value)
+    send(child, Store, data)
+    saved = fill_bytes(8, 9)
+    collect()
+    if fail { 1 / 0 } else { score(data) }
+  }
+
+  on Self(length: Int, value: Int) -> Int {
+    let data = fill_bytes(length, value)
+    send_self(Store, data)
+    collect()
+    score(data)
+  }
+
+  on Ask(length: Int, value: Int, timeout: Int) -> Int {
+    let child = spawn_self()
+    let data = fill_bytes(length, value)
+    let pending = request(child, Compute, Completed, timeout, data)
+    collect()
+    score(data)
+  }
+
+  on Mixed(length: Int, value: Int) -> Int {
+    let child = spawn_self()
+    let first = fill_bytes(length, value)
+    let second = fill_bytes(65536 - length, value + 1)
+    send(child, StoreMixed, first, record_int(7), prepend_int(3, prepend_int(5, empty_ints())),
+      second, true, fill_bytes(0, 0))
+    collect()
+    score(first)
+  }
+
+  on Repeat(length: Int) -> Int {
+    let child = spawn_self()
+    let data = fill_bytes(length, 23)
+    send(child, StorePair, data, data)
+    collect()
+    score(data)
+  }
+
+  on Store(value: Bytes) { collect(); saved = value; collect() }
+
+  on Over -> Int {
+    let child = spawn_self()
+    send(child, StorePair, fill_bytes(65536, 17), fill_bytes(1, 19))
+    0
+  }
+
+  on StorePair(first: Bytes, second: Bytes) {
+    collect()
+    saved = replace_i64_be(fill_bytes(8, 0), 0, score(first) + score(second))
+    collect()
+  }
+
+  on StoreMixed(first: Bytes, record: RecordInt, values: IntList, second: Bytes, flag: Bool, empty: Bytes) {
+    collect()
+    saved = replace_i64_be(fill_bytes(8, 0), 0, score(first) + score(second) + read_int(record)
+      + head_int(values) + head_int(tail_ints(values)) + if flag { 1 } else { 0 } + bytes_len(empty))
+    collect()
+  }
+
+  on Compute(value: Bytes) -> Int { collect(); saved = value; score(value) }
+
+  on Completed(id: RequestId, status: Int, value: Int) {
+    saved = replace_i64_be(fill_bytes(8, 0), 0, status * 1000000000 + value + 1)
+    collect()
+  }
+
+  on Read -> Int { collect(); score(saved) }
+  on Result -> Int { collect(); read_i64_be(saved, 0) }
+}

@@ -224,6 +224,20 @@ Linux 沿用 2 vCPU/4 GiB、Ubuntu 24.04 x86-64 QEMU TCG 隔离客体；客体 G
 
 改名后的本机 check/clippy/fmt/MSRV 与完整原限 debug/release AOT 全部通过，见 `/tmp/wings-memory-post-{check,clippy,fmt,msrv,aot-debug,aot-release}.log`；专项及显式 BEAM 测量配置两种构建通过，见 `/tmp/wings-memory-semantic-{specific,measure-debug,measure-release}.log`。最终五份脚本增量传入新启动客体，GCC 原生 helper 和完整原限 release AOT 再次通过，正常停止客体，见 `/tmp/wings-memory-final-linux-{start,aot,stop}.log`。92 份 Markdown 路径/围栏、Python AST、依赖隔离、禁 unwind 与 diff 空白检查通过；语法草案仅审阅，仍不在本片提交。
 
+## 计费 Bytes 消息：ADR-0076
+
+基于 `3f5fce8`，按 [ADR-0076](adr/0076-accounted-byte-messages.md) 接通不可变 Bytes 的语言自发送、目标发送和异步请求参数。沿用原语法和大小写，待审语法草案不参与实现或提交。源码 ABI 升至 v15，EffectRequest 为 72 B；每条消息的 Bytes 合计至多 65536 B，三个引用 mask 与 schema 精确匹配。回复与宿主原始整数入口仍拒绝引用句柄。
+
+发送方先向 process→tenant→VM 预留独立 staging 容量，再 fallible 分配；持目标唯一发布权时转移票据并准入 envelope。接收方导入自己的精确堆，导入期间两份字节均计费；每至多 256 B 经过原预算、取消和让出检查。混合参数逐个进入入口根，后续导入 GC 保留前参。控制字段增加后，单 worker 与 Scheduler 的保守 invocation 预留统一为 4352 B，完整计入控制类型估算，资源上限不变。启动准备失败保留原队列载荷，完成准备后才转移到活栈。
+
+本机环境同上。workspace debug/release 各 490 项、六个示例各 13 项，总计各 503 项通过；新增 8 项覆盖规范分段、mask/边界、三级准入、跨账户净转移及失败回滚、源副本独立、混合导入 GC、队满/停止清理和启动失败后重试。`byte_messages` 真实 AOT 包含空/1 B/64 KiB、自发送/子进程/请求、混合记录/列表/多个 Bytes、共享源的独立副本、65537/65538 B 拒绝、目标堆耗尽、源失败后已接受发送保留及单/双 worker；128 个有界取消位置实际命中 source staging 和 target 双份导入计费，退出账目归零。最后强化故障分类，分别核对 DivisionByZero、SendRejected、HeapExhausted 及失败前已提交状态；原限 debug/release 专项通过，见 `/tmp/wings-byte-messages-fault-{debug,release}.log`。
+
+本机 check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过；原限 debug/release 完整 AOT 与显式 v1–v7 Wings/BEAM/Python 全部通过，日志 `/tmp/wings-byte-messages-aot-final-{debug,release}.log`、`/tmp/wings-byte-messages-verify_*-{debug,release}.log`。最后的故障断言与失败上下文补充后，再次 check/clippy/fmt/MSRV 及两种构建的完整原限 AOT 全部通过，见 `/tmp/wings-byte-messages-close-{check,clippy,fmt,msrv,aot-debug,aot-release}.log`。依赖隔离、禁 unwind feature、Python AST、93 份 Markdown 相对路径/围栏和 diff 空白检查通过。这些仍是功能/配置验证，不是性能验收。
+
+Linux 沿用 2 vCPU/4 GiB、Ubuntu 24.04 x86-64 QEMU TCG 隔离客体，交叉构建全部工具/示例和 81 个 release harness，共 503 项通过，见 `/tmp/wings-byte-messages-linux-tests.log`。首次完整 AOT 在既有 v5 开环业务报 `open-loop stage deadline`；当时与宿主短时构建重叠，原报错没有场景上下文，不能断言具体负载或唯一原因。保留失败日志 `/tmp/wings-byte-messages-linux-aot.log`。客体重启后先在无并行重型工作时逐项输出调用场景，六组原规模/原限及十项配置拒绝均通过，见 `/tmp/wings-byte-messages-linux-open-loop-diagnose.log`，没有重现首次超时。为后续故障增加 verifier 的 runtime/负载/时长/到达率上下文，未修改业务、池、队列或时限，未将一次成功归因为未实施的优化。
+
+更新最后的故障断言 fixture 后，核对 296 份源码及新 fixture binary SHA-256，在原 CPU 20 秒/墙钟 30 秒/禁 core 的 AOT 子进程及业务 CPU 5 秒/墙钟 10 秒/阶段 3 秒内，从头完整 release AOT 通过，见 `/tmp/wings-byte-messages-linux-final-{hashes,aot}.log`；测试后正常停止客体，见 `/tmp/wings-byte-messages-linux-final-stop.log`。客体仍无 OTP、原生 debug/clippy/MSRV/doc-tests，不替代原生 Linux 或双平台门禁。现有 Bytes 消息切片也不代表字符串、通用记录、引用回复、完整账本或 MVP 已完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

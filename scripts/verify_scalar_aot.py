@@ -206,7 +206,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 14
+    assert manifest["abi"] == 15
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -297,7 +297,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v14 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v15 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -454,7 +454,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     effect_status = 0
     reject_operation = None
     class EffectRequest(ctypes.Structure):
-        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64), ("list_mask", ctypes.c_uint64)]
+        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64), ("list_mask", ctypes.c_uint64), ("bytes_mask", ctypes.c_uint64)]
 
     effect_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.POINTER(EffectRequest), ctypes.POINTER(ctypes.c_int64))
 
@@ -463,6 +463,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
         try:
             roots = collect(pointer.contents)
             current = request.contents
+            assert current.bytes_mask == 0
             if record_messages:
                 assert current.operation in [0, 2, 3, 4]
                 values = list(current.arguments[:current.count])
@@ -517,7 +518,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 14 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 15 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -922,6 +923,14 @@ def main():
                 json.dumps(message(name, 2 << 32)) + "\n",
                 expected=1,
             )
+            assert "not JSON arguments" in result.stderr
+        byte_messages = parent / "byte-messages"
+        command([COMPILER, "build", ROOT / "examples/byte-messages.wings", "-o", byte_messages])
+        result = example("byte_messages", byte_messages)
+        print(result.stdout.strip())
+        for name in ["Store", "Compute"]:
+            result = command([VM, "run", "--trusted", byte_messages, "--heap-records", 10],
+                             json.dumps(message(name, 65536 << 32)) + "\n", expected=1)
             assert "not JSON arguments" in result.stderr
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])

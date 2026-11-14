@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
-use crate::message_values::ListPayload;
+use crate::message_values::{BytePayload, ListPayload};
 use crate::{
     CancellationToken, DetachedProcess, ExecutionFault, ExecutionSnapshot, HandlerId,
     IngressRequest, Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule,
@@ -28,7 +28,7 @@ const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
 const MAX_MAILBOX: usize = 256;
 const THREAD_STACK: usize = 2 << 20;
-const INVOCATION_BYTES: u64 = 4096;
+const INVOCATION_BYTES: u64 = crate::execution::INVOCATION_OVERHEAD;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
 static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 
@@ -175,6 +175,7 @@ struct Envelope {
     max_steps: u64,
     record_mask: u64,
     lists: ListPayload,
+    bytes: BytePayload,
     system: bool,
     reply: Reply,
     _charge: Reservation,
@@ -523,7 +524,15 @@ impl SchedulerHandle {
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
-        validate(actor, handler, arguments, false, 0, &ListPayload::default())?;
+        validate(
+            actor,
+            handler,
+            arguments,
+            false,
+            0,
+            &ListPayload::default(),
+            &BytePayload::default(),
+        )?;
         if handler.schema().reply.is_some() {
             return Err("send requires a one-way handler".into());
         }
@@ -534,6 +543,7 @@ impl SchedulerHandle {
             max_steps,
             0,
             ListPayload::default(),
+            BytePayload::default(),
             false,
             Reply::None,
         )?;
@@ -558,7 +568,15 @@ impl SchedulerHandle {
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
-        validate(actor, handler, arguments, false, 0, &ListPayload::default())?;
+        validate(
+            actor,
+            handler,
+            arguments,
+            false,
+            0,
+            &ListPayload::default(),
+            &BytePayload::default(),
+        )?;
         let reply = match handler.schema().reply {
             Some(
                 ty @ (wings_abi::ValueType::Int
@@ -574,6 +592,7 @@ impl SchedulerHandle {
             max_steps,
             0,
             ListPayload::default(),
+            BytePayload::default(),
             false,
             Reply::None,
         )?;
@@ -716,6 +735,7 @@ fn validate(
     system: bool,
     record_mask: u64,
     lists: &ListPayload,
+    bytes: &BytePayload,
 ) -> Result<(), String> {
     let schema = handler.schema();
     if actor.stopping
@@ -728,16 +748,21 @@ fn validate(
     }
     let mut expected_record = 0;
     let mut expected_list = 0;
+    let mut expected_bytes = 0;
     for (index, (value, (_, ty))) in arguments.iter().zip(&schema.parameters).enumerate() {
         match ty {
             wings_abi::ValueType::Ref => expected_record |= 1 << index,
             wings_abi::ValueType::ListRef => expected_list |= 1 << index,
+            wings_abi::ValueType::BytesRef => expected_bytes |= 1 << index,
             wings_abi::ValueType::RequestId if system && *value > 0 => {}
             _ if ty.accepts(*value) => {}
             _ => return Err("scheduler scalar argument mismatch".into()),
         }
     }
-    if record_mask != expected_record || !lists.valid(arguments, expected_list) {
+    if record_mask != expected_record
+        || !lists.valid(arguments, expected_list)
+        || !bytes.valid(arguments, expected_bytes)
+    {
         return Err("scheduler reference payload mismatch".into());
     }
     Ok(())
@@ -751,12 +776,14 @@ fn envelope(
     max_steps: u64,
     record_mask: u64,
     lists: ListPayload,
+    mut bytes: BytePayload,
     system: bool,
     reply: Reply,
 ) -> Result<Envelope, String> {
     if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
         return Err("mailbox_full".into());
     }
+    bytes.transfer(&actor.account)?;
     let charge = actor.account.reserve(Resources {
         messages: 1,
         bytes: std::mem::size_of::<Envelope>() as u64,
@@ -771,6 +798,7 @@ fn envelope(
         max_steps,
         record_mask,
         lists,
+        bytes,
         system,
         reply,
         _charge: charge,

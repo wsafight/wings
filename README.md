@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt 和有界 IntList 可复制为语言消息，尚无 Bytes 消息、引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，尚无引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
 
 ## 开发
+
+[ADR-0076](docs/adr/0076-accounted-byte-messages.md) 为现有语言消息开放 Bytes 复制参数，单条合计至多 64 KiB，发送暂存/目标导入均计费并分块检查。源码 ABI v15，旧产物须重编译；类型拼写不变，不采纳待审语法稿。构建 `examples/byte-messages.wings` 后，可用 `cargo run -p wings-vm --example byte_messages -- --trusted <产物目录>` 验证，完整 AOT 也包含该回归。
 
 [ADR-0075](docs/adr/0075-platform-memory-observation.md) 为长测补 Linux PSS、macOS physical footprint 和主机压缩/swap 原始观测，分口径保存身份、缺失与采样器成本。`python3 scripts/verify_memory.py` 执行本机有界验证；不等于完整内存或 BEAM 性能门禁。
 
@@ -64,7 +66,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 [ADR-0059](docs/adr/0059-byte-state-counter-equivalence.md) 将完整 256 B/4 KiB/64 KiB Bytes state、32 条异步请求窗口及失败退出接到 Wings Counter。`python3 scripts/verify_counter_equivalence.py --compare-beam` 用真实 OTP 29 与独立 Python checked 模型核对结果、FIFO、旧提交状态和清理；不带该选项只运行 Wings/模型，不宣称执行了 BEAM。先构建 compiler/VM 示例，边界与命令见[同协议工作负载](docs/beam-workloads.md)。未提供吞吐、尾延迟或整机内存比较。
 
-[ADR-0058](docs/adr/0058-byte-i64-big-endian-access.md) 补充 `read_i64_be` 和 `replace_i64_be`，支持 Bytes 内连续八字节的 signed big-endian 读写、未对齐 offset 及完整 i64 范围；写操作仍复制完整对象、计费并分块检查。当前 ABI v14，旧产物须重编译，为后续 BEAM 固定字节状态对照补齐编码基础，不代表该业务或性能门禁已经通过。
+[ADR-0058](docs/adr/0058-byte-i64-big-endian-access.md) 补充 `read_i64_be` 和 `replace_i64_be`，支持 Bytes 内连续八字节的 signed big-endian 读写、未对齐 offset 及完整 i64 范围；写操作仍复制完整对象、计费并分块检查。该片将 ABI 升至 v14，旧产物须重编译，为后续 BEAM 固定字节状态对照补齐编码基础，不代表该业务或性能门禁已经通过。
 
 [ADR-0057](docs/adr/0057-accounted-immutable-bytes.md) 增加 `Bytes`、`fill_bytes`、`bytes_len`、`byte_at` 与复制替换的 `replace_byte`；每块最多 256 字节，检查预算/取消，未发布 buffer 也向原进程三级计费。精确 GC 支持字节叶节点，失败不修改旧 state；ABI 升至 v13，旧产物须重编译。`examples/bytes.wings` 覆盖 state、fn、条件和循环，完整验证仍用下列 workspace 与受限 AOT 命令；不是字符串/通用记录或 BEAM 性能结果。类型大小写不变，语法草案仍待评审。
 

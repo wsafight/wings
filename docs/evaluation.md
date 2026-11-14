@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0076](adr/0076-accounted-byte-messages.md) 须验证 Bytes 消息的精确合计边界、空值/最高 mask、混合记录/列表参数、三级准入/净转移/失败回滚，不能以原 handle 注入冒充复制。真实 AOT 在原 3 秒阶段及 CPU 20 秒/墙钟 30 秒边界下检查自发送、异步请求、一/双 worker、发送方后续 GC/失败、目标导入失败/旧状态与保留队列/取消清理；长时测量和完整业务值门禁独立。
+
 [ADR-0075](adr/0075-platform-memory-observation.md) 在 v6 原采样点分列 Linux RSS/PSS/private/shared/SwapPss、macOS resident/physical footprint 和主机压缩/swap。冻结 C helper/source/编译命令，记录 PID/start_id、前后 census、时间窗与 helper 成本；拓扑变化/读取错误时完整性为 false、平台总数为 null，不删除缺失值或相加不同口径。仍缺每进程压缩/swap、整体共享/内核成本和观察器偏差验收，不据字段存在宣布整机内存门禁通过。
 
 [ADR-0074](adr/0074-bounded-concurrent-recovery.md) 的 `concurrent_recovery` 已接完整 AOT 入口，固定两个 sender、两 actor、4 KiB Bytes、mailbox 16/结果 17、一/双 worker 和原 3 秒阶段。核对已超时/取消消息仍占队列/请求额度、队满无净预留、健康 actor 推进、stop/取消合法终态、Fail 结果取消不撤回执行、旧状态/新 heap 与强度限制、最终零；独立表测试覆盖取消/发布/丢弃竞争。它不替代完整故障注入或 BEAM 测量。

@@ -841,7 +841,7 @@ fn scheduler_start_admission_failure_restores_front_message_and_other_actors_pro
     limited.bytes = baseline
         + crate::stack_pool::EXECUTION_STACK_BYTES as u64
         + unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64
-        + 4096;
+        + crate::execution::INVOCATION_OVERHEAD;
     let constrained = handle.spawn(&module, limited, 1).unwrap();
     let queued = handle
         .request(

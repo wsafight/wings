@@ -449,7 +449,8 @@ fn record_message_masks_must_match_schema_without_poisoning_the_process() {
                     &[i64::MIN, 1, i64::MAX],
                     false,
                     mask,
-                    &crate::message_values::ListPayload::default()
+                    &crate::message_values::ListPayload::default(),
+                    &crate::message_values::BytePayload::default()
                 )
                 .is_err()
         );
@@ -461,7 +462,8 @@ fn record_message_masks_must_match_schema_without_poisoning_the_process() {
                 &[i64::MIN, 1, i64::MAX],
                 false,
                 5,
-                &crate::message_values::ListPayload::default()
+                &crate::message_values::ListPayload::default(),
+                &crate::message_values::BytePayload::default()
             )
             .is_ok()
     );
@@ -473,7 +475,8 @@ fn record_message_masks_must_match_schema_without_poisoning_the_process() {
                     arguments,
                     false,
                     5,
-                    &crate::message_values::ListPayload::default()
+                    &crate::message_values::ListPayload::default(),
+                    &crate::message_values::BytePayload::default()
                 )
                 .is_err()
         );
@@ -502,7 +505,14 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     let arguments = [ListPayload::encode(0, 2), 9, 1];
     assert!(
         process
-            .validate_handler_payload(&handler, &arguments, false, 2, &payload)
+            .validate_handler_payload(
+                &handler,
+                &arguments,
+                false,
+                2,
+                &payload,
+                &crate::message_values::BytePayload::default()
+            )
             .is_ok()
     );
     for mask in [0, 1, 2, 3, 4, u64::MAX] {
@@ -512,7 +522,14 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
         let invalid = ListPayload { mask, ..payload };
         assert!(
             process
-                .validate_handler_payload(&handler, &arguments, false, 2, &invalid)
+                .validate_handler_payload(
+                    &handler,
+                    &arguments,
+                    false,
+                    2,
+                    &invalid,
+                    &crate::message_values::BytePayload::default()
+                )
                 .is_err()
         );
     }
@@ -524,18 +541,39 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     ] {
         assert!(
             process
-                .validate_handler_payload(&handler, &[encoded, 9, 1], false, 2, &payload)
+                .validate_handler_payload(
+                    &handler,
+                    &[encoded, 9, 1],
+                    false,
+                    2,
+                    &payload,
+                    &crate::message_values::BytePayload::default()
+                )
                 .is_err()
         );
     }
     assert!(
         process
-            .validate_handler_payload(&handler, &arguments, false, 3, &payload)
+            .validate_handler_payload(
+                &handler,
+                &arguments,
+                false,
+                3,
+                &payload,
+                &crate::message_values::BytePayload::default()
+            )
             .is_err()
     );
     assert!(
         process
-            .validate_handler_payload(&handler, &arguments, false, 2, &ListPayload::default())
+            .validate_handler_payload(
+                &handler,
+                &arguments,
+                false,
+                2,
+                &ListPayload::default(),
+                &crate::message_values::BytePayload::default()
+            )
             .is_err()
     );
     assert!(!process.failed);

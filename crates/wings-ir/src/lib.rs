@@ -187,14 +187,6 @@ impl Program {
         {
             return Err("Pid is only supported as a local value".into());
         }
-        if self.handlers.iter().any(|handler| {
-            handler
-                .parameters
-                .iter()
-                .any(|(_, ty)| *ty == ValueType::BytesRef)
-        }) {
-            return Err("Bytes message parameters are not supported".into());
-        }
         if self
             .handlers
             .iter()
@@ -456,6 +448,7 @@ impl Function {
                                         | ValueType::Unit
                                         | ValueType::Ref
                                         | ValueType::ListRef
+                                        | ValueType::BytesRef
                                 )
                             })
                         })
@@ -480,6 +473,7 @@ impl Function {
                                         | ValueType::Unit
                                         | ValueType::Ref
                                         | ValueType::ListRef
+                                        | ValueType::BytesRef
                                 )
                             })
                         })
@@ -506,6 +500,7 @@ impl Function {
                                         | ValueType::Unit
                                         | ValueType::Ref
                                         | ValueType::ListRef
+                                        | ValueType::BytesRef
                                 )
                             })
                         })

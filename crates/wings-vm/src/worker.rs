@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::ingress::IngressReceiver;
 use crate::ingress_requests::ReplyPublisher;
-use crate::message_values::ListPayload;
+use crate::message_values::{BytePayload, ListPayload};
 use crate::timer::DeadlineTimer;
 use crate::{
     CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, IngressSender,
@@ -18,7 +18,7 @@ static NEXT_REQUEST_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
-const INVOCATION_OVERHEAD: u64 = 4096;
+use crate::execution::INVOCATION_OVERHEAD;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pid {
@@ -168,6 +168,7 @@ struct Message {
     external: Option<ReplyPublisher>,
     record_mask: u64,
     lists: ListPayload,
+    bytes: BytePayload,
     _charge: Reservation,
 }
 
@@ -568,6 +569,7 @@ impl ScalarWorker {
             request,
             0,
             &ListPayload::default(),
+            BytePayload::default(),
         )
     }
 
@@ -581,6 +583,7 @@ impl ScalarWorker {
         request: Option<RequestId>,
         record_mask: u64,
         lists: &ListPayload,
+        mut bytes: BytePayload,
     ) -> Result<(), String> {
         let actor = self.actor_mut(pid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
@@ -608,23 +611,30 @@ impl ScalarWorker {
                 .fold(0u64, |mask, (index, (_, ty))| {
                     mask | (u64::from(*ty == wings_abi::ValueType::ListRef) << index)
                 });
+        let bytes_mask =
+            schema
+                .parameters
+                .iter()
+                .enumerate()
+                .fold(0u64, |mask, (index, (_, ty))| {
+                    mask | (u64::from(*ty == wings_abi::ValueType::BytesRef) << index)
+                });
         if record_mask != expected_mask
             || !lists.valid(arguments, list_mask)
+            || !bytes.valid(arguments, bytes_mask)
             || arguments.len() != schema.parameters.len()
             || arguments.len() > MAX_ARGUMENTS
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| {
-                    *ty == wings_abi::ValueType::BytesRef
-                        || (!ty.is_reference() && !ty.accepts(*value))
-                })
+                .any(|(value, (_, ty))| !ty.is_reference() && !ty.accepts(*value))
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
         if actor.mailbox.count == actor.mailbox.slots.len() {
             return Err("mailbox_full".into());
         }
+        bytes.transfer(&actor.account)?;
         let charge = actor.account.reserve(Resources {
             messages: 1,
             bytes: std::mem::size_of::<Message>() as u64,
@@ -642,6 +652,7 @@ impl ScalarWorker {
             external: None,
             record_mask,
             lists: *lists,
+            bytes,
             _charge: charge,
         };
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -678,6 +689,7 @@ impl ScalarWorker {
                             external: envelope.reply,
                             record_mask: 0,
                             lists: ListPayload::default(),
+                            bytes: BytePayload::default(),
                             _charge: envelope.charge,
                         });
                         actor.mailbox.count += 1;
@@ -693,7 +705,7 @@ impl ScalarWorker {
                     ..Resources::default()
                 })?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
-                    .as_ref()
+                    .as_mut()
                     .expect("mailbox head");
                 actor.task.start_kind(
                     &message.handler,
@@ -705,6 +717,7 @@ impl ScalarWorker {
                     message.system,
                     message.record_mask,
                     &message.lists,
+                    &mut message.bytes,
                 )?;
                 let message = actor.mailbox.slots[actor.mailbox.head]
                     .take()
@@ -944,6 +957,7 @@ impl ScalarWorker {
                             None,
                             effect.record_mask,
                             &effect.lists,
+                            effect.bytes,
                         )
                         .is_ok()
                     });
@@ -1135,6 +1149,7 @@ impl ScalarWorker {
             Some(request),
             effect.record_mask,
             &effect.lists,
+            effect.bytes,
         )?;
         self.requests[index].pending = Some(PendingRequest {
             target,
@@ -1195,6 +1210,7 @@ impl ScalarWorker {
                 external: None,
                 record_mask: 0,
                 lists: ListPayload::default(),
+                bytes: BytePayload::default(),
                 _charge: completion.charge,
             };
             let actor = self.actor_mut(owner).expect("completion recipient");
@@ -1218,6 +1234,178 @@ fn storage<Value>(
     }
     values.resize_with(capacity, &mut initialize);
     Ok(values.into_boxed_slice())
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn limits() -> Resources {
+        Resources {
+            bytes: 16 << 20,
+            processes: 4,
+            messages: 8,
+            requests: 8,
+        }
+    }
+
+    fn module() -> ScalarModule {
+        let mut module = crate::tests::module();
+        let manifest = &mut Arc::get_mut(&mut module.inner).unwrap().manifest;
+        manifest.handlers[0].parameters = vec![("data".into(), wings_abi::ValueType::BytesRef)];
+        manifest.handlers[0].reply = None;
+        module
+    }
+
+    #[test]
+    fn queued_bytes_move_charge_reject_full_and_return_storage_on_stop() {
+        let vm = ResourceAccount::vm(limits());
+        let tenant = vm.tenant_accounted(limits()).unwrap();
+        let source = tenant.process_accounted(limits()).unwrap();
+        let module = module();
+        let handler = module.handler(&module.manifest().handlers[0].name).unwrap();
+        let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+        let pid = worker.spawn_with_heap(&module, limits(), 1, 4).unwrap();
+        let baseline = worker.resources(pid).unwrap();
+        let mut bytes = BytePayload::new(&source, 1, 8).unwrap();
+        bytes.data.extend_from_slice(b"abcdefgh");
+        let before_publish = vm.used();
+        worker
+            .enqueue_payload(
+                pid,
+                &handler,
+                &[ListPayload::encode(0, 8)],
+                4096,
+                None,
+                0,
+                &ListPayload::default(),
+                bytes,
+            )
+            .unwrap();
+        assert_eq!(source.used().bytes, 0);
+        assert_eq!(
+            worker.resources(pid).unwrap().bytes,
+            baseline.bytes + 8 + std::mem::size_of::<Message>() as u64
+        );
+        assert_eq!(
+            vm.used().bytes,
+            before_publish.bytes + std::mem::size_of::<Message>() as u64
+        );
+        let full = vm.used();
+        let mut rejected = BytePayload::new(&source, 1, 1).unwrap();
+        rejected.data.push(9);
+        assert!(
+            worker
+                .enqueue_payload(
+                    pid,
+                    &handler,
+                    &[ListPayload::encode(0, 1)],
+                    4096,
+                    None,
+                    0,
+                    &ListPayload::default(),
+                    rejected
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), full);
+        assert_eq!(source.used(), Resources::default());
+        let queued = worker.actor(pid).unwrap().mailbox.slots[0]
+            .as_ref()
+            .unwrap();
+        assert_eq!(queued.bytes.data, b"abcdefgh");
+        worker.stop(pid).unwrap();
+        assert_eq!(tenant.used().messages, 0);
+        drop((worker, source, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn rejected_byte_transfer_and_execution_preparation_do_not_lose_payloads() {
+        let vm = ResourceAccount::vm(limits());
+        let tenant = vm.tenant_accounted(limits()).unwrap();
+        let source = tenant.process_accounted(limits()).unwrap();
+        let module = module();
+        let handler = module.handler(&module.manifest().handlers[0].name).unwrap();
+        let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+        let mut quota = limits();
+        quota.bytes = 1 << 20;
+        let pid = worker.spawn_with_heap(&module, quota, 1, 4).unwrap();
+        let account = worker.actor(pid).unwrap().account.clone();
+        let filler = account
+            .reserve(Resources {
+                bytes: quota.bytes - account.used().bytes,
+                ..Resources::default()
+            })
+            .unwrap();
+        let baseline = vm.used();
+        let mut rejected = BytePayload::new(&source, 1, 8).unwrap();
+        rejected.data.extend_from_slice(b"abcdefgh");
+        assert!(
+            worker
+                .enqueue_payload(
+                    pid,
+                    &handler,
+                    &[ListPayload::encode(0, 8)],
+                    4096,
+                    None,
+                    0,
+                    &ListPayload::default(),
+                    rejected
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(worker.queued(pid).unwrap(), 0);
+        drop(filler);
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let busy = bound.acquire().unwrap();
+        let mut retained = BytePayload::new(&account, 1, 8).unwrap();
+        retained.data.extend_from_slice(b"abcdefgh");
+        let baseline = vm.used();
+        let actor = worker.actor_mut(pid).unwrap();
+        assert!(
+            actor
+                .task
+                .start_kind(
+                    &handler,
+                    &[ListPayload::encode(0, 8)],
+                    4096,
+                    &CancellationToken::default(),
+                    &PreemptionToken::default(),
+                    &bound,
+                    false,
+                    0,
+                    &ListPayload::default(),
+                    &mut retained
+                )
+                .is_err()
+        );
+        assert!(retained.valid(&[ListPayload::encode(0, 8)], 1));
+        assert_eq!(vm.used(), baseline);
+        assert!(!actor.task.is_active());
+        drop(busy);
+        actor
+            .task
+            .start_kind(
+                &handler,
+                &[ListPayload::encode(0, 8)],
+                4096,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+                &bound,
+                false,
+                0,
+                &ListPayload::default(),
+                &mut retained,
+            )
+            .unwrap();
+        assert_eq!(retained.mask, 0);
+        assert!(actor.task.is_active());
+        drop((worker, retained, bound, pool, account, source, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
 }
 
 #[cfg(test)]

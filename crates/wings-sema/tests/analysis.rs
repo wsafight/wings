@@ -31,12 +31,11 @@ fn byte_i64_builtins_require_explicit_byte_and_integer_operands() {
 }
 
 #[test]
-fn bytes_are_typed_immutable_roots_but_not_message_fields_or_replies() {
+fn bytes_are_typed_immutable_message_roots_but_not_replies() {
     checked(
         "process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 255) } state data: Bytes = fill_bytes(4, 0); on Set(value: Int) -> Int { let old = data; data = if true { changed(old) } else { fill_bytes(value, 7) }; collect(); bytes_len(data) + byte_at(old, 0) } }",
     );
     for text in [
-        "process P { state data: Bytes = fill_bytes(1, 0); on Store(value: Bytes) {} }",
         "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bytes { data } }",
         "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bool { data == data } }",
         "process P { state data: Bytes = empty_ints(); on Read -> Int { bytes_len(data) } }",
@@ -49,6 +48,9 @@ fn bytes_are_typed_immutable_roots_but_not_message_fields_or_replies() {
             "unexpected acceptance: {text}"
         );
     }
+    checked(
+        "process P { state data: Bytes = fill_bytes(1, 0); on Start { let child = spawn_self(); send(child, Store, data); send_self(Store, data); let pending = request(child, Size, Done, 1000, data); collect() } on Store(value: Bytes) { data = value } on Size(value: Bytes) -> Int { bytes_len(value) } on Done(id: RequestId, status: Int, value: Int) {} }",
+    );
 }
 
 fn handler(body: &str) -> String {

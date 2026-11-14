@@ -135,6 +135,7 @@ impl State {
                 max_steps: pending.max_steps,
                 record_mask: 0,
                 lists: ListPayload::default(),
+                bytes: BytePayload::default(),
                 system: true,
                 reply: Reply::None,
                 _charge: pending.completion_charge,
@@ -258,6 +259,7 @@ impl Shared {
                         false,
                         effect.record_mask,
                         &effect.lists,
+                        &effect.bytes,
                     )?;
                     if effect.operation != wings_abi::EFFECT_REQUEST {
                         if schema.reply.is_some() {
@@ -270,6 +272,7 @@ impl Shared {
                             budget,
                             effect.record_mask,
                             effect.lists,
+                            effect.bytes,
                             false,
                             Reply::None,
                         )?;
@@ -319,6 +322,7 @@ impl Shared {
                         budget,
                         effect.record_mask,
                         effect.lists,
+                        effect.bytes,
                         false,
                         Reply::Language(key),
                     )?;

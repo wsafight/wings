@@ -7,7 +7,7 @@ use wings_abi::{
     ShadowFrame,
 };
 
-use crate::message_values::{ListPayload, MAX_LIST_ELEMENTS};
+use crate::message_values::{BytePayload, ListPayload, MAX_LIST_ELEMENTS, MAX_MESSAGE_BYTES};
 use crate::{
     FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation,
     ResourceAccount, Resources, ShadowRoots,
@@ -247,27 +247,134 @@ pub(crate) unsafe fn export_lists(
     Ok(payload)
 }
 
+pub(crate) unsafe fn export_bytes(
+    context: &mut ScalarContext,
+    arguments: &mut [i64],
+    mask: u64,
+) -> Result<BytePayload, u32> {
+    if mask == 0 {
+        return Ok(BytePayload::default());
+    }
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut length = 0usize;
+    for (index, argument) in arguments.iter().enumerate() {
+        if mask & (1u64 << index) != 0 {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+            let reference = heap
+                .heap
+                .import_reference(*argument as u64)
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+            let bytes = heap
+                .heap
+                .bytes(reference)
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+            length = length
+                .checked_add(bytes.len())
+                .filter(|total| *total <= MAX_MESSAGE_BYTES)
+                .ok_or(wings_abi::STATUS_SEND_REJECTED)?;
+        }
+    }
+    let account = unsafe { &*pointer }.account.clone();
+    let mut payload =
+        BytePayload::new(&account, mask, length).map_err(|_| STATUS_HEAP_EXHAUSTED)?;
+    for (index, argument) in arguments.iter_mut().enumerate() {
+        if mask & (1u64 << index) == 0 {
+            continue;
+        }
+        let reference = unsafe { &*pointer }
+            .heap
+            .import_reference(*argument as u64)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        let length = unsafe { &*pointer }
+            .heap
+            .bytes(reference)
+            .map_err(|_| STATUS_INVALID_ROOT)?
+            .len();
+        let start = payload.data.len();
+        for offset in (0..length).step_by(256) {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let bytes = unsafe { &*pointer }
+                .heap
+                .bytes(reference)
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+            payload
+                .data
+                .extend_from_slice(&bytes[offset..(offset + 256).min(length)]);
+        }
+        *argument = ListPayload::encode(start, length);
+    }
+    Ok(payload)
+}
+
+unsafe fn import_bytes(context: &mut ScalarContext, data: &[u8]) -> Result<u64, u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(data.len()) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            unsafe { collect_managed(context) }?;
+            unsafe { &*pointer }
+                .heap
+                .prepare_bytes(data.len())
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+        }
+    };
+    for chunk in data.chunks(256) {
+        crate::execution::runtime_checkpoint(context, true)?;
+        buffer.data.extend_from_slice(chunk);
+    }
+    let mut buffer = Some(buffer);
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            match unsafe { &mut *pointer }
+                .heap
+                .allocate_bytes_chunk(&mut buffer, &mut cursor)
+            {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
+}
+
 pub(crate) unsafe fn import_arguments(
     context: &mut ScalarContext,
     arguments: &mut [i64],
     mask: u64,
     lists: &ListPayload,
+    bytes: &BytePayload,
 ) -> Result<(), u32> {
     if !lists.valid(arguments, lists.mask)
-        || mask & lists.mask != 0
+        || !bytes.valid(arguments, bytes.mask)
+        || mask & (lists.mask | bytes.mask) != 0
+        || lists.mask & bytes.mask != 0
         || (arguments.len() < 64 && mask >> arguments.len() != 0)
     {
         return Err(STATUS_INVALID_CONTROL);
     }
     for (index, argument) in arguments.iter_mut().enumerate() {
         let bit = 1u64 << index;
-        if (mask | lists.mask) & bit == 0 {
+        if (mask | lists.mask | bytes.mask) & bit == 0 {
             continue;
         }
         if context.heap_data.is_null() {
             return Err(STATUS_HEAP_EXHAUSTED);
         }
         crate::execution::runtime_checkpoint(context, true)?;
+        if bytes.mask & bit != 0 {
+            let (start, length) = ListPayload::segment(*argument);
+            let encoded = unsafe { import_bytes(context, &bytes.data[start..start + length]) }?;
+            unsafe { root_incoming(context, index, encoded) }?;
+            *argument = encoded as i64;
+            continue;
+        }
         let mut encoded = if mask & bit != 0 {
             let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.layout;
             unsafe { allocate_managed(context, layout, &[RecordValue::Int(*argument)]) }?
@@ -631,6 +738,105 @@ mod tests {
     unsafe extern "C" fn resume_one_step(pointer: *mut ScalarContext) -> u32 {
         unsafe { (*pointer).slice_remaining = 1 };
         STATUS_OK
+    }
+
+    #[test]
+    fn byte_exports_are_independent_accounted_and_bounded_before_publication() {
+        let (vm, mut heap) = fixture(4);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        let (status, source) =
+            unsafe { bytes(&mut context, wings_abi::HEAP_FILL_BYTES, [65536, 201, 0]) };
+        assert_eq!(status, STATUS_OK);
+        heap.commit_typed(wings_abi::ValueType::BytesRef, source as i64)
+            .unwrap();
+        let baseline = vm.used();
+        let mut arguments = [source as i64];
+        let payload = unsafe { export_bytes(&mut context, &mut arguments, 1) }.unwrap();
+        assert!(payload.valid(&arguments, 1));
+        assert_eq!(payload.data, vec![201; MAX_MESSAGE_BYTES]);
+        assert_eq!(vm.used().bytes, baseline.bytes + MAX_MESSAGE_BYTES as u64);
+        let mut arguments = [source as i64, source as i64];
+        assert!(matches!(
+            unsafe { export_bytes(&mut context, &mut arguments, 3) },
+            Err(wings_abi::STATUS_SEND_REJECTED)
+        ));
+        assert_eq!(vm.used().bytes, baseline.bytes + MAX_MESSAGE_BYTES as u64);
+        for steps in [0, 2, 32, 128, 256] {
+            context.remaining_steps = steps;
+            let mut arguments = [source as i64];
+            assert!(matches!(
+                unsafe { export_bytes(&mut context, &mut arguments, 1) },
+                Err(wings_abi::STATUS_BUDGET_EXHAUSTED)
+            ));
+            assert_eq!(vm.used().bytes, baseline.bytes + MAX_MESSAGE_BYTES as u64);
+        }
+        context.remaining_steps = 4096;
+        flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            unsafe { export_bytes(&mut context, &mut [source as i64], 1) },
+            Err(wings_abi::STATUS_CANCELLED)
+        ));
+        flag.store(0, std::sync::atomic::Ordering::SeqCst);
+        heap.committed = None;
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        assert_eq!(payload.data, vec![201; MAX_MESSAGE_BYTES]);
+        drop(heap);
+        assert_eq!(vm.used().bytes, MAX_MESSAGE_BYTES as u64);
+        drop(payload);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn byte_imports_root_mixed_arguments_at_every_copy_and_collection_checkpoint() {
+        let (vm, mut heap) = fixture(7);
+        for _ in 0..7 {
+            heap.heap
+                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .unwrap();
+        }
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        let mut bytes = BytePayload::new(&heap.account, 0b11001, MAX_MESSAGE_BYTES).unwrap();
+        bytes
+            .data
+            .extend((0..MAX_MESSAGE_BYTES).map(|index| (index % 251) as u8));
+        let lists = ListPayload {
+            mask: 4,
+            count: 2,
+            values: std::array::from_fn(|index| if index == 0 { i64::MIN } else { i64::MAX }),
+        };
+        let mut arguments = [
+            ListPayload::encode(0, 32768),
+            17,
+            ListPayload::encode(0, 2),
+            ListPayload::encode(32768, 32768),
+            ListPayload::encode(65536, 0),
+        ];
+        unsafe { import_arguments(&mut context, &mut arguments, 2, &lists, &bytes) }.unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 7);
+        assert_eq!(heap.record_value(arguments[1]), Ok(17));
+        for (index, expected) in [
+            (0, &bytes.data[..32768]),
+            (3, &bytes.data[32768..]),
+            (4, &bytes.data[0..0]),
+        ] {
+            let reference = heap.heap.import_reference(arguments[index] as u64).unwrap();
+            assert_eq!(heap.heap.bytes(reference).unwrap(), expected);
+        }
+        let Some((first, tail)) = heap.list_node(arguments[2]).unwrap() else {
+            panic!("missing imported list")
+        };
+        assert_eq!(first, i64::MIN);
+        assert_eq!(heap.list_node(tail).unwrap().unwrap().0, i64::MAX);
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        assert_eq!(bytes.data.len(), MAX_MESSAGE_BYTES);
+        drop((heap, bytes));
+        assert_eq!(vm.used(), Resources::default());
     }
 
     unsafe fn bytes(
@@ -1017,7 +1223,16 @@ mod tests {
             1,
             ListPayload::encode(4, 0),
         ];
-        unsafe { import_arguments(&mut context, &mut arguments, 2, &payload) }.unwrap();
+        unsafe {
+            import_arguments(
+                &mut context,
+                &mut arguments,
+                2,
+                &payload,
+                &BytePayload::default(),
+            )
+        }
+        .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.record_value(arguments[1]), Ok(17));
         assert_eq!(heap.stats().allocated, 8);
@@ -1043,7 +1258,15 @@ mod tests {
         context.remaining_steps = 4096;
         context.slow_path = Some(resume_one_step);
         assert_eq!(
-            unsafe { import_arguments(&mut context, &mut arguments, 0, &empty_payload) },
+            unsafe {
+                import_arguments(
+                    &mut context,
+                    &mut arguments,
+                    0,
+                    &empty_payload,
+                    &BytePayload::default(),
+                )
+            },
             Err(STATUS_HEAP_EXHAUSTED)
         );
         assert_eq!(heap.stats().allocated, 9);
@@ -1063,7 +1286,16 @@ mod tests {
             mask: u64::MAX,
             ..ListPayload::default()
         };
-        unsafe { import_arguments(&mut context, &mut arguments, 0, &payload) }.unwrap();
+        unsafe {
+            import_arguments(
+                &mut context,
+                &mut arguments,
+                0,
+                &payload,
+                &BytePayload::default(),
+            )
+        }
+        .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.stats().allocated, 64);
         for argument in arguments {
@@ -1100,6 +1332,7 @@ mod tests {
                 &mut arguments,
                 u64::MAX,
                 &ListPayload::default(),
+                &BytePayload::default(),
             )
         }
         .unwrap();
@@ -1146,8 +1379,16 @@ mod tests {
             effect_call: None,
         };
         let mut arguments = [11, 22];
-        unsafe { import_arguments(&mut context, &mut arguments, 3, &ListPayload::default()) }
-            .unwrap();
+        unsafe {
+            import_arguments(
+                &mut context,
+                &mut arguments,
+                3,
+                &ListPayload::default(),
+                &BytePayload::default(),
+            )
+        }
+        .unwrap();
         assert_eq!(heap.record_value(arguments[0]), Ok(11));
         assert_eq!(heap.record_value(arguments[1]), Ok(22));
         let first = heap.heap.import_reference(arguments[0] as u64).unwrap();
