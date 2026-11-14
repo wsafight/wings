@@ -18,6 +18,8 @@ const THREAD_BYTES: usize = 256 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(100);
 const SOCKET_BUFFER_BYTES: libc::c_int = 16 * 1024;
 const SOCKET_BUFFER_CEILING: libc::c_int = 64 * 1024;
+#[cfg(target_os = "macos")]
+const TCP_SEGMENT_CEILING: libc::c_int = 1024;
 
 #[derive(Default)]
 struct Report {
@@ -31,6 +33,9 @@ struct Report {
     io_errors: u64,
     wake_errors: u64,
     max_socket_buffer: u64,
+    socket_setup_errors: u64,
+    socket_buffer_rejections: u64,
+    max_tcp_segment: Option<u64>,
 }
 
 struct Adapter {
@@ -58,7 +63,8 @@ impl Adapter {
         })?;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .map_err(|error| error.to_string())?;
-        configure_socket(&listener).map_err(|error| error.to_string())?;
+        let mut report = Report::default();
+        configure_socket(&listener, &mut report).map_err(|error| error.to_string())?;
         if unsafe { libc::listen(listener.as_raw_fd(), 1) } != 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
@@ -72,7 +78,17 @@ impl Adapter {
         let thread = thread::Builder::new()
             .name("wings-tcp-example".into())
             .stack_size(THREAD_BYTES)
-            .spawn(move || serve(listener, sender, &account, connections, frames, &signal))
+            .spawn(move || {
+                serve(
+                    listener,
+                    sender,
+                    &account,
+                    connections,
+                    frames,
+                    &signal,
+                    report,
+                )
+            })
             .map_err(|error| error.to_string())?;
         Ok(Self {
             thread: Some(thread),
@@ -111,8 +127,8 @@ fn serve(
     max_connections: usize,
     frames: usize,
     stopped: &AtomicBool,
+    mut report: Report,
 ) -> Result<Report, String> {
-    let mut report = Report::default();
     for _ in 0..max_connections {
         let _connection_charge = account.reserve(Resources {
             bytes: 256 * 1024,
@@ -159,7 +175,10 @@ fn handle_connection(
     stopped: &AtomicBool,
     report: &mut Report,
 ) -> std::io::Result<()> {
-    report.max_socket_buffer = report.max_socket_buffer.max(configure_socket(&stream)?);
+    if let Err(error) = configure_connection(&stream, report) {
+        report.socket_setup_errors += 1;
+        return Err(error);
+    }
     stream.set_nonblocking(false)?;
     stream.set_nodelay(true)?;
     for _ in 0..max_frames {
@@ -167,7 +186,7 @@ fn handle_connection(
             break;
         }
         let mut frame = [0; 32];
-        read_frame(&mut stream, &mut frame)?;
+        read_frame(&mut stream, &mut frame, report)?;
         let sequence = u64::from_be_bytes(frame[..8].try_into().unwrap());
         let operation = u64::from_be_bytes(frame[8..16].try_into().unwrap());
         let value = i64::from_be_bytes(frame[16..24].try_into().unwrap());
@@ -192,7 +211,7 @@ fn handle_connection(
                 report.rejected += 1;
                 frame[8..16].copy_from_slice(&4u64.to_be_bytes());
                 frame[16..24].copy_from_slice(&4i64.to_be_bytes());
-                write_frame(&mut stream, &frame)?;
+                write_frame(&mut stream, &frame, report)?;
                 continue;
             }
         };
@@ -216,13 +235,67 @@ fn handle_connection(
         };
         frame[8..16].copy_from_slice(&operation.to_be_bytes());
         frame[16..24].copy_from_slice(&value.to_be_bytes());
-        write_frame(&mut stream, &frame)?;
+        write_frame(&mut stream, &frame, report)?;
     }
     Ok(())
 }
 
-fn configure_socket(socket: &impl AsRawFd) -> std::io::Result<u64> {
-    let mut maximum = 0;
+fn configure_connection(stream: &TcpStream, report: &mut Report) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut segment: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&segment) as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_MAXSEG,
+                (&mut segment as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if length as usize != std::mem::size_of_val(&segment) || segment <= 0 {
+            return Err(std::io::Error::other("invalid TCP segment size"));
+        }
+        segment = segment.min(TCP_SEGMENT_CEILING);
+        let result = unsafe {
+            libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_MAXSEG,
+                (&segment as *const libc::c_int).cast(),
+                length,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_MAXSEG,
+                (&mut segment as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if length as usize != std::mem::size_of_val(&segment)
+            || !(1..=TCP_SEGMENT_CEILING).contains(&segment)
+        {
+            return Err(std::io::Error::other("TCP segment exceeds adapter limit"));
+        }
+        report.max_tcp_segment = Some(report.max_tcp_segment.unwrap_or(0).max(segment as u64));
+    }
+    configure_socket(stream, report)
+}
+
+fn configure_socket(socket: &impl AsRawFd, report: &mut Report) -> std::io::Result<()> {
     for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
         let result = unsafe {
             libc::setsockopt(
@@ -236,6 +309,12 @@ fn configure_socket(socket: &impl AsRawFd) -> std::io::Result<u64> {
         if result != 0 {
             return Err(std::io::Error::last_os_error());
         }
+    }
+    observe_socket_buffers(socket, report)
+}
+
+fn observe_socket_buffers(socket: &impl AsRawFd, report: &mut Report) -> std::io::Result<()> {
+    for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
         let mut actual: libc::c_int = 0;
         let mut length = std::mem::size_of_val(&actual) as libc::socklen_t;
         let result = unsafe {
@@ -250,17 +329,24 @@ fn configure_socket(socket: &impl AsRawFd) -> std::io::Result<u64> {
         if result != 0 {
             return Err(std::io::Error::last_os_error());
         }
+        if actual > 0 {
+            report.max_socket_buffer = report.max_socket_buffer.max(actual as u64);
+        }
         if length as usize != std::mem::size_of::<libc::c_int>()
             || !(1..=SOCKET_BUFFER_CEILING).contains(&actual)
         {
+            report.socket_buffer_rejections += 1;
             return Err(std::io::Error::other("socket buffer exceeds adapter limit"));
         }
-        maximum = maximum.max(actual as u64);
     }
-    Ok(maximum)
+    Ok(())
 }
 
-fn read_frame(stream: &mut TcpStream, frame: &mut [u8; 32]) -> std::io::Result<()> {
+fn read_frame(
+    stream: &mut TcpStream,
+    frame: &mut [u8; 32],
+    report: &mut Report,
+) -> std::io::Result<()> {
     let end = Instant::now() + IO_TIMEOUT;
     let mut offset = 0;
     while offset < frame.len() {
@@ -269,7 +355,9 @@ fn read_frame(stream: &mut TcpStream, frame: &mut [u8; 32]) -> std::io::Result<(
             return Err(std::io::ErrorKind::TimedOut.into());
         }
         stream.set_read_timeout(Some(remaining))?;
-        match stream.read(&mut frame[offset..]) {
+        let result = stream.read(&mut frame[offset..]);
+        observe_socket_buffers(stream, report)?;
+        match result {
             Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
             Ok(count) => offset += count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -279,7 +367,11 @@ fn read_frame(stream: &mut TcpStream, frame: &mut [u8; 32]) -> std::io::Result<(
     Ok(())
 }
 
-fn write_frame(stream: &mut TcpStream, frame: &[u8; 32]) -> std::io::Result<()> {
+fn write_frame(
+    stream: &mut TcpStream,
+    frame: &[u8; 32],
+    report: &mut Report,
+) -> std::io::Result<()> {
     let end = Instant::now() + IO_TIMEOUT;
     let mut offset = 0;
     while offset < frame.len() {
@@ -288,7 +380,9 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8; 32]) -> std::io::Result<()> 
             return Err(std::io::ErrorKind::TimedOut.into());
         }
         stream.set_write_timeout(Some(remaining))?;
-        match stream.write(&frame[offset..]) {
+        let result = stream.write(&frame[offset..]);
+        observe_socket_buffers(stream, report)?;
+        match result {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(count) => offset += count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -353,6 +447,9 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
             "rejected": report.rejected, "timed_out": report.timed_out, "failed": report.failed,
             "invalid": report.invalid, "io_errors": report.io_errors, "wake_errors": report.wake_errors,
             "max_socket_buffer": report.max_socket_buffer,
+            "socket_setup_errors": report.socket_setup_errors,
+            "socket_buffer_rejections": report.socket_buffer_rejections,
+            "max_tcp_segment": report.max_tcp_segment,
             "committed": committed, "resources_released": true,
             "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         })
@@ -367,11 +464,99 @@ mod tests {
     #[test]
     fn listener_and_accepted_socket_buffers_have_verified_limits() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        assert!((1..=SOCKET_BUFFER_CEILING as u64).contains(&configure_socket(&listener).unwrap()));
+        let mut report = Report::default();
+        configure_socket(&listener, &mut report).unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
-        assert!((1..=SOCKET_BUFFER_CEILING as u64).contains(&configure_socket(&server).unwrap()));
+        configure_connection(&server, &mut report).unwrap();
+        assert!((1..=SOCKET_BUFFER_CEILING as u64).contains(&report.max_socket_buffer));
         drop((client, server, listener));
+    }
+
+    #[test]
+    fn socket_buffers_remain_bounded_during_bidirectional_frames() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut report = Report::default();
+        configure_socket(&listener, &mut report).unwrap();
+        for _ in 0..128 {
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client.set_nodelay(true).unwrap();
+            client.write_all(&[7; 32]).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            configure_connection(&server, &mut report).unwrap();
+            for index in 0..16 {
+                let mut frame = [0; 32];
+                read_frame(&mut server, &mut frame, &mut report).unwrap();
+                assert_eq!(frame, [7; 32]);
+                for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+                    let mut actual: libc::c_int = 0;
+                    let mut length = std::mem::size_of_val(&actual) as libc::socklen_t;
+                    assert_eq!(
+                        unsafe {
+                            libc::getsockopt(
+                                server.as_raw_fd(),
+                                libc::SOL_SOCKET,
+                                option,
+                                (&mut actual as *mut libc::c_int).cast(),
+                                &mut length,
+                            )
+                        },
+                        0
+                    );
+                    assert!(
+                        (1..=SOCKET_BUFFER_CEILING).contains(&actual),
+                        "buffer {option} grew to {actual} after read"
+                    );
+                }
+                write_frame(&mut server, &frame, &mut report).unwrap();
+                let mut reply = [0; 32];
+                client.read_exact(&mut reply).unwrap();
+                assert_eq!(reply, frame);
+                if index != 15 {
+                    client.write_all(&[7; 32]).unwrap();
+                }
+            }
+        }
+        assert_eq!(report.socket_buffer_rejections, 0);
+        #[cfg(target_os = "macos")]
+        assert!((1..=1024).contains(&report.max_tcp_segment.unwrap()));
+        #[cfg(not(target_os = "macos"))]
+        assert!(report.max_tcp_segment.is_none());
+    }
+
+    #[test]
+    fn frame_io_rejection_keeps_the_actual_peak_and_counter() {
+        for reading in [false, true] {
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            let mut report = Report::default();
+            configure_connection(&server, &mut report).unwrap();
+            let excess: libc::c_int = 128 * 1024;
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        server.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUF,
+                        (&excess as *const libc::c_int).cast(),
+                        std::mem::size_of_val(&excess) as libc::socklen_t,
+                    )
+                },
+                0
+            );
+            let result = if reading {
+                client.write_all(&[7; 32]).unwrap();
+                read_frame(&mut server, &mut [0; 32], &mut report)
+            } else {
+                write_frame(&mut server, &[7; 32], &mut report)
+            };
+            assert!(result.unwrap_err().to_string().contains("adapter limit"));
+            assert!(report.max_socket_buffer > SOCKET_BUFFER_CEILING as u64);
+            assert_eq!(report.socket_buffer_rejections, 1);
+            assert_eq!(report.socket_setup_errors, 0);
+            drop((client, server, listener));
+        }
     }
 
     #[test]
@@ -379,10 +564,12 @@ mod tests {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (mut server, _) = listener.accept().unwrap();
+        let mut report = Report::default();
+        configure_connection(&server, &mut report).unwrap();
         let started = Instant::now();
         let mut client = client;
         client.write_all(&[1, 2, 3]).unwrap();
-        let error = read_frame(&mut server, &mut [0; 32]).unwrap_err();
+        let error = read_frame(&mut server, &mut [0; 32], &mut report).unwrap_err();
         assert!(matches!(
             error.kind(),
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock

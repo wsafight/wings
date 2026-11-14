@@ -369,12 +369,38 @@ Linux 仍是 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG �
 
 依赖隔离、禁 unwind feature、Python AST、98 份 Markdown 的 955 条相对路径/围栏及 diff 空白检查通过，见 `/tmp/wings-cli-accounting-static.log` 与 `/tmp/wings-cli-accounting-docs-final.log`。本次只补 CLI 核心计费路径，JSON/标准 I/O 与宿主控制对象的完整计费、独立工具入口、业务值、公平性和原生双平台 BEAM 双门禁仍未完成；macOS TCP 异常独立保留，MVP 状态不变。
 
+## TCP 运行期间的缓冲限制：ADR-0082
+
+基于 `207ba04`，按 [ADR-0082](adr/0082-bounded-tcp-segments.md) 修正 TCP 示例仅在设置时读取缓冲、随后仍可能增长的假设。macOS 已接受连接先将实际 MSS 限至当前正值与 1024 的较小值，再重设原 16 KiB 收发缓冲；每次 read/write 返回后核对原 64 KiB 上限。新增固定的 socket_setup_errors、socket_buffer_rejections 与 macOS 实际 max_tcp_segment；其他平台的 MSS 字段为 null。原全部资源预留、连接/帧数、50 ms 请求/等待、100 ms 绝对读写、2 秒 accept、业务预算和 ABI v15 不变。
+
+max_tcp_segment 是配置确认时跨连接的最大值，max_socket_buffer 是配置及各次 I/O 后的最大容量读数；采样不覆盖所有内核瞬间，也不测量物理分配峰值。
+
+### 缺陷复现与探针
+
+本机为 macOS 26.6.2、Darwin 25.6.0 / `xnu-12377.161.14~5`、Apple Silicon。新增真实 socket 回归先在原实现失败：完成 32 B 帧读取后 SO_RCVBUF 已为 277696 B，超过 65536 B；失败保留在 `/tmp/wings-tcp-segments-before.log`，不是静态推断。
+
+独立探针的四个配置组各 128 连接、每连接 16 帧，子进程保持 CPU 5 秒/墙钟 10 秒/禁 core。默认和仅限制 listener 的两组实际连接 MSS=16332，运行期间各 128 个连接全部超额，峰值 277696 B；接受后限制 MSS 的两组均为 1024、峰值 32768 B、无超额，见 `/tmp/wings-tcp-mss-probe.log`。配置前曾读取到 326640 B，不能将配置后的检查写成握手或 OS 物理内存硬上限。
+
+公开 XNU 提交 `f6217f891ac0bb64f3d375211650a4c1ff8ca1ea` 中固定缓冲仍可按 MSS 增长的路径用于解释机制，原文件与该提交 hash 核对一致；该公开提交来自 2025-10-16，不是本机内核构建源码。原 ADR-0081 两次 TCP 失败没有细分字段，仍不能追溯其唯一原因；失败日志不改写。
+
+### 本机功能验证
+
+新增 2 项单测：128×16 帧真实双向传输期间独立读取缓冲核对上限与平台 MSS；配置后人为设置小规模超额，检查拒绝前保存真实峰值与计数。原单测同时保留 listener/接受连接配置与部分帧不刷新 100 ms 截止时间，4 项通过。debug/release 各三轮完整 TCP 专项通过，包含新增原最大 8×64 帧、512 次实际请求/回复、最终 committed=512 及所有旧错误场景；新增设置错误和缓冲拒绝均为零。见 `/tmp/wings-tcp-segments-unit-debug.log` 与 `/tmp/wings-tcp-segments-focused-{debug,release}.log`。这是有限功能验证，不是调度延迟或吞吐测量。
+
+workspace check、all-target clippy `-D warnings`、fmt、Rust 1.85.0 all-target check 通过；debug/release all-targets 各 82 个 harness、518 项测试通过，两种构建 doc-tests 通过。日志为 `/tmp/wings-tcp-segments-{check,clippy,fmt,msrv,tests-debug,tests-release,doctests-debug,doctests-release}.log`。
+
+debug/release 完整原限 AOT 各首次通过，包含新最大连接/帧数与旧 TCP 全场景、CLI 默认/堆模式、执行/GC/消息/请求/监督及配置前加载拒绝。每个 AOT 子进程仍为 CPU 20 秒/墙钟 30 秒/禁 core，业务保留 CPU 5 秒/墙钟 10 秒及原 3 秒阶段，见 `/tmp/wings-tcp-segments-aot-{debug,release}.log`。两种构建另显式执行真实 Wings/BEAM/Python v1、v2：45/18 组业务以及原 JSON/桥接拒绝全部通过，见 `/tmp/wings-tcp-segments-beam-v{1,2}-{debug,release}.log`。没有重跑五对长测、改变原冻结结果或宣称性能/内存门禁通过。
+
+### Linux x86-64 隔离仿真
+
+沿用 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 客体；macOS 交叉构建 release，客体 GCC 13.3 链接并执行真实 AOT `.so`。冻结包 `/tmp/wings-tcp-segments-final-linux.tar.gz` 含 306 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿；执行前与完整 AOT 后全部 448 项 source/harness/binary hash 一致，且冻结实现源码与宿主最终工作区一致。82 个独立资源限制测试子进程共 518 项通过，完整受限 release AOT 通过，包含新增 TCP 最大 8×64 业务与运行期间缓冲报告，见 `/tmp/wings-tcp-segments-final-linux-{tests,aot,hashes,host-sources}.log`。验证后停止客体；保留 linker 警告，不代表原生 Linux CI、Linux BEAM 或原生平台性能/内存证据。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
 - 并发失败、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，仍缺完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 与 mixed-4k 各五对 30s/60s 只补长时集成；mixed-4k 两端均有拒绝/超时，仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
-- macOS TCP 既有场景的间歇失败与 socket 设置后读取超额，须定位实际错误阶段并保持原资源与 I/O 边界修正，不能用一次成功复跑视为关闭。
+- TCP 运行期间缓冲边界已接入有限示例，但握手期内核容量、完整账本与原生平台硬配额仍不在该回归覆盖内。
 
 M0/MVP 状态不变；不推送、发布或降低验收门槛。

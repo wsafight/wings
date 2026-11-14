@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0082](docs/adr/0082-bounded-tcp-segments.md) 修正 TCP 设置缓冲后仍可能增长的问题：macOS 已接受连接先限制 MSS，再设原缓冲大小；每次读写后继续检查实际容量。原资源/时限不变，新增设置错误、缓冲拒绝和实际 MSS 报告；配置前内核瞬时占用仍不在该上限保证内。
+
 [ADR-0081](docs/adr/0081-accounted-default-cli.md) 将 CLI 默认标量模式接入与堆模式相同的计费根、模块加载及单槽栈池。两种模式均使用原 16 MiB 三级逻辑字节额度，超额模块在解析/装载前拒绝；JSON/标准 I/O 适配层及其余分配仍待闭环。
 
 [ADR-0080](docs/adr/0080-central-execution-admission.md) 将初始化和所有计费执行入口的控制预留统一到核心，补直接调用漏计并删除 worker 重复票据。标量实例保留显式池，控制额度不足先拒绝，原 4352 字节和 ABI v15 不变；`accounted_stacks` 随完整受限 AOT 回归。

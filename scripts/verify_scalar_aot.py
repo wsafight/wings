@@ -104,6 +104,12 @@ def verify_tcp_service(directory):
             assert report["bootstrap_bytes"] > 0
             assert report["remaining_bytes"] == report["bootstrap_bytes"]
             assert report["wake_errors"] == 0
+            assert report["socket_setup_errors"] == 0, report
+            assert report["socket_buffer_rejections"] == 0, report
+            if os.uname().sysname == "Darwin" and report["connections"]:
+                assert 0 < report["max_tcp_segment"] <= 1024, report
+            else:
+                assert report["max_tcp_segment"] is None, report
             assert 0 <= report["max_socket_buffer"] <= 65536
             if report["connections"]:
                 assert report["max_socket_buffer"] > 0
@@ -127,6 +133,18 @@ def verify_tcp_service(directory):
 
     scenario(1, 4, normal, {"connections": 1, "published": 4, "replies": 4,
                           "committed": 8, "failed": 0, "rejected": 0, "io_errors": 0})
+
+    def maximum_frames(connect):
+        for connection_index in range(8):
+            with connect() as connection:
+                connection.sendall(b"".join(frame(index + 1, 1) for index in range(64)))
+                for index in range(64):
+                    assert reply(connection) == (index + 1, 3, connection_index * 64 + index + 1, 0)
+                require_closed(connection)
+
+    scenario(8, 64, maximum_frames, {"connections": 8, "published": 512, "replies": 512,
+                                    "committed": 512, "failed": 0, "rejected": 0,
+                                    "invalid": 0, "io_errors": 0, "timed_out": 0})
 
     def failing(connect, overflow):
         with connect() as connection:

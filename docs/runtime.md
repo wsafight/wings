@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0082](adr/0082-bounded-tcp-segments.md) 将 TCP 缓冲检查延伸至每次读写后，失败仍记录已观察峰值并终结当前连接。macOS 接受连接先限制 MSS 至不超过 1024；其他平台保留原配置并报告 MSS 为 null。原连接/帧数、请求/读写/accept 截止时间、资源额度和副作用时机保持，握手期内核分配仍不受此运行期检查约束。
+
 [ADR-0081](adr/0081-accounted-default-cli.md) 让 CLI 默认标量模式与堆模式都使用计费根/子账户、计费模块和单槽零缓存池；16 MiB 三级逻辑字节上限不因模式变化。初始化/handler 控制由核心准入，错误继续写 stderr 并退出非零。JSON/标准 I/O 适配层与宿主控制对象仍未完整计费，独立工具入口保留原边界。
 
 [ADR-0080](adr/0080-central-execution-admission.md) 将原 4352 字节控制容量统一放到 initializer/Invocation 核心预留，覆盖直接调用、owned task 及单/多 worker；活栈挂起时保留，正常返回/受管失败/正常取消清理后归还。worker 外层重复票据移除。标量 `instantiate_in_pool` 保存显式池，后续同步调用不退回默认未计费池。VM 已满且没有控制余量时拒绝；栈票据的净转移不能替代控制分配准入。旧未计费工具池及完整账本边界仍保留。

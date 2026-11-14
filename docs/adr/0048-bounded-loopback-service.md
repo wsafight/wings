@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（真实 I/O 验证切片）
 - 前置：[ADR-0047](0047-cross-thread-ingress-requests.md)
+- 后续：[ADR-0082](0082-bounded-tcp-segments.md) 修正仅配置时检查缓冲的假设，限制 macOS 连接 MSS 并在每次读写后核对实际缓冲，补充固定诊断计数。
 
 ## 决定与理由
 

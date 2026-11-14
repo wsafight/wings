@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0082](adr/0082-bounded-tcp-segments.md) 修正有限 TCP 示例的 socket 边界：macOS 接受后先限制 TCP_MAXSEG，再重设原 16 KiB 收发缓冲；读写后持续核对原 64 KiB 上限，配置失败与缓冲拒绝分别计数。没有改变执行核心、语言或 ABI v15，也不将配置前内核容量或用户态预留写成 OS 硬限制。
+
 [ADR-0081](adr/0081-accounted-default-cli.md) 将默认标量 CLI 与堆 CLI 合并为同一计费构造路径，模块先准入再解析/装载，实例保留同 process 的单槽池。两种模式均使用原堆模式 16 MiB 三级逻辑字节上限；不把它解释为 JSON/标准 I/O、allocator 或动态装载器全部开销的闭环。
 
 [ADR-0080](adr/0080-central-execution-admission.md) 由执行核心在控制/参数/协程和借栈前统一预留原 4352 字节，initializer 本地持有、Invocation 持有至正常退出清理；单/多 worker 删除外层重复票据。显式标量池现在与堆模式一样保存在实例中，detach 仍释放本线程池、attach 重新绑定，不引入活栈跨线程移动。失败不丢队首或载荷，ABI v15 与资源上限不变。
