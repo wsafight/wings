@@ -84,10 +84,46 @@ fn verify_execution_binding(directory: &Path) {
     assert_eq!(vm.used(), bootstrap);
 }
 
+fn verify_loading_order(directory: &Path) {
+    let control = 2 << 20;
+    for accounted in [false, true] {
+        let bootstrap = if accounted {
+            ResourceAccount::vm_accounted(limits(control))
+                .unwrap()
+                .used()
+                .bytes
+        } else {
+            0
+        };
+        for remaining in [0, control - 1, control] {
+            let limit = limits(bootstrap + remaining);
+            let vm = if accounted {
+                ResourceAccount::vm_accounted(limit).unwrap()
+            } else {
+                ResourceAccount::vm(limit)
+            };
+            let baseline = vm.used();
+            for _ in 0..2 {
+                for path in [Path::new(""), directory] {
+                    let error = unsafe { ScalarModule::load_accounted(path, &vm) }
+                        .err()
+                        .unwrap();
+                    assert_eq!(
+                        error.contains("resource_exhausted at Vm account"),
+                        remaining < control || path == directory
+                    );
+                    assert_eq!(vm.used(), baseline);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 5 && arguments[0] == "--trusted");
     let directory = Path::new(&arguments[1]);
+    verify_loading_order(directory);
     verify_execution_binding(directory);
     let bytes = std::fs::metadata(directory.join(wings_artifact::library_name()))
         .unwrap()
@@ -247,6 +283,6 @@ fn main() {
         assert_eq!(vm.used(), Resources::default());
     }
     println!(
-        "Module accounting verified: admission, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
+        "Module accounting verified: path/control/library admission order, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
     );
 }

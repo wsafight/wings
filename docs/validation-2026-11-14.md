@@ -421,6 +421,16 @@ Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG �
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体；release 冻结包 `/tmp/wings-root-module-linux.tar.gz` 含 308 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。各测试子进程保留 CPU 20s/墙钟 30s/core 0：520 项测试及完整受限 AOT 通过；执行后全部 450 项 source/harness/binary hash 一致，冻结源码也与宿主实现一致，随后停止客体。见 `/tmp/wings-root-module-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-root-module-host-sources.log`。这些是功能证据，不替代原生 Linux CI、双平台 BEAM 吞吐/整机内存门禁或完整账本。
 
+## 模块路径解析前的控制准入：ADR-0085
+
+基于 `2a5fc9d`，按 [ADR-0085](adr/0085-module-path-admission.md) 修正计费模块在预留前解析路径的顺序。新增单测先在旧实现实际失败：零控制余量时先返回路径错误，而非 `resource_exhausted at Vm account`，见 `/tmp/wings-module-path-before.log`。修复后在路径解析前持有原 2 MiB 控制票据，库元数据验证后再追加原页预算；成功总额仍为库页加 2 MiB。
+
+单测分别覆盖旧零启动根和计费根的零/少一字节/精确控制余量、路径错误与重复失败回滚；跨线程末持有者 fixture 将原 1024 B 分为两份 512 B，保持原总额并验证两部分同时受最后代码租约约束。真实 AOT `module_accounting` 增加同样的早拒绝和精确控制但库页不足的回滚检查，保留原完整模块精确/少一字节额度、32 次循环加载、坏产物、跨 VM 与暂停取消清理。
+
+最终 macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、521 项测试及完整受限 AOT 通过。显式 Wings/BEAM/Python v1 的 45 组业务、28 项 JSON/14 项桥接拒绝和 v2 的 18 组业务、17 项桥接/49 项 JSON 拒绝也在 debug/release 全部通过。见 `/tmp/wings-module-path-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 与 `/tmp/wings-module-path-beam-v{1,2}-{debug,release}.log`；依赖/unwind、102 份 Markdown 的 1000 条相对路径和围栏、Python AST 与 diff 检查通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-module-path-linux.tar.gz` 含 309 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿；原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 521 项通过，完整受限 AOT 通过。执行后全部 451 项 source/harness/binary hash 一致，冻结源码与宿主实现一致，随后停止客体；见 `/tmp/wings-module-path-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-module-path-host-sources.log`。交叉 linker 警告保留；不将这些功能证据当作原生 Linux CI、完整账本或 BEAM 吞吐/整机内存验收。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

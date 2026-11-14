@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0085](adr/0085-module-path-admission.md) 继续推进第 4 项：路径解析先准入原控制预算，库页追加失败完整回滚；原生双平台、完整账本与 BEAM 双门禁仍未完成。
+
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 推进第 4 项，禁止计费根接收未计费工具模块；保持独立工具入口、资源上限和 MVP 验收门槛不变。
 
 [ADR-0083](adr/0083-accounted-module-execution.md) 推进第 4 项的模块执行绑定：计费模块禁止默认/显式未计费池与未绑定 process 池，镜像接回遵循相同校验。独立工具模块、完整业务值/账本、宿主适配层、公平性及原生双平台 BEAM 双门禁仍待完成，MVP 未完成。

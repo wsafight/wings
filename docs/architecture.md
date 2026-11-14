@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0085](adr/0085-module-path-admission.md) 将计费加载拆为路径解析前的原控制预留与元数据检查后的库页预留，同一模块租约持有两部分，保留原总额和末持有者释放顺序。
+
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 补齐反向组合检查：计费根及后代只接收本 VM 的计费模块，不自动补租约；旧工具树保持原用途。
 
 [ADR-0083](adr/0083-accounted-module-execution.md) 将计费模块的 VM 绑定延伸到所有初始化/执行/镜像接回入口：池必须绑定本 VM 的 process，默认 TLS 工具池在创建前即拒绝。未计费模块的独立工具路径保留；带堆实例仍要求原账户，标量显式选择本 VM 的其他 process 池规则不变，不增加隐式根或账户。

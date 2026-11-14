@@ -9,6 +9,8 @@ use wings_artifact::{
 
 use crate::{Reservation, ResourceAccount, ResourceLevel, Resources, ScalarProcess, check_status};
 
+const MODULE_CONTROL_BYTES: u64 = 2 << 20;
+
 #[derive(Clone)]
 pub struct ScalarModule {
     pub(crate) inner: Arc<ModuleData>,
@@ -25,6 +27,7 @@ pub(crate) struct ModuleData {
 pub(crate) struct ModuleLease {
     vm: ResourceAccount,
     _charge: Reservation,
+    _library_charge: Option<Reservation>,
 }
 
 #[derive(Clone)]
@@ -61,6 +64,19 @@ impl ScalarModule {
     }
 
     unsafe fn load(directory: &Path, vm: Option<&ResourceAccount>) -> Result<Self, String> {
+        let mut lease = vm
+            .map(|vm| {
+                let charge = vm.reserve(Resources {
+                    bytes: MODULE_CONTROL_BYTES,
+                    ..Resources::default()
+                })?;
+                Ok::<_, String>(ModuleLease {
+                    vm: vm.clone(),
+                    _charge: charge,
+                    _library_charge: None,
+                })
+            })
+            .transpose()?;
         let directory = directory
             .canonicalize()
             .map_err(|error| error.to_string())?;
@@ -71,19 +87,12 @@ impl ScalarModule {
         if !metadata.is_file() || metadata.len() > MAX_LIBRARY_BYTES {
             return Err("artifact library must be a regular file of at most 64 MiB".into());
         }
-        let lease = vm
-            .map(|vm| {
-                let bytes = metadata.len().div_ceil(4096) * 4096 + (2 << 20);
-                let charge = vm.reserve(Resources {
-                    bytes,
-                    ..Resources::default()
-                })?;
-                Ok::<_, String>(ModuleLease {
-                    vm: vm.clone(),
-                    _charge: charge,
-                })
-            })
-            .transpose()?;
+        if let Some(lease) = lease.as_mut() {
+            lease._library_charge = Some(lease.vm.reserve(Resources {
+                bytes: metadata.len().div_ceil(4096) * 4096,
+                ..Resources::default()
+            })?);
+        }
         let manifest = Manifest::read(&directory)?;
         let library = unsafe { Library::new(&library_path) }.map_err(|error| error.to_string())?;
         let initializer = unsafe {
@@ -220,6 +229,47 @@ impl HandlerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_control_admission_precedes_path_resolution_and_rolls_back() {
+        let control = 2 << 20;
+        let missing = Path::new("");
+        for accounted in [false, true] {
+            let bootstrap = if accounted {
+                ResourceAccount::vm_accounted(Resources {
+                    bytes: control,
+                    ..Resources::default()
+                })
+                .unwrap()
+                .used()
+                .bytes
+            } else {
+                0
+            };
+            for remaining in [0, control - 1, control] {
+                let limits = Resources {
+                    bytes: bootstrap + remaining,
+                    ..Resources::default()
+                };
+                let vm = if accounted {
+                    ResourceAccount::vm_accounted(limits).unwrap()
+                } else {
+                    ResourceAccount::vm(limits)
+                };
+                let baseline = vm.used();
+                for _ in 0..2 {
+                    let error = unsafe { ScalarModule::load_accounted(missing, &vm) }
+                        .err()
+                        .unwrap();
+                    assert_eq!(
+                        error.contains("resource_exhausted at Vm account"),
+                        remaining < control
+                    );
+                    assert_eq!(vm.used(), baseline);
+                }
+            }
+        }
+    }
 
     #[test]
     fn accounted_roots_reject_tool_modules_without_entering_or_consuming_images() {
@@ -361,6 +411,7 @@ mod tests {
                 _library: None,
                 lease: Some(ModuleLease {
                     vm: vm.clone(),
+                    _library_charge: None,
                     _charge: vm
                         .reserve(Resources {
                             bytes: 1024,
@@ -433,7 +484,13 @@ mod tests {
         });
         let charge = vm
             .reserve(Resources {
-                bytes: 1024,
+                bytes: 512,
+                ..Resources::default()
+            })
+            .unwrap();
+        let library_charge = vm
+            .reserve(Resources {
+                bytes: 512,
                 ..Resources::default()
             })
             .unwrap();
@@ -461,6 +518,7 @@ mod tests {
                 lease: Some(ModuleLease {
                     vm: vm.clone(),
                     _charge: charge,
+                    _library_charge: Some(library_charge),
                 }),
             }),
         };

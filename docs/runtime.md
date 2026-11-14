@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0085](adr/0085-module-path-admission.md) 要求计费加载先预留原 2 MiB 控制容量，额度不足优先于目录错误；追加库页或后续解析/装载失败时归还已持有预留。模块、handler、实例和活栈仍共享一次总预算。
+
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 在现有 VM 身份校验中拒绝未计费模块接入计费根，先于业务入口、堆/进程分配、调度槽占用与镜像消费；失败后原工具实例和镜像仍可使用。
 
 [ADR-0083](adr/0083-accounted-module-execution.md) 禁止计费模块通过未计费或未绑定 process 的池初始化、执行或接回镜像；跨 VM 同样拒绝。失败发生在进入原生入口、移动 heap/Bytes 或消耗镜像前，保留原状态与重试能力。默认 `instantiate()` 要求显式配置，不再偷偷使用 TLS 工具池；未计费模块工具行为保持。
