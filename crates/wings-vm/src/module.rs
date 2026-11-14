@@ -129,6 +129,13 @@ impl ScalarModule {
         if let Some(account) = pool.account() {
             self.validate_vm(account)?;
         }
+        if self.inner.lease.is_some()
+            && !pool
+                .account()
+                .is_some_and(|account| account.level() == ResourceLevel::Process)
+        {
+            return Err("accounted module requires a process-accounted stack pool".into());
+        }
         Ok(())
     }
 
@@ -151,6 +158,12 @@ impl ScalarModule {
     }
 
     pub fn instantiate(&self) -> Result<ScalarProcess, String> {
+        if self.inner.lease.is_some() {
+            return Err(
+                "accounted module requires an explicitly configured process-accounted stack pool"
+                    .into(),
+            );
+        }
         self.instantiate_in_pool(&crate::execution::default_stack_pool()?)
     }
 
@@ -204,6 +217,118 @@ impl HandlerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accounted_modules_reject_tool_pools_before_entering_or_consuming_images() {
+        use crate::{CancellationToken, PreemptionToken, ScalarTask, StackPool};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ENTRIES: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn entry(
+            state: i64,
+            _arguments: *const i64,
+            output: *mut wings_abi::ScalarOutput,
+            _context: *mut wings_abi::ScalarContext,
+        ) -> u32 {
+            ENTRIES.fetch_add(1, Ordering::SeqCst);
+            unsafe {
+                *output = wings_abi::ScalarOutput {
+                    state,
+                    reply: state,
+                }
+            };
+            wings_abi::STATUS_OK
+        }
+        let limits = Resources {
+            bytes: 8 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm_accounted(limits).unwrap();
+        let bootstrap = vm.used();
+        let tenant = vm.tenant(limits).unwrap();
+        let account = tenant.process(limits).unwrap();
+        let module = ScalarModule {
+            inner: Arc::new(ModuleData {
+                manifest: Manifest {
+                    format: wings_artifact::FORMAT_VERSION,
+                    abi: wings_abi::SCALAR_ABI_VERSION,
+                    target: wings_abi::host_target().unwrap().into(),
+                    process: "Bounded".into(),
+                    state: wings_abi::ValueType::Int,
+                    handlers: vec![Handler {
+                        name: "Get".into(),
+                        parameters: vec![],
+                        reply: Some(wings_abi::ValueType::Int),
+                    }],
+                },
+                initializer: entry,
+                entries: vec![entry as ScalarEntry].into_boxed_slice(),
+                _library: None,
+                lease: Some(ModuleLease {
+                    vm: vm.clone(),
+                    _charge: vm
+                        .reserve(Resources {
+                            bytes: 1024,
+                            ..Resources::default()
+                        })
+                        .unwrap(),
+                }),
+            }),
+        };
+        let baseline = vm.used();
+        assert!(module.instantiate().is_err());
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 0);
+        assert_eq!(vm.used(), baseline);
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let tools = StackPool::new(1, 0).unwrap();
+        let baseline = vm.used();
+        for invalid in [&tools, &pool] {
+            let slots = invalid.stats();
+            assert!(module.instantiate_in_pool(invalid).is_err());
+            assert_eq!(ENTRIES.load(Ordering::SeqCst), 0);
+            assert_eq!(vm.used(), baseline);
+            assert_eq!(invalid.stats(), slots);
+        }
+        let mut process = module.instantiate_in_pool(&bound).unwrap();
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 1);
+        let cancellation = CancellationToken::default();
+        let preemption = PreemptionToken::default();
+        for invalid in [&tools, &pool] {
+            let slots = invalid.stats();
+            assert!(
+                process
+                    .start_in_pool("Get", &[], 64, &cancellation, &preemption, invalid)
+                    .is_err()
+            );
+            assert_eq!(ENTRIES.load(Ordering::SeqCst), 1);
+            assert_eq!(vm.used(), baseline);
+            assert_eq!(invalid.stats(), slots);
+        }
+        let mut task = ScalarTask::new(process);
+        let handler = module.handler("Get").unwrap();
+        assert!(
+            task.start(&handler, &[], 64, &cancellation, &preemption, &tools)
+                .is_err()
+        );
+        assert!(!task.is_active());
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 1);
+        let mut image = task.into_process().detach();
+        for invalid in [&tools, &pool] {
+            assert!(image.attach(invalid).is_err());
+            assert_eq!(vm.used(), baseline);
+        }
+        let mut process = image.attach(&bound).unwrap();
+        assert!(image.attach(&bound).is_err());
+        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 2);
+        assert_eq!(vm.used(), baseline);
+        drop((
+            process, image, handler, module, bound, pool, tools, account, tenant,
+        ));
+        assert_eq!(vm.used(), bootstrap);
+    }
 
     #[test]
     fn module_data_and_charge_share_one_last_owner_even_across_threads() {

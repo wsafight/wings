@@ -6,6 +6,7 @@
 - 后续：[ADR-0045](0045-concurrent-resource-admission.md) 将资源账户改为线程安全；本决定的模块 Rc 租约和原线程执行限制保持不变。
 - 后续：[ADR-0052](0052-cross-thread-module-leases.md) 将只读模块租约改为 Arc，允许不同 worker 线程中的独立进程共享代码；actor/活栈仍不迁移。
 - 后续：[ADR-0081](0081-accounted-default-cli.md) 将 CLI 默认标量模式改用计费加载，独立库工具入口仍保留。
+- 后续：[ADR-0083](0083-accounted-module-execution.md) 要求计费模块所有执行路径使用本 VM 的 process 计费池，禁止通过未计费池绕过执行准入。
 
 ## 决定与理由
 

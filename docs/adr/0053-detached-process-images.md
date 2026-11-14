@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（迁移前置切片）
 - 相关：[ADR-0015](0015-owned-scalar-tasks.md)、[ADR-0019](0019-accounted-stack-pools.md)、[ADR-0052](0052-cross-thread-module-leases.md)
+- 后续：[ADR-0083](0083-accounted-module-execution.md) 要求带计费模块租约的标量镜像也只能接回本 VM 的 process 计费池，失败仍保留镜像。
 
 ## 决定与理由
 

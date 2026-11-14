@@ -15,10 +15,80 @@ fn limits(bytes: u64) -> Resources {
     }
 }
 
+fn verify_execution_binding(directory: &Path) {
+    let vm = ResourceAccount::vm_accounted(limits(16 << 20)).unwrap();
+    let bootstrap = vm.used();
+    let tenant = vm.tenant(limits(12 << 20)).unwrap();
+    let account = tenant.process(limits(8 << 20)).unwrap();
+    let module = unsafe { ScalarModule::load_accounted(directory, &vm) }.unwrap();
+    let tools = StackPool::new(1, 0).unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let baseline = vm.used();
+    assert!(module.instantiate().is_err());
+    for invalid in [&tools, &pool] {
+        let slots = invalid.stats();
+        assert!(module.instantiate_in_pool(invalid).is_err());
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(invalid.stats(), slots);
+    }
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+    let cancellation = CancellationToken::default();
+    let preemption = PreemptionToken::default();
+    for owner in [&account, &tenant, &vm] {
+        let fill = owner
+            .reserve(Resources {
+                bytes: owner.limit().bytes - owner.used().bytes,
+                ..Resources::default()
+            })
+            .unwrap();
+        let full = vm.used();
+        assert!(process.invoke("Inc", &[99]).is_err());
+        for invalid in [&tools, &pool] {
+            let slots = invalid.stats();
+            assert!(module.instantiate_in_pool(invalid).is_err());
+            assert!(
+                process
+                    .start_in_pool("Inc", &[99], 128, &cancellation, &preemption, invalid)
+                    .is_err()
+            );
+            assert_eq!(vm.used(), full);
+            assert_eq!(invalid.stats(), slots);
+        }
+        drop(fill);
+        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+    }
+    let mut task = ScalarTask::new(process);
+    assert!(
+        task.start(
+            &module.handler("Inc").unwrap(),
+            &[99],
+            128,
+            &cancellation,
+            &preemption,
+            &tools
+        )
+        .is_err()
+    );
+    assert!(!task.is_active());
+    let mut image = task.into_process().detach();
+    for invalid in [&tools, &pool] {
+        assert!(image.attach(invalid).is_err());
+        assert_eq!(vm.used(), baseline);
+    }
+    let mut process = image.attach(&bound).unwrap();
+    assert!(image.attach(&bound).is_err());
+    assert_eq!(process.invoke("Inc", &[2]).unwrap(), Some(9));
+    drop((process, image, module, bound, pool, tools, account, tenant));
+    assert_eq!(vm.used(), bootstrap);
+}
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 5 && arguments[0] == "--trusted");
     let directory = Path::new(&arguments[1]);
+    verify_execution_binding(directory);
     let bytes = std::fs::metadata(directory.join(wings_artifact::library_name()))
         .unwrap()
         .len()
@@ -46,12 +116,16 @@ fn main() {
     assert_eq!(tenant.used(), Resources::default());
     let duplicate = module.clone();
     let handler = module.handler("Inc").unwrap();
-    let mut process = module.instantiate().unwrap();
-    assert_eq!(vm.used().bytes, bytes);
+    let pool = StackPool::new_accounted(&tenant, 1, 0)
+        .unwrap()
+        .for_process(&account)
+        .unwrap();
+    let mut process = module.instantiate_in_pool(&pool).unwrap();
+    let baseline = vm.used();
     drop((module, duplicate));
-    assert_eq!(vm.used().bytes, bytes);
+    assert_eq!(vm.used(), baseline);
     assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
-    drop(process);
+    drop((process, pool));
     assert_eq!(vm.used().bytes, bytes);
     drop(handler);
     assert_eq!(vm.used(), Resources::default());
@@ -68,7 +142,7 @@ fn main() {
             .unwrap();
         let pool_baseline = vm.used();
         let module = unsafe { ScalarModule::load_accounted(directory, &vm) }.unwrap();
-        let mut task = ScalarTask::new(module.instantiate().unwrap());
+        let mut task = ScalarTask::new(module.instantiate_in_pool(&pool).unwrap());
         task.start(
             &module.handler("Inc").unwrap(),
             &[1],
@@ -111,7 +185,11 @@ fn main() {
             .is_err()
     );
     assert_eq!(foreign_vm.used(), baseline);
-    let mut process = module.instantiate().unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0)
+        .unwrap()
+        .for_process(&account)
+        .unwrap();
+    let mut process = module.instantiate_in_pool(&pool).unwrap();
     assert!(
         process
             .start_in_pool(
@@ -127,7 +205,7 @@ fn main() {
     assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
     drop((foreign_pool, foreign_worker));
     assert_eq!(foreign_vm.used(), Resources::default());
-    drop(process);
+    drop((process, pool));
     let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
     let pid = worker.spawn(&module, limits(8 << 20), 1).unwrap();
     worker
@@ -145,25 +223,30 @@ fn main() {
     drop(worker);
     assert_eq!(vm.used(), Resources::default());
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }.unwrap();
-    let mut process = module.instantiate().unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0)
+        .unwrap()
+        .for_process(&account)
+        .unwrap();
+    let mut process = module.instantiate_in_pool(&pool).unwrap();
+    let baseline = vm.used();
     drop(module);
     let cancellation = CancellationToken::default();
     let mut execution = process
         .start_controlled("Inc", &[7], 128, &cancellation, &PreemptionToken::default())
         .unwrap();
     assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
-    assert_eq!(vm.used().bytes, bytes);
+    assert_eq!(vm.used().bytes, baseline.bytes + 4352);
     cancellation.cancel();
     assert!(execution.resume(1).is_err());
     drop(execution);
-    assert_eq!(vm.used().bytes, bytes);
-    drop(process);
+    assert_eq!(vm.used(), baseline);
+    drop((process, pool));
     assert_eq!(vm.used(), Resources::default());
     for artifact in &arguments[2..] {
         assert!(unsafe { ScalarModule::load_accounted(Path::new(artifact), &vm) }.is_err());
         assert_eq!(vm.used(), Resources::default());
     }
     println!(
-        "Module accounting verified: admission, failure rollback, shared leases, suspended cleanup and VM ownership"
+        "Module accounting verified: admission, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
     );
 }

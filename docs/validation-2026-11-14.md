@@ -395,6 +395,20 @@ debug/release 完整原限 AOT 各首次通过，包含新最大连接/帧数与
 
 沿用 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 客体；macOS 交叉构建 release，客体 GCC 13.3 链接并执行真实 AOT `.so`。冻结包 `/tmp/wings-tcp-segments-final-linux.tar.gz` 含 306 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿；执行前与完整 AOT 后全部 448 项 source/harness/binary hash 一致，且冻结实现源码与宿主最终工作区一致。82 个独立资源限制测试子进程共 518 项通过，完整受限 release AOT 通过，包含新增 TCP 最大 8×64 业务与运行期间缓冲报告，见 `/tmp/wings-tcp-segments-final-linux-{tests,aot,hashes,host-sources}.log`。验证后停止客体；保留 linker 警告，不代表原生 Linux CI、Linux BEAM 或原生平台性能/内存证据。
 
+## 计费模块禁止未计费执行降级：ADR-0083
+
+基于 `389491e`，按 [ADR-0083](adr/0083-accounted-module-execution.md) 修正 `validate_pool` 在池没有账户时跳过全部校验的问题。计费模块默认 `instantiate()` 在创建 TLS 工具池前拒绝；显式初始化、受控调用、owned task 与镜像接回都要求本 VM 的 process 计费池。未计费模块的独立工具入口保留原边界，不修改 ABI v15、资源上限、总预算或时限。
+
+可信 Rust ABI fixture 的新增回归先在旧实现实际失败：`module.instantiate().is_err()` 未成立，原路径已经执行 initializer，见 `/tmp/wings-module-binding-before.log`。修复后检查未计费/未绑定池的拒绝不进入业务、栈与账目零变化，owned task 不变 active，镜像拒绝后仍可成功接回且只能消费一次；正常 Get 返回后入口总调用数恰为 initializer 加 handler 两次。该 fixture 不冒充生成代码证据。
+
+`module_accounting` 真实 AOT 回归新增计费根下相同入口与镜像拒绝，在 process/tenant/VM 各自满额时检查不能切换工具池绕过；每级释放填充后仍读出旧状态 7，最后成功更新为 9，清理回到根基线。原租约共享/循环装载/跨 VM/暂停取消用例改用显式池，活动调用核对真实新增 4352 B 控制，释放后回到池/模块基线，而非继续将仅模块字节作为完整执行成本。
+
+首次完整 debug AOT 暴露新检查顺序遮住原跨 VM 诊断：`detached_process` 的 foreign tenant 池应返回 `different VM`，却先报 process 绑定错误。失败保留于 `/tmp/wings-module-binding-aot-debug.log`；核心调整为先执行已有 VM 身份校验，再检查 process 绑定，没有放宽原测试期望、消耗镜像或修改额度/时限。
+
+最终 macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check 与 fmt 通过；debug/release 各 82 个 harness、519 项测试及 doc-tests 通过。两种构建的完整受限 AOT，以及显式 Wings/BEAM/Python v1 的 45 组业务、28 项 JSON/14 项桥接拒绝和 v2 的 18 组业务、17 项桥接/49 项 JSON 拒绝全部通过。日志为 `/tmp/wings-module-binding-final-{check,clippy,msrv,fmt,tests-debug,doctests-debug,build-debug,aot-debug}.log`、`/tmp/wings-module-binding-{tests,doctests,build,aot}-release.log` 与 `/tmp/wings-module-binding-beam-v{1,2}-{debug,release}.log`。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体；release 冻结包 `/tmp/wings-module-binding-linux.tar.gz` 含 307 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。各测试子进程保留 CPU 20s/墙钟 30s/core 0：519 项测试及完整受限 AOT 通过；执行后全部 449 项 source/harness/binary hash 一致，冻结源码也与宿主实现一致，随后仅补本验证记录。见 `/tmp/wings-module-binding-linux-{tests,aot,hashes,host-sources}.log`。验证后停止客体，保留交叉 linker 警告；这些是功能证据，不替代原生 Linux CI、双平台 BEAM 吞吐/整机内存门禁或完整账本。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
