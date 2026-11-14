@@ -15,6 +15,7 @@ import sys
 import time
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 import measure_memory
 from verify_open_loop import CASES, DEADLINE_NS, integer, require, target
 
@@ -83,6 +84,7 @@ def validate_trace(path, name, rate, result):
     runtime = result["environment"]["runtime"]
     require(runtime in ("wings", "beam"), "runtime")
     if runtime == "wings":
+        receipts.validate(result, historical=True)
         require(result.get("resources_released") is True and result["environment"]["workers"] == 2, "Wings cleanup/workers")
     else:
         require(result["environment"]["otp"] == "29" and result["environment"]["schedulers"] == 2, "OTP/schedulers")
@@ -189,7 +191,8 @@ def memory_snapshot(root, probe=None):
             "platform_memory": {"complete": False, "status": "not_configured"}}
 
 
-def measurement(command, trace, destination, name, rate, memory_probe=None, *, validator=validate_trace):
+def measurement(command, trace, destination, name, rate, memory_probe=None, *, runtime, validator=validate_trace):
+    require(runtime in ("wings", "beam"), "expected measurement runtime")
     environment = os.environ.copy()
     for variable in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
         environment.pop(variable, None)
@@ -199,7 +202,7 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, v
     raw = destination.with_suffix(".stdout.jsonl")
     errors = destination.with_suffix(".stderr.txt")
     memory = destination.with_suffix(".memory.jsonl")
-    manifest = {"command": [str(value) for value in command], "trace": str(trace), "status": "running"}
+    manifest = {"command": [str(value) for value in command], "trace": str(trace), "runtime": runtime, "status": "running"}
     destination.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     try:
         with errors.open("xb") as stderr:
@@ -263,6 +266,9 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, v
         require(not buffer and len(events) == 3, "incomplete control output")
         require(events[0] == {"event": "start", "warmup_seconds": 30, "sample_seconds": 60}, "start control")
         require(events[1].get("event") == "sampling" and integer(events[1]["elapsed_ns"]) >= WARMUP_NS, "sampling control")
+        require(events[-1].get("environment", {}).get("runtime") == runtime, "measurement runtime mismatch")
+        if runtime == "wings":
+            receipts.validate(events[-1])
         summary = validator(trace, name, rate, events[-1])
         manifest.update({"status": "ok", "summary": summary, "result": events[-1],
                          "rss_tree_plus_driver_peak_bytes": peak, "wall_seconds": time.monotonic() - started})
@@ -319,7 +325,8 @@ def main():
     shutil.copytree(artifact, frozen / "artifact")
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=aot.ROOT).decode().split("\0")
     tracked += ["scripts/measure_open_loop.py", "scripts/verify_measurement.py", "scripts/measure_memory.py",
-                "scripts/measure_memory.c", "scripts/verify_memory.py", "docs/adr/0075-platform-memory-observation.md"]
+                "scripts/measure_memory.c", "scripts/verify_memory.py", "scripts/verify_resource_receipt.py",
+                "docs/adr/0075-platform-memory-observation.md"]
     source_directory = frozen / "source"
     for name in sorted(set(tracked)):
         if name and (aot.ROOT / name).is_file():
@@ -363,7 +370,8 @@ def main():
                 trace = output / f"{name}.events.bin"
                 command = ([executable, "--trusted", artifact, "--measure"] if runtime == "wings"
                            else [escript, frozen / "beam_open_loop.escript", "--measure"])
-                result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate, memory_probe)
+                result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate, memory_probe,
+                                     runtime=runtime)
                 results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                                 "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"],
                                 "platform_memory": result["platform_memory"]})

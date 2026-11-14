@@ -113,7 +113,8 @@ fn advance(worker: &mut ScalarWorker, pid: Pid, deadline: Instant) -> Result<Wor
 }
 
 fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String> {
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let configure = module.handler("Configure")?;
     let apply = module.handler("Apply")?;
@@ -240,10 +241,12 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
         output["failed_seq"] = json!(failed_seq);
     }
     drop((configure, apply, worker, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("Counter leaked resource reservations".into());
     }
     output["resources_released"] = json!(true);
+    output["bootstrap_bytes"] = json!(bootstrap.bytes);
+    output["remaining_bytes"] = json!(vm.used().bytes);
     Ok((code, output))
 }
 

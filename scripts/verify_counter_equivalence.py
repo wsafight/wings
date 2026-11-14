@@ -11,6 +11,7 @@ import tempfile
 
 import verify_beam_workload as beam
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 
 
 def strict_object(pairs):
@@ -128,6 +129,7 @@ def verify(artifact, compare_beam):
         beam.require(result.get("version") == 1, result)
         beam.require(result.get("state_bytes") == workload["state_bytes"], result)
         beam.require(result.get("message_bytes") == 32 and result.get("resources_released") is True, result)
+        receipts.validate(result)
         beam.require(result.get("environment", {}).get("runtime") == "wings", result)
         beam.require(result["environment"].get("workers") == 1 and result["environment"].get("window") == 32, result)
         if compare_beam:

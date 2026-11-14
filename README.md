@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0087](docs/adr/0087-accounted-beam-workload-roots.md) 将六个 BEAM 对照驱动接入计费根，并报告启动/清理后字节；新采集严格校验回执，历史冻结记录保持原样，完整性能门禁仍未通过。
+
 [ADR-0086](docs/adr/0086-accounted-cli-json.md) 将 CLI 行缓冲、JSON 解析暂存和取消控制纳入原 16 MiB 三级额度，使用固定参数解析与回复结构；重复字段和嵌套参数在执行前拒绝，原行/参数上限不变。
 
 [ADR-0085](docs/adr/0085-module-path-admission.md) 将原 2 MiB 模块控制预留前移到路径解析之前，库页随后按原公式追加；总预算和可信装载边界不变，失败归还两部分预留。

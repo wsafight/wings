@@ -126,7 +126,8 @@ fn state(
 }
 
 fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String> {
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
     let mut supervisor = SchedulerSupervisor::new(
@@ -295,7 +296,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
         module,
         tenant,
     ));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("multi Counter resource leak".into());
     }
     Ok((
@@ -303,7 +304,8 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
         json!({"version": 2, "status": if code == 0 {"ok"} else {"failure"},
         "actors": workload.actors, "state_bytes": workload.state_bytes, "message_bytes": 32,
         "committed": committed, "replies": replies, "failures": reported, "states_verified": true,
-        "resources_released": true, "environment": {"runtime": "wings", "workers": 2, "window": WINDOW}}),
+        "resources_released": true, "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
+        "environment": {"runtime": "wings", "workers": 2, "window": WINDOW}}),
     ))
 }
 

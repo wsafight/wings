@@ -189,7 +189,8 @@ fn execute(
         })
         .transpose()?;
     let measure = trace.is_some();
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
@@ -429,7 +430,7 @@ fn execute(
         trace.flush().map_err(|error| error.to_string())?;
     }
     drop((handle, configure, cpu, pulse, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("fairness retained resources".into());
     }
     Ok(
@@ -437,6 +438,7 @@ fn execute(
         "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": MAX_PENDING,
         "deadline_ns": DEADLINE_NS, "message_bytes": 32, "samples": samples, "hot": hot_samples,
         "committed": committed.to_vec(), "states_verified": true, "resources_released": true,
+        "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         "yield_observation": yield_observation,
         "observation_offset_ns": observation_offset,
         "measurement_elapsed_ns": measurement_elapsed,

@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_multi_counter import invoke
 
 
@@ -47,6 +48,7 @@ def validate(result, name, duration, rate, runtime):
         require(type(result.get(field)) is type(expected) and result[field] == expected, field)
     require(result["environment"]["runtime"] == runtime, "runtime")
     if runtime == "wings":
+        receipts.validate(result)
         require(result.get("resources_released") is True, "resources")
         require(integer(result["environment"]["workers"]) == 2, "workers")
     else:
@@ -96,7 +98,8 @@ def model_tests():
     result = {"version": 5, "status": "ok", "mode": "smoke", "actors": 100,
               "state_bytes": 4096, "mailbox_capacity": 100, "rate": rate, "deadline_ns": DEADLINE_NS,
               "pending_capacity": 256, "message_bytes": 32, "states_verified": True,
-              "resources_released": True, "environment": {"runtime": "wings", "workers": 2},
+              "resources_released": True, "bootstrap_bytes": 168, "remaining_bytes": 168,
+              "environment": {"runtime": "wings", "workers": 2},
               "samples": samples, "committed": [10] + [0] * 99}
     validate(result, name, duration, rate, "wings")
     late = copy.deepcopy(result)

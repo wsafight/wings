@@ -240,7 +240,8 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     } else {
         Recorder::Smoke(Vec::with_capacity(workload.count))
     };
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
@@ -408,7 +409,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         }
     };
     drop((handle, scheduler, apply, configure, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("open-loop resources retained".into());
     }
     Ok(
@@ -417,6 +418,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         "rate": workload.rate, "deadline_ns": DEADLINE_NS, "pending_capacity": PENDING,
         "message_bytes": 32, "samples": samples, "committed": committed,
         "states_verified": true, "resources_released": true,
+        "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         "environment": {"runtime": "wings", "workers": 2}}),
     )
 }

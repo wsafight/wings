@@ -443,6 +443,18 @@ Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG �
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。修正版本冻结包 `/tmp/wings-cli-input-final-linux.tar.gz` 含 311 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿，显式包含新增 CLI 源文件。原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 529 项通过，完整受限 release AOT 通过；执行后全部 453 项 source/harness/binary hash 一致，冻结源码与宿主实现一致。日志为 `/tmp/wings-cli-input-final-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-input-final-host-sources.log`。客体已停止；保留交叉 linker 警告，不把功能验证视为原生 Linux CI、完整资源账本或 BEAM 吞吐/整机内存验收。
 
+## BEAM 驱动计费根与清理回执：ADR-0087
+
+基于 `457f72c`，按 [ADR-0087](adr/0087-accounted-beam-workload-roots.md) 收敛六个对照驱动的零启动工具根。旧真实 v1 报 `resources_released: true` 但没有 bootstrap/remaining 回执，新增断言实际失败，见 `/tmp/wings-beam-root-before.log`。修复后各驱动使用 `vm_accounted`，保留原限额与业务；最后释放所有派生持有者再比较完整 Resources 的启动基线，报告实际正启动字节与相等余量。
+
+独立回执检查器覆盖旧历史重放、缺失/半份回执、bool/float/负数/超 u64 与清理不等。当前 v1–v7 正确性入口要求回执；v6/v8 新采集显式传入预期运行时，回执或 runtime 错误在 trace verifier 前使实验无效并保存原始输出。离线重放允许旧冻结记录没有两字段，已有 trace/hash/结果不回写。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、529 项测试和完整受限 AOT 通过。七个显式 BEAM 入口在两种构建全部通过：v1 的 45 组业务、v2 的 18 组业务、v3 的 21 组 FIFO/交错业务、v4 的 1/100/256 队列、v5 的六个短时开环计划、v7 的两个突发心跳计划及 v8 有界采集器模型；这不包含新的长时性能测量。独立回执模型拒绝 37 份伪造记录；采集器另拒绝五种错误回执/runtime，并保存为 `invalid_experiment`，不进入 trace verifier。日志为 `/tmp/wings-beam-root-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log`、`/tmp/wings-beam-root-verify_*-{debug,release}.log` 和 `/tmp/wings-beam-root-{receipts,measurement-model,fairness-model}.log`。依赖隔离、协程禁 unwind、Python AST、104 份 Markdown 的 1020 条相对路径/围栏和 diff 检查通过。
+
+首次完整 debug AOT 在 TCP 示例等待监听输出的原五秒边界超时，保留 `/tmp/wings-beam-root-aot-debug-initial.log`；原参数的独立 TCP 回归及随后完整 debug/release AOT 通过，见 `/tmp/wings-beam-root-tcp-focused.log` 与最终 AOT 日志。没有修改 TCP 实现、容量或任何 CPU/墙钟/阶段时限；首次失败不计为通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-beam-root-linux.tar.gz` 含 313 份源码、82 个 harness 和 60 个工具/示例，显式包含新回执检查器与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 529 项通过，完整受限 release AOT 通过；执行后全部 455 项 source/harness/binary hash 一致，313 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-beam-root-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-beam-root-host-sources.log`。客体已停止，交叉 linker 警告保留；该结果不替代原生 Linux CI、完整宿主资源计费或同负载 BEAM 吞吐/整机内存门禁。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

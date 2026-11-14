@@ -1,5 +1,6 @@
 import argparse
 import copy
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -104,14 +105,30 @@ def verify(compare_beam):
                 code, result = invoke([*command, *suffix], b"")
                 require(code == 2 and result["status"] == "invalid" and result["version"] == (8 if runtime == "beam" else 7), "invalid long config")
         controls = [{"event": "start", "warmup_seconds": 30, "sample_seconds": 60},
-                    {"event": "sampling", "elapsed_ns": 30_000_000_000}, {"version": 8, "status": "synthetic"}]
+                    {"event": "sampling", "elapsed_ns": 30_000_000_000},
+                    {"version": 8, "status": "synthetic", "environment": {"runtime": "wings"},
+                     "resources_released": True, "bootstrap_bytes": 168, "remaining_bytes": 168}]
         program = "import json; [print(json.dumps(item), flush=True) for item in " + repr(controls) + "]"
         calls = []
         def validator(path, name, rate, result):
             calls.append((path, name, rate, result))
             return {"synthetic_control_validation": True}
-        collected = measure.measurement([sys.executable, "-c", program], parent / "synthetic.bin", parent / "collector", "fairness", 10000, validator=validator)
+        collected = measure.measurement([sys.executable, "-c", program], parent / "synthetic.bin", parent / "collector", "fairness", 10000,
+                                        runtime="wings", validator=validator)
         require(collected["status"] == "ok" and calls == [(parent / "synthetic.bin", "fairness", 10000, controls[-1])], "independent collector validator")
+        for index, change in enumerate([
+            {"bootstrap_bytes": None}, {"remaining_bytes": 0}, {"bootstrap_bytes": True},
+            {"remaining_bytes": 169}, {"environment": {"runtime": "beam"}},
+        ]):
+            forged = copy.deepcopy(controls)
+            forged[-1].update(change)
+            program = "import json; [print(json.dumps(item), flush=True) for item in " + repr(forged) + "]"
+            destination = parent / f"forged-receipt-{index}"
+            rejected(lambda: measure.measurement([sys.executable, "-c", program], parent / "synthetic.bin", destination,
+                                                 "fairness", 10000, runtime="wings", validator=validator))
+            require(json.loads(destination.with_suffix(".json").read_text())["status"] == "invalid_experiment",
+                    "forged collection receipt preserved as invalid")
+        require(len(calls) == 1, "forged collection reached the trace validator")
     print(f"Fairness v8 bounded model: exact phases/bursts, retained pending, CPU/FIFO, yield loss, {len(changed)} forged histories, strict CLI and collector checked; no long experiment")
 
 

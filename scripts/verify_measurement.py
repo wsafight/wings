@@ -121,21 +121,21 @@ def verify(compare_beam=False):
         failure = parent / "failure"
         failed = False
         try:
-            measure.measurement([sys.executable, "-c", "raise SystemExit(7)"], parent / "absent.bin", failure, "sparse-256", 1000)
+            measure.measurement([sys.executable, "-c", "raise SystemExit(7)"], parent / "absent.bin", failure, "sparse-256", 1000, runtime="wings")
         except ValueError:
             failed = True
         require(failed and json.loads(failure.with_suffix(".json").read_text())["status"] == "invalid_experiment", "child failure preserved")
         failure = parent / "incomplete"
         failed = False
         try:
-            measure.measurement([sys.executable, "-c", "print('{}')"], parent / "absent.bin", failure, "sparse-256", 1000)
+            measure.measurement([sys.executable, "-c", "print('{}')"], parent / "absent.bin", failure, "sparse-256", 1000, runtime="wings")
         except ValueError:
             failed = True
         require(failed and json.loads(failure.with_suffix(".json").read_text())["status"] == "invalid_experiment", "truncated control preserved")
         failure = parent / "not-started"
         failed = False
         try:
-            measure.measurement([parent / "missing-executable"], parent / "absent.bin", failure, "sparse-256", 1000)
+            measure.measurement([parent / "missing-executable"], parent / "absent.bin", failure, "sparse-256", 1000, runtime="wings")
         except OSError:
             failed = True
         require(failed and json.loads(failure.with_suffix(".json").read_text())["status"] == "invalid_experiment", "startup failure preserved")

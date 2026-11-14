@@ -11,6 +11,7 @@ import sys
 import tempfile
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_counter_equivalence import strict_object
 from verify_multi_counter import invoke, limit_child, MIN_I64, MAX_I64
 
@@ -229,6 +230,7 @@ def verify(artifact, compare_beam):
             check(workload, result)
             assert result["environment"]["senders"] == 2 and result["environment"]["window_per_sender"] == 16, result
             if runtime == "wings":
+                receipts.validate(result)
                 assert result["resources_released"] is True and result["environment"]["workers"] == 2, result
             else:
                 assert result["environment"]["otp"] == "29" and result["environment"]["schedulers"] == 2, result

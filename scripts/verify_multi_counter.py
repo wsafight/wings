@@ -11,6 +11,7 @@ import sys
 import tempfile
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_counter_equivalence import strict_object
 
 MIN_I64 = -(2**63)
@@ -161,6 +162,7 @@ def verify(artifact, compare_beam):
                 assert result.get(key) == value, (runtime, key, result, expected)
             assert result["environment"]["window"] == 32, result
             if runtime == "wings":
+                receipts.validate(result)
                 assert result["resources_released"] is True and result["environment"]["workers"] == 2, result
             else:
                 assert result["environment"]["otp"] == "29" and result["environment"]["schedulers"] == 2, result

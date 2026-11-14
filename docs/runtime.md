@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0087](adr/0087-accounted-beam-workload-roots.md) 的六个 BEAM 对照驱动在资源创建前记录实际启动值，派生清理后核对完整 Resources 回到该值；`resources_released` 同时附正的 `bootstrap_bytes` 与相等的 `remaining_bytes`，存活根不伪报归零。
+
 [ADR-0086](adr/0086-accounted-cli-json.md) 为 CLI 请求缓冲、转义解析增长及固定控制预留 264 KiB，沿 process/tenant/VM 准入并保持至适配器存储释放。重复/未知字段和嵌套参数在 handler 前拒绝；输出失败不回滚已完成 handler，原 16 MiB 和 64 KiB 行上限不变。
 
 [ADR-0085](adr/0085-module-path-admission.md) 要求计费加载先预留原 2 MiB 控制容量，额度不足优先于目录错误；追加库页或后续解析/装载失败时归还已持有预留。模块、handler、实例和活栈仍共享一次总预算。

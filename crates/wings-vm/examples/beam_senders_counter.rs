@@ -107,7 +107,8 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 }
 
 fn execute(directory: &Path, workload: &Workload) -> Result<Value, String> {
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
@@ -217,12 +218,13 @@ fn execute(directory: &Path, workload: &Workload) -> Result<Value, String> {
     }
     remaining(deadline)?;
     drop((scheduler, handle, configure, apply, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("senders Counter resource leak".into());
     }
     Ok(
         json!({"version": 3, "status": "ok", "actors": workload.actors, "state_bytes": workload.bytes, "message_bytes": 32,
         "committed": committed, "replies": replies, "states_verified": true, "resources_released": true,
+        "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         "environment": {"senders": 2, "window_per_sender": WINDOW, "workers": 2}}),
     )
 }

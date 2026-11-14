@@ -25,7 +25,8 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 }
 
 fn run(directory: &Path, capacity: usize) -> Result<Value, String> {
-    let vm = ResourceAccount::vm(limits());
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
@@ -113,13 +114,14 @@ fn run(directory: &Path, capacity: usize) -> Result<Value, String> {
     }
     remaining(deadline)?;
     drop((scheduler, handle, add, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("admission resources retained".into());
     }
     Ok(
         json!({"version": 4, "status": "ok", "state_bytes": 4096, "mailbox_capacity": capacity,
         "accepted": capacity, "rejected_full": 1, "failed": capacity, "healthy_value": 7,
         "initial_value": 0, "queue_released": true, "stale_rejected": true, "resources_released": true,
+        "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         "environment": {"workers": 2, "runtime": "wings"}}),
     )
 }

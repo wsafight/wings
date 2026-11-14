@@ -4,7 +4,9 @@
 
 ## 已执行的最小业务
 
-v2 Wings 批量创建可显式复用同 tenant 的一槽计费初始化池，见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。池创建仍在原 3 秒 actor 阶段内；不改输入、规模、100 活动 actor、32 窗口、CPU/墙钟限制或失败业务。停止 actor 后释放池再检查账本零，复用本身不是性能验收。
+[ADR-0087](adr/0087-accounted-beam-workload-roots.md) 让六个 Wings 驱动使用计费根，原 32/128/256 MiB 等限额不变；清理后完整账本回到实际启动基线。当前业务报告附 `bootstrap_bytes > 0` 和相等的 `remaining_bytes`，正确性入口与新 v6/v8 采集严格校验；驱动剩余外部测试内存仍不等于完整受管计费。历史冻结结果不回写，离线重放允许两字段都缺失，若出现任一字段则须完整验证。
+
+v2 Wings 批量创建可显式复用同 tenant 的一槽计费初始化池，见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。池创建仍在原 3 秒 actor 阶段内；不改输入、规模、100 活动 actor、32 窗口、CPU/墙钟限制或失败业务。停止 actor 后释放池再检查启动基线，复用本身不是性能验收。
 
 - 一个普通 BEAM actor，或 Wings 单 worker 下一个有计费堆的 actor，初始计数器由输入给出；不冬眠、不重启。一个外部驱动发送请求，actor 内没有阻塞业务调用。
 - 计数器和 delta 均为 `[-2^63, 2^63-1]` 的有符号整数，每次加法单独 checked；不环绕、不饱和，也不让 BEAM 的任意精度整数成为业务结果。BEAM 和 Python 可用宽整数计算临时值，但必须在编码、提交和成功回复之前检查范围。
@@ -46,7 +48,7 @@ v2 Wings 批量创建可显式复用同 tenant 的一槽计费初始化池，见
 
 Wings 用 Never 监督、2 worker、共享 32 结果槽、堆四槽，每 actor mailbox 取其在任一 32 条窗口内的最大请求数（至少 1、最多 32）。VM/tenant 各 256 MiB、process 4 MiB。二进制桥接为 40 B 头 `version/state_bytes/initial/actors/count`，后接最多 256 条 40 B `actor/sequence/operation/delta/reserved`，路由信封不算入 32 B 逻辑业务请求。先完整校验精确长度/路由/字段，再装载可信产物。
 
-Wings 核对实际提交的长度/计数器/ID/32 B 前缀，完整 padding 沿已测 Bytes 原语而不是全量导出；BEAM 在活 actor 停止前检查全部 padding。失败旧值与逻辑资源归零另行核对，不等同 RSS。OTP 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 32768 +Q 1024`，每 actor 的 `max_heap_size=262144` words 仍非 OS 内存硬隔离。v2 输出最多 1 MiB，业务 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 deadline 3 秒；仅经 Python 限制器执行，不裸跑 escript。真实 BEAM 显式启用，未安装时失败、不回退成模型通过：
+Wings 核对实际提交的长度/计数器/ID/32 B 前缀，完整 padding 沿已测 Bytes 原语而不是全量导出；BEAM 在活 actor 停止前检查全部 padding。失败旧值与逻辑资源恢复启动基线另行核对，不等同 RSS。OTP 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 32768 +Q 1024`，每 actor 的 `max_heap_size=262144` words 仍非 OS 内存硬隔离。v2 输出最多 1 MiB，业务 CPU 5 秒/墙钟 10 秒/禁 core、actor 阶段总 deadline 3 秒；仅经 Python 限制器执行，不裸跑 escript。真实 BEAM 显式启用，未安装时失败、不回退成模型通过：
 
 ```sh
 cargo build --workspace --locked --bins --examples
@@ -90,7 +92,7 @@ WINGS_PROFILE=release python3 scripts/verify_senders_counter.py --compare-beam
 
 占槽是准入点不是提交点；占槽与 `!` 之间退出/关闭的请求仍算已接受，依据目标 DOWN 结束 pending，不能重试造成重复。只有绑定 actor 能归还，关闭不会因迟到消息/归还重开，旧 gate 不重新绑定；可信驱动保证发送者不在占槽后永久崩溃。本模块不是恶意代码沙箱或完整资源账本，未来性能/整机内存必须计入其原子元数据和全部真实 mailbox 成本。
 
-v4 固定三个容量 1/100/256，每个独立受限子进程内运行两个完整 4 KiB state 的业务 actor。目标先进入 CPU Hold，确认已开始再排满请求，下一条拒绝且排队数不变；健康目标仍可通过单向消息提交 +7。随后关闭/停止满队列目标，所有已接受请求失败、旧入口拒绝，清理后输出；不是等待队列自然排空来伪造关闭。Wings 检查原 live owner、每结果只能消费一次和最终三级逻辑归零，BEAM 消费目标 DOWN、确认完整旧 state/队列长度及 gate 关闭；不声称 BEAM 有 Wings 资源账本。`initial_value` 只表示 Hold 前状态，不是 Wings 退出时全量导出。
+v4 固定三个容量 1/100/256，每个独立受限子进程内运行两个完整 4 KiB state 的业务 actor。目标先进入 CPU Hold，确认已开始再排满请求，下一条拒绝且排队数不变；健康目标仍可通过单向消息提交 +7。随后关闭/停止满队列目标，所有已接受请求失败、旧入口拒绝，清理后输出；不是等待队列自然排空来伪造关闭。Wings 检查原 live owner、每结果只能消费一次和最终三级逻辑资源回到启动基线，BEAM 消费目标 DOWN、确认完整旧 state/队列长度及 gate 关闭；不声称 BEAM 有 Wings 资源账本。`initial_value` 只表示 Hold 前状态，不是 Wings 退出时全量导出。
 
 BEAM 固定 `+S 2:2 +A 1 +SDcpu 1:1 +SDio 1 +P 1024 +Q 1024`，业务 actor max_heap_size 为 262144 words；原子 gate 自测增加两发送进程竞争、各自 FIFO、开始归还/复用、非法容量、关闭与发送竞态。业务 CPU 5 秒/墙钟 10 秒/禁 core、共享 actor 阶段 3 秒，AOT 原 CPU 20 秒/墙钟 30 秒不变。真实 OTP 29 须显式启用，默认完整 AOT 只跑 Wings/模型：
 
@@ -112,7 +114,7 @@ WINGS_PROFILE=release python3 scripts/verify_admission_counter.py --compare-beam
 
 驱动最多保留 256 条未收到实际结果的请求，满时记 `pending_full`；队列满记 `mailbox_full`，均不补发、不重试。即使外部 100ms deadline 已过，原 pending 仍占空间直到实际回复，以免超时造成无界迟到结果。`observed_ns < planned_ns+100000000` 才记 `reply`，边界及之后记 `timed_out`，迟到不能改回成功；超时不取消已接受业务，最终仍核对其提交值。Wings 内部请求租约用剩余阶段时间，仅用于保留迟到实际结果，不能据此移动业务 deadline。若 3 秒总阶段内未收齐真实结果、actor 失败或清理异常，则整个探测失败，不输出成功样本集。
 
-独立 Python 重算每次路由/计划/外部 deadline、256 pending 上界、每目标递增与最终值、拒绝不执行和样本总数；两运行时拒绝位置不必相同，不以匹配延迟为正确性条件。BEAM 在规范化前另核对实际回复的每目标顺序、完整 padding 与 monitor；Wings 核对提交 Bytes 长度/ID/32 B 前缀及逻辑归零。模型还验证精确截止边界、迟到不复活、超时 pending 不提前复用、伪造记录与错误配置。v5 沿用 CPU 5 秒/墙钟 10 秒/禁 core、总阶段 3 秒，默认完整 AOT 只跑 Wings/模型，真实 OTP 29 仍须显式启用：
+独立 Python 重算每次路由/计划/外部 deadline、256 pending 上界、每目标递增与最终值、拒绝不执行和样本总数；两运行时拒绝位置不必相同，不以匹配延迟为正确性条件。BEAM 在规范化前另核对实际回复的每目标顺序、完整 padding 与 monitor；Wings 核对提交 Bytes 长度/ID/32 B 前缀及资源回到启动基线。模型还验证精确截止边界、迟到不复活、超时 pending 不提前复用、伪造记录与错误配置。v5 沿用 CPU 5 秒/墙钟 10 秒/禁 core、总阶段 3 秒，默认完整 AOT 只跑 Wings/模型，真实 OTP 29 仍须显式启用：
 
 ```sh
 cargo build --workspace --locked --bins --examples
@@ -154,7 +156,7 @@ WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --ar
 
 冷actor2..101每10ms各发送一次心跳，计划为 `t0+floor(k/100)*10000000ns`，同一burst100条同刻，不均匀摊开。短测只接受严格字符串`10`/`30`，分别100/300条到达；直接发送、不等旧回复/不暂停计划/不重试。热任务正常返回后立即续发，直到最后计划burst发送完；随后收齐已有CPU/冷请求，不继续续热任务。总结果容量256，其中255实际冷pending加一个保留热请求；队列满/冷pending满逐条记录拒绝。冷请求计划后100ms外部deadline，迟发不重基准、超时pending仍占空间至真实回复，不取消已接受业务。
 
-输出v7 smoke包括与v5同形状的全部`samples`、热任务`hot:[sequence,sent_ns,observed_ns,1000000]`、每actor实际`committed`。最终要求至少一个CPU实际完成、所有接受的心跳实际收齐并核对state；BEAM还检查完整padding/实际每目标回复顺序/monitor，Wings检查提交Bytes长度/ID/32 B前缀及逻辑归零。CPU预算固定10000000 steps，另以小预算真实执行验证不可绕过。任何阶段超时、业务失败或清理不完整使整个测试失败；CPU5秒/墙钟10秒/禁core、总阶段3秒与完整AOT20/30秒不变。
+输出v7 smoke包括与v5同形状的全部`samples`、热任务`hot:[sequence,sent_ns,observed_ns,1000000]`、每actor实际`committed`。最终要求至少一个CPU实际完成、所有接受的心跳实际收齐并核对state；BEAM还检查完整padding/实际每目标回复顺序/monitor，Wings检查提交Bytes长度/ID/32 B前缀及资源回到启动基线。CPU预算固定10000000 steps，另以小预算真实执行验证不可绕过。任何阶段超时、业务失败或清理不完整使整个测试失败；CPU5秒/墙钟10秒/禁core、总阶段3秒与完整AOT20/30秒不变。
 
 独立Python重算全部同刻计划/目标/每目标值/最终状态、拒绝与超时、255实际冷pending上界，报告每冷actor最大观测等待及拒绝/超时、nearest-rank p50/p99/最大值，少于10000不报p999。`observed_while_CPU_pending`只表示CPU票据开始到结果观察区间的重叠，不能冒充CPU当时仍在执行、实际抢占或让出时间。两端CPU完成次数/拒绝位置/时间不要求相同，不将某种OS交错写成必然。
 
@@ -235,7 +237,7 @@ Wings 驱动位于 [`beam_counter.rs`](../crates/wings-vm/examples/beam_counter.
 
 两端共享 JSON schema；Wings 测试子进程经内部二进制桥接运行：32 B 头 `version:u64/state_bytes:u64/initial:i64/count:u64`，后接最多 256 条 32 B 请求，全部 big-endian；最大 8224 B，校验连续 sequence、operation 1/2、reserved 0 和精确长度后才装载产物。这不是通用网络/CLI 协议，不把四个 Int 参数或请求表的物理成本称为 32 B。
 
-Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目归零只证明逻辑清理，不证明 RSS。
+Wings mailbox/request 表各 32、堆四槽、一个 actor，VM/tenant/process 字节额度各 32 MiB；Configure 在业务窗口前设完整 state。每次成功由真实已提交 Bytes 核对计数器/actor ID 和固定前缀零填充，失败副本来自旧提交根，不从模型推测。固定诊断只含长度/32 B 前缀，不独立证明其余全部 padding；完整 state 初始化/复制沿已有字节原语回归，未声称导出全部状态。驱动输入/JSON/结果是有界外部测试内存，不等同全部受管计费。actor 总 deadline 3 秒，Wings 业务子进程 CPU 5 秒/墙钟 10 秒/禁 core，编译沿 CPU 20 秒/墙钟 30 秒；超时杀整个子进程组回收。资源账目回到启动基线只证明逻辑清理，不证明 RSS。
 
 v1 套件跨三种 state 检查空/256 条、i64 两端与溢出优先级、窗口 1/32/33/256 失败位置、候选不提交、FIFO 与故障队尾终结；多 actor 正确性见 v2，短时开环见 v5，独立长时入口见 v6，CPU/突发心跳短时业务见 v7。完整 `verify_scalar_aot.py` 默认接入 Wings/模型模式，两平台 CI 无需自动安装 OTP，也不自动执行长测；真实 BEAM 结果需单独记录平台/版本，不把默认模式写成已经运行 BEAM。尚无长时公平性、完整过载性能或吞吐/整机内存门禁结论。
 

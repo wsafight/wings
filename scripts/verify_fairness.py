@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_multi_counter import invoke
 from verify_open_loop import integer, require
 
@@ -108,6 +109,7 @@ def validate(result, duration, runtime):
         require(type(result.get(key)) is type(expected) and result[key] == expected, key)
     require(result["environment"]["runtime"] == runtime, "runtime")
     if runtime == "wings":
+        receipts.validate(result)
         require(result.get("resources_released") is True, "resources")
         require(integer(result["environment"]["workers"]) == 1, "workers")
         require(integer(result["environment"]["slice_steps"]) == 4096, "slice steps")
@@ -179,7 +181,8 @@ def model_tests():
     result = {"version": 7, "status": "ok", "mode": "smoke", "actors": 101,
               "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": 255,
               "deadline_ns": 100_000_000, "message_bytes": 32, "states_verified": True,
-              "resources_released": True, "samples": samples, "hot": [[1, 0, 2_000_000, 1000000]],
+              "resources_released": True, "bootstrap_bytes": 168, "remaining_bytes": 168,
+              "samples": samples, "hot": [[1, 0, 2_000_000, 1000000]],
               "committed": [1] * 101, "environment": {"runtime": "wings", "workers": 1, "slice_steps": 4096, "quantum_ns": 1_000_000}}
     summary = validate(result, 10, "wings")
     require(summary["observed_while_CPU_pending"] == 100 and summary["p999_ns"] is None, "overlap/small sample")

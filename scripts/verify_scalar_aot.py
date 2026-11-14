@@ -1153,6 +1153,7 @@ def main():
         command([COMPILER, "build", ROOT / "examples/beam-multi-counter.wings", "-o", multi_counter])
         command([sys.executable, ROOT / "scripts/verify_multi_counter.py", "--artifact", multi_counter])
         command([sys.executable, ROOT / "scripts/verify_open_loop.py", "--artifact", multi_counter])
+        command([sys.executable, ROOT / "scripts/verify_resource_receipt.py"])
         command([sys.executable, ROOT / "scripts/verify_measurement.py"])
         fairness = parent / "beam-fairness"
         command([COMPILER, "build", ROOT / "examples/beam-fairness.wings", "-o", fairness])

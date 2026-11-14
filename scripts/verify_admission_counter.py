@@ -6,6 +6,7 @@ import sys
 import tempfile
 
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_multi_counter import invoke
 
 
@@ -28,6 +29,7 @@ def verify(artifact, compare_beam):
             for key, value in expected.items():
                 assert type(result.get(key)) is type(value) and result[key] == value, (runtime, key, result)
             if runtime == "wings":
+                receipts.validate(result)
                 assert result["resources_released"] is True and result["environment"]["workers"] == 2, result
             else:
                 assert result["environment"]["otp"] == "29" and result["environment"]["schedulers"] == 2, result

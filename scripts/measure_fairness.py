@@ -12,6 +12,7 @@ import sys
 import measure_memory
 import measure_open_loop as measure
 import verify_scalar_aot as aot
+import verify_resource_receipt as receipts
 from verify_fairness import quantiles
 from verify_open_loop import integer, require
 
@@ -192,6 +193,7 @@ def validate_trace(path, result):
     environment = result["environment"]
     require(environment["runtime"] in ("wings", "beam"), "runtime")
     if environment["runtime"] == "wings":
+        receipts.validate(result, historical=True)
         require(result.get("resources_released") is True, "Wings cleanup")
         for key, value in (("workers", 1), ("slice_steps", 4096), ("quantum_ns", 1_000_000)):
             require(type(environment[key]) is int and environment[key] == value, key)
@@ -273,6 +275,7 @@ def main():
             if runtime == "wings" and arguments.observe:
                 command.append("--observe")
             result = measure.measurement(command, trace, output / name, "fairness", 10000, probe,
+                                         runtime=runtime,
                                          validator=lambda path, _name, _rate, result: validate_trace(path, result))
             results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                             "platform_memory": result["platform_memory"],
