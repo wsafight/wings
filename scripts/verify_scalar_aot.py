@@ -831,11 +831,25 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
         print("Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
 
 
+def verify_cli_module_admission(parent):
+    directory = parent / "cli-module-admission"
+    directory.mkdir()
+    (directory / "manifest.json").write_text("not json")
+    name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    with (directory / name).open("wb") as library:
+        library.truncate(16 << 20)
+    for options in [[], ["--heap-records", "1"]]:
+        result = command([VM, "run", "--trusted", directory, *options], expected=1)
+        assert not result.stdout
+        assert "resource_exhausted at Vm" in result.stderr, result.stderr
+
+
 def main():
     if not COMPILER.is_file() or not VM.is_file():
         raise SystemExit("Build wings-compile and wings-vm for the selected WINGS_PROFILE first")
     with tempfile.TemporaryDirectory(prefix="wings-aot-") as temporary:
         parent = Path(temporary)
+        verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
         for count in (16, 64, 256):

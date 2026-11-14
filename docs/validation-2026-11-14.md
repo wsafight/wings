@@ -351,11 +351,30 @@ debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性回归：
 
 保留既有交叉 linker 的 `ignoring deprecated linker optimization setting '1'` 警告，没有更改工具链参数来消除日志；客体测试后停止。没有新增原生 Linux CI、debug/clippy/MSRV/doc-tests 或 Linux BEAM 数据，TCG 功能验证不替代原生双平台或性能/内存门禁。旧未计费工具入口、CLI 适配层、完整业务值/账本、公平性及 BEAM 双门禁仍需完成，MVP 状态不变。
 
+## CLI 默认标量路径计费：ADR-0081
+
+基于 `e43aced`，按 [ADR-0081](adr/0081-accounted-default-cli.md) 将 `wings-vm run --trusted` 默认模式接入与堆模式相同的计费根、子账户、模块加载及单槽零缓存栈池。默认标量由未计费改为原堆模式的 16 MiB 三级逻辑字节上限，堆模式的额度不变；CLI 帮助同步说明两种模式。JSON 协议、ABI v15、语言拼写、总步数与检查点不变。
+
+新增完整 AOT 内的加载前拒绝回归：用 16 MiB 稀疏伪库和坏清单复现旧默认路径先报 `expected ident`，见 `/tmp/wings-cli-accounting-before.log`；修复后默认/堆模式都先报 `resource_exhausted at Vm` 且 stdout 为空，见 `/tmp/wings-cli-accounting-focused-debug.log`。原库大小上限仍为 64 MiB，原模块保守预算为文件页数加 2 MiB，因超过 CLI 原 16 MiB 额度而拒绝，没有加载伪原生代码或在宿主制造内存耗尽。
+
+macOS AArch64、Rust 1.99.1 下，workspace check、all-target clippy `-D warnings`、fmt、Rust 1.85.0 all-target check 通过。debug/release all-targets 各 82 个 harness、516 项测试通过，两种构建 doc-tests 通过，日志为 `/tmp/wings-cli-accounting-{check,clippy,fmt,msrv,tests-debug,tests-release,doctests-debug,doctests-release}.log`。
+
+完整 debug AOT 通过，见 `/tmp/wings-cli-accounting-aot-debug.log`。首次 release AOT 在既有 TCP invalid 场景失败：预期 invalid=3，实际 invalid=2、io_errors=1，正常业务 committed=4，资源已回到 168 B 根基线；报告保留在 `/tmp/wings-cli-accounting-aot-release.log`。独立 TCP 复核随后在 disconnected 场景收到 reset，服务正常退出但 published=0、max_socket_buffer=0、io_errors=1，见 `/tmp/wings-cli-accounting-tcp-release.log`。此次没有修改 TCP 实现、缓冲上限、I/O deadline、业务预算或测试期望。
+
+受限独立 socket 探针使用相同 16384 B 设置与 65536 B 上限，计划至多 128 连接，在第 97 次连接读取到 SO_RCVBUF=277696 B 后失败；探针子进程 CPU 5 秒/墙钟 10 秒/禁 core，见 `/tmp/wings-cli-accounting-socket-probe.log`。它证明本机存在设置后读取超额的情况，尚不能确定上述两次 TCP 失败都由该条件触发；TCP 稳定性与资源边界仍是未解决项，不能以复跑成功消除。
+
+保持原参数首次完整 release 复跑通过，见 `/tmp/wings-cli-accounting-aot-release-rerun.log`，前述失败原样保留。debug/release 各显式 Wings/BEAM/Python v1、v2 正确性回归通过：v1 45 组业务、28 JSON/14 桥接拒绝，v2 18 组业务、49 JSON/17 桥接拒绝。日志为 `/tmp/wings-cli-accounting-beam-v{1,2}-{debug,release}.log`。没有重跑五对长测或宣称吞吐、尾延迟、整机内存改进。
+
+Linux 仍是 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 功能验证。冻结包 `/tmp/wings-cli-accounting-linux.tar.gz` 含 305 份源码、82 个 harness 和 60 个工具/示例，排除语法评审稿；执行前与完整 AOT 后全部 447 项 SHA-256 一致，实现源码与宿主最终工作区一致，验证记录后补。516 项 release 测试与完整受限 AOT 通过，包含新 CLI 默认/堆模式加载准入、真实正常调用及错误/清理场景。见 `/tmp/wings-cli-accounting-linux-{tests,aot,hashes,host-sources}.log`。原 AOT CPU 20 秒/墙钟 30 秒/禁 core、业务 CPU 5 秒/墙钟 10 秒和 3 秒阶段不变，保留旧 linker 警告；客体验证后停止。该结果没有新增原生 Linux CI、debug/clippy/MSRV/doc-tests 或真实 Linux BEAM 证据。
+
+依赖隔离、禁 unwind feature、Python AST、98 份 Markdown 的 955 条相对路径/围栏及 diff 空白检查通过，见 `/tmp/wings-cli-accounting-static.log` 与 `/tmp/wings-cli-accounting-docs-final.log`。本次只补 CLI 核心计费路径，JSON/标准 I/O 与宿主控制对象的完整计费、独立工具入口、业务值、公平性和原生双平台 BEAM 双门禁仍未完成；macOS TCP 异常独立保留，MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
 - 并发失败、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，仍缺完整性能验收。
 - 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 与 mixed-4k 各五对 30s/60s 只补长时集成；mixed-4k 两端均有拒绝/超时，仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
+- macOS TCP 既有场景的间歇失败与 socket 设置后读取超额，须定位实际错误阶段并保持原资源与 I/O 边界修正，不能用一次成功复跑视为关闭。
 
 M0/MVP 状态不变；不推送、发布或降低验收门槛。

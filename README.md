@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0081](docs/adr/0081-accounted-default-cli.md) 将 CLI 默认标量模式接入与堆模式相同的计费根、模块加载及单槽栈池。两种模式均使用原 16 MiB 三级逻辑字节额度，超额模块在解析/装载前拒绝；JSON/标准 I/O 适配层及其余分配仍待闭环。
+
 [ADR-0080](docs/adr/0080-central-execution-admission.md) 将初始化和所有计费执行入口的控制预留统一到核心，补直接调用漏计并删除 worker 重复票据。标量实例保留显式池，控制额度不足先拒绝，原 4352 字节和 ABI v15 不变；`accounted_stacks` 随完整受限 AOT 回归。
 
 [ADR-0079](docs/adr/0079-accounted-vm-bootstrap.md) 为 VM 根与准入门闩增加启动计费入口，并强制该树的子节点预留控制存储。CLI 堆模式与 TCP 使用此入口；业务清理回到存活根基线。`vm_bootstrap` 已接完整 AOT，旧工具模型及其余资源边界仍待完成。
@@ -88,7 +90,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 [ADR-0052](docs/adr/0052-cross-thread-module-leases.md) 使只读 `ScalarModule`/`HandlerId` 可跨线程共享，计费模块使用 Arc 租约；四个线程各建独立 worker，退出后由最后代码所有者归还预算。`parallel_modules` 是并行宿主回归，不是 M:N 调度器；actor、堆、栈池和挂起活栈仍在各自原线程。
 
-按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 堆模式使用计费子账户；旧账户构造入口及 VM 根 bootstrap 仍是未计费工具路径，不代表完整资源隔离。
+按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 两种模式使用计费根与子账户；根启动计费见 ADR-0079，旧零基线工具构造器仍保留，不代表完整资源隔离。
 
 ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，引用回复仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。
 
@@ -100,7 +102,7 @@ ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](do
 
 资源账户与预留票据支持跨线程共享/归还，同 VM 的三级四维准入和净转移通过一个门闩串行提交，失败不留半账；见 [ADR-0045](docs/adr/0045-concurrent-resource-admission.md)。actor/活栈仍绑定原线程，这不是 M:N，也没有无锁或吞吐领先结论。
 
-`ScalarModule::load_accounted(directory, vm)` 在解析/装载前预留 VM 级模块逻辑预算，同模块实例共享一次预留；Library 随最后代码租约交还，挂起调用先正常取消。heap CLI 使用该路径，旧 `load_trusted` 工具入口不计费，限制见 [ADR-0044](docs/adr/0044-native-module-leases.md)。这不是热更新或精确 RSS 计量。
+`ScalarModule::load_accounted(directory, vm)` 在解析/装载前预留 VM 级模块逻辑预算，同模块实例共享一次预留；Library 随最后代码租约交还，挂起调用先正常取消。CLI 两种模式使用该路径，旧库 API `load_trusted` 工具入口不计费，限制见 [ADR-0044](docs/adr/0044-native-module-leases.md)。这不是热更新或精确 RSS 计量。
 
 受管 GC 每 16 个节点/根检查预算、取消与让出，暂停后从原 phase 继续；总预算包含 GC 工作单位，堆统计不扫描全堆。示例 `examples/chunked-gc.wings`，限制见 [ADR-0043](docs/adr/0043-chunked-runtime-gc.md)；尚无块耗时或同业务性能达标结果。
 

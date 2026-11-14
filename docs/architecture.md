@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0081](adr/0081-accounted-default-cli.md) 将默认标量 CLI 与堆 CLI 合并为同一计费构造路径，模块先准入再解析/装载，实例保留同 process 的单槽池。两种模式均使用原堆模式 16 MiB 三级逻辑字节上限；不把它解释为 JSON/标准 I/O、allocator 或动态装载器全部开销的闭环。
+
 [ADR-0080](adr/0080-central-execution-admission.md) 由执行核心在控制/参数/协程和借栈前统一预留原 4352 字节，initializer 本地持有、Invocation 持有至正常退出清理；单/多 worker 删除外层重复票据。显式标量池现在与堆模式一样保存在实例中，detach 仍释放本线程池、attach 重新绑定，不引入活栈跨线程移动。失败不丢队首或载荷，ABI v15 与资源上限不变。
 
 [ADR-0079](adr/0079-accounted-vm-bootstrap.md) 在根与共享准入门闩的 Arc 分配前检查逻辑启动成本，直接初始化根计数，避免保存自引用 Reservation。计费根下所有子构造器都先预留元数据；最后后代/票据释放前根成本持续存在，业务清理只能回到启动基线。CLI 堆模式与 TCP 已采用该入口，完整 VM builder 和其余分配仍待收敛；不修改 ABI v15 或线程执行权。
@@ -158,7 +160,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 `start_controlled` 从每线程有界共享池借出 256 KiB 可用 guarded stack（默认 64 槽、缓存 2 槽），`start_in_pool` 可显式传入 `StackPool`；耗尽或分配失败先返回，不终止实例。池使用自研的整块 mmap、按平台页大小设置 guard page、已完成槽位缓存和 `trim` 页回收。`ScalarExecution` 拥有参数、令牌、协程，并独占借用实例，不能 Send/Sync。`resume(非零时间片步数)` 在生成代码检查点经 C ABI 慢路径暂停，保留原栈和全部标量活跃值，再从原位置恢复；完成后才提交并立即归还槽位。切换使用禁用 unwind 的 `corosensei 0.3.3`，默认栈分配器只用于对照实验。丢弃未完成 handle 会终止实例；挂起栈先收到内部取消命令、正常返回再释放，不调用强制 unwind/reset。同步 `invoke`/CLI 与 initializer 也借用池内栈，正常返回立即归还；worker 通过 `instantiate_in_pool` 将初始化栈计入进程额度，额度不足在 spawn 时回滚。池不代替 compiler 根、GC 或完整资源账本，当前栈检查见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，原栈恢复与池契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md) 和 [ADR-0012](adr/0012-bounded-stack-pool.md)。
 
-`wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源、ABI 和无外部 native 回调/线程的生命周期要求。共享库由代码租约持有，不再永久泄留；OS 是否立即解除页映射由装载器决定，不提供运行中热卸载。heap CLI 使用计费加载，原标量工具入口仍不计费。
+`wings-vm run --trusted <目录>` 只装载自己构建的可信本机产物。**清单校验不能证明机器码安全**；共享库装载本身可能执行原生初始化代码，`--trusted` 不是沙箱。库 API 的装载入口为 `unsafe`，调用者必须保证来源、ABI 和无外部 native 回调/线程的生命周期要求。共享库由代码租约持有，不再永久泄留；OS 是否立即解除页映射由装载器决定，不提供运行中热卸载。CLI 两种模式都使用计费加载，独立库工具入口 `load_trusted` 仍不计费。
 
 驱动从 stdin 接收最多 64 KiB 的逐行 JSON：`{"message":"Inc","args":[3]}`。Int 使用有符号 64 位 JSON 整数，Bool 使用 JSON 布尔，Unit 使用 null。请求输出 `{"reply":值}`，`-> Unit` 输出 `{"reply":null}`；单向入口成功处理后输出 `{"accepted":true}`，这是驱动确认，不是语言自动回复。输入错误或受管算术失败写 stderr 并退出非零，失败调用不提交候选状态，也不输出成功回复；此前已完成调用的输出不撤回。stdin EOF 正常退出，启动失败退出 1，命令用法错误退出 2。原型没有网络、文件或语言内 I/O。
 

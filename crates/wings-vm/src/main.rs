@@ -4,15 +4,13 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 use wings_abi::{DEFAULT_MAX_STEPS, ValueType};
-use wings_vm::{
-    CancellationToken, ResourceAccount, Resources, ScalarModule, ScalarProcess, StackPool,
-};
+use wings_vm::{CancellationToken, ResourceAccount, Resources, ScalarModule, StackPool};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments == ["--help"] || arguments == ["-h"] {
         println!(
-            "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]\n\nRuns only trusted host-native AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM. Each handler defaults to 1000000 execution steps. Heap mode uses fixed 16 MiB VM/tenant/process byte limits."
+            "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]\n\nRuns only trusted host-native AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM. Each handler defaults to 1000000 execution steps. Both execution modes use fixed 16 MiB VM/tenant/process logical byte limits."
         );
         return ExitCode::SUCCESS;
     }
@@ -61,22 +59,20 @@ fn main() -> ExitCode {
 }
 
 fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<(), String> {
+    let limits = Resources {
+        bytes: 16 << 20,
+        processes: 1,
+        messages: 0,
+        requests: 0,
+    };
+    let vm = ResourceAccount::vm_accounted(limits)?;
+    let tenant = vm.tenant_accounted(limits)?;
+    let account = tenant.process_accounted(limits)?;
+    let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
+    let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let mut process = match heap_records {
-        None => unsafe { ScalarProcess::load_trusted(directory) }?,
-        Some(capacity) => {
-            let limits = Resources {
-                bytes: 16 << 20,
-                processes: 1,
-                messages: 0,
-                requests: 0,
-            };
-            let vm = ResourceAccount::vm_accounted(limits)?;
-            let tenant = vm.tenant_accounted(limits)?;
-            let account = tenant.process_accounted(limits)?;
-            let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
-            unsafe { ScalarModule::load_accounted(directory, &vm) }?
-                .instantiate_with_heap(&pool, &account, capacity)?
-        }
+        None => module.instantiate_in_pool(&pool)?,
+        Some(capacity) => module.instantiate_with_heap(&pool, &account, capacity)?,
     };
     let cancellation = CancellationToken::default();
     let mut reader = io::stdin().lock();
