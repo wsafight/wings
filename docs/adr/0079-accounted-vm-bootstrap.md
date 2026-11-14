@@ -3,6 +3,7 @@
 - 日期：2026-11-14
 - 状态：已采纳（VM 控制资源切片）
 - 后续：[ADR-0081](0081-accounted-default-cli.md) 补 CLI 默认标量模式的计费根、模块和显式池；适配层及其余资源边界仍待完成。
+- 后续：[ADR-0084](0084-accounted-root-module-admission.md) 要求计费根及后代接入的模块带有本 VM 计费租约。
 - 部分替代：[ADR-0050](0050-account-node-admission.md) 的根节点/共享门闩属于账本外 bootstrap，以及计费根下仍可创建未计费子节点的安排。
 - 沿用：[ADR-0045](0045-concurrent-resource-admission.md) 的 VM 级准入锁、三级净转移与末持有者归还。
 

@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（模块执行资源边界修正）
+- 后续：[ADR-0084](0084-accounted-root-module-admission.md) 补计费根对未计费工具模块的反向准入检查。
 - 部分替代：[ADR-0044](0044-native-module-leases.md) 仅校验已给定账户的 VM 身份，以及 [ADR-0053](0053-detached-process-images.md) 标量镜像可接回未计费池的安排。
 - 沿用：[ADR-0080](0080-central-execution-admission.md) 的控制准入与显式池保留、原 4352 字节、ABI v15 和资源/时间上限。
 

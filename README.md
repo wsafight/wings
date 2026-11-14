@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0084](docs/adr/0084-accounted-root-module-admission.md) 要求计费根接入的模块具有本 VM 的计费租约；未计费工具模块在初始化、调用、spawn 或镜像接回前拒绝，独立工具路径仍可使用。
+
 [ADR-0083](docs/adr/0083-accounted-module-execution.md) 禁止计费模块通过默认/显式未计费池执行或接回镜像；调用者须配置本 VM 的 process 池。拒绝不消耗镜像或改变旧状态，独立 `load_trusted` 工具入口仍保留原边界，ABI v15 与原资源上限不变。
 
 [ADR-0082](docs/adr/0082-bounded-tcp-segments.md) 修正 TCP 设置缓冲后仍可能增长的问题：macOS 已接受连接先限制 MSS，再设原缓冲大小；每次读写后继续检查实际容量。原资源/时限不变，新增设置错误、缓冲拒绝和实际 MSS 报告；配置前内核瞬时占用仍不在该上限保证内。

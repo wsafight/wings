@@ -197,7 +197,7 @@ impl ResourceAccount {
         level: ResourceLevel,
         limit: Resources,
     ) -> Result<Self, String> {
-        if self.root().node.accounted_root {
+        if self.has_accounted_root() {
             return self.child_accounted(required, level, limit);
         }
         if self.level() != required {
@@ -257,6 +257,10 @@ impl ResourceAccount {
 
     pub(crate) fn same_vm(&self, other: &Self) -> bool {
         self.root().same(other.root())
+    }
+
+    pub(crate) fn has_accounted_root(&self) -> bool {
+        self.root().node.accounted_root
     }
 }
 

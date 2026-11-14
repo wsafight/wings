@@ -122,6 +122,9 @@ impl ScalarModule {
         {
             return Err("module belongs to a different VM account".into());
         }
+        if self.inner.lease.is_none() && account.has_accounted_root() {
+            return Err("accounted VM requires an accounted module".into());
+        }
         Ok(())
     }
 
@@ -217,6 +220,98 @@ impl HandlerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accounted_roots_reject_tool_modules_without_entering_or_consuming_images() {
+        use crate::{CancellationToken, PreemptionToken, ScalarTask, StackPool};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ENTRIES: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn entry(
+            state: i64,
+            _arguments: *const i64,
+            output: *mut wings_abi::ScalarOutput,
+            _context: *mut wings_abi::ScalarContext,
+        ) -> u32 {
+            ENTRIES.fetch_add(1, Ordering::SeqCst);
+            unsafe {
+                *output = wings_abi::ScalarOutput {
+                    state,
+                    reply: state,
+                }
+            };
+            wings_abi::STATUS_OK
+        }
+        let limits = Resources {
+            bytes: 8 << 20,
+            ..Resources::default()
+        };
+        let module = ScalarModule {
+            inner: Arc::new(ModuleData {
+                manifest: Manifest {
+                    format: wings_artifact::FORMAT_VERSION,
+                    abi: wings_abi::SCALAR_ABI_VERSION,
+                    target: wings_abi::host_target().unwrap().into(),
+                    process: "Tool".into(),
+                    state: wings_abi::ValueType::Int,
+                    handlers: vec![Handler {
+                        name: "Get".into(),
+                        parameters: vec![],
+                        reply: Some(wings_abi::ValueType::Int),
+                    }],
+                },
+                initializer: entry,
+                entries: vec![entry as ScalarEntry].into_boxed_slice(),
+                _library: None,
+                lease: None,
+            }),
+        };
+        let vm = ResourceAccount::vm_accounted(limits).unwrap();
+        let bootstrap = vm.used();
+        let tenant = vm.tenant(limits).unwrap();
+        let account = tenant.process(limits).unwrap();
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let baseline = vm.used();
+        let slots = bound.stats();
+        assert!(module.instantiate_in_pool(&bound).is_err());
+        assert!(module.instantiate_with_heap(&bound, &account, 4).is_err());
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 0);
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(bound.stats(), slots);
+        let tools = StackPool::new(1, 0).unwrap();
+        let mut process = module.instantiate_in_pool(&tools).unwrap();
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 1);
+        let cancellation = CancellationToken::default();
+        let preemption = PreemptionToken::default();
+        assert!(
+            process
+                .start_in_pool("Get", &[], 64, &cancellation, &preemption, &bound)
+                .is_err()
+        );
+        let mut task = ScalarTask::new(process);
+        let handler = module.handler("Get").unwrap();
+        assert!(
+            task.start(&handler, &[], 64, &cancellation, &preemption, &bound)
+                .is_err()
+        );
+        assert!(!task.is_active());
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 1);
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(bound.stats(), slots);
+        let mut image = task.into_process().detach();
+        assert!(image.attach(&bound).is_err());
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(bound.stats(), slots);
+        let mut process = image.attach(&tools).unwrap();
+        assert!(image.attach(&tools).is_err());
+        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
+        assert_eq!(ENTRIES.load(Ordering::SeqCst), 2);
+        drop((
+            process, image, handler, module, tools, bound, pool, account, tenant,
+        ));
+        assert_eq!(vm.used(), bootstrap);
+    }
 
     #[test]
     fn accounted_modules_reject_tool_pools_before_entering_or_consuming_images() {

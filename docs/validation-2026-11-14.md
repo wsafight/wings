@@ -409,6 +409,18 @@ debug/release 完整原限 AOT 各首次通过，包含新最大连接/帧数与
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体；release 冻结包 `/tmp/wings-module-binding-linux.tar.gz` 含 307 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。各测试子进程保留 CPU 20s/墙钟 30s/core 0：519 项测试及完整受限 AOT 通过；执行后全部 449 项 source/harness/binary hash 一致，冻结源码也与宿主实现一致，随后仅补本验证记录。见 `/tmp/wings-module-binding-linux-{tests,aot,hashes,host-sources}.log`。验证后停止客体，保留交叉 linker 警告；这些是功能证据，不替代原生 Linux CI、双平台 BEAM 吞吐/整机内存门禁或完整账本。
 
+## 计费根的模块租约准入：ADR-0084
+
+基于 `eceb441`，按 [ADR-0084](adr/0084-accounted-root-module-admission.md) 收敛 `load_trusted` 工具模块与 `vm_accounted` 的反向组合。新增可信 Rust ABI fixture 先在旧实现实际失败：`module.instantiate_in_pool(&bound).is_err()` 未成立，见 `/tmp/wings-root-module-before.log`。该 fixture 只证明核心入口行为，不冒充生成代码证据。
+
+核心从账户推导根已有的启动计费标志，在原 VM 身份检查后拒绝没有模块租约的代码；不新增账户或预留。回归检查初始化、带堆初始化、受控调用、owned task 和镜像拒绝不进入业务、不改账目和池、不消费镜像，随后工具路径仍可执行。真实 AOT `vm_bootstrap` 增加相同标量入口、Bytes 初始化与 worker/Scheduler 的模块拒绝，原单槽容量仍可接入合法计费模块；单/双 worker 的标量与 Bytes 结果租约最终回到根启动基线。保持原资源、CPU/墙钟和阶段截止时间。
+
+首次完整 debug AOT 在 `accounted_stacks` 发现旧 ADR-0080 直接调用 fixture 仍把工具模块放进计费根，见 `/tmp/wings-root-module-aot-debug.log`。改为每个根加载计费模块后，第二次在填充 process/tenant 额度时先遇到 VM 拒绝：真实模块占用原 4 MiB 根的余量，不再能分别填满下级，见 `/tmp/wings-root-module-final-aot-debug.log`。保留原 4 MiB/3 MiB/1 MiB 和单槽的工具模块拒绝/账目零变化检查；将完整三级控制专项移入已有 32 MiB 的 `vm_bootstrap` 回归，保留 tenant 3 MiB、process 1 MiB、单槽和控制 4352 B，并加强为必须报告目标级别的资源错误。正路径使用真实计费模块、按实际 used 填充，最后同时释放模块再核对启动基线；其余独立旧 `vm` 工具树用例保持不变，不扩大任何既有工具入口的配置或时限。
+
+最终 macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 与 doc-tests 通过；debug/release 各 82 个 harness、520 项测试通过。两种构建的完整受限 AOT，以及显式 Wings/BEAM/Python v1 的 45 组业务、28 项 JSON/14 项桥接拒绝和 v2 的 18 组业务、17 项桥接/49 项 JSON 拒绝全部通过。新增 `accounted_stacks` 与 `vm_bootstrap` 输出见 `/tmp/wings-root-module-focused-aot.log`；完整日志为 `/tmp/wings-root-module-verified-{check,clippy,msrv,fmt,tests-debug,doctests-debug,build-debug,aot-debug}.log`、`/tmp/wings-root-module-{tests,doctests,build,aot}-release.log` 与 `/tmp/wings-root-module-beam-v{1,2}-{debug,release}.log`。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体；release 冻结包 `/tmp/wings-root-module-linux.tar.gz` 含 308 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿。各测试子进程保留 CPU 20s/墙钟 30s/core 0：520 项测试及完整受限 AOT 通过；执行后全部 450 项 source/harness/binary hash 一致，冻结源码也与宿主实现一致，随后停止客体。见 `/tmp/wings-root-module-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-root-module-host-sources.log`。这些是功能证据，不替代原生 Linux CI、双平台 BEAM 吞吐/整机内存门禁或完整账本。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
