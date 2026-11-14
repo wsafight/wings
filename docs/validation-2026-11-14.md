@@ -499,6 +499,16 @@ Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG �
 
 最终各 harness 保留 CPU 20s/墙钟 30s/core 0，完整受限 AOT 包含新清单来源拒绝与原 JSON/I/O/业务；执行后全部 463 项 source/harness/binary hash 一致，321 份冻结源码与宿主工作区一致，随后仅补本验证记录。见 `/tmp/wings-artifact-error-linux-{hashes,stop}.log` 与 `/tmp/wings-artifact-error-host-sources.log`。客体已停止，交叉 linker 警告保留；不将 TCG 功能回归替代原生 Linux CI、完整资源账本、时序稳定性或同负载 BEAM 吞吐/整机内存门禁。
 
+## 调度退出诊断测试的清理边界
+
+基于 `86c5a58`，修正上节首次 Linux 测试暴露的错误断言。既有 [ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 明确诊断在 actor/mailbox 清理前发布；worker 在 registry 解锁后销毁消息和退役 actor。旧测试读取 last_exit 前后比较全局 vm.used，可能恰好跨过该清理，先前实际观察到一条消息和 1368 B 预留归还。该现象不证明诊断查询持有资源，也不能靠重跑通过证明已修复。
+
+保留运行中的故障分类、owner/旧 Pid、旧提交状态、预算失败、成功/stop 不覆盖诊断及其他 actor 前进的全部断言；只把“重复读取不改变账目”的检查移至 scheduler 销毁并 join worker 后。此时明确验证 process/message/request 为零，handle 仍持有固定控制存储，两次查询后完整 Resources 与基线相等，最后释放 handle 全部归零。运行时实现、发布顺序、阶段/CPU/墙钟时限、容量及原 MVP 门槛不变，本次不改 ADR 契约。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、550 项测试通过，目标测试分别额外执行 32 次独立子进程回归。每个重复子进程保留 CPU 20s/墙钟 30s/core 0，记录为 `/tmp/wings-scheduler-diagnostic-repeat-{debug,release}.log`；其余检查见 `/tmp/wings-scheduler-diagnostic-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release}.log`。依赖隔离、协程禁 unwind、Python AST、108 份 Markdown 的 1059 条相对路径/围栏和 diff 检查通过。本片只改测试和评测说明，未重新执行 AOT 或 BEAM 业务，不沿用历史运行结果冒充新测量，也不据此声称三秒开环超时已经解决。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-scheduler-diagnostic-linux.tar.gz` 含 321 份源码、82 个 harness 与 60 个工具/示例，排除语法评审稿；原独立子进程限额下 550 项 release 测试通过，目标测试另外 32 次独立重复通过，与本机合计 96 次。测试后全部 463 项 source/harness/binary hash 一致，321 份冻结源码与宿主工作区一致，随后仅补本验证记录；日志为 `/tmp/wings-scheduler-diagnostic-linux-{tests,repeat,hashes,stop}.log` 与 `/tmp/wings-scheduler-diagnostic-host-sources.log`。客体已停止；没有重跑 AOT/BEAM，不将 TCG 功能或固定重复次数当作原生 Linux CI、完整时序稳定性或性能/内存双门禁证据。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

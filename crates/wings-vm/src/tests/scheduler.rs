@@ -1112,9 +1112,7 @@ fn scheduler_exit_diagnostics_keep_old_state_and_survive_cleanup_without_busines
         Some(ExecutionFault::DivisionByZero)
     );
     assert!(handle.snapshot(first).is_err());
-    let baseline = vm.used();
     assert_eq!(handle.last_exit(), Some(diagnostic));
-    assert_eq!(vm.used(), baseline);
     let second = handle.spawn(&module, quota(), 8).unwrap();
     let result = handle
         .request(
@@ -1149,7 +1147,15 @@ fn scheduler_exit_diagnostics_keep_old_state_and_survive_cleanup_without_busines
     handle.stop(stopped).unwrap();
     assert_eq!(handle.last_exit(), Some(budget_exit));
     drop((scheduler, tenant));
-    assert_eq!(handle.last_exit(), Some(budget_exit));
+    let baseline = vm.used();
+    assert!(baseline.bytes > 0);
+    assert_eq!(baseline.processes, 0);
+    assert_eq!(baseline.messages, 0);
+    assert_eq!(baseline.requests, 0);
+    for _ in 0..2 {
+        assert_eq!(handle.last_exit(), Some(budget_exit));
+        assert_eq!(vm.used(), baseline);
+    }
     drop(handle);
     assert_eq!(vm.used(), Resources::default());
     assert_eq!(diagnostic.handler(), "FailRequest");
