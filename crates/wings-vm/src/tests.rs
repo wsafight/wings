@@ -17,6 +17,7 @@ use crate::*;
 mod diagnostics;
 mod ingress;
 mod ingress_requests;
+mod list_replies;
 mod persistent_state;
 mod preemption;
 mod primitives;
@@ -194,6 +195,57 @@ pub(crate) unsafe extern "C" fn record_reply(
         *output = ScalarOutput {
             state,
             reply: encoded as i64,
+        };
+    }
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn list_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut encoded = 0;
+        let status = heap_call(context, wings_abi::HEAP_EMPTY_INTS, 0, &mut encoded);
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state,
+            reply: encoded as i64,
+        };
+    }
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn list_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut empty = 0;
+        let status = heap_call(
+            context,
+            wings_abi::HEAP_IS_EMPTY_INTS,
+            *arguments.add(2) as u64,
+            &mut empty,
+        );
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state: *arguments.add(1) * 100 + 1 - empty as i64,
+            reply: 0,
         };
     }
     STATUS_OK

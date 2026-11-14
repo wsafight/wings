@@ -63,6 +63,7 @@ fn main() {
         for _ in 0..1024 {
             match task.resume(1).expect("resume") {
                 ExecutionStatus::Suspended => {}
+                ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
                 ExecutionStatus::Complete(reply) => {
                     assert_eq!(reply, Some(expected));
                     completed = true;

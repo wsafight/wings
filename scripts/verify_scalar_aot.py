@@ -1391,6 +1391,26 @@ def main():
         state_run = [VM, "run", "--trusted", record_reply_state, "--heap-records", 8]
         result = command(state_run, "".join(json.dumps(request) + "\n" for request in [message("Put", -(2**63)), message("Current"), message("Put", 2**63 - 1), message("Read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": -(2**63)}, {"record_int": 2**63 - 1}, 2**63 - 1]
+        list_replies = parent / "list-replies"
+        command([COMPILER, "build", ROOT / "examples/list-replies.wings", "-o", list_replies])
+        result = example("list_replies", list_replies)
+        assert "72 bounded language scenarios" in result.stdout
+        print(result.stdout.strip())
+        list_run = [VM, "run", "--trusted", list_replies, "--heap-records", 140]
+        for length in [0, 1, 64]:
+            result = command(list_run, "".join(json.dumps(request) + "\n" for request in [message("Make", 17, length), message("Current"), message("Candidate"), message("Marker")]))
+            values = {"int_list": list(range(17, 17 + length))}
+            assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
+        for value in [-(2**63), 2**63 - 1]:
+            result = command(list_run, json.dumps(message("Make", value, 1)) + "\n")
+            assert json.loads(result.stdout) == {"reply": {"int_list": [value]}}
+        result = command(list_run, json.dumps(message("Make", 17, 65)) + "\n", expected=1)
+        assert not result.stdout and "exceeds 64" in result.stderr
+        for request in [message("Echo", 0), message("Done", 1, 0, 0)]:
+            result = command(list_run, json.dumps(request) + "\n", expected=1)
+            assert not result.stdout and "not JSON arguments" in result.stderr
+        result = invoke(list_replies, [message("Make", 17, 1)], expected=1)
+        assert not result.stdout and "heap" in result.stderr
         request_roots = parent / "request-roots"
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])

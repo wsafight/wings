@@ -153,8 +153,14 @@ impl State {
                 .as_mut()
                 .expect("ready completion");
             let completion = pending.completion.take().expect("completion route");
-            let (status, value) = match pending.outcome.expect("terminal completion") {
+            let mut lists = ListPayload::default();
+            let (status, value) = match pending.outcome.clone().expect("terminal completion") {
                 RequestOutcome::Reply(value) => (0, value),
+                RequestOutcome::ReplyList(value) => {
+                    lists.count = value.as_slice().len();
+                    lists.values[..lists.count].copy_from_slice(value.as_slice());
+                    (0, ListPayload::encode(0, lists.count))
+                }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
                 RequestOutcome::Failed => (3, 0),
@@ -166,13 +172,17 @@ impl State {
             let record_mask = u64::from(
                 completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
             ) << 2;
+            if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
+            {
+                lists.mask = 4;
+            }
             let message = Envelope {
                 handler: completion.handler,
                 arguments,
                 count: 3,
                 max_steps: completion.max_steps,
                 record_mask,
-                lists: ListPayload::default(),
+                lists,
                 bytes: BytePayload::default(),
                 system: true,
                 reply: Reply::None,
@@ -327,6 +337,7 @@ impl Shared {
                                 | wings_abi::ValueType::Bool
                                 | wings_abi::ValueType::Unit
                                 | wings_abi::ValueType::Ref
+                                | wings_abi::ValueType::ListRef
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {

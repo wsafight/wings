@@ -148,7 +148,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn accepts_copied_record_replies_and_parameters_but_not_list_replies() {
+fn accepts_copied_record_and_list_replies_and_parameters() {
     for ty in [ValueType::Ref, ValueType::ListRef] {
         let mut with_state = manifest();
         with_state.state = ty;
@@ -162,11 +162,7 @@ fn accepts_copied_record_replies_and_parameters_but_not_list_replies() {
                     .push(("reference".into(), ty)),
                 _ => manifest.handlers[0].reply = Some(ty),
             }
-            if boundary == 1 || ty == ValueType::Ref {
-                manifest.validate().unwrap();
-            } else {
-                rejects(&manifest, "cannot cross scalar artifact boundaries");
-            }
+            manifest.validate().unwrap();
         }
     }
 }
@@ -210,6 +206,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
         ValueType::Bool,
         ValueType::Unit,
         ValueType::Ref,
+        ValueType::ListRef,
     ] {
         let mut manifest = manifest();
         manifest.handlers[0].parameters = vec![
@@ -234,12 +231,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
             assert!(!invalid.handlers[0].is_completion());
             assert!(invalid.validate().is_err());
         }
-        for wrong in [
-            ValueType::ListRef,
-            ValueType::BytesRef,
-            ValueType::Pid,
-            ValueType::RequestId,
-        ] {
+        for wrong in [ValueType::BytesRef, ValueType::Pid, ValueType::RequestId] {
             let mut invalid = manifest.clone();
             invalid.handlers[0].parameters[2].1 = wrong;
             assert_eq!(invalid.handlers[0].completion_reply(), None);

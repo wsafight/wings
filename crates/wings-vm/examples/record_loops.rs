@@ -71,6 +71,7 @@ fn main() {
                         break;
                     }
                 }
+                ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
                 ExecutionStatus::Complete(reply) => {
                     assert!(!cancel);
                     assert_eq!(reply, Some(30));

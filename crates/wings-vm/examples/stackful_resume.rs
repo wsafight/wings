@@ -16,6 +16,7 @@ fn finish(execution: &mut ScalarExecution<'_>, slice: u64) -> (Option<i64>, usiz
                 suspensions += 1;
                 assert!(suspensions < 4096);
             }
+            ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::Complete(reply) => return (reply, suspensions),
         }
     }

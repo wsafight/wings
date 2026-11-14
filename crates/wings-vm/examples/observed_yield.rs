@@ -80,6 +80,7 @@ fn main() {
                     Ok(ExecutionStatus::Complete(Some(1_000_000)))
                 );
             }
+            ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert!(remote);
                 assert_eq!(reply, Some(1_000_000));

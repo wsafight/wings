@@ -207,6 +207,7 @@ fn copied_completion_hover_and_diagnostics_share_request_reply_types() {
         ("Bool", "false"),
         ("Unit", "()"),
         ("RecordInt", "record_int(7)"),
+        ("IntList", "empty_ints()"),
     ] {
         let mut typed_server = server();
         let text = format!(

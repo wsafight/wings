@@ -112,7 +112,14 @@ impl Handler {
                 [
                     (_, ValueType::RequestId),
                     (_, ValueType::Int),
-                    (_, ty @ (ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref)),
+                    (
+                        _,
+                        ty @ (ValueType::Int
+                        | ValueType::Bool
+                        | ValueType::Unit
+                        | ValueType::Ref
+                        | ValueType::ListRef),
+                    ),
                 ],
             ) => Some(*ty),
             _ => None,
@@ -196,13 +203,12 @@ impl Program {
         {
             return Err("Pid is only supported as a local value".into());
         }
-        if self.handlers.iter().any(|handler| {
-            matches!(
-                handler.reply,
-                Some(ValueType::ListRef | ValueType::BytesRef)
-            )
-        }) {
-            return Err("list and byte references cannot cross scalar IR boundaries".into());
+        if self
+            .handlers
+            .iter()
+            .any(|handler| matches!(handler.reply, Some(ValueType::BytesRef)))
+        {
+            return Err("byte references cannot cross scalar IR boundaries".into());
         }
         if self.handlers.len() > MAX_HANDLERS {
             return Err("too many handlers for the scalar prototype".into());
@@ -252,7 +258,13 @@ impl Program {
                         .ok_or("invalid request completion")?;
                     if !matches!(
                         target.reply,
-                        Some(ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref)
+                        Some(
+                            ValueType::Int
+                                | ValueType::Bool
+                                | ValueType::Unit
+                                | ValueType::Ref
+                                | ValueType::ListRef
+                        )
                     ) || callback.completion_reply() != target.reply
                         || target.parameters.len() != arguments.len()
                         || arguments
@@ -263,7 +275,7 @@ impl Program {
                             })
                     {
                         return Err(
-                            "request requires scalar or RecordInt reply, matching completion event and matching parameters"
+                            "request requires scalar, RecordInt or IntList reply, matching completion event and matching parameters"
                                 .into(),
                         );
                     }

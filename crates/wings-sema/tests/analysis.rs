@@ -207,8 +207,9 @@ fn request_completion_values_match_copyable_replies_without_coercion() {
         ("Bool", "true"),
         ("Unit", "()"),
         ("RecordInt", "record_int(7)"),
+        ("IntList", "empty_ints()"),
     ] {
-        for completion in ["Int", "Bool", "Unit", "RecordInt"] {
+        for completion in ["Int", "Bool", "Unit", "RecordInt", "IntList"] {
             let text = format!(
                 "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {reply} {{ {literal} }} on Done(id: RequestId, status: Int, value: {completion}) {{ () }} }}"
             );
@@ -291,11 +292,7 @@ fn lists_have_distinct_types_across_builtins_state_functions_and_messages() {
     checked(
         "process P { state n: Int = 0; on Work(value: IntList) { collect(); let first = is_empty_ints(value) } }",
     );
-    assert_error(
-        "process P { state n: Int = 0; on Get -> IntList { empty_ints() } }",
-        "T011",
-        "IntList is not supported",
-    );
+    checked("process P { state n: Int = 0; on Get -> IntList { empty_ints() } }");
 }
 
 #[test]
@@ -472,7 +469,7 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
 }
 
 #[test]
-fn accepts_record_state_messages_and_replies_but_rejects_other_reference_replies() {
+fn accepts_record_and_list_replies_but_rejects_byte_replies() {
     checked(
         "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
     );
@@ -486,12 +483,12 @@ fn accepts_record_state_messages_and_replies_but_rejects_other_reference_replies
         "T005",
         "expected RecordInt",
     );
-    for source in [
-        "process P { state n: Int = 0; on Get -> IntList { empty_ints() } }",
+    checked("process P { state n: Int = 0; on Get -> IntList { empty_ints() } }");
+    assert_error(
         "process P { state n: Int = 0; on Get -> Bytes { fill_bytes(1, 0) } }",
-    ] {
-        assert_error(source, "T011", "not supported in message");
-    }
+        "T011",
+        "not supported in message",
+    );
     checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
     checked("process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }");
     checked(

@@ -5,6 +5,128 @@ use crate::module::ModuleData;
 use wings_abi::{ScalarContext, ScalarOutput, ValueType};
 use wings_artifact::{Handler, Manifest};
 
+#[test]
+fn list_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirement() {
+    for workers in [1, 2] {
+        for owner_exits in [false, true] {
+            let limits = Resources {
+                bytes: 32 << 20,
+                processes: 4,
+                messages: 8,
+                requests: 4,
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant_accounted(limits).unwrap();
+            let scheduler = Scheduler::new(
+                &tenant,
+                SchedulerConfig {
+                    workers,
+                    capacity: 2,
+                    requests: 2,
+                    ..SchedulerConfig::default()
+                },
+            )
+            .unwrap();
+            let handle = scheduler.handle();
+            let mut module = module();
+            let data = Arc::get_mut(&mut module.inner).unwrap();
+            data.manifest.handlers[0].parameters[2].1 = ValueType::ListRef;
+            data.entries[0] = crate::tests::list_completion;
+            data.manifest.validate().unwrap();
+            let owner = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
+            let target = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
+            let mut state = handle.shared.lock();
+            let actor = state.actor_mut(handle.shared.identity, owner).unwrap();
+            let account = actor.account.clone();
+            let message = envelope(
+                actor,
+                &module.handler("Drop").unwrap(),
+                &[],
+                128,
+                0,
+                ListPayload::default(),
+                BytePayload::default(),
+                false,
+                Reply::None,
+            )
+            .unwrap();
+            actor.mailbox.push(message).unwrap();
+            let target_account = state
+                .actor(handle.shared.identity, target)
+                .unwrap()
+                .account
+                .clone();
+            let target_baseline = target_account.used();
+            let retained =
+                crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap();
+            state.requests[0].pending = Some(Pending {
+                owner,
+                target,
+                capability: 17,
+                deadline: Instant::now() + Duration::from_secs(60),
+                outcome: Some(RequestOutcome::ReplyList(retained.clone())),
+                publisher: false,
+                completion: Some(Completion {
+                    handler: module.handler("Done").unwrap(),
+                    max_steps: 128,
+                    charge: account
+                        .reserve(Resources {
+                            messages: 1,
+                            bytes: std::mem::size_of::<Envelope>() as u64,
+                            ..Resources::default()
+                        })
+                        .unwrap(),
+                }),
+                _charge: account
+                    .reserve(Resources {
+                        requests: 1,
+                        ..Resources::default()
+                    })
+                    .unwrap(),
+            });
+            let baseline = vm.used();
+            state.maintain(handle.shared.identity);
+            assert_eq!(vm.used(), baseline);
+            assert!(
+                state.requests[0]
+                    .pending
+                    .as_ref()
+                    .unwrap()
+                    .completion
+                    .is_some()
+            );
+            if owner_exits {
+                drop(state.retire(handle.shared.identity, owner));
+            } else {
+                drop(
+                    state
+                        .actor_mut(handle.shared.identity, owner)
+                        .unwrap()
+                        .mailbox
+                        .pop(),
+                );
+                state.maintain(handle.shared.identity);
+                let message = state
+                    .actor_mut(handle.shared.identity, owner)
+                    .unwrap()
+                    .mailbox
+                    .pop();
+                assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
+                assert!(message.lists.valid(&message.arguments[..3], 4));
+                assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                state.remove_ready(owner.slot as usize);
+            }
+            assert!(state.requests[0].pending.is_none());
+            assert!(target_account.used().bytes > target_baseline.bytes);
+            drop(retained);
+            assert_eq!(target_account.used(), target_baseline);
+            drop(state);
+            drop((scheduler, handle, target_account, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+}
+
 unsafe extern "C" fn entry(
     state: i64,
     _arguments: *const i64,
@@ -100,12 +222,14 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
             ValueType::Bool,
             ValueType::Unit,
             ValueType::Ref,
+            ValueType::ListRef,
         ] {
             for callback in [
                 ValueType::Int,
                 ValueType::Bool,
                 ValueType::Unit,
                 ValueType::Ref,
+                ValueType::ListRef,
             ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
@@ -137,6 +261,8 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                     data.manifest.handlers[3].reply = Some(reply);
                     data.entries[0] = if callback == ValueType::Ref {
                         crate::tests::record_completion
+                    } else if callback == ValueType::ListRef {
+                        crate::tests::list_completion
                     } else {
                         scalar_completion
                     };
@@ -144,6 +270,8 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         data.entries[3] = invalid_scalar_reply;
                     } else if reply == ValueType::Ref {
                         data.entries[3] = crate::tests::record_reply;
+                    } else if reply == ValueType::ListRef {
+                        data.entries[3] = crate::tests::list_reply;
                     }
                     data.manifest.validate().unwrap();
                     let owner = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
@@ -200,7 +328,11 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                             assert_eq!(exit.committed_state, Some(0));
                             assert_eq!(
                                 exit.reason,
-                                SchedulerExitReason::Managed(ExecutionFault::InvalidOutput)
+                                SchedulerExitReason::Managed(if reply == ValueType::ListRef {
+                                    ExecutionFault::InvalidRoot
+                                } else {
+                                    ExecutionFault::InvalidOutput
+                                })
                             );
                         }
                     }

@@ -122,7 +122,15 @@ pub(super) fn worker(
                     }
                     local.push_back(active);
                 }
-                Ok(ExecutionStatus::Complete(reply)) => finish(&shared, index, active, Ok(reply)),
+                Ok(ExecutionStatus::Complete(reply)) => {
+                    finish(&shared, index, active, Ok(reply.map(RequestOutcome::Reply)))
+                }
+                Ok(ExecutionStatus::CompleteList(reply)) => finish(
+                    &shared,
+                    index,
+                    active,
+                    Ok(Some(RequestOutcome::ReplyList(reply))),
+                ),
                 Err(error) => finish(&shared, index, active, Err(error)),
             }
         }
@@ -219,7 +227,12 @@ fn start(
     }
 }
 
-fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<i64>, String>) {
+fn finish(
+    shared: &Shared,
+    index: usize,
+    active: Running,
+    result: Result<Option<RequestOutcome>, String>,
+) {
     let Running {
         pid,
         task,
@@ -281,12 +294,13 @@ fn finish(shared: &Shared, index: usize, active: Running, result: Result<Option<
         state.last_exit = Some(diagnostic);
     }
     let outcome = match result {
-        Ok(Some(value)) if !failed => RequestOutcome::Reply(value),
+        Ok(Some(value)) if !failed => value,
         _ => RequestOutcome::Failed,
     };
     match std::mem::replace(&mut message.reply, Reply::None) {
         Reply::External(publisher) => match outcome {
             RequestOutcome::Reply(value) => publisher.complete(value),
+            RequestOutcome::ReplyList(value) => publisher.complete_list(value),
             _ => drop(publisher),
         },
         Reply::Language(key) => state.finish(key, outcome),

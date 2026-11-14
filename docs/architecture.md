@@ -1,6 +1,8 @@
 # 架构设计
 
-[ADR-0096](adr/0096-copied-record-replies.md) 接入 RecordInt 内容回复：目标返回引用先验证/读取固定字段，再提交候选；pending/宿主只持独立 i64 内容，语言完成入口在发起方堆重建记录并发布入口根。沿 ABI v15，具体平台证据见[验证记录](validation-2026-11-14.md)，其他Bytes 回复仍拒绝。
+[ADR-0097](adr/0097-accounted-int-list-replies.md) 接入有界 IntList 回复：原协程为候选/回复建立出口根并逐节点检查，复制为独立计费结果后才提交。继续 ABI v15，原生代码、schema、结果拥有者与完成导入的输入边界分别验证。结果只持不可变内容及预留，不保留 actor、模块、堆或执行栈。
+
+[ADR-0096](adr/0096-copied-record-replies.md) 接入 RecordInt 内容回复：目标返回引用先验证/读取固定字段，再提交候选；pending/宿主只持独立 i64 内容，语言完成入口在发起方堆重建记录并发布入口根。沿 ABI v15，具体平台证据见[验证记录](validation-2026-11-14.md)，Bytes 回复仍拒绝。
 
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 扩展语言请求与系统完成签名的标量类型检查。ABI v15 的布局和编码保持，旧 Int 产物仍兼容；旧 runtime 会拒绝新增 Bool/Unit 完成签名。前端、IR、Manifest 和 runtime 各检查自己的输入边界，不以共享检查器代替执行入口防线。
 
@@ -110,7 +112,7 @@
 
 [ADR-0032](adr/0032-safe-point-diagnostics.md) 规定宿主诊断只传递开始/让出/返回边界的值快照，不保存悬挂 context 或跨线程读取 actor；不改变 ABI v11 与现有协程所有权。
 
-当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v11 沿用新增 effect 回调后的 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；原始整数参数仍限定标量，复制消息与回复的新增范围见 ADR-0094/0096，系统完成事件首参额外允许 RequestId。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
+当前有界记录状态契约见 [ADR-0027](adr/0027-persistent-record-state.md)：ABI v11 沿用新增 effect 回调后的 context 布局，允许所属进程堆内的 Ref 状态，以宿主持久根合并 compiler 根；原始整数参数仍限定标量，复制消息与回复的新增范围见 ADR-0094/0096/0097，系统完成事件首参额外允许 RequestId。无显式计费堆不能初始化 Ref 状态，旧产物须重新编译。
 
 宿主监督通过显式堆容量配置重建 RecordInt 进程，沿用现有 worker 准入与 initializer，不新增 ABI 或依赖；新堆不继承旧状态根。见 [ADR-0028](adr/0028-supervised-record-heaps.md)。
 
@@ -163,7 +165,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 ## 编译后端、受管 ABI 与 GC
 
-未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确活跃根，[ADR-0026](adr/0026-language-temporary-records.md) 开放语言单 Int 字段记录，[ADR-0027](adr/0027-persistent-record-state.md) 增加持久状态根；已有 RecordInt/有界 IntList 复制消息及入口根，RecordInt 回复出口根与复制由 ADR-0096 接入，通用业务值仍未完成，下面的完整受管契约仍待实现。
+未发布源码另有 [ADR-0018](adr/0018-bounded-record-heap.md) 的 `RecordHeap`/`ShadowRoots` 原型：不可变定长记录按布局保存无动态标签的字段，显式根帧配合精确非移动 mark-sweep，构造前向进程/租户/VM 预留容量。[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确活跃根，[ADR-0026](adr/0026-language-temporary-records.md) 开放语言单 Int 字段记录，[ADR-0027](adr/0027-persistent-record-state.md) 增加持久状态根；已有 RecordInt/有界 IntList 复制消息及入口根，RecordInt/IntList 回复出口根与复制由 ADR-0096/0097 接入，通用业务值仍未完成，下面的完整受管契约仍待实现。
 
 首版采用 **wings-lang 单前端 + Cranelift AOT 后端 + 显式 shadow stack**。M0 先验证两个目标平台上的产物生成、调用约定、根发布和上下文恢复，确保每个 safepoint 的活跃值都能恢复，再优化 GC。当前仅接入下面的标量原型，完整后端仍待这一步验证。
 

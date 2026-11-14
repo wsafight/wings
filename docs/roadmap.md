@@ -1,6 +1,8 @@
 # 风险与里程碑
 
-[ADR-0096](adr/0096-copied-record-replies.md) 按第 3/4 项补齐 RecordInt 内容回复，具体平台证据见[验证记录](validation-2026-11-14.md)。列表/字节/通用记录回复、完整账本、公平/故障、原生双平台及 BEAM 双门禁仍未完成。
+[ADR-0097](adr/0097-accounted-int-list-replies.md) 按第 3/4 项补齐有界 IntList 回复、计费结果与完成导入，平台证据见[验证记录](validation-2026-11-15.md)；Bytes/通用业务值、完整账本、公平/故障、原生双平台及 BEAM 双门禁保持未完成。
+
+[ADR-0096](adr/0096-copied-record-replies.md) 按第 3/4 项补齐 RecordInt 内容回复，具体平台证据见[验证记录](validation-2026-11-14.md)。字节/通用记录回复、完整账本、公平/故障、原生双平台及 BEAM 双门禁仍未完成。
 
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 按第 3 项补齐语言请求的既有标量回复和匹配完成签名，具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、完整业务值/账本、长时公平/故障、最新原生双平台及同负载 BEAM 双门禁不因此完成。
 

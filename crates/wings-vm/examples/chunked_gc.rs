@@ -39,6 +39,7 @@ fn main() {
         assert!(suspended < 1024);
         match execution.resume(1).unwrap() {
             ExecutionStatus::Suspended => suspended += 1,
+            ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert_eq!(reply, Some(19));
                 break;

@@ -71,12 +71,15 @@ impl ReplyTable {
         if !(self.account.same(account) || account.is_child_of(&self.account))
             || !matches!(
                 reply_type,
-                ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref
+                ValueType::Int
+                    | ValueType::Bool
+                    | ValueType::Unit
+                    | ValueType::Ref
+                    | ValueType::ListRef
             )
         {
             return Err(
-                "result table requires its owner or direct child and a scalar or RecordInt reply"
-                    .into(),
+                "result table requires its owner or direct child and a supported reply".into(),
             );
         }
         let charge = account.reserve(Resources {
@@ -176,7 +179,7 @@ impl IngressRequest {
         if pending.outcome.is_none() && Instant::now() >= pending.deadline {
             pending.outcome = Some(RequestOutcome::TimedOut);
         }
-        let outcome = pending.outcome;
+        let outcome = pending.outcome.clone();
         if outcome.is_some() {
             pending.caller = false;
             self.active = false;
@@ -274,6 +277,10 @@ impl Drop for IngressRequest {
 }
 
 impl ReplyPublisher {
+    pub(crate) fn complete_list(self, value: crate::IntListReply) {
+        self.table
+            .finish(self.slot, self.generation, RequestOutcome::ReplyList(value));
+    }
     pub(crate) fn complete(self, value: i64) {
         self.table
             .finish(self.slot, self.generation, RequestOutcome::Reply(value));

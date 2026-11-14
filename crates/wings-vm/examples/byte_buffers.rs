@@ -68,6 +68,7 @@ fn main() {
     loop {
         match execution.resume(1).unwrap() {
             ExecutionStatus::Suspended => suspensions += 1,
+            ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert_eq!(reply, Some(i64::MAX));
                 break;

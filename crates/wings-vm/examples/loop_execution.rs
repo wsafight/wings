@@ -51,6 +51,7 @@ fn main() {
         previous = snapshot;
         match result {
             ExecutionStatus::Suspended => {}
+            ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert_eq!(reply, Some(30));
                 assert_eq!(snapshot.phase, ExecutionPhase::Complete);

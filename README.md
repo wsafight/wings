@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，RecordInt 可按内容复制回复；列表/字节回复、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，RecordInt 与最多 64 元素的 IntList 可按内容复制回复；字节回复、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-15。
 
 ## 开发
+
+[ADR-0097](docs/adr/0097-accounted-int-list-replies.md) 接入有界 IntList 回复：原协程保留出口根并逐节点检查，复制为独立计费的 `IntListReply` 后才提交候选状态。宿主使用 `invoke_list`、`CompleteList` 或 `ReplyList` 取得拥有的结果，JSON 输出 `{"reply":{"int_list":[...]}}`；非成功语言完成事件为空列表。示例见 [`examples/list-replies.wings`](examples/list-replies.wings)，平台证据见[验证记录](docs/validation-2026-11-15.md)，Bytes 与通用业务值回复仍未完成。
 
 [ADR-0096](docs/adr/0096-copied-record-replies.md) 接入现有 RecordInt 的内容复制回复，目标验证先于状态提交，语言完成入口在发起方计费堆导入记录。宿主结果只持 i64 字段副本，JSON 输出带 record_int 字段；仍为 ABI v15，不改变语法拼写。真实示例为 [`examples/record-replies.wings`](examples/record-replies.wings) 与 [`examples/record-reply-state.wings`](examples/record-reply-state.wings)，具体平台证据见[验证记录](docs/validation-2026-11-14.md)。
 
@@ -122,7 +124,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 两种模式使用计费根与子账户；根启动计费见 ADR-0079，旧零基线工具构造器仍保留，不代表完整资源隔离。
 
-ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，列表/字节回复仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。
+ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，回复范围后由 ADR-0096/0097 扩展。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。
 
 受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。
 
@@ -144,7 +146,7 @@ ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](do
 
 未发布源码 ABI v10 支持 handler 内 `send_self(Message, args...)`：目标为本 process 单向入口，worker 在调用点准入入队，下一片恢复后继续；失败不撤回此前发送。示例 `examples/self-send.wings` 与 `examples/self-send-roots.wings`，见 [ADR-0038](docs/adr/0038-self-send-effects.md)。CLI 与独立实例无 worker 回调，调用受管失败；旧 v9 产物须重编译。
 
-`IntList` 是不可变整数节点和共享尾，可作 state、局部、fn 值或有界语言消息参数，IntList 回复仍未开放。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。
+`IntList` 是不可变整数节点和共享尾，可作 state、局部、fn 值、有界语言消息参数和最多 64 元素的回复。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)，回复出口根与拥有者见 ADR-0097。
 
 process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；私有受管调用逐帧检查剩余栈，保留跨帧精确根和强制预算检查。最多 32 层函数链、64 个聚合根，示例 `examples/functions.wings`、限制和验证见 [ADR-0042](docs/adr/0042-managed-function-frames.md)。
 

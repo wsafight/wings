@@ -16,6 +16,7 @@ mod heap;
 mod host_values;
 mod ingress;
 mod ingress_requests;
+mod list_reply;
 mod message_values;
 mod module;
 mod preemption;
@@ -41,6 +42,7 @@ pub use heap::{
 pub use host_values::MessageValue;
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
+pub use list_reply::IntListReply;
 pub use module::{HandlerId, ScalarModule};
 pub use preemption::{
     PreemptionCounters, PreemptionObservation, PreemptionToken, YieldObservation,
@@ -141,6 +143,9 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: Option<&CancellationToken>,
     ) -> Result<Option<i64>, String> {
+        if self.module.manifest().handlers[index].reply == Some(ValueType::ListRef) {
+            return Err("list reply requires invoke_list or explicit execution".into());
+        }
         let mut execution = self.start_index(index, arguments, max_steps, || {
             (
                 cancellation.cloned().unwrap_or_default(),
@@ -151,6 +156,30 @@ impl ScalarProcess {
             match execution.resume(u64::MAX)? {
                 ExecutionStatus::Complete(reply) => return Ok(reply),
                 ExecutionStatus::Suspended => {}
+                ExecutionStatus::CompleteList(_) => unreachable!("validated scalar reply"),
+            }
+        }
+    }
+
+    pub fn invoke_list(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<IntListReply, String> {
+        let index = self.validate_invocation(name, arguments)?;
+        if self.module.manifest().handlers[index].reply != Some(ValueType::ListRef) {
+            return Err("invoke_list requires an IntList reply".into());
+        }
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (cancellation.clone(), PreemptionToken::default())
+        })?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::CompleteList(reply) => return Ok(reply),
+                ExecutionStatus::Suspended => {}
+                ExecutionStatus::Complete(_) => unreachable!("validated list reply"),
             }
         }
     }
@@ -246,7 +275,8 @@ impl ScalarProcess {
         index: usize,
         status: u32,
         output: ScalarOutput,
-    ) -> Result<Option<i64>, String> {
+        list: Option<IntListReply>,
+    ) -> Result<ExecutionStatus, String> {
         if let Err(error) = check_status(status) {
             self.failed = true;
             return Err(error);
@@ -264,6 +294,8 @@ impl ScalarProcess {
                     return Err("entry returned an invalid record reply".into());
                 }
             }
+        } else if handler.reply == Some(ValueType::ListRef) && list.is_some() {
+            0
         } else if handler
             .reply
             .unwrap_or(ValueType::Unit)
@@ -283,7 +315,12 @@ impl ScalarProcess {
             return Err(error);
         }
         self.state = output.state;
-        Ok(handler.reply.map(|_| reply))
+        match list {
+            Some(list) if handler.reply == Some(ValueType::ListRef) => {
+                Ok(ExecutionStatus::CompleteList(list))
+            }
+            _ => Ok(ExecutionStatus::Complete(handler.reply.map(|_| reply))),
+        }
     }
 }
 
@@ -315,6 +352,7 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_STACK_EXHAUSTED => Err("managed execution stack exhausted".into()),
         STATUS_HEAP_EXHAUSTED => Err("managed record heap exhausted".into()),
         STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
+        wings_abi::STATUS_REPLY_REJECTED => Err("managed list reply exceeds 64 integers".into()),
         wings_abi::STATUS_EMPTY_LIST => Err("managed empty IntList access".into()),
         wings_abi::STATUS_INVALID_BYTES => {
             Err("managed invalid byte buffer length, value or index".into())

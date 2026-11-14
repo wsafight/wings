@@ -18,6 +18,7 @@ pub const STATUS_SEND_REJECTED: u32 = 10;
 pub const STATUS_SPAWN_REJECTED: u32 = 11;
 pub const STATUS_REQUEST_REJECTED: u32 = 12;
 pub const STATUS_INVALID_BYTES: u32 = 13;
+pub const STATUS_REPLY_REJECTED: u32 = 14;
 pub const EFFECT_SEND_SELF: u32 = 0;
 pub const EFFECT_SELF_PID: u32 = 1;
 pub const EFFECT_SPAWN_SELF: u32 = 2;

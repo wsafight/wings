@@ -228,7 +228,7 @@ fn handle_connection(
                 report.failed += 1;
                 (4, 2)
             }
-            RequestOutcome::Failed => {
+            RequestOutcome::Failed | RequestOutcome::ReplyList(_) => {
                 report.failed += 1;
                 (4, 3)
             }

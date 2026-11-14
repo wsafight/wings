@@ -432,12 +432,15 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
         ValueType::Bool,
         ValueType::Unit,
         ValueType::Ref,
+        ValueType::ListRef,
     ] {
         let mut typed = program.clone();
         let register = typed.handlers[0].function.instructions.len();
         typed.handlers[0].function.instructions.push(instruction(
             reply,
-            if reply == ValueType::Ref {
+            if reply == ValueType::ListRef {
+                Operation::EmptyInts
+            } else if reply == ValueType::Ref {
                 Operation::RecordInt(1)
             } else {
                 Operation::Constant(0)
@@ -453,6 +456,7 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
             ValueType::Bool,
             ValueType::Unit,
             ValueType::Ref,
+            ValueType::ListRef,
         ] {
             if other != reply {
                 typed.handlers[1].parameters[2].1 = other;
@@ -531,7 +535,7 @@ fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
         rejects(&wrong, "operand, type");
     }
     let mut wrong = program;
-    wrong.handlers[0].reply = Some(ValueType::ListRef);
+    wrong.handlers[0].reply = Some(ValueType::BytesRef);
     rejects(&wrong, "cannot cross scalar IR");
 }
 
@@ -1062,11 +1066,9 @@ fn rejects_record_forging_type_confusion_and_boundary_references() {
             .push(instruction(ty, operation));
         rejects(&program, "operand, type or forward reference");
     }
-    for ty in [ValueType::ListRef, ValueType::BytesRef] {
-        let mut program = valid_program();
-        program.handlers[0].reply = Some(ty);
-        rejects(&program, "cannot cross scalar IR boundaries");
-    }
+    let mut program = valid_program();
+    program.handlers[0].reply = Some(ValueType::BytesRef);
+    rejects(&program, "cannot cross scalar IR boundaries");
 }
 
 #[test]

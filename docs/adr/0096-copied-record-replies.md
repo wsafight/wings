@@ -3,6 +3,7 @@
 - 日期：2026-11-14
 - 状态：已采纳（固定 RecordInt 内容回复切片；平台验证另记，MVP 尚未完成）
 - 部分替代：[ADR-0095](0095-typed-scalar-request-events.md) 仅接受标量回复的限制；列表、字节和通用记录回复仍不开放。
+- 后续部分替代：[ADR-0097](0097-accounted-int-list-replies.md) 开放计费的有界 IntList 回复；本文保留固定记录切片的原决策理由。
 
 ## 决定与边界
 

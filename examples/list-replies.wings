@@ -1,0 +1,73 @@
+process ListReplies {
+  state values: IntList = empty_ints()
+
+  on Make(seed: Int, length: Int) -> IntList {
+    values = prepend_int(length, empty_ints())
+    while head_int(values) > 0 {
+      let next = head_int(values) - 1
+      values = prepend_int(next, prepend_int(seed + next, tail_ints(values)))
+    }
+    collect()
+    tail_ints(values)
+  }
+
+  on Current -> IntList {
+    collect()
+    if is_empty_ints(values) { values } else { tail_ints(values) }
+  }
+
+  on Echo(input: IntList) -> IntList {
+    collect()
+    values = prepend_int(0, input)
+    collect()
+    input
+  }
+
+  on Candidate -> IntList {
+    let result = if is_empty_ints(values) { values } else { tail_ints(values) }
+    values = prepend_int(77, empty_ints())
+    collect()
+    result
+  }
+
+  on Fail -> IntList {
+    values = prepend_int(999, empty_ints())
+    collect()
+    let failed = 1 / 0
+    values
+  }
+
+  on Start(length: Int, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
+    let target = if same { self_pid() } else { spawn_self() }
+    let pending = if fail {
+      request(target, Fail, Done, timeout)
+    } else {
+      request(target, Make, Done, timeout, 17, length)
+    }
+    if cancel { cancel_request(pending) } else { () }
+    values = prepend_int(9, empty_ints())
+    9
+  }
+
+  on Done(id: RequestId, status: Int, result: IntList) {
+    collect()
+    values = prepend_int(status, result)
+    collect()
+    send_self(Mark)
+  }
+
+  on Mark { values = prepend_int(999, values); collect() }
+  on CompletedStatus -> Int { head_int(tail_ints(values)) }
+  on CompletedValues -> IntList { tail_ints(tail_ints(values)) }
+  on Clear { values = empty_ints(); collect() }
+  on Pulse -> Int { 1 }
+  on Marker -> Int { if is_empty_ints(values) { -1 } else { head_int(values) } }
+
+  on StartImportFail -> Int {
+    let child = spawn_self()
+    let pending = request(child, Initial, Done, 60000)
+    values = prepend_int(9, empty_ints())
+    9
+  }
+  on Initial -> IntList { prepend_int(5, empty_ints()) }
+}

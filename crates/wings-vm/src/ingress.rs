@@ -167,7 +167,11 @@ impl IngressReceiver {
             || schema.reply.is_some_and(|ty| {
                 !matches!(
                     ty,
-                    ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref
+                    ValueType::Int
+                        | ValueType::Bool
+                        | ValueType::Unit
+                        | ValueType::Ref
+                        | ValueType::ListRef
                 )
             })
             || schema.parameters.len() > MAX_ARGUMENTS

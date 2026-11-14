@@ -58,6 +58,30 @@ enum Reply {
 }
 
 impl Adapter {
+    pub fn write_list_reply(
+        &self,
+        writer: &mut impl Write,
+        value: &wings_vm::IntListReply,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct ListBody<'value> {
+            int_list: &'value [i64],
+        }
+        #[derive(Serialize)]
+        struct ListResponse<'value> {
+            reply: ListBody<'value>,
+        }
+        let response = ListResponse {
+            reply: ListBody {
+                int_list: value.as_slice(),
+            },
+        };
+        serde_json::to_writer(&mut *writer, &response).map_err(|error| error.to_string())?;
+        writeln!(writer)
+            .and_then(|_| writer.flush())
+            .map_err(|error| error.to_string())
+    }
+
     pub fn new(account: &ResourceAccount) -> Result<Self, String> {
         if account.level() != ResourceLevel::Process {
             return Err("CLI adapter requires a process resource account".into());

@@ -34,9 +34,10 @@ pub struct RequestId {
     generation: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestOutcome {
     Reply(i64),
+    ReplyList(crate::IntListReply),
     TimedOut,
     Cancelled,
     Failed,
@@ -628,7 +629,7 @@ impl ScalarWorker {
         if self.pending(request)?.completion.is_some() {
             return Err("language request results require completion events".into());
         }
-        let outcome = self.pending(request)?.outcome;
+        let outcome = self.pending(request)?.outcome.clone();
         if outcome.is_some() {
             let slot = &mut self.requests[request.slot as usize];
             slot.pending
@@ -854,6 +855,26 @@ impl ScalarWorker {
                         _ => {
                             self.remove(index);
                             return Err("handler reply does not match message kind".into());
+                        }
+                    }
+                    Ok(WorkerEvent::Delivered(pid))
+                }
+                Ok(ExecutionStatus::CompleteList(reply)) => {
+                    let active = self.slots[index]
+                        .actor
+                        .as_mut()
+                        .expect("running actor")
+                        .active
+                        .take()
+                        .expect("completed message");
+                    match (active.message.request, active.message.external) {
+                        (Some(request), None) => {
+                            self.finish_request(request, RequestOutcome::ReplyList(reply))
+                        }
+                        (None, Some(publisher)) => publisher.complete_list(reply),
+                        _ => {
+                            self.remove(index);
+                            return Err("list reply does not match message kind".into());
                         }
                     }
                     Ok(WorkerEvent::Delivered(pid))
@@ -1205,9 +1226,10 @@ impl ScalarWorker {
                     | wings_abi::ValueType::Bool
                     | wings_abi::ValueType::Unit
                     | wings_abi::ValueType::Ref
+                    | wings_abi::ValueType::ListRef
             )
         ) {
-            return Err("request requires a scalar or RecordInt reply".into());
+            return Err("request requires a scalar, RecordInt or IntList reply".into());
         }
         let callback = module
             .manifest()
@@ -1293,7 +1315,7 @@ impl ScalarWorker {
             let Some(pending) = self.requests[index].pending.as_ref() else {
                 continue;
             };
-            let Some(outcome) = pending.outcome else {
+            let Some(outcome) = pending.outcome.clone() else {
                 continue;
             };
             let Some(completion) = pending.completion.as_ref() else {
@@ -1314,9 +1336,15 @@ impl ScalarWorker {
             pending.result_taken = true;
             retire_request(&mut self.requests[index]);
             let mut arguments = [0; MAX_ARGUMENTS];
+            let mut lists = ListPayload::default();
             arguments[0] = completion.capability;
             (arguments[1], arguments[2]) = match outcome {
                 RequestOutcome::Reply(value) => (0, value),
+                RequestOutcome::ReplyList(value) => {
+                    lists.count = value.as_slice().len();
+                    lists.values[..lists.count].copy_from_slice(value.as_slice());
+                    (0, ListPayload::encode(0, lists.count))
+                }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
                 RequestOutcome::Failed => (3, 0),
@@ -1324,6 +1352,10 @@ impl ScalarWorker {
             let record_mask = u64::from(
                 completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
             ) << 2;
+            if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
+            {
+                lists.mask = 4;
+            }
             let message = Message {
                 handler: completion.handler,
                 arguments,
@@ -1333,7 +1365,7 @@ impl ScalarWorker {
                 system: true,
                 external: None,
                 record_mask,
-                lists: ListPayload::default(),
+                lists,
                 bytes: BytePayload::default(),
                 _charge: completion.charge,
             };
@@ -1375,6 +1407,103 @@ fn storage<Value>(
 mod payload_tests {
     use super::*;
 
+    #[test]
+    fn list_completion_waits_for_mailbox_capacity_and_releases_results_when_owner_exits() {
+        for owner_exits in [false, true] {
+            let limits = Resources {
+                bytes: 32 << 20,
+                processes: 4,
+                messages: 8,
+                requests: 4,
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant_accounted(limits).unwrap();
+            let mut module = crate::tests::module();
+            let data = Arc::get_mut(&mut module.inner).unwrap();
+            data.manifest.handlers.push(wings_artifact::Handler {
+                name: "DoneList".into(),
+                reply: None,
+                parameters: vec![
+                    ("id".into(), wings_abi::ValueType::RequestId),
+                    ("status".into(), wings_abi::ValueType::Int),
+                    ("value".into(), wings_abi::ValueType::ListRef),
+                ],
+            });
+            let mut entries = data.entries.to_vec();
+            entries.push(crate::tests::list_completion);
+            data.entries = entries.into_boxed_slice();
+            data.manifest.validate().unwrap();
+            let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
+            let owner = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
+            let target = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
+            let target_account = worker.actor(target).unwrap().account.clone();
+            let target_baseline = target_account.used();
+            let retained =
+                crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap();
+            worker
+                .send(owner, &module.handler("Add").unwrap(), &[0], 128)
+                .unwrap();
+            let account = worker.actor(owner).unwrap().account.clone();
+            worker.requests[0].pending = Some(PendingRequest {
+                target,
+                deadline: Instant::now() + Duration::from_secs(60),
+                outcome: Some(RequestOutcome::ReplyList(retained.clone())),
+                publisher: false,
+                result_taken: false,
+                completion: Some(Completion {
+                    owner,
+                    capability: 17,
+                    handler: module.handler("DoneList").unwrap(),
+                    budget: 128,
+                    charge: account
+                        .reserve(Resources {
+                            messages: 1,
+                            bytes: std::mem::size_of::<Message>() as u64,
+                            ..Resources::default()
+                        })
+                        .unwrap(),
+                }),
+                _charge: account
+                    .reserve(Resources {
+                        requests: 1,
+                        ..Resources::default()
+                    })
+                    .unwrap(),
+            });
+            let baseline = vm.used();
+            worker.flush_completions();
+            assert_eq!(vm.used(), baseline);
+            assert!(
+                worker.requests[0]
+                    .pending
+                    .as_ref()
+                    .unwrap()
+                    .completion
+                    .is_some()
+            );
+            if owner_exits {
+                worker.stop(owner).unwrap();
+            } else {
+                let actor = worker.actor_mut(owner).unwrap();
+                actor.mailbox.slots[actor.mailbox.head].take();
+                actor.mailbox.count = 0;
+                worker.flush_completions();
+                let actor = worker.actor_mut(owner).unwrap();
+                let message = actor.mailbox.slots[actor.mailbox.head].take().unwrap();
+                actor.mailbox.count = 0;
+                assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
+                assert!(message.lists.valid(&message.arguments[..3], 4));
+                assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+            }
+            assert!(worker.requests[0].pending.is_none());
+            assert!(target_account.used().bytes > target_baseline.bytes);
+            drop(retained);
+            assert_eq!(target_account.used(), target_baseline);
+            drop((worker, target_account, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
     unsafe extern "C" fn invalid_scalar_reply(
         _state: i64,
         _arguments: *const i64,
@@ -1413,12 +1542,14 @@ mod payload_tests {
             ValueType::Bool,
             ValueType::Unit,
             ValueType::Ref,
+            ValueType::ListRef,
         ] {
             for callback in [
                 ValueType::Int,
                 ValueType::Bool,
                 ValueType::Unit,
                 ValueType::Ref,
+                ValueType::ListRef,
             ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
@@ -1449,9 +1580,13 @@ mod payload_tests {
                         entries[2] = invalid_scalar_reply;
                     } else if reply == ValueType::Ref {
                         entries[2] = crate::tests::record_reply;
+                    } else if reply == ValueType::ListRef {
+                        entries[2] = crate::tests::list_reply;
                     }
                     entries.push(if callback == ValueType::Ref {
                         crate::tests::record_completion
+                    } else if callback == ValueType::ListRef {
+                        crate::tests::list_completion
                     } else {
                         scalar_completion
                     });
@@ -1502,7 +1637,11 @@ mod payload_tests {
                             assert_eq!(exit.committed_state, Some(0));
                             assert_eq!(
                                 exit.execution.fault,
-                                Some(crate::ExecutionFault::InvalidOutput)
+                                Some(if reply == ValueType::ListRef {
+                                    crate::ExecutionFault::InvalidRoot
+                                } else {
+                                    crate::ExecutionFault::InvalidOutput
+                                })
                             );
                         }
                         assert_eq!(vm.used().requests, 0);
