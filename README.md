@@ -26,11 +26,13 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，尚无引用回复、递归/动态派发或语言级监督。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，RecordInt 可按内容复制回复；列表/字节回复、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-14。
 
 ## 开发
 
-[ADR-0095](docs/adr/0095-typed-scalar-request-events.md) 将语言异步请求扩展为 Int/Bool/Unit 回复，完成入口第三参数精确匹配目标回复，系统事件仍不能伪造。真实示例见 [`examples/scalar-completions.wings`](examples/scalar-completions.wings)，沿用既有语法、ABI v15 和请求生命周期；引用回复和完整 MVP 门禁仍未完成。
+[ADR-0096](docs/adr/0096-copied-record-replies.md) 接入现有 RecordInt 的内容复制回复，目标验证先于状态提交，语言完成入口在发起方计费堆导入记录。宿主结果只持 i64 字段副本，JSON 输出带 record_int 字段；仍为 ABI v15，不改变语法拼写。真实示例为 [`examples/record-replies.wings`](examples/record-replies.wings) 与 [`examples/record-reply-state.wings`](examples/record-reply-state.wings)，具体平台证据见[验证记录](docs/validation-2026-11-14.md)。
+
+[ADR-0095](docs/adr/0095-typed-scalar-request-events.md) 将语言异步请求扩展为 Int/Bool/Unit 回复，完成入口第三参数精确匹配目标回复，系统事件仍不能伪造。真实示例见 [`examples/scalar-completions.wings`](examples/scalar-completions.wings)，沿用既有语法、ABI v15 和请求生命周期；其他引用回复和完整 MVP 门禁仍未完成。
 
 [ADR-0094](docs/adr/0094-typed-host-message-values.md) 为 ScalarWorker、ScalarSupervisor 和 SchedulerHandle 增加 `send_values`/`request_values`，使用 `MessageValue` 传入独立的记录内容、列表和字节副本。完整受限 AOT 已接入 [`examples/host-values.wings`](examples/host-values.wings)，宿主用法见[运行时](docs/runtime.md)。原始整数/JSON/IngressSender 及回复仍遵守原边界；语法评审稿尚未采纳。
 
@@ -100,7 +102,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 [ADR-0061](docs/adr/0061-on-demand-scheduler-stacks.md) 将 Scheduler worker 的业务栈改为按需 guarded mapping，映射前完整三级准入，活栈原线程保留至正常返回，最多缓存两个已返回栈。沿用完整受限 AOT 与 `scheduler_density` 回归，不缩小单栈、不更改 ABI/语法，不把逻辑预留减少称为 RSS 或 BEAM 内存结果；后续容量/调度安排见 ADR-0062。
 
-[ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 结果总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；后续栈安排见 ADR-0061。
+[ADR-0060](docs/adr/0060-shared-scheduler-reply-table.md) 消除空闲 actor 重复预留的宿主结果表：`config.requests` 现在是整个 Scheduler 的宿主 Int/Bool/Unit 与 RecordInt 内容回复的总容量，语言 pending 表独立；请求仍向原目标 process 三级计费。完整受限 AOT 增加 16/64/256 actor 的逻辑预留与清理回归；后续栈安排见 ADR-0061。
 
 [ADR-0059](docs/adr/0059-byte-state-counter-equivalence.md) 将完整 256 B/4 KiB/64 KiB Bytes state、32 条异步请求窗口及失败退出接到 Wings Counter。`python3 scripts/verify_counter_equivalence.py --compare-beam` 用真实 OTP 29 与独立 Python checked 模型核对结果、FIFO、旧提交状态和清理；不带该选项只运行 Wings/模型，不宣称执行了 BEAM。先构建 compiler/VM 示例，边界与命令见[同协议工作负载](docs/beam-workloads.md)。未提供吞吐、尾延迟或整机内存比较。
 
@@ -120,11 +122,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 按 [ADR-0050](docs/adr/0050-account-node-admission.md)，`tenant_accounted`/`process_accounted` 在创建子账户前向父路径预留控制节点字节，最后持有者释放才归还。worker 默认计费进程账户，TCP 示例及 CLI 两种模式使用计费根与子账户；根启动计费见 ADR-0079，旧零基线工具构造器仍保留，不代表完整资源隔离。
 
-ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，引用回复仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。
+ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](docs/adr/0051-bounded-int-list-messages.md) 允许 RecordInt/IntList 语言消息参数：固定信封按值复制，列表合计最多 64 个整数，源遍历及目标重建逐节点检查预算/取消。目标入口根保活，源失败不撤回已接受消息；JSON/宿主/ingress 不接受原 handle 或段编码，列表/字节回复仍拒绝。示例 `examples/record-messages.wings`、`examples/list-messages.wings` 及 `record_messages`、`list_messages`。
 
 受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。
 
-`ScalarWorker::open_request_ingress` 可将单个外部入口绑定为 Int/Bool/Unit 请求协议；发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位。超时/取消不撤回已接收消息；示例 `worker_ingress_requests`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。仍不提供网络服务或语言阻塞请求。
+`ScalarWorker::open_request_ingress` 可将单个外部入口绑定为 Int/Bool/Unit 或 RecordInt 内容回复协议，输入参数仍仅接受标量；发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位。超时/取消不撤回已接收消息；示例 `worker_ingress_requests`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。仍不提供网络服务或语言阻塞请求。
 
 宿主可在配置等待后用 `ScalarWorker::open_ingress` 注册单 actor 单入口的固定跨线程队列，发送端只传 Int/Bool/Unit，并以原票据转入 mailbox；关闭后旧 sender 拒绝，最后 sender 释放前保留控制与通知预算。示例 `worker_ingress`，契约见 [ADR-0046](docs/adr/0046-bounded-cross-thread-ingress.md)。这不是网络服务、引用消息或 M:N。
 
@@ -142,7 +144,7 @@ ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](do
 
 未发布源码 ABI v10 支持 handler 内 `send_self(Message, args...)`：目标为本 process 单向入口，worker 在调用点准入入队，下一片恢复后继续；失败不撤回此前发送。示例 `examples/self-send.wings` 与 `examples/self-send-roots.wings`，见 [ADR-0038](docs/adr/0038-self-send-effects.md)。CLI 与独立实例无 worker 回调，调用受管失败；旧 v9 产物须重编译。
 
-`IntList` 是不可变整数节点和共享尾，可作 state、局部、fn 值或有界语言消息参数，仍禁止引用回复。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。
+`IntList` 是不可变整数节点和共享尾，可作 state、局部、fn 值或有界语言消息参数，IntList 回复仍未开放。`empty_ints` / `prepend_int` / `head_int` / `tail_ints` / `is_empty_ints` 每次只处理一个节点，使用同一计费堆与传递 GC；空读取受管失败。示例 `examples/lists.wings`，见 [ADR-0037](docs/adr/0037-immutable-int-lists.md)。
 
 process 内可声明 `fn next(value: RecordInt) -> RecordInt { record_int(read_int(value) + 1) }`。函数只访问参数/局部和更早函数，禁止递归、state 访问和 while；私有受管调用逐帧检查剩余栈，保留跨帧精确根和强制预算检查。最多 32 层函数链、64 个聚合根，示例 `examples/functions.wings`、限制和验证见 [ADR-0042](docs/adr/0042-managed-function-frames.md)。
 
@@ -194,7 +196,7 @@ worker 可选 `enable_timer` 后用 `tick_timed` 按单调 deadline 请求让出
 
 `ScalarSupervisor` 可独占单 worker 做受限 one-for-one 恢复：失败后新实例重新初始化、使用新 Pid，保留旧请求结果但不重放消息；窗口内重启达到上限或重建失败即停止。显式 `spawn_with_heap` 以固定槽数创建及重建全新计费堆，不保留旧记录状态；普通 spawn 仍无堆。主动 stop 不重启，没有语言级 supervisor、link/monitor 或 OTP 兼容承诺，见 [ADR-0023](docs/adr/0023-bounded-host-supervision.md) 和 [ADR-0028](docs/adr/0028-supervised-record-heaps.md)。
 
-语言局部与 state 均可用 `RecordInt`，受限内建为 `record_int(value)`、`read_int(record)`、`collect()`；记录不可变，不支持字段赋值，宿主参数和所有回复仍只允许标量，语言消息参数另支持复制载荷。compiler 发布活跃引用及候选状态，宿主根独立保活已提交状态。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置。引用状态无堆时在初始化前拒绝，临时内建无堆时受管失败；同步及显式执行均保持同 process 计费栈池。见 [ADR-0026](docs/adr/0026-language-temporary-records.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)，可运行示例为 `examples/records.wings` 与 `examples/record-state.wings`。
+语言局部与 state 均可用 `RecordInt`，受限内建为 `record_int(value)`、`read_int(record)`、`collect()`；记录不可变，不支持字段赋值，宿主原始整数参数仍只允许标量，语言消息参数另支持复制载荷，RecordInt 回复按 ADR-0096 复制内容。compiler 发布活跃引用及候选状态，宿主根独立保活已提交状态。CLI 用 `--heap-records 1..=1024` 显式配置堆，并使用固定 16 MiB 的三级字节额度；宿主 `instantiate_with_heap` 与 worker `spawn_with_heap` 允许显式配置。引用状态无堆时在初始化前拒绝，临时内建无堆时受管失败；同步及显式执行均保持同 process 计费栈池。见 [ADR-0026](docs/adr/0026-language-temporary-records.md) 和 [ADR-0027](docs/adr/0027-persistent-record-state.md)，可运行示例为 `examples/records.wings` 与 `examples/record-state.wings`。
 
 ```sh
 cargo run -p wings-compile -- build examples/records.wings -o target/records-aot

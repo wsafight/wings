@@ -71,11 +71,12 @@ impl ReplyTable {
         if !(self.account.same(account) || account.is_child_of(&self.account))
             || !matches!(
                 reply_type,
-                ValueType::Int | ValueType::Bool | ValueType::Unit
+                ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref
             )
         {
             return Err(
-                "result table requires its owner or direct child and a scalar reply".into(),
+                "result table requires its owner or direct child and a scalar or RecordInt reply"
+                    .into(),
             );
         }
         let charge = account.reserve(Resources {

@@ -164,9 +164,12 @@ impl IngressReceiver {
         }
         let schema = handler.schema();
         if schema.is_completion()
-            || schema
-                .reply
-                .is_some_and(|ty| !matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit))
+            || schema.reply.is_some_and(|ty| {
+                !matches!(
+                    ty,
+                    ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref
+                )
+            })
             || schema.parameters.len() > MAX_ARGUMENTS
             || schema
                 .parameters

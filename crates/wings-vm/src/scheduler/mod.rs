@@ -581,9 +581,10 @@ impl SchedulerHandle {
             Some(
                 ty @ (wings_abi::ValueType::Int
                 | wings_abi::ValueType::Bool
-                | wings_abi::ValueType::Unit),
+                | wings_abi::ValueType::Unit
+                | wings_abi::ValueType::Ref),
             ) => ty,
-            _ => return Err("request requires a scalar reply".into()),
+            _ => return Err("request requires a scalar or RecordInt reply".into()),
         };
         let mut message = envelope(
             actor,

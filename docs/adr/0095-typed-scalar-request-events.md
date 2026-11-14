@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（标量完成事件切片；平台验证另记，MVP 尚未完成）
+- RecordInt 内容回复后由 [ADR-0096](0096-copied-record-replies.md) 扩展，原标量和生命周期决定保持。
 - 部分替代：[ADR-0040](0040-language-request-events.md) 仅接受 Int 回复与固定第三参数类型的限制。
 
 ## 决定与理由

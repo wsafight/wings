@@ -295,7 +295,7 @@ pub fn analyze(text: &str) -> Analysis {
                         [
                             (_, Type::RequestId),
                             (_, Type::Int),
-                            (_, Type::Int | Type::Bool | Type::Unit)
+                            (_, Type::Int | Type::Bool | Type::Unit | Type::RecordInt)
                         ]
                     ))
             {
@@ -307,7 +307,9 @@ pub fn analyze(text: &str) -> Analysis {
             }
             let reply = handler.reply_type.as_ref().map(|name| {
                 let ty = checker.declared_type(name);
-                checker.external_type(&ty, name.span);
+                if ty != Type::RecordInt {
+                    checker.external_type(&ty, name.span);
+                }
                 ty
             });
             checker.bind(
@@ -559,10 +561,13 @@ impl Checker {
                         _ => None,
                     };
                     if let Some(Type::Message { parameters, reply }) = target {
-                        if !matches!(reply.as_deref(), Some(Type::Int | Type::Bool | Type::Unit)) {
+                        if !matches!(
+                            reply.as_deref(),
+                            Some(Type::Int | Type::Bool | Type::Unit | Type::RecordInt)
+                        ) {
                             self.error(
                                 "T018",
-                                "request requires an Int, Bool or Unit reply handler",
+                                "request requires an Int, Bool, Unit or RecordInt reply handler",
                                 arguments[1].span,
                             );
                         }
@@ -577,7 +582,7 @@ impl Checker {
                     }
                     if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.len() == 3
                         && parameters[0].1 == Type::RequestId && parameters[1].1 == Type::Int
-                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit)
+                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit | Type::RecordInt)
                         && Some(&parameters[2].1) == reply_type.as_ref())
                     {
                         self.error(

@@ -1201,10 +1201,13 @@ impl ScalarWorker {
         if !matches!(
             schema.reply,
             Some(
-                wings_abi::ValueType::Int | wings_abi::ValueType::Bool | wings_abi::ValueType::Unit
+                wings_abi::ValueType::Int
+                    | wings_abi::ValueType::Bool
+                    | wings_abi::ValueType::Unit
+                    | wings_abi::ValueType::Ref
             )
         ) {
-            return Err("request requires a scalar reply".into());
+            return Err("request requires a scalar or RecordInt reply".into());
         }
         let callback = module
             .manifest()
@@ -1318,6 +1321,9 @@ impl ScalarWorker {
                 RequestOutcome::Cancelled => (2, 0),
                 RequestOutcome::Failed => (3, 0),
             };
+            let record_mask = u64::from(
+                completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
+            ) << 2;
             let message = Message {
                 handler: completion.handler,
                 arguments,
@@ -1326,7 +1332,7 @@ impl ScalarWorker {
                 request: None,
                 system: true,
                 external: None,
-                record_mask: 0,
+                record_mask,
                 lists: ListPayload::default(),
                 bytes: BytePayload::default(),
                 _charge: completion.charge,
@@ -1400,10 +1406,20 @@ mod payload_tests {
     }
 
     #[test]
-    fn scalar_request_protocol_rejects_mismatches_before_admission_and_canonicalizes_failure() {
+    fn copy_request_protocol_rejects_mismatches_before_admission_and_canonicalizes_failure() {
         use wings_abi::ValueType;
-        for reply in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
-            for callback in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+        for reply in [
+            ValueType::Int,
+            ValueType::Bool,
+            ValueType::Unit,
+            ValueType::Ref,
+        ] {
+            for callback in [
+                ValueType::Int,
+                ValueType::Bool,
+                ValueType::Unit,
+                ValueType::Ref,
+            ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
                         continue;
@@ -1431,13 +1447,19 @@ mod payload_tests {
                     let mut entries = data.entries.to_vec();
                     if corrupt {
                         entries[2] = invalid_scalar_reply;
+                    } else if reply == ValueType::Ref {
+                        entries[2] = crate::tests::record_reply;
                     }
-                    entries.push(scalar_completion);
+                    entries.push(if callback == ValueType::Ref {
+                        crate::tests::record_completion
+                    } else {
+                        scalar_completion
+                    });
                     data.entries = entries.into_boxed_slice();
                     data.manifest.validate().unwrap();
                     let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
-                    let owner = worker.spawn(&module, limits, 1).unwrap();
-                    let target = worker.spawn(&module, limits, 1).unwrap();
+                    let owner = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
+                    let target = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
                     worker
                         .send(owner, &module.handler("Add").unwrap(), &[0], 128)
                         .unwrap();

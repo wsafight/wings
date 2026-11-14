@@ -587,6 +587,22 @@ macOS AArch64 最终 debug/release 各 85 个 harness、566 项测试及完整�
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。85 个 release harness、566 项测试、完整受限 AOT 和同限额的八次 runtime/八次真实 AOT 独立进程均通过；与 macOS 两种构建合计 48 次定向进程、48 次 runtime 测试执行和 1728 组真实 AOT 场景，有限重复不代表完整并发状态空间覆盖。冻结包 `/tmp/wings-scalar-completions-linux.tar.gz` 含 334 份源码、85 个 harness、63 个工具/示例，显式包含新示例与 ADR，排除语法评审稿；结束后全部 482 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-scalar-completions-linux-{tests,repeat,aot,hashes,stop}.log`，状态回执为 `linux-status.json`；宿主源码核对为 `host-sources-final.log`，冻结后仅补本验证记录，最终静态检查为 `static-final.log`，均沿相同前缀。TCG 只提供功能证据；最新原生 Linux CI、完整业务值/账本、长时公平/故障及同平台同负载 BEAM 吞吐/整机内存双门禁仍未完成。
 
+## RecordInt 回复的独立内容复制：ADR-0096
+
+基于 `89ff2ee`，按 [ADR-0096](adr/0096-copied-record-replies.md) 开放现有 `-> RecordInt` 和匹配的单向 `(RequestId, Int, RecordInt)` 完成签名，不改变语法拼写或 ABI v15。runtime 在候选状态提交前从目标当前计费堆验证/读取唯一 i64 字段，结果表与宿主只保存独立内容；语言完成信封复用原存储和预留，以第三项 record mask 在发起方堆重建独立记录。非成功事件导入内容为 0 的记录；导入失败使发起方受管失败，不重发、重新选终态或撤回目标副作用。旧 runtime 在清单检查拒绝新增回复/完成签名，原标量产物继续兼容；列表/字节和通用记录回复仍未开放。
+
+直接宿主 ScalarProcess/ScalarTask、worker/supervisor、Scheduler 及固定 ingress 的成功结果返回 RecordInt 内容 i64，schema 或 `reply_type()` 标识类型。JSON 成功输出为 `{"reply":{"record_int":N}}`，输入仍拒绝原记录编号及系统 RequestId。固定八字节复制没有新增动态结果分配或新预留类别，原请求票据/完成信封/结果表与目标堆各自沿原账户和生命周期管理；此结论不代表全部 VM 分配已计费。
+
+新增五项可信 runtime 测试验证当前记录内容、结果保留后 collect、过期/零/非法/无堆编号、其他布局和旧状态不提交。既有内部编码只有槽号/代次，不含堆身份；测试分别验证当前堆无对应对象时不能读到外堆内容，以及两个堆编号恰相同时只读取当前堆的不同字段值。设计未声称可以识别所有可信 native 伪造来源，正常 compiler 与消息通道仍保证引用只在所属堆使用。这是沿既有可信 ABI 的边界，不是原生代码沙箱。
+
+前端/共享 LSP、IR、Manifest 及两个 runtime 的原请求矩阵扩展为 4×4 匹配/错配，runtime fixture 另验证非法 RecordInt 输出 2 不提交候选 77，完成入口读取 Failed/内容 0 的独立记录。新真实 AOT `record-replies`/`record-reply-state` 覆盖 i64 最小/最大/零、源码 fn/出口根、collect 与一步活栈推进、已提交记录和候选替换；宿主副本跨目标失败/停止或 worker Drop 后仍可消费。类型化输入 Echo、固定 ingress、监督及一/二 Scheduler worker 均执行真实生成入口；原始整数/JSON 不能传入记录或伪造完成入口。
+
+真实语言完成在手动 worker、一/二 Scheduler worker 中共 24 组，覆盖自请求/子目标、正常/零超时/取消/失败、完成入口 collect 后读取和后续 send。手动 worker 核对子目标超时/取消后仍执行，保留原取消竞争与能力失效行为；自目标失败保留旧状态 9，子目标失败保留 0。另一持久记录 fixture 用单槽堆确定性制造完成记录导入失败，须定位 Done/HeapExhausted，子目标仍可回复原内容 5；三种执行配置最终票据和根基线恢复。没有缩减原负载或提高业务三秒阶段、独立 CPU 20s/墙钟 30s/core 0 限制。
+
+macOS AArch64 debug/release 各 86 个 harness、571 项测试及完整受限 AOT 通过；workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和两种构建 doc-tests 通过。每种构建额外执行八次两项请求协议回归、八次五项回复验证和八次真实 AOT，执行前用 `--list` 核对目标数量；每种合计 24 个独立进程、56 次 runtime 测试执行及 192 组语言完成场景，另含每次 AOT 的宿主/持久根/导入失败检查。日志前缀为 `/tmp/wings-record-replies-`，最终测试 `tests-debug-final.log`/`tests-release.log`，重复 `repeat-debug.log`/`repeat-release.log`，完整 AOT `aot-debug.log`/`aot-release.log`，其余检查单独记录。本片未新采 BEAM 长测或性能/整机内存结果。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。86 个 release harness、571 项测试、完整受限 AOT 和同限额的 24 次定向进程通过；与 macOS 两种构建合计 72 次定向进程、168 次 runtime 测试执行和 576 组语言完成 AOT 场景，不据有限重复声称覆盖全部并发状态空间。冻结包 `/tmp/wings-record-replies-linux.tar.gz` 含 339 份源码、86 个 harness、64 个工具/示例，显式包含新测试/示例/ADR，排除语法评审稿；结束后全部 489 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-record-replies-linux-{tests,repeat,aot,hashes,stop}.log`，客体状态回执为 `/tmp/wings-record-replies-linux-status.json`；宿主冻结源码核对为 `/tmp/wings-record-replies-host-sources-final.log`，冻结后仅补本验证记录；最终静态检查覆盖 113 份 Markdown、1136 条相对链接与围栏，依赖边界、禁 unwind、Python AST 与 diff 检查通过。TCG 不替代最新原生 Linux CI、完整业务值/账本、长时公平/故障和同平台同负载 BEAM 吞吐/整机内存双门禁，M0/MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

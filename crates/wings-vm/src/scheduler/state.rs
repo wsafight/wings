@@ -163,12 +163,15 @@ impl State {
             arguments[..3].copy_from_slice(&[pending.capability, status, value]);
             let owner = pending.owner;
             retire_request(&mut self.requests[index]);
+            let record_mask = u64::from(
+                completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
+            ) << 2;
             let message = Envelope {
                 handler: completion.handler,
                 arguments,
                 count: 3,
                 max_steps: completion.max_steps,
-                record_mask: 0,
+                record_mask,
                 lists: ListPayload::default(),
                 bytes: BytePayload::default(),
                 system: true,
@@ -323,6 +326,7 @@ impl Shared {
                             wings_abi::ValueType::Int
                                 | wings_abi::ValueType::Bool
                                 | wings_abi::ValueType::Unit
+                                | wings_abi::ValueType::Ref
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0096](adr/0096-copied-record-replies.md) 按第 3/4 项补齐 RecordInt 内容回复，具体平台证据见[验证记录](validation-2026-11-14.md)。列表/字节/通用记录回复、完整账本、公平/故障、原生双平台及 BEAM 双门禁仍未完成。
+
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 按第 3 项补齐语言请求的既有标量回复和匹配完成签名，具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、完整业务值/账本、长时公平/故障、最新原生双平台及同负载 BEAM 双门禁不因此完成。
 
 [ADR-0094](adr/0094-typed-host-message-values.md) 按第 3/4 项补齐直接宿主向既有 RecordInt/IntList/Bytes 消息的类型化复制入口，保留原语法、ABI、合计上限及请求生命周期；具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、字符串/通用记录、完整账本、原生双平台及同负载 BEAM 双门禁仍未完成。
@@ -165,7 +167,7 @@ M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与
 
 当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录/IntList、非递归 fn 调用帧、条件表达式、比较和标量/RecordInt state while。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、外部 OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0042](adr/0042-managed-function-frames.md) 将源码函数接到真实受管帧。已有 RecordInt 复制消息/入口根，列表消息根由 ADR-0051 接入，尚无引用回复、任意引用 phi、递归或动态派发，不等于完整 safepoint/GC 或 M0 验证。
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0042](adr/0042-managed-function-frames.md) 将源码函数接到真实受管帧。已有 RecordInt 复制消息/入口根，列表消息根由 ADR-0051 接入，尚无列表/字节回复、任意引用 phi、递归或动态派发，不等于完整 safepoint/GC 或 M0 验证。
 
 资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)，[ADR-0045](adr/0045-concurrent-resource-admission.md) 增加同 VM 门闩下的跨线程原子准入、净转移和票据归还。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入，[ADR-0044](adr/0044-native-module-leases.md) 增加共享模块租约及 VM 级加载预算；完整业务堆、allocator 元数据和外部 I/O 仍未覆盖，线程安全账本也不等于 M:N 或 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
 
@@ -194,7 +196,7 @@ OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接�
 
 [ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。[ADR-0032](adr/0032-safe-point-diagnostics.md) 补充最近安全点 GC/预算快照；尚无语言级监督、link/monitor 或跨线程/故障历史诊断，不跳过 M0/M1 或性能门禁。
 
-[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList 消息根按 ADR-0049/0051 接入，但引用回复和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
+[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList 消息根按 ADR-0049/0051 接入，但其他引用回复和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
 BEAM 对照已固化 [v1–v9 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测，ADR-0092 补双发送者并发失败前缀。正确性和部分测量仍不等同完整基线；长时并发故障、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
 

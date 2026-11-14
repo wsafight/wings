@@ -1,8 +1,10 @@
 # 运行时
 
+[ADR-0096](adr/0096-copied-record-replies.md) 接入 RecordInt 回复的固定八字节内容复制，完成信封和结果槽沿原预留，完成记录在发起方显式计费堆导入；非成功结果为内容 0 的独立记录。无效目标引用在状态提交前失败，原请求终态、发布票据和退出清理边界保持，具体平台证据见[验证记录](validation-2026-11-14.md)。
+
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 补语言请求的 Bool/Unit 回复。单 worker 与 Scheduler 在预留/发布前核对目标回复与完成第三参数类型；成功输出沿原规范编码检查，非成功完成使用类型默认值。原 status、唯一终态、超时/取消保留、队满背压、预算、计费与清理顺序保持。
 
-[ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数、JSON 和 IngressSender 仍按原标量边界处理。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
+[ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数、JSON 和 IngressSender 的输入仍按原标量边界处理。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
 
 宿主调用示例（针对 [`examples/host-values.wings`](../examples/host-values.wings) 的 `Compute`，须先用本 VM 的计费模块创建带堆目标；以下 `handle` 为 SchedulerHandle）：
 
@@ -19,7 +21,7 @@ let mut request = handle.request_values(pid, &compute, &values, 32768, timeout)?
 let outcome = request.wait(timeout)?;
 ```
 
-调用正常返回后源切片即可修改或丢弃；`wait` 返回 None 仅表示本次等待结束，仍可继续等待。请求 TimedOut/Cancelled 不撤回副本，目标导入失败返回 Failed；正常标量回复携带于 Reply。列表总计最多 64 个整数，字节总计最多 65536；每项值须精确匹配 schema，不能将 Int(1) 当作 Bool(true)。ScalarWorker/ScalarSupervisor 的同名方法返回原 RequestId，仍须由宿主驱动 tick 并 take_reply；原构造、队列和请求上限保持。此接口是未发布源码能力，CLI/IngressSender 不会自动转换这些业务值。
+调用正常返回后源切片即可修改或丢弃；`wait` 返回 None 仅表示本次等待结束，仍可继续等待。请求 TimedOut/Cancelled 不撤回副本，目标导入失败返回 Failed；正常回复的 Reply 携带标量编码或 RecordInt 内容副本。列表总计最多 64 个整数，字节总计最多 65536；每项值须精确匹配 schema，不能将 Int(1) 当作 Bool(true)。ScalarWorker/ScalarSupervisor 的同名方法返回原 RequestId，仍须由宿主驱动 tick 并 take_reply；原构造、队列和请求上限保持。此接口是未发布源码能力，CLI/IngressSender 不会自动转换这些业务值。
 
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 要求 Scheduler 在等待锁内重查本 worker 的 ready：空认领后新发布的工作立即进入下一轮，其他 worker 的队列不触发自旋，已认领但启动失败仍保留原有界退避。请求期限、预算及超时不撤回业务的契约不变。
 
@@ -85,13 +87,13 @@ v2 与 v5/v6 驱动将池创建纳入原阶段计时，仍逐 actor 绑定；开
 
 [ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 为 Scheduler worker 采用按需栈池，最大活栈数仍由 actor 容量限制，冷栈在映射前按完整容量和 guard 三级准入；缓存命中只净转移账户。启动拒绝不弹走队头、不提交 state、不退出 actor，其他可准入 actor 继续运行；拒绝可持续至资源释放或 stop/关闭，未承诺饿死工作最终准入。正常返回才可缓存最多两个栈，超额映射释放，缓存只向 tenant 计费，trim 不碰活栈。
 
-[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 将 `SchedulerConfig.requests` 的宿主结果容量解释为全实例 Int/Bool/Unit 共用的总槽数，语言 pending 另有同大小表，不合并这两类容量；普通固定入口 ingress 不变。每次宿主 request 先按原目标 process 计费，实例表满返回 `ingress_requests_full`，队列/准入失败不留半槽或票据。超时/取消不撤回消息，caller/publisher 都结束才复用槽；退出释放业务资源，未消费结果仅延长原票据/共享控制表租约，不保留 actor 或模块。
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 将 `SchedulerConfig.requests` 的宿主结果容量解释为全实例 Int/Bool/Unit 与 RecordInt 内容回复共用的总槽数，语言 pending 另有同大小表，不合并这两类容量；普通固定入口 ingress 不变。每次宿主 request 先按原目标 process 计费，实例表满返回 `ingress_requests_full`，队列/准入失败不留半槽或票据。超时/取消不撤回消息，caller/publisher 都结束才复用槽；退出释放业务资源，未消费结果仅延长原票据/共享控制表租约，不保留 actor 或模块。
 
 [ADR-0059](adr/0059-byte-state-counter-equivalence.md) 为单 worker 增加固定按值 `ByteStateSnapshot`（长度/最多 32 B 前缀），不返回 handle 或保留堆/账户。`byte_state_snapshot(pid)` 在 active invocation 时拒绝，非 Bytes 返回 None；失败 ExitSnapshot 在清理前复制已提交 Bytes，退出后仍可持有副本。前缀可含业务数据，仅可信宿主显式读取，不是完整导出或持久快照。固定 Counter 测试先提交整批最多 32 个请求再 tick，按 Delivered 顺序消费；失败终结该批队尾且不重放，业务契约不变。
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的八字节读取固定有界、不分配；替换仍沿 Bytes 原账户、精确源根、每块最多 256 字节和取消清理契约，需同时容纳旧/新对象。先验证完整范围，再预留/复制，不从负数或极端 offset 形成越界访问。ABI v14 复用原 scratch/context，未开放原 handle 消息或原生沙箱。
 
-[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；Bytes 复制消息见 ADR-0076，引用回复、字符串和完整业务值仍未完成。
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；Bytes 复制消息见 ADR-0076，列表/字节回复、字符串和完整业务值仍未完成。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 的 SchedulerSupervisor 通过固定子表与每实例唯一终态票据实现宿主 one-for-one 恢复。poll 一次至多消费一个退出，受管失败且滚动窗口仍准入时创建全新 state/堆和 Pid，旧请求已终结、旧消息不重放。并发失败不能互相覆盖终态；stop/关闭不重启，初始化/资源拒绝或强度超限不自动重试。host handle 的结果租约仍可延长旧账户，但票据不持有业务资源。需显式 poll，不提供语言 supervision/link/monitor。
 
@@ -103,7 +105,7 @@ v2 与 v5/v6 驱动将池创建纳入原阶段计时，仍逐 actor 绑定；开
 
 只读模块及 handler ID 可按 [ADR-0052](adr/0052-cross-thread-module-leases.md) 跨线程 clone；每个 worker 必须在所属线程独立构造，模块 VM 身份仍逐次校验。代码/计费租约到最后持有者才释放，各 actor 的状态、堆、栈池、mailbox 和执行权不共享或迁移；四线程宿主示例不改变单 worker 调度契约。
 
-IntList 消息按 [ADR-0051](adr/0051-bounded-int-list-messages.md) 在源协程逐节点复制到固定 64 整数信封，所有列表合计超限在发布前受管拒绝。目标按参数顺序从尾重建，每个空/cons 节点前检查预算与取消，当前尾和已导入参数由入口根保活；失败与 stop/Drop 沿原调用清理，未发生跨进程 handle 共享。共享尾在不同参数独立复制，空列表也在目标分配节点。宿主/JSON/ingress 不接受内部段编码，引用回复尚未开放。
+IntList 消息按 [ADR-0051](adr/0051-bounded-int-list-messages.md) 在源协程逐节点复制到固定 64 整数信封，所有列表合计超限在发布前受管拒绝。目标按参数顺序从尾重建，每个空/cons 节点前检查预算与取消，当前尾和已导入参数由入口根保活；失败与 stop/Drop 沿原调用清理，未发生跨进程 handle 共享。共享尾在不同参数独立复制，空列表也在目标分配节点。宿主/JSON/ingress 不接受内部段编码，IntList 回复尚未开放。
 
 RecordInt 语言消息按 [ADR-0049](adr/0049-record-message-copies.md) 用固定信封复制字段，目标消息开始后才在自己的计费堆构造引用。导入逐项扣 runtime 步数，分配/GC 可让出；入口根最多 64 项，完成/失败/取消清空。队列满拒绝在发布前，已发布后目标堆满是目标受管失败，不回滚源副作用，也不暴露源 handle。
 

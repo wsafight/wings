@@ -21,6 +21,7 @@ mod persistent_state;
 mod preemption;
 mod primitives;
 mod process_effects;
+mod record_replies;
 mod request_events;
 mod scheduler;
 mod stack_boundary;
@@ -172,6 +173,57 @@ unsafe extern "C" fn invalid_output(
     _context: *mut ScalarContext,
 ) -> u32 {
     unsafe { *output = ScalarOutput { state: 2, reply: 2 } };
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn record_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut encoded = 0;
+        let status = heap_call(context, wings_abi::HEAP_RECORD_INT, 0, &mut encoded);
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state,
+            reply: encoded as i64,
+        };
+    }
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn record_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut value = 0;
+        let status = heap_call(
+            context,
+            wings_abi::HEAP_READ_INT,
+            *arguments.add(2) as u64,
+            &mut value,
+        );
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state: *arguments.add(1) * 100 + value as i64,
+            reply: 0,
+        };
+    }
     STATUS_OK
 }
 

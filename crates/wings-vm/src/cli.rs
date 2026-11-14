@@ -54,6 +54,7 @@ enum Reply {
     Int(i64),
     Bool(bool),
     Unit(()),
+    RecordInt { record_int: i64 },
 }
 
 impl Adapter {
@@ -119,6 +120,7 @@ impl Adapter {
                 reply: match reply_type {
                     Some(ValueType::Int) => Reply::Int(value),
                     Some(ValueType::Bool) => Reply::Bool(value != 0),
+                    Some(ValueType::Ref) => Reply::RecordInt { record_int: value },
                     _ => Reply::Unit(()),
                 },
             },
@@ -664,6 +666,16 @@ mod tests {
             (Some(ValueType::Bool), Some(0), "{\"reply\":false}\n"),
             (Some(ValueType::Bool), Some(1), "{\"reply\":true}\n"),
             (Some(ValueType::Unit), Some(0), "{\"reply\":null}\n"),
+            (
+                Some(ValueType::Ref),
+                Some(i64::MIN),
+                "{\"reply\":{\"record_int\":-9223372036854775808}}\n",
+            ),
+            (
+                Some(ValueType::Ref),
+                Some(i64::MAX),
+                "{\"reply\":{\"record_int\":9223372036854775807}}\n",
+            ),
             (None, None, "{\"accepted\":true}\n"),
         ] {
             output.clear();

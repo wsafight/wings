@@ -1,0 +1,51 @@
+process RecordReplies {
+  state count: Int = 0
+
+  fn make(value: Int) -> RecordInt {
+    let result = record_int(value)
+    collect()
+    result
+  }
+
+  on Value(value: Int) -> RecordInt {
+    let result = make(value)
+    count = count + 1
+    collect()
+    result
+  }
+
+  on Echo(value: RecordInt) -> RecordInt {
+    collect()
+    count = read_int(value)
+    value
+  }
+
+  on Current -> RecordInt { make(count) }
+  on Fail -> RecordInt {
+    count = 99
+    let failed = 1 / 0
+    make(count)
+  }
+
+  on Start(value: Int, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
+    let target = if same { self_pid() } else { spawn_self() }
+    let pending = if fail {
+      request(target, Fail, Done, timeout)
+    } else {
+      request(target, Value, Done, timeout, value)
+    }
+    if cancel { cancel_request(pending) } else { () }
+    count = 9
+    count
+  }
+
+  on Done(id: RequestId, status: Int, value: RecordInt) {
+    collect()
+    count = status * 1000 + read_int(value)
+    collect()
+    send_self(Add, 10000)
+  }
+
+  on Add(value: Int) { count = count + value }
+  on Read -> Int { count }
+}

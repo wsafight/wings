@@ -148,7 +148,7 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn accepts_reference_state_and_copied_parameters_but_not_reference_replies() {
+fn accepts_copied_record_replies_and_parameters_but_not_list_replies() {
     for ty in [ValueType::Ref, ValueType::ListRef] {
         let mut with_state = manifest();
         with_state.state = ty;
@@ -162,7 +162,7 @@ fn accepts_reference_state_and_copied_parameters_but_not_reference_replies() {
                     .push(("reference".into(), ty)),
                 _ => manifest.handlers[0].reply = Some(ty),
             }
-            if boundary == 1 {
+            if boundary == 1 || ty == ValueType::Ref {
                 manifest.validate().unwrap();
             } else {
                 rejects(&manifest, "cannot cross scalar artifact boundaries");
@@ -204,8 +204,13 @@ fn request_ids_only_enter_exact_one_way_completion_signatures() {
 }
 
 #[test]
-fn completion_signatures_round_trip_all_scalar_values_and_reject_other_types() {
-    for ty in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
+    for ty in [
+        ValueType::Int,
+        ValueType::Bool,
+        ValueType::Unit,
+        ValueType::Ref,
+    ] {
         let mut manifest = manifest();
         manifest.handlers[0].parameters = vec![
             ("id".into(), ValueType::RequestId),
@@ -230,7 +235,6 @@ fn completion_signatures_round_trip_all_scalar_values_and_reject_other_types() {
             assert!(invalid.validate().is_err());
         }
         for wrong in [
-            ValueType::Ref,
             ValueType::ListRef,
             ValueType::BytesRef,
             ValueType::Pid,

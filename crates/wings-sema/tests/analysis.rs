@@ -201,9 +201,14 @@ fn language_requests_require_typed_system_completions_and_scalar_replies() {
 }
 
 #[test]
-fn request_completion_values_match_all_scalar_replies_without_coercion() {
-    for (reply, literal) in [("Int", "7"), ("Bool", "true"), ("Unit", "()")] {
-        for completion in ["Int", "Bool", "Unit"] {
+fn request_completion_values_match_copyable_replies_without_coercion() {
+    for (reply, literal) in [
+        ("Int", "7"),
+        ("Bool", "true"),
+        ("Unit", "()"),
+        ("RecordInt", "record_int(7)"),
+    ] {
+        for completion in ["Int", "Bool", "Unit", "RecordInt"] {
             let text = format!(
                 "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {reply} {{ {literal} }} on Done(id: RequestId, status: Int, value: {completion}) {{ () }} }}"
             );
@@ -467,7 +472,7 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
 }
 
 #[test]
-fn accepts_record_state_and_message_fields_but_rejects_reference_replies() {
+fn accepts_record_state_messages_and_replies_but_rejects_other_reference_replies() {
     checked(
         "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
     );
@@ -483,11 +488,12 @@ fn accepts_record_state_and_message_fields_but_rejects_reference_replies() {
     );
     for source in [
         "process P { state n: Int = 0; on Get -> IntList { empty_ints() } }",
-        "process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }",
+        "process P { state n: Int = 0; on Get -> Bytes { fill_bytes(1, 0) } }",
     ] {
         assert_error(source, "T011", "not supported in message");
     }
     checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
+    checked("process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }");
     checked(
         "process P { state n: Int = 0; on Put(value: RecordInt) { collect(); n = read_int(value) } on Get(value: RecordInt) -> Int { collect(); read_int(value) } }",
     );

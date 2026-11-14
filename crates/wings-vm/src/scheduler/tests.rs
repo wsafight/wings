@@ -93,10 +93,20 @@ unsafe extern "C" fn scalar_completion(
 }
 
 #[test]
-fn scalar_request_protocol_checks_callback_before_publication_and_preserves_failed_state() {
+fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed_state() {
     for workers in [1, 2] {
-        for reply in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
-            for callback in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+        for reply in [
+            ValueType::Int,
+            ValueType::Bool,
+            ValueType::Unit,
+            ValueType::Ref,
+        ] {
+            for callback in [
+                ValueType::Int,
+                ValueType::Bool,
+                ValueType::Unit,
+                ValueType::Ref,
+            ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
                         continue;
@@ -125,13 +135,19 @@ fn scalar_request_protocol_checks_callback_before_publication_and_preserves_fail
                     let data = Arc::get_mut(&mut module.inner).unwrap();
                     data.manifest.handlers[0].parameters[2].1 = callback;
                     data.manifest.handlers[3].reply = Some(reply);
-                    data.entries[0] = scalar_completion;
+                    data.entries[0] = if callback == ValueType::Ref {
+                        crate::tests::record_completion
+                    } else {
+                        scalar_completion
+                    };
                     if corrupt {
                         data.entries[3] = invalid_scalar_reply;
+                    } else if reply == ValueType::Ref {
+                        data.entries[3] = crate::tests::record_reply;
                     }
                     data.manifest.validate().unwrap();
-                    let owner = handle.spawn(&module, limits, 1).unwrap();
-                    let target = handle.spawn(&module, limits, 1).unwrap();
+                    let owner = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
+                    let target = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
                     let target_capability = handle
                         .shared
                         .lock()

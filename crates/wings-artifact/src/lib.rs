@@ -34,7 +34,7 @@ impl Handler {
                 [
                     (_, ValueType::RequestId),
                     (_, ValueType::Int),
-                    (_, ty @ (ValueType::Int | ValueType::Bool | ValueType::Unit)),
+                    (_, ty @ (ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Ref)),
                 ],
             ) => Some(*ty),
             _ => None,
@@ -88,12 +88,13 @@ impl Manifest {
         }) {
             return Err("Pid cannot cross scalar artifact boundaries; RequestId is only allowed in completion events".into());
         }
-        if self
-            .handlers
-            .iter()
-            .any(|handler| handler.reply.is_some_and(ValueType::is_reference))
-        {
-            return Err("record references cannot cross scalar artifact boundaries".into());
+        if self.handlers.iter().any(|handler| {
+            matches!(
+                handler.reply,
+                Some(ValueType::ListRef | ValueType::BytesRef)
+            )
+        }) {
+            return Err("list and byte references cannot cross scalar artifact boundaries".into());
         }
         let mut names = HashSet::new();
         for handler in &self.handlers {

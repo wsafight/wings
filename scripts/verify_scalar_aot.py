@@ -1374,6 +1374,23 @@ def main():
         for name, value in [("CompletedBool", False), ("CompletedUnit", None)]:
             result = invoke(scalar_completions, [message(name, 1, 0, value)], expected=1)
             assert not result.stdout and "not JSON arguments" in result.stderr
+        record_replies = parent / "record-replies"
+        record_reply_state = parent / "record-reply-state"
+        for name, artifact in [("record-replies", record_replies), ("record-reply-state", record_reply_state)]:
+            command([COMPILER, "build", ROOT / f"examples/{name}.wings", "-o", artifact])
+        result = example("record_replies", record_replies, record_reply_state)
+        assert "24 bounded language scenarios" in result.stdout
+        print(result.stdout.strip())
+        record_run = [VM, "run", "--trusted", record_replies, "--heap-records", 8]
+        result = command(record_run, "".join(json.dumps(request) + "\n" for request in [message("Value", -(2**63)), message("Value", 2**63 - 1), message("Current")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": 2**63 - 1}, {"record_int": 2}]
+        result = command(record_run, json.dumps(message("Echo", 0)) + "\n", expected=1)
+        assert not result.stdout and "not JSON arguments" in result.stderr
+        result = command(record_run, json.dumps(message("Done", 1, 0, 0)) + "\n", expected=1)
+        assert not result.stdout and "not JSON arguments" in result.stderr
+        state_run = [VM, "run", "--trusted", record_reply_state, "--heap-records", 8]
+        result = command(state_run, "".join(json.dumps(request) + "\n" for request in [message("Put", -(2**63)), message("Current"), message("Put", 2**63 - 1), message("Read")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": -(2**63)}, {"record_int": 2**63 - 1}, 2**63 - 1]
         request_roots = parent / "request-roots"
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])

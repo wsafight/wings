@@ -103,6 +103,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0093](0093-scheduler-ready-before-park.md) | 等待锁内重查本 worker 的 ready，保留启动失败退避 | 已采纳（等待竞争修正） |
 | [0094](0094-typed-host-message-values.md) | 宿主类型化 RecordInt/IntList/Bytes 复制消息 | 已采纳（直接宿主消息切片） |
 | [0095](0095-typed-scalar-request-events.md) | 语言异步 Int/Bool/Unit 回复与精确类型完成入口 | 已采纳（标量完成事件切片） |
+| [0096](0096-copied-record-replies.md) | RecordInt 回复的目标检查、内容复制和完成导入 | 已采纳（固定记录回复切片） |
 
 ## 维护方式
 

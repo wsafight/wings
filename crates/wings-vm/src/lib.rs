@@ -252,14 +252,28 @@ impl ScalarProcess {
             return Err(error);
         }
         let handler = &self.module.inner.manifest.handlers[index];
-        if !handler
+        let reply = if handler.reply == Some(ValueType::Ref) {
+            match self
+                .heap
+                .as_deref()
+                .and_then(|heap| heap.record_value(output.reply).ok())
+            {
+                Some(value) => value,
+                None => {
+                    self.failed = true;
+                    return Err("entry returned an invalid record reply".into());
+                }
+            }
+        } else if handler
             .reply
             .unwrap_or(ValueType::Unit)
             .accepts(output.reply)
         {
+            output.reply
+        } else {
             self.failed = true;
             return Err("entry returned an invalid scalar state or reply".into());
-        }
+        };
         if let Err(error) = commit_state(
             self.module.inner.manifest.state,
             &mut self.heap,
@@ -269,7 +283,7 @@ impl ScalarProcess {
             return Err(error);
         }
         self.state = output.state;
-        Ok(handler.reply.map(|_| output.reply))
+        Ok(handler.reply.map(|_| reply))
     }
 }
 

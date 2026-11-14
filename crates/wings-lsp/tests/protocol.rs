@@ -202,8 +202,12 @@ fn request_ids_and_completion_names_use_shared_analysis() {
 }
 
 #[test]
-fn scalar_completion_hover_and_diagnostics_share_request_reply_types() {
-    for (ty, literal) in [("Bool", "false"), ("Unit", "()")] {
+fn copied_completion_hover_and_diagnostics_share_request_reply_types() {
+    for (ty, literal) in [
+        ("Bool", "false"),
+        ("Unit", "()"),
+        ("RecordInt", "record_int(7)"),
+    ] {
         let mut typed_server = server();
         let text = format!(
             "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {ty} {{ {literal} }} on Done(id: RequestId, status: Int, value: {ty}) {{ let saved = value }} }}"

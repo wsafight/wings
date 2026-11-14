@@ -1,0 +1,19 @@
+process RecordReplyState {
+  state data: RecordInt = record_int(5)
+
+  on Current -> RecordInt { collect(); data }
+  on Put(value: Int) -> RecordInt { data = record_int(value); collect(); data }
+  on Read -> Int { collect(); read_int(data) }
+
+  on StartImportFail -> Int {
+    let child = spawn_self()
+    let pending = request(child, Current, Done, 60000)
+    9
+  }
+
+  on Done(id: RequestId, status: Int, value: RecordInt) {
+    collect()
+    data = value
+    collect()
+  }
+}
