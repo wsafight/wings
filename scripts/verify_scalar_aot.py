@@ -101,6 +101,8 @@ def verify_tcp_service(directory):
             assert child.returncode == 0 and not errors, (child.returncode, output, errors)
             report = json.loads(output)
             assert report["resources_released"] is True
+            assert report["bootstrap_bytes"] > 0
+            assert report["remaining_bytes"] == report["bootstrap_bytes"]
             assert report["wake_errors"] == 0
             assert 0 <= report["max_socket_buffer"] <= 65536
             if report["connections"]:
@@ -1061,6 +1063,8 @@ def main():
         example("multi_worker", scheduler, loops)
         byte_buffers = parent / "bytes"
         command([COMPILER, "build", ROOT / "examples/bytes.wings", "-o", byte_buffers])
+        bootstrap = example("vm_bootstrap", counter, byte_buffers)
+        print(bootstrap.stdout.strip())
         example("byte_buffers", byte_buffers)
         command([sys.executable, Path(__file__), "--check-byte-roots", byte_buffers])
         counter_bytes = parent / "beam-counter"

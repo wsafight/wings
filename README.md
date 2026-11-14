@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0079](docs/adr/0079-accounted-vm-bootstrap.md) 为 VM 根与准入门闩增加启动计费入口，并强制该树的子节点预留控制存储。CLI 堆模式与 TCP 使用此入口；业务清理回到存活根基线。`vm_bootstrap` 已接完整 AOT，旧工具模型及其余资源边界仍待完成。
+
 [ADR-0078](docs/adr/0078-request-publisher-lifetimes.md) 修正内部请求资源生命周期：超时/取消结果取走、完成事件入队或发起方退出后，仍排队/执行的目标消息继续占请求额度，两端都结束才回收槽位。原容量、类型拼写和 ABI v15 不变；回归随 workspace 测试与完整受限 AOT 执行。
 
 [ADR-0077](docs/adr/0077-streamed-fairness-measurement.md) 增加独立公平性长测：连续 CPU 与突发心跳的 30s/60s 五对采样，逐条流式事件、每 actor 延迟及可选让出时间戳。原短测边界不变；运行方式见 [v8 协议](docs/beam-workloads.md#v8连续-cpu-与突发心跳长测)，本机结果含队满和观测缺样，完整保留在[验证记录](docs/validation-2026-11-14.md)，不构成公平性或 MVP 门禁通过。

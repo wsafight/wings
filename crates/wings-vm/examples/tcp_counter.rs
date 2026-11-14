@@ -305,7 +305,8 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
         messages: 4,
         requests: 4,
     };
-    let vm = ResourceAccount::vm(limits);
+    let vm = ResourceAccount::vm_accounted(limits)?;
+    let bootstrap = vm.used();
     let tenant = vm.tenant_accounted(limits)?;
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let handler = module.handler("Apply")?;
@@ -341,7 +342,7 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
             .and_then(|snapshot| snapshot.committed_state)
     });
     drop((adapter, worker, module, tenant));
-    if vm.used() != Resources::default() {
+    if vm.used() != bootstrap {
         return Err("TCP service leaked resource reservations".into());
     }
     writeln!(
@@ -353,6 +354,7 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
             "invalid": report.invalid, "io_errors": report.io_errors, "wake_errors": report.wake_errors,
             "max_socket_buffer": report.max_socket_buffer,
             "committed": committed, "resources_released": true,
+            "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         })
     ).map_err(|error| error.to_string())?;
     Ok(())

@@ -295,6 +295,34 @@ debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性对照：
 
 语法评审稿继续未采纳、未 stage；未推送或发布。完整业务值、全部资源账本、公平性、CPU 硬配额和同负载 BEAM 吞吐/整机内存门禁仍待完成，MVP 状态不变。
 
+## VM 根与准入门闩启动计费：ADR-0079
+
+基于 `59b82e2`，按 [ADR-0079](adr/0079-accounted-vm-bootstrap.md) 补根账户与共享准入门闩的逻辑存储。`vm_accounted` 在两次 Arc 分配前检查根/门闩及四个强弱引用计数字段的成本，used 从启动成本开始；不创建指向根自身的 Reservation。计费根下旧 `tenant`/`process` 入口也强制先预留子节点元数据。旧 `vm` 工具树仍保留零基线；没有声称所有入口或 allocator/动态装载器内部成本已闭环。
+
+### 功能与边界
+
+- 新增 4 项根账户测试：零/不足/精确字节上限、其他维度为零可启动、精确成本/clone 不重复计费、旧子路径不能绕过父/祖先元数据额度、非法层级零变化、满 VM 净转移与跨根拒绝。弱引用检查跨线程最后票据释放后根/门闩都析构，没有自引用环；原并发节点竞争另加计费根模式，8 线程只准入可容纳的 4 节点，结束回到启动基线。
+- `vm_bootstrap` 已接完整 AOT：完整计费根下模块/worker 满额度拒绝零变化、标量活栈超时后继续/stop、Bytes 正常状态与失败旧提交快照、一/双 worker 关闭后未消费结果保留原账户及最终启动基线。原 3 秒阶段与 AOT CPU 20 秒/墙钟 30 秒/禁 core 保留。
+- CLI 堆模式和 TCP 服务改用计费根；TCP 所有既有 normal/错误/断开/超时/失败场景均校验正的 `bootstrap_bytes` 与相等的 `remaining_bytes`，`resources_released` 表示派生业务预留已归还。本机另跑一帧 `+7`，实际报告 `bootstrap_bytes=168`、`remaining_bytes=168`、committed=7、published/replies 各 1、其他失败计数 0；记录在 `/tmp/wings-bootstrap-tcp-receipt.log`。该值是本机 Rust 类型的逻辑成本，不是 RSS、allocator 开销或跨平台常量。
+
+### macOS AArch64
+
+Rust 1.99.1；workspace check、all-target clippy `-D warnings`、fmt、Rust 1.85.0 all-target check、依赖隔离/禁止 unwind feature、Python AST、95 份 Markdown 路径与代码围栏检查通过。debug/release all-targets 各 82 个 harness、512 项测试通过，两种构建的 doc-tests 通过；最终精确根成本断言的 release 资源测试另行通过。日志见 `/tmp/wings-bootstrap-final-{check,clippy,msrv,fmt,tests-debug,resources-release}.log`、`/tmp/wings-bootstrap-tests-release.log`、`/tmp/wings-bootstrap-doctests-{debug,release}.log` 和 `/tmp/wings-bootstrap-static.log`。
+
+release 完整受限 AOT 通过，见 `/tmp/wings-bootstrap-aot-release.log`。首次 debug 完整 AOT 中新启动计费回归通过，随后既有 Counter v1 正确性子进程触及原墙钟 10 秒上限；失败日志 `/tmp/wings-bootstrap-aot-debug.log` 完整保留。当时还有 release 与 Linux TCG 验证并行，但未证明超时的唯一原因，不归因于 CPU 竞争，也不改变业务或时限。
+
+其他验证结束、停止 Linux 客体后，debug 完整 AOT 保持原参数首次复跑通过，见 `/tmp/wings-bootstrap-final-aot-debug.log`；没有扩大 timeout 或重写失败日志。两种构建都验证原 TCP 全场景的启动基线字段；新 `vm_bootstrap` 回归同时在本机 debug/release 和 Linux release 执行。
+
+debug/release 各显式执行真实 Wings/BEAM/Python v1、v2 正确性对照：v1 45 组业务、28 JSON/14 桥接拒绝，v2 18 组业务、49 JSON/17 桥接拒绝全部通过。保留业务 CPU 5 秒/墙钟 10 秒与原 3 秒阶段，未重跑长时五对或据启动账目宣称性能/内存提升。见 `/tmp/wings-bootstrap-beam-v{1,2}-{debug,release}.log`。
+
+### Linux x86-64 隔离仿真
+
+沿用 QEMU TCG Ubuntu 24.04 x86-64、2 vCPU/4 GiB、无宿主挂载；macOS 交叉构建 release，客体 GCC 13.3 链接/执行真实 AOT `.so`。冻结包 `/tmp/wings-bootstrap-linux.tar.gz` 含 303 份源码、82 个 harness、60 个工具/示例，不含待审语法稿。执行前及完整 AOT 后全部 445 项 hash 一致；82 个测试子进程共 512 项通过，完整受限 release AOT 通过，包含新增启动计费/CLI/TCP 回归。CPU 20 秒/墙钟 30 秒/禁 core、Counter 业务 CPU 5 秒/墙钟 10 秒与原 3 秒阶段未变。见 `/tmp/wings-bootstrap-linux-{validation,hashes}.log`；本节为测试后补写的验证记录。
+
+交叉构建保留既有 `ignoring deprecated linker optimization setting '1'` 工具链警告；未更改 linker 参数来消除日志。验证结束已停止客体，见 `/tmp/wings-bootstrap-linux-stop.log`。没有新增原生 Linux CI、debug/clippy/MSRV/doc-tests 或 Linux BEAM 数据；TCG 功能回归仍不能替代原生双平台或性能/内存验收。
+
+没有改语言类型拼写或 ABI v15，没有重新发布包或回写冻结的长测结果。完整业务值、其余资源入口、公平性、CPU 硬配额和同负载 BEAM 吞吐/整机内存门禁仍未完成，MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

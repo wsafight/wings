@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 推进第 4 项根/门闩控制存储：新增启动前计费根、强制其子节点准入，CLI 堆模式/TCP 清理回到存活根基线。旧工具入口、完整业务值/账本、长时公平性与原生双平台 BEAM 双门禁仍未完成，MVP 未完成。
+
 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正第 3 项内部请求在超时/取消结果取走、完成事件入队或发起方退出后的提前回收；槽和请求票据保持到目标消息完成/清理。仍缺完整业务值/账本、长时公平性、CPU 硬配额、最新原生双平台与 BEAM 吞吐/整机内存双门禁，MVP 未完成。
 
 [ADR-0077](adr/0077-streamed-fairness-measurement.md) 为第 5/7 项接独立长时 CPU/突发心跳采样，保留原业务、255+1 pending 和短测边界。本机 30s/60s 五对及单独观测已完成；Wings 4/5、BEAM 5/5 通过尾延迟候选，但有 291 次队满、观测采样无数据，CPU 硬配额/过载分组/原生双平台仍不完整；MVP 未完成。
@@ -58,7 +60,7 @@
 
 [2026-11-13 验证记录](validation-2026-11-13.md) 保存 Linux x86-64 隔离仿真功能证据：`6e390af` 的 release 独立测试与 AOT 全回归通过；较早源码的 debug AOT 大型编译触及既有 CPU 上限，未重标成功。原生双平台和 BEAM 门禁仍未完成，不放宽既有资源限制。
 
-[ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；旧工具构造器、根 bootstrap、allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
+[ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 接入根/门闩计费入口。旧工具树、执行入口统一及 allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
 
 [ADR-0049](adr/0049-record-message-copies.md) 接入 ABI v11 的 RecordInt 语言消息复制、目标入口根及整数请求参数，列表消息由 ADR-0051 扩展，仍无引用回复、通用业务值或 M:N；M0/M1 和同业务 BEAM 双目标门禁仍未完成。
 

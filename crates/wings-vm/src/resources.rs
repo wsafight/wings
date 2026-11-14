@@ -50,6 +50,7 @@ pub struct ResourceAccount {
 
 struct AccountNode {
     level: ResourceLevel,
+    accounted_root: bool,
     limit: Resources,
     used: [AtomicU64; 4],
     gate: Arc<Mutex<()>>,
@@ -63,7 +64,17 @@ pub struct Reservation {
 
 impl ResourceAccount {
     pub fn vm(limit: Resources) -> Self {
-        Self::create(ResourceLevel::Vm, limit, None)
+        Self::create(ResourceLevel::Vm, limit, None, 0)
+    }
+
+    pub fn vm_accounted(limit: Resources) -> Result<Self, String> {
+        let bootstrap = (std::mem::size_of::<AccountNode>()
+            + std::mem::size_of::<Mutex<()>>()
+            + 4 * std::mem::size_of::<usize>()) as u64;
+        if limit.bytes < bootstrap {
+            return Err("resource_exhausted at Vm account during bootstrap".into());
+        }
+        Ok(Self::create(ResourceLevel::Vm, limit, None, bootstrap))
     }
 
     pub fn tenant(&self, limit: Resources) -> Result<Self, String> {
@@ -153,7 +164,12 @@ impl ResourceAccount {
         })
     }
 
-    fn create(level: ResourceLevel, limit: Resources, parent: Option<Reservation>) -> Self {
+    fn create(
+        level: ResourceLevel,
+        limit: Resources,
+        parent: Option<Reservation>,
+        bootstrap: u64,
+    ) -> Self {
         let gate = parent.as_ref().map_or_else(
             || Arc::new(Mutex::new(())),
             |parent| parent.account.node.gate.clone(),
@@ -161,9 +177,15 @@ impl ResourceAccount {
         Self {
             node: Arc::new(AccountNode {
                 level,
+                accounted_root: bootstrap != 0,
                 limit,
                 parent,
-                used: std::array::from_fn(|_| AtomicU64::new(0)),
+                used: [
+                    AtomicU64::new(bootstrap),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                    AtomicU64::new(0),
+                ],
                 gate,
             }),
         }
@@ -175,6 +197,9 @@ impl ResourceAccount {
         level: ResourceLevel,
         limit: Resources,
     ) -> Result<Self, String> {
+        if self.root().node.accounted_root {
+            return self.child_accounted(required, level, limit);
+        }
         if self.level() != required {
             return Err("resource account hierarchy must be VM -> tenant -> process".into());
         }
@@ -185,6 +210,7 @@ impl ResourceAccount {
                 account: self.clone(),
                 amount: Resources::default(),
             }),
+            0,
         ))
     }
 
@@ -201,7 +227,7 @@ impl ResourceAccount {
             bytes: (std::mem::size_of::<AccountNode>() + 2 * std::mem::size_of::<usize>()) as u64,
             ..Resources::default()
         })?;
-        Ok(Self::create(level, limit, Some(charge)))
+        Ok(Self::create(level, limit, Some(charge), 0))
     }
 
     fn path(&self) -> [Option<&Self>; 3] {
@@ -365,6 +391,129 @@ mod tests {
     }
 
     #[test]
+    fn accounted_root_requires_its_bootstrap_budget_and_keeps_it_without_self_reservation() {
+        let probe = ResourceAccount::vm_accounted(bytes(4096)).unwrap();
+        let bootstrap = probe.used();
+        assert_eq!(
+            bootstrap.bytes,
+            (std::mem::size_of::<AccountNode>()
+                + std::mem::size_of::<Mutex<()>>()
+                + 4 * std::mem::size_of::<usize>()) as u64
+        );
+        assert!(bootstrap.bytes > node_bytes());
+        assert_eq!(bootstrap, bytes(bootstrap.bytes));
+        drop(probe);
+        for limit in [0, bootstrap.bytes - 1] {
+            assert!(ResourceAccount::vm_accounted(bytes(limit)).is_err());
+        }
+        let vm = ResourceAccount::vm_accounted(bootstrap).unwrap();
+        let root = Arc::downgrade(&vm.node);
+        let gate = Arc::downgrade(&vm.node.gate);
+        let clone = vm.clone();
+        assert_eq!(clone.used(), bootstrap);
+        assert!(vm.reserve(bytes(1)).is_err());
+        assert!(vm.tenant(bytes(0)).is_err());
+        assert!(vm.tenant_accounted(bytes(0)).is_err());
+        let ticket = vm.reserve(Resources::default()).unwrap();
+        drop((vm, clone));
+        assert_eq!(
+            ResourceAccount {
+                node: root.upgrade().unwrap()
+            }
+            .used(),
+            bootstrap
+        );
+        drop(ticket);
+        assert!(root.upgrade().is_none());
+        assert!(gate.upgrade().is_none());
+    }
+
+    #[test]
+    fn accounted_root_forces_legacy_child_paths_to_reserve_parent_metadata() {
+        let bootstrap = ResourceAccount::vm_accounted(bytes(4096))
+            .unwrap()
+            .used()
+            .bytes;
+        let cost = node_bytes();
+        for explicit in [false, true] {
+            for (root_limit, tenant_limit, expected) in [
+                (bootstrap + 2 * cost - 1, cost, "Vm"),
+                (bootstrap + 2 * cost, cost - 1, "Tenant"),
+            ] {
+                let vm = ResourceAccount::vm_accounted(bytes(root_limit)).unwrap();
+                let tenant = if explicit {
+                    vm.tenant_accounted(bytes(tenant_limit))
+                } else {
+                    vm.tenant(bytes(tenant_limit))
+                }
+                .unwrap();
+                let result = if explicit {
+                    tenant.process_accounted(bytes(0))
+                } else {
+                    tenant.process(bytes(0))
+                };
+                assert!(result.err().unwrap().contains(expected));
+                assert_eq!(vm.used(), bytes(bootstrap + cost));
+                assert_eq!(tenant.used(), Resources::default());
+                assert!(vm.process(bytes(0)).is_err());
+                assert!(tenant.tenant(bytes(0)).is_err());
+                drop(tenant);
+                assert_eq!(vm.used(), bytes(bootstrap));
+            }
+        }
+    }
+
+    #[test]
+    fn accounted_root_and_gate_survive_only_until_the_last_cross_thread_child_ticket() {
+        let vm = ResourceAccount::vm_accounted(bytes(4096)).unwrap();
+        let bootstrap = vm.used().bytes;
+        let root = Arc::downgrade(&vm.node);
+        let gate = Arc::downgrade(&vm.node.gate);
+        let tenant = vm.tenant(bytes(1024)).unwrap();
+        let process = tenant.process(bytes(7)).unwrap();
+        let ticket = process.reserve(bytes(7)).unwrap();
+        let before = bytes(bootstrap + 2 * node_bytes() + 7);
+        assert_eq!(vm.used(), before);
+        drop((vm, tenant, process));
+        assert_eq!(
+            ResourceAccount {
+                node: root.upgrade().unwrap()
+            }
+            .used(),
+            before
+        );
+        std::thread::spawn(move || drop(ticket)).join().unwrap();
+        assert!(root.upgrade().is_none());
+        assert!(gate.upgrade().is_none());
+    }
+
+    #[test]
+    fn accounted_root_bootstrap_cannot_be_transferred_or_readmitted_with_business_tickets() {
+        let bootstrap = ResourceAccount::vm_accounted(bytes(4096))
+            .unwrap()
+            .used()
+            .bytes;
+        let cost = node_bytes();
+        let vm = ResourceAccount::vm_accounted(bytes(bootstrap + 2 * cost + 7)).unwrap();
+        let tenant = vm.tenant(bytes(cost + 7)).unwrap();
+        let process = tenant.process(bytes(7)).unwrap();
+        let mut ticket = process.reserve(bytes(7)).unwrap();
+        assert_eq!(vm.used(), vm.limit());
+        ticket.transfer(&vm).unwrap();
+        assert_eq!(vm.used(), vm.limit());
+        assert_eq!(tenant.used(), bytes(cost));
+        assert_eq!(process.used(), Resources::default());
+        ticket.transfer(&process).unwrap();
+        assert_eq!(vm.used(), vm.limit());
+        let other = ResourceAccount::vm_accounted(bytes(4096)).unwrap();
+        assert!(ticket.transfer(&other).is_err());
+        assert_eq!(other.used(), bytes(bootstrap));
+        assert_eq!(vm.used(), vm.limit());
+        drop((ticket, process, tenant));
+        assert_eq!(vm.used(), bytes(bootstrap));
+    }
+
+    #[test]
     fn accounted_nodes_charge_only_the_parent_path_and_last_owner_releases_it() {
         let cost = node_bytes();
         let vm = ResourceAccount::vm(bytes(3 * cost));
@@ -446,33 +595,51 @@ mod tests {
     #[test]
     fn concurrent_accounted_node_creation_cannot_overrun_shared_metadata_budget() {
         let cost = node_bytes();
-        let vm = ResourceAccount::vm(bytes(4 * cost));
-        let barrier = Arc::new(std::sync::Barrier::new(9));
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..8)
-                .map(|_| {
-                    let vm = &vm;
-                    let barrier = &barrier;
-                    scope.spawn(move || {
-                        barrier.wait();
-                        let account = vm.tenant_accounted(bytes(0));
-                        barrier.wait();
-                        barrier.wait();
-                        account
+        for accounted in [false, true] {
+            let bootstrap = if accounted {
+                ResourceAccount::vm_accounted(bytes(4096))
+                    .unwrap()
+                    .used()
+                    .bytes
+            } else {
+                0
+            };
+            let vm = if accounted {
+                ResourceAccount::vm_accounted(bytes(bootstrap + 4 * cost)).unwrap()
+            } else {
+                ResourceAccount::vm(bytes(4 * cost))
+            };
+            let barrier = Arc::new(std::sync::Barrier::new(9));
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
+                        let vm = &vm;
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            let account = if accounted {
+                                vm.tenant(bytes(0))
+                            } else {
+                                vm.tenant_accounted(bytes(0))
+                            };
+                            barrier.wait();
+                            barrier.wait();
+                            account
+                        })
                     })
-                })
-                .collect();
-            barrier.wait();
-            barrier.wait();
-            assert_eq!(vm.used(), bytes(4 * cost));
-            barrier.wait();
-            let accounts: Vec<_> = handles
-                .into_iter()
-                .map(|handle| handle.join().unwrap())
-                .collect();
-            assert_eq!(accounts.iter().filter(|account| account.is_ok()).count(), 4);
-            drop(accounts);
-        });
-        assert_eq!(vm.used(), Resources::default());
+                    .collect();
+                barrier.wait();
+                barrier.wait();
+                assert_eq!(vm.used(), bytes(bootstrap + 4 * cost));
+                barrier.wait();
+                let accounts: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .collect();
+                assert_eq!(accounts.iter().filter(|account| account.is_ok()).count(), 4);
+                drop(accounts);
+            });
+            assert_eq!(vm.used(), bytes(bootstrap));
+        }
     }
 }

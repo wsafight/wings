@@ -70,7 +70,7 @@ fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<
                 messages: 0,
                 requests: 0,
             };
-            let vm = ResourceAccount::vm(limits);
+            let vm = ResourceAccount::vm_accounted(limits)?;
             let tenant = vm.tenant_accounted(limits)?;
             let account = tenant.process_accounted(limits)?;
             let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;

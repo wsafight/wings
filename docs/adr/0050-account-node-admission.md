@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（资源元数据切片）
 - 扩展：[ADR-0014](0014-resource-reservations.md)、[ADR-0045](0045-concurrent-resource-admission.md)
+- 部分替代：[ADR-0079](0079-accounted-vm-bootstrap.md) 新增启动前计费的 VM 根/门闩，计费根下旧子入口也强制计费；下文保留原 bootstrap 边界与选择理由。
 
 ## 决定与理由
 

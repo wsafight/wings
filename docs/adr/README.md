@@ -57,7 +57,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0047](0047-cross-thread-ingress-requests.md) | 固定外部请求结果表、超时/取消与双端租约 | 已采纳（外部请求切片） |
 | [0048](0048-bounded-loopback-service.md) | 有限 loopback TCP、绝对 I/O 截止时间与服务清理 | 已采纳（真实 I/O 验证切片） |
 | [0049](0049-record-message-copies.md) | ABI v11、RecordInt 语言消息按值复制与目标入口根 | 已采纳（引用消息切片） |
-| [0050](0050-account-node-admission.md) | 子账户控制节点预留、父路径计费与末持有者释放 | 已采纳（资源元数据切片） |
+| [0050](0050-account-node-admission.md) | 子账户控制节点预留、父路径计费与末持有者释放 | 已采纳；bootstrap 部分由 0079 替代 |
 | [0051](0051-bounded-int-list-messages.md) | ABI v12、有界列表序列信封、目标重建与入口根 | 已采纳（列表消息切片） |
 | [0052](0052-cross-thread-module-leases.md) | 线程安全只读代码租约、并行独立 worker 与末持有者清理 | 已采纳（多 worker 前置切片） |
 | [0053](0053-detached-process-images.md) | 无活栈独占进程镜像、线程转交与同账户重绑定 | 已采纳（迁移前置切片） |
@@ -86,6 +86,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0076](0076-accounted-byte-messages.md) | Bytes 消息暂存计费、目标净转移、分块导入与入口根 | 已采纳（有界业务消息切片） |
 | [0077](0077-streamed-fairness-measurement.md) | 连续 CPU/突发心跳长测、流式重放、每 actor 与让出时基 | 已采纳（长测入口；公平性门禁未通过） |
 | [0078](0078-request-publisher-lifetimes.md) | 内部请求槽/票据保持到结果端与目标消息端都结束 | 已采纳（请求资源生命周期修正） |
+| [0079](0079-accounted-vm-bootstrap.md) | VM 根/准入门闩启动计费、强制子节点准入及基线清理 | 已采纳（VM 控制资源切片） |
 
 ## 维护方式
 

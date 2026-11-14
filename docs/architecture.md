@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 在根与共享准入门闩的 Arc 分配前检查逻辑启动成本，直接初始化根计数，避免保存自引用 Reservation。计费根下所有子构造器都先预留元数据；最后后代/票据释放前根成本持续存在，业务清理只能回到启动基线。CLI 堆模式与 TCP 已采用该入口，完整 VM builder 和其余分配仍待收敛；不修改 ABI v15 或线程执行权。
+
 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 在原固定请求表中分别记录结果端与消息发布端结束，不为每个请求新增堆对象。完成路由移出即释放其代码/事件租约，requests 票据保留到两端结束；退出账户可因仍接受的目标消息继续存活，槽代次只在完整回收时推进。单/多 worker 使用相同生命周期，不改变 ABI v15、活栈唯一执行权或消息准入上限。
 
 [ADR-0076](adr/0076-accounted-byte-messages.md) 将受管 ABI 升至 v15：EffectRequest 为 72 字节，独立 bytes_mask 与记录/列表 mask 互斥；context 的 88 字节布局不变。Bytes 消息通过计费动态载荷复制，不传源 heap handle，接收端独立堆导入与入口根沿现有唯一执行权运行。单 worker/Scheduler 执行控制区统一预留 4352 字节，原资源上限不提高。
@@ -44,7 +46,7 @@
 
 [ADR-0051](adr/0051-bounded-int-list-messages.md) 升至 ABI v12，EffectRequest 增加 u64 list_mask，56→64 字节，context 仍为 88 字节。语言消息用固定 64 整数序列及规范段描述复制 IntList，逐节点扣 runtime 预算；源协程持根遍历、目标独立堆重建并更新入口根，不共享源 handle。Message/actor 控制区按实际大小计费，固定执行槽预留另有结构大小回归。
 
-[ADR-0050](adr/0050-account-node-admission.md) 将子账户节点的逻辑存储纳入父路径准入，内部票据仅引用父级，无自循环。worker 创建计费进程账户；actor 退出后，跨线程入口/结果仍可延长节点及祖先租约。旧工具构造器和根 bootstrap 不计费，未完成全部分配门禁。
+[ADR-0050](adr/0050-account-node-admission.md) 将子账户节点的逻辑存储纳入父路径准入，内部票据仅引用父级，无自循环。worker 创建计费进程账户；actor 退出后，跨线程入口/结果仍可延长节点及祖先租约。[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 增加计费根/门闩并强制该树子节点计费；旧工具树和其余分配仍未完成全部门禁。
 
 [ADR-0049](adr/0049-record-message-copies.md) 升至 ABI v11，在 EffectRequest 末尾新增 u64 record_mask，结构从 48 到 56 字节，context/入口不变。源堆仅在 callback 内校验并复制 RecordInt 字段，目标进入业务前按预算重建，固定宿主入口根覆盖 GC/暂停；无共享堆或外部 handle 注入。
 
