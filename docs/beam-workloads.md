@@ -133,7 +133,7 @@ WINGS_PROFILE=release python3 scripts/verify_open_loop.py --compare-beam --outpu
 
 `measure_open_loop.py` 固定五次独立配对重复，交替两端先后顺序、同一时刻只跑一端；启动前冻结执行文件、BEAM/gate、artifact 和当前 tracked 源码及本切片新文件，逐个保存 SHA-256。默认只跑基准点，`--scan` 才最多八点翻倍；任一运行时有拒绝/超时/尾延迟失败则当前点五次跑完后停止提高，无失败点标扫描不充分。任何异常保留原始输出、失败 manifest，不自动重试或跳过。
 
-离线 verifier 逐条核对计划、路由、关联、pending≤256、拒绝/超时、每目标值及最终提交；BEAM 另验实际到达 FIFO。分位包含迟到实际回复，nearest-rank 精确计算，少于 10000 不报 p999。用三轮固定 16-bit radix 桶离线选秩，不存全量延迟数组；另报全部到达的迟发、拒绝/超时比例和最大值。固定候选要求无拒绝/超时、p99≤20ms、p999≤50ms；报告 `tail_candidate_pass` 不等同 BEAM 双目标达标。RSS 每秒取被测进程树加 Python 驱动及瞬时监测辅助进程，保留共享页重复统计含义；超过观测 1 GiB 安全停止不是 OS 硬内存配额。
+离线 verifier 逐条核对计划、路由、关联、pending≤256、拒绝/超时、每目标值及最终提交；BEAM 另验实际到达 FIFO。分位包含迟到实际回复，nearest-rank 精确计算，少于 10000 不报 p999。用三轮固定 16-bit radix 桶离线选秩，不存全量延迟数组；另报全部到达的迟发、拒绝/超时比例和最大值。固定候选要求无拒绝/超时、p99≤20ms、p999≤50ms；报告 `tail_candidate_pass` 不等同 BEAM 双目标达标。RSS 每秒取被测进程树加 Python 驱动，ADR-0075 起当次 census/probe 辅助进程单列排除；保留共享页重复统计含义，超过观测 1 GiB 安全停止不是 OS 硬内存配额。
 
 ```sh
 cargo build --release --workspace --locked --bins --examples
@@ -142,9 +142,11 @@ python3 scripts/verify_measurement.py --compare-beam
 WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --artifact target/long-counter --output target/long-hot
 ```
 
-选择其他 case 或增加 `--scan`，但不能减少时段/重复次数。当前 runner 明确标注未验证主机隔离/CPU 硬配额、未记录电源/热状态/QoS/核分配，缺少 Linux PSS、macOS physical footprint/压缩/swap；因此只能提供长时集成证据和 RSS 观测。fairness、最新原生双平台、最大持续吞吐、完整整机内存与可试用 MVP 均未据此通过。
+选择其他 case 或增加 `--scan`，但不能减少时段/重复次数。[ADR-0075](adr/0075-platform-memory-observation.md) 增加冻结的原生 C helper，逐秒分列 Linux smaps_rollup 的 RSS/PSS/private/shared/swap、macOS resident/physical footprint 和主机压缩/swap；主机值不归因给 VM、不与进程 footprint 混加。驱动及后代有界前后 census 排除当次监测 helper，保留各 PID/start_id/时间窗、helper CPU/max RSS/wall；拓扑变化/读失败/身份变化时平台总数为 null，原始样本与完整数不丢弃。原 `ps` RSS 安全停止保持，不是 OS 硬配额。
 
-本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。没有饱和扫描或 CPU/平台内存完整口径，不作最大持续吞吐/整机内存领先结论；其余三组与 fairness 仍待验证。
+当前 runner 仍明确标注未验证主机隔离/CPU 硬配额、未记录电源/热状态/QoS/核分配；平台采样不覆盖全部瞬时峰值、共享/内核成本或每进程压缩/swap，监测偏差未验收。因此只能提供分口径长时集成证据。fairness、最新原生双平台、最大持续吞吐、完整整机内存与可试用 MVP 均未据此通过。
+
+本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。ADR-0075 另完成 mixed-4k 原规模五对长测，见[验证记录](validation-2026-11-14.md#分口径平台内存观测adr-0075)和 [JSON 摘要](open-loop-memory-mixed-macos-2026-11-14.json)：两端各仅一轮通过候选尾延迟，拒绝/超时及一份不完整采样均保留。没有饱和扫描、CPU 硬配额或完整平台内存验收，不作最大持续吞吐/整机内存领先结论；其余两组与长时 fairness 仍待验证。
 
 ## v7：百万次加法与突发心跳的短时验证
 

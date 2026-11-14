@@ -15,6 +15,7 @@ import sys
 import time
 
 import verify_scalar_aot as aot
+import measure_memory
 from verify_open_loop import CASES, DEADLINE_NS, integer, require, target
 
 
@@ -179,20 +180,16 @@ def stop(child, failed=False):
     child.wait()
 
 
-def memory_snapshot(root):
-    output = subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=2)
-    rows = [tuple(map(int, line.split())) for line in output.splitlines()]
-    included = {root}
-    while True:
-        children = {pid for pid, parent, _ in rows if parent in included}
-        if children <= included:
-            break
-        included |= children
-    values = {str(pid): rss * 1024 for pid, _, rss in rows if pid in included}
-    return {"rss_bytes": sum(values.values()), "processes": values}
+def memory_snapshot(root, probe=None):
+    if probe is not None:
+        return measure_memory.snapshot(root, probe)
+    census = measure_memory.census(root)
+    values = {pid: row["rss_bytes"] for pid, row in census["processes"].items()}
+    return {"rss_bytes": sum(values.values()) + census["observer"]["rss_bytes"], "processes": values,
+            "platform_memory": {"complete": False, "status": "not_configured"}}
 
 
-def measurement(command, trace, destination, name, rate):
+def measurement(command, trace, destination, name, rate, memory_probe=None):
     environment = os.environ.copy()
     for variable in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
         environment.pop(variable, None)
@@ -219,6 +216,10 @@ def measurement(command, trace, destination, name, rate):
     buffer = b""
     events = []
     peak = 0
+    memory_summary = {"samples": 0, "complete_samples": 0, "host_error_samples": 0,
+                      "identity_changes": 0, "sampled_metric_peaks": {},
+                      "scope": "driver plus captured descendants; helper costs recorded separately"}
+    memory_identities = {}
     next_snapshot = started
     try:
         with raw.open("xb") as stdout, memory.open("x") as snapshots:
@@ -226,10 +227,19 @@ def measurement(command, trace, destination, name, rate):
                 now = time.monotonic()
                 require(now - started < 130, "measurement wall deadline")
                 if now >= next_snapshot:
-                    sample = memory_snapshot(os.getpid())
+                    sample = memory_snapshot(os.getpid(), memory_probe)
                     sample["elapsed_seconds"] = now - started
                     sample["phase"] = "initializing" if not events else "sampling" if len(events) >= 2 else "warmup"
                     peak = max(peak, sample["rss_bytes"])
+                    details = sample["platform_memory"]
+                    memory_summary["identity_changes"] += measure_memory.track_identities(details, memory_identities)
+                    memory_summary["samples"] += 1
+                    if details["complete"]:
+                        memory_summary["complete_samples"] += 1
+                        for field, value in details["totals"].items():
+                            memory_summary["sampled_metric_peaks"][field] = max(
+                                memory_summary["sampled_metric_peaks"].get(field, 0), value)
+                    memory_summary["host_error_samples"] += details.get("host", {}).get("status") == "error"
                     snapshots.write(json.dumps(sample) + "\n")
                     snapshots.flush()
                     require(sample["rss_bytes"] <= MAX_RSS, "observed RSS safety stop, not OS quota")
@@ -263,6 +273,9 @@ def measurement(command, trace, destination, name, rate):
         stop(child, manifest["status"] != "ok")
         selector.close()
         child.stdout.close()
+        memory_summary["all_samples_complete"] = (memory_summary["samples"] > 0
+                                                    and memory_summary["complete_samples"] == memory_summary["samples"])
+        manifest["platform_memory"] = memory_summary
         destination.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
 
@@ -286,13 +299,27 @@ def main():
     require(executable.is_file() and artifact.is_dir(), "build release runner and artifact first")
     frozen = output / "frozen"
     frozen.mkdir()
+    shutil.copy2(aot.ROOT / "scripts/measure_memory.c", frozen / "measure_memory.c")
+    memory_probe = frozen / "measure_memory"
+    memory_setup = {"status": "running"}
+    try:
+        memory_build = measure_memory.build(frozen / "measure_memory.c", memory_probe)
+        memory_preflight = measure_memory.snapshot(os.getpid(), memory_probe)
+        memory_setup.update({"status": "ok", "command": memory_build})
+    except BaseException as error:
+        memory_setup.update({"status": "invalid_experiment", "error": str(error)})
+        raise
+    finally:
+        (output / "memory-setup.json").write_text(json.dumps(memory_setup, indent=2) + "\n")
+    (output / "memory-preflight.json").write_text(json.dumps(memory_preflight, indent=2) + "\n")
     shutil.copy2(executable, frozen / "beam_open_loop")
     for filename in ("beam_open_loop.escript", "beam_bounded_mailbox.erl"):
         shutil.copy2(aot.ROOT / "scripts" / filename, frozen / filename)
     require(sum(path.stat().st_size for path in artifact.rglob("*") if path.is_file()) < 16 << 20, "artifact bytes")
     shutil.copytree(artifact, frozen / "artifact")
     tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=aot.ROOT).decode().split("\0")
-    tracked += ["scripts/measure_open_loop.py", "scripts/verify_measurement.py", "docs/adr/0069-streamed-open-loop-measurement.md"]
+    tracked += ["scripts/measure_open_loop.py", "scripts/verify_measurement.py", "scripts/measure_memory.py",
+                "scripts/measure_memory.c", "scripts/verify_memory.py", "docs/adr/0075-platform-memory-observation.md"]
     source_directory = frozen / "source"
     for name in sorted(set(tracked)):
         if name and (aot.ROOT / name).is_file():
@@ -317,8 +344,9 @@ def main():
         "warmup_seconds": 30, "sample_seconds": 60, "repetitions": 5,
         "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120,
                    "file_bytes": MAX_TRACE, "observed_rss_stop_bytes": MAX_RSS},
-        "memory_scope": "sum RSS of measured process tree plus Python driver and transient monitoring helpers; shared pages double counted",
-        "missing_gates": ["OS CPU hard quota", "Linux PSS", "macOS physical/compressed/swap", "fairness",
+        "memory_probe_build": memory_build,
+        "memory_scope": "driver plus captured descendants; census/probe helpers excluded from tree totals; host compressor/swap not attributed to VM; non-atomic samples",
+        "missing_gates": ["OS CPU hard quota", "complete platform memory acceptance and monitoring overhead", "fairness",
                           "native dual-platform", "same-workload throughput and memory acceptance"],
     }
     (output / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
@@ -335,9 +363,10 @@ def main():
                 trace = output / f"{name}.events.bin"
                 command = ([executable, "--trusted", artifact, "--measure"] if runtime == "wings"
                            else [escript, frozen / "beam_open_loop.escript", "--measure"])
-                result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate)
+                result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate, memory_probe)
                 results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
-                                "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"]})
+                                "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"],
+                                "platform_memory": result["platform_memory"]})
                 print(f"{name}: tail candidate {result['summary']['tail_candidate_pass']}; not MVP acceptance", flush=True)
         saturated = any(not result["tail_candidate_pass"] for result in results)
         require(all(hashlib.sha256((frozen / filename).read_bytes()).hexdigest() == digest

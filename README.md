@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0075](docs/adr/0075-platform-memory-observation.md) 为长测补 Linux PSS、macOS physical footprint 和主机压缩/swap 原始观测，分口径保存身份、缺失与采样器成本。`python3 scripts/verify_memory.py` 执行本机有界验证；不等于完整内存或 BEAM 性能门禁。
+
 [ADR-0074](docs/adr/0074-bounded-concurrent-recovery.md) 补一/双 worker 真实 AOT 的并发取消、超时保留队列、stop 竞争与监督恢复。沿用原固定容量和时限，不把取消结果当作消息撤回，不替代完整故障或性能门禁。
 
 [ADR-0073](docs/adr/0073-reusable-initializer-stack-pool.md) 增加宿主批量创建时显式复用计费初始化栈池，减少重复 mapping；不改变默认 spawn、自动重启或线程所有权。v2 原规模与时限不变，实际结果见[验证记录](docs/validation-2026-11-14.md)，不据此宣布性能或 MVP 达标。

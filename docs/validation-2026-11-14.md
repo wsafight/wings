@@ -202,11 +202,33 @@ Linux x86-64 release 交叉构建 bins、54 个示例和 31 个测试 harness �
 
 Linux 同配置隔离仿真交叉构建 55 个示例及 31 个 release harness，传包核对本片四份代码/脚本与当前工作区一致，排除待审语法稿。客体 31 个 harness 共 495 项及完整原限 AOT 均通过，包含新增真实 AOT 恢复和旧 v2 大容量；日志 `/tmp/wings-recovery-linux-{build,test-build,start,tests,aot}.log`。测试结束正常停止，见 `/tmp/wings-recovery-linux-stop.log`。客体无 OTP/原生 debug/clippy/MSRV/doc-tests，仍非原生 Linux、双平台性能或完整故障门禁。
 
+## 分口径平台内存观测：ADR-0075
+
+基于 `22f44b3`，在原 v6 长测逐秒采样点接入冻结的 C11 helper。Linux 原生读取 smaps_rollup 的 RSS/PSS/private/shared/swap，macOS 使用 SDK 的 resident/physical footprint；主机压缩/swap 单列，不归因给 VM。记录每 PID/start_id、前后 census、时间窗及 helper CPU/max RSS/wall；缺失、拓扑或身份变化保留原始错误，完整性为 false、平台总数为 null。原 1 GiB RSS 安全停止保留监测辅助成本，不是 OS 硬配额或真实峰值。ABI v14、业务、容量、路由、deadline、30 秒预热/60 秒采样/五次配对和所有原限不变。
+
+### 有界回归
+
+本机 check、全目标 clippy `-D warnings`、fmt、Rust 1.85.0 全目标 check 通过；debug/release 各 workspace 482 项加示例 13 项共 495 项，完整原限 AOT 两种构建均通过。最终版本再跑完整 AOT 及显式 BEAM 测量配置验证，两种构建均通过；有界模型覆盖非法/重复字段、缺失值、身份与历史容量、拓扑变化、null 与零的区别，真实父/子/孙进程验证原生字段、helper 成本与清理。日志 `/tmp/wings-memory-{check,clippy,fmt,msrv,tests-debug,tests-release,examples-debug,examples-release}.log`、`/tmp/wings-memory-final-{aot-debug,aot-release,measure-debug,measure-release,guards}.log`。首次 C 编译因 POSIX feature macro 隐藏 Darwin SDK 类型失败，补 `_DARWIN_C_SOURCE` 后通过，不手写结构布局。
+
+Linux 沿用 2 vCPU/4 GiB、Ubuntu 24.04 x86-64 QEMU TCG 隔离客体；客体 GCC 原生编译 C helper 并通过真实 Linux PSS/后代/错误验证，未仅以交叉编译充数。Rust 源码未改，复用 `22f44b3` 的 31 个 release harness，共 495 项及接入新采样验证的完整原限 AOT 全部通过，见 `/tmp/wings-memory-linux-tests.log`、`/tmp/wings-memory-linux-aot.log`。首次增量传包发现客体 `/tmp` 随重启清空，恢复原完整包再叠增量；这是 harness 准备失败，不是业务回归或放宽时限。测试后正常停止客体，见 `/tmp/wings-memory-linux-stop.log`；仍无原生 Wings Linux debug/clippy/MSRV/doc-tests 或客体 OTP，不能替代原生双平台门禁。
+
+### 长时集成
+
+正式 `mixed-4k` 在 macOS M3 Pro 上完成原 1000×4 KiB、100 活跃、mailbox 1、256 pending、100ms deadline、1000 到达/秒的五对 30 秒预热/60 秒采样；每端合计 300000 个采样段到达。十轮都正常退出、最终状态和 drain 通过。Wings 合计 194 次超时/89 次拒绝，BEAM 223 次超时/44 次拒绝，两端各仅一轮通过候选尾延迟，不筛选最好的一轮。原始目录 `target/open-loop-memory-mixed-v6`，日志 `/tmp/wings-memory-long-mixed.log`；十份 trace 用当时冻结 verifier 再独立复核，50 份原始文件与所有冻结输入 SHA-256 一致，见 `/tmp/wings-memory-evidence-audit.log` 和 [JSON 摘要](open-loop-memory-mixed-macos-2026-11-14.json)。业务产物复用旧冻结 ABI v14 Counter，不把它写成本片新编译产物。
+
+平台采样 Wings 442/442 完整，BEAM 442/443 完整；BEAM 首轮末尾进程消失保留 errno 3，平台总数为 null，即使 census 拓扑一致也不算完整。包括初始化/预热/采样的各轮 observed footprint peak：Wings 45.03–55.36 MiB、BEAM 68.77–75.27 MiB；RSS 另列，不混加，均包含驱动和捕获的后代，不是真峰值或整机物理页去重。host compressor resident 约 10.38–10.87 GB、swap used 约 2.098 GB 是主机背景值，不是 VM 成本。helper peak 至多约 1.41 MB，十轮 helper user+system CPU 合计约 2.01 秒；单次 probe wall 最大约 30.1ms、census 最大约 1.515 秒，监测偏差未验收，不能据较低 footprint 宣布性能/整机内存双门禁通过。
+
+首次将驱动复制到临时目录遗漏 verifier 依赖，导入阶段即失败，没有启动业务，保留 `/tmp/wings-memory-long-driver-import-error.log`；正式运行只复制驱动/采样模块并显式设置仓库 scripts 的 PYTHONPATH，源文件 hash 冻结，不在运行中改采样代码。长测前已停止客体及构建/测试，但主机其他活动未隔离，仍无 CPU 硬配额、热状态/电源/QoS/核分配记录，不把这十轮当作受控性能验收。
+
+长测后复核 SDK 注释，发现初版 `swapped_logical_bytes` 错把 swapped_count 命名成解压后逻辑字节。最终 helper 改名 `compressor_swapped_page_bytes`，含义为已换出 compressor 页数×页大小，不等于解压后逻辑量或磁盘 swap used；补独立模型拒绝旧字段/区分三种量。已冻结的长测 raw/source/hash 不改，JSON 明确解释历史字段，不能用最终 helper 反写该实验。不将有界 OS 测试或字段存在写成完整内存验收。
+
+改名后的本机 check/clippy/fmt/MSRV 与完整原限 debug/release AOT 全部通过，见 `/tmp/wings-memory-post-{check,clippy,fmt,msrv,aot-debug,aot-release}.log`；专项及显式 BEAM 测量配置两种构建通过，见 `/tmp/wings-memory-semantic-{specific,measure-debug,measure-release}.log`。最终五份脚本增量传入新启动客体，GCC 原生 helper 和完整原限 release AOT 再次通过，正常停止客体，见 `/tmp/wings-memory-final-linux-{start,aot,stop}.log`。92 份 Markdown 路径/围栏、Python AST、依赖隔离、禁 unwind 与 diff 空白检查通过；语法草案仅审阅，仍不在本片提交。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
 - 并发失败、完整长时开环、热点/公平性、过载/超时竞争及端到端诊断。双发送者安全加法各自 FIFO、有限准入/关闭、短时计划开环与 CPU/突发心跳业务分别由 ADR-0065/0067/0068/0070 补充，仍缺完整性能验收。
-- 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 五对 30s/60s 只补长时集成；仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
+- 相同业务/同平台同机器的 BEAM 吞吐与整机内存双目标。hot-queue 与 mixed-4k 各五对 30s/60s 只补长时集成；mixed-4k 两端均有拒绝/超时，仍缺 CPU 硬配额、完整平台内存、其余负载、饱和扫描和原生双平台。
 - 更完整的业务值与资源账本闭环；当前初始 slot 分布及返回后固定编号迁移不是自适应 work stealing，语言 capability 查找与最多 256 pending 维护仍为有界扫描。
 
 M0/MVP 状态不变；不推送、发布或降低验收门槛。

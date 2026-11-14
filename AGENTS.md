@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0075 为 v6 长测增加冻结的原生 C 内存 probe：Linux smaps_rollup/PSS、macOS rusage physical footprint、主机压缩/swap 分列；有界 census/身份/错误保留，不完整总数为 null，不把主机值归因给 VM。原时段/重复/负载和配额不变，仍缺完整内存口径/监测偏差/CPU 硬配额与原生双平台门禁，语法草案仍待审。
+
 - ADR-0074 新增真实 AOT 的一/双 worker 并发恢复回归：两个发送者排满 Bytes actor，已超时/取消结果不撤回消息或提前释放 publisher；stop/取消竞争只承诺单一合法终态。取消 Fail 结果仍须实际失败、保留旧提交状态、一次全新重启后强度超限。固定容量/原时限不变，不替代完整并发故障/原生双平台或 BEAM 双门禁，语法草案仍待审。
 
 - ADR-0073 允许宿主批量 spawn 显式借用同 tenant 的计费初始化栈池；只同步借用，不存入 Scheduler/supervisor，自动重启仍走原临时池。v2 保留原规模、配额与 3 秒阶段，池创建也计时；缓存不等于 RSS 消失，回归不替代原生双平台或 BEAM 双门禁，语法草案仍待审。

@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 import measure_open_loop as measure
+import verify_memory
 import verify_scalar_aot as aot
 from verify_multi_counter import invoke
 from verify_open_loop import require, target
@@ -113,6 +114,7 @@ def models(parent):
 
 
 def verify(compare_beam=False):
+    verify_memory.verify()
     with tempfile.TemporaryDirectory(prefix="wings-measure-model-") as temporary:
         parent = Path(temporary)
         models(parent)
