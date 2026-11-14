@@ -51,6 +51,48 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_cli_arguments(directory, parent):
+    def run(arguments, expected, text=b""):
+        result = subprocess.run([os.fsencode(VM), *[os.fsencode(value) for value in arguments]],
+                                input=text, capture_output=True, timeout=30, cwd=ROOT, preexec_fn=limit_child)
+        assert result.returncode == expected and b"panicked" not in result.stderr, (arguments[:2], result)
+        assert len(result.stderr) <= 4096, result
+        return result
+
+    for help_option in ("--help", "-h"):
+        result = run([help_option], 0)
+        assert result.stdout.startswith(b"Usage: wings-vm run --trusted ") and b"16 KiB" in result.stdout
+        assert not result.stderr
+    for arguments in ([], ["run"], ["--help", "extra"], ["run", "--trusted", directory, "--max-steps"],
+                      ["run", "--trusted", directory, "--max-steps", "1", "--heap-records", "2", "extra"],
+                      [b"x" * 20000] * 8):
+        result = run(arguments, 2)
+        assert not result.stdout and result.stderr.startswith(b"Usage: wings-vm run --trusted ")
+    for options in ([], ["--heap-records", "2"]):
+        limit = 16384 - sum(len(os.fsencode(value)) + 1 for value in ["run", "--trusted", *options]) - 1
+        for length, expected in ((limit, 1), (limit + 1, 2)):
+            result = run(["run", "--trusted", b"x" * length, *options], expected)
+            assert not result.stdout
+            if expected == 2:
+                assert result.stderr == b"CLI arguments exceed 16 KiB\n"
+            else:
+                assert result.stderr.startswith(b"wings-vm: ") and b"CLI arguments exceed" not in result.stderr
+        result = run(["run", "--trusted", b"/tmp/wings-artifact-\xff", *options], 1)
+        assert not result.stdout and result.stderr.startswith(b"wings-vm: ")
+    for option, value, diagnostic in ((b"\xff", b"1", b"unknown or duplicate execution option"),
+                                      (b"--max-steps", b"\xff", b"--max-steps must"),
+                                      (b"--heap-records", b"\xff", b"--heap-records must")):
+        result = run(["run", "--trusted", directory, option, value], 2)
+        assert not result.stdout and result.stderr.startswith(diagnostic)
+    if os.uname().sysname == "Linux":
+        alias = os.fsencode(parent) + b"/counter-\xff"
+        os.symlink(os.fsencode(directory), alias)
+        for options in ([], ["--heap-records", "2"]):
+            result = run(["run", "--trusted", alias, *options], 0, (json.dumps(message("Inc", 7)) + "\n").encode())
+            assert json.loads(result.stdout) == {"reply": 7} and not result.stderr
+    print("Bounded CLI startup verified: native argv, help/options, exact byte limit and non-UTF8 handling; not complete host accounting")
+
+
 def verify_cli_stdio(directory):
     def flushed_reply(child):
         deadline = time.monotonic() + 5
@@ -967,6 +1009,7 @@ def main():
         verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
+        verify_cli_arguments(counter, parent)
         verify_cli_input(counter, parent)
         verify_cli_stdio(counter)
         for count in (16, 64, 256):

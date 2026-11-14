@@ -465,6 +465,18 @@ macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-stdio-linux.tar.gz` 含 315 份源码、82 个 harness 和 60 个工具/示例，显式包含新 I/O 模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 535 项测试通过，完整受限 AOT 通过，包括默认/堆 CLI 的交互回复、断管和目录输入错误。执行后全部 457 项 source/harness/binary hash 一致，315 份冻结源码与宿主工作区一致，随后仅补本验证记录。见 `/tmp/wings-cli-stdio-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-stdio-host-sources.log`。客体已停止，交叉 linker 警告保留；不将功能验证替代原生 Linux CI、完整资源账本或同负载 BEAM 吞吐/整机内存门禁。
 
+## CLI 启动参数的有界读取与准入：ADR-0089
+
+基于 `a4f941b`，按 [ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 收敛自有启动参数副本。旧真实 CLI 对 `/tmp/wings-artifact-\xff` 参数在 `std::env::args` 的 String 转换中 panic，退出 101，见 `/tmp/wings-cli-argv-before.log`；探针在 CPU 20s/墙钟 30s/core 0 子进程运行。macOS 文件系统不允许创建该非法字节别名，最初别名探针在启动 CLI 前失败，不计为运行证据；后改为直接传原始参数记录 panic，Linux 再验证真实非 UTF-8 别名。
+
+新启动路径保留 Rust main/运行时，先建立计费根/子账户并预留 20 KiB，再借用原生 argv；仅复制通过校验的目录字节，最多七个参数、含 NUL 总计 16 KiB，不解析 argv[0]。参数数量/字节超限或非法选项正常退出 2，非 UTF-8 路径交文件系统处理；原步数、堆容量、三级 16 MiB、ABI 和业务时限不变。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、541 项测试与完整受限 AOT 通过。六项启动单测覆盖三级拒绝前不读参数、固定控制上界、精确预留/释放、正常/重复选项和数值边界、数量/指针/含 NUL 字节边界、非 UTF-8 目录副本及来源失败回滚。真实 CLI 覆盖 help、八参数先拒绝、默认/堆两模式精确 16 KiB 与多一字节、非 UTF-8 选项/数值正常退出 2、非 UTF-8 路径正常文件系统错误而非 panic；原 JSON/I/O 和业务回归继续通过。显式 Wings/BEAM/Python v1 的 45 组业务、v2 的 18 组业务及原 JSON/桥接拒绝在两种构建全部通过，未新增长时性能结果。日志为 `/tmp/wings-cli-argv-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 与 `/tmp/wings-cli-argv-verify_{counter_equivalence,multi_counter}-{debug,release}.log`。依赖隔离、协程禁 unwind、Python AST、106 份 Markdown 的 1038 条相对路径/围栏及 diff 检查通过。
+
+独立分配探针复用本切片源文件与同一资源实现，在 CPU 20s/墙钟 30s/core 0 的子进程测量 Startup 创建至销毁：8 B 和精确上限下 16,369 B 的目录分别仅请求 8/16,369 B，期间保留相同字节，销毁后 allocator 请求和 process 账目都回到基线，预留均为 20,480 B；见 `/tmp/wings-cli-argv-allocation-probe.log`。该结果支持当前路径没有复制整份 argv，不等于 Rust 启动、OS 已有 argv/环境、RSS 或完整 CLI 账本已闭环。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-argv-linux.tar.gz` 含 317 份源码、82 个 harness 和 60 个工具/示例，显式包含新启动参数模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 541 项测试通过，完整受限 AOT 通过。glibc init-array 的参数捕获经真实 CLI 执行验证；非 UTF-8 目录别名在默认/堆模式均返回真实 AOT 回复 7，参数超限、非 UTF-8 选项、JSON/I/O 与全部业务回归继续通过。执行后全部 459 项 source/harness/binary hash 一致，317 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-cli-argv-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-argv-host-sources.log`。客体已停止，交叉 linker 警告保留；不把功能验证当作原生 Linux CI、完整资源账本或同负载 BEAM 吞吐/整机内存证据。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

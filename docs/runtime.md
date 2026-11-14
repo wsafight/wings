@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 将 CLI 自有启动参数纳入原 16 MiB 三级额度的 20 KiB 预留，持有至 run 退出且目录销毁后；参数数量或含 NUL 总字节超限在模块装载前固定报错，OS 已有 argv/环境仍属于可信启动边界。
+
 [ADR-0088](adr/0088-owned-cli-stdio.md) 为 CLI 的独立 8 KiB 输入缓冲、128 B 输出缓冲及描述符/控制共预留 12 KiB，原 16 MiB 限额不变。任一描述符复制失败不进入 initializer；每个成功回复显式 flush，退出时丢弃未 flush 尾部，不隐式重试失败输出，已完成 handler 的提交与副作用不回滚。
 
 [ADR-0087](adr/0087-accounted-beam-workload-roots.md) 的六个 BEAM 对照驱动在资源创建前记录实际启动值，派生清理后核对完整 Resources 回到该值；`resources_released` 同时附正的 `bootstrap_bytes` 与相等的 `remaining_bytes`，存活根不伪报归零。

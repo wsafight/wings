@@ -4,6 +4,7 @@
 - 状态：已采纳（CLI I/O 资源切片）
 - 部分替代：[ADR-0086](0086-accounted-cli-json.md) 尚未纳入业务生命周期的 stdin/stdout 全局缓冲路径。
 - 沿用：原 16 MiB 三级额度、264 KiB 请求适配器、64 KiB 行限制、逐回复 flush、业务步数与 ABI v15。
+- 后续：[ADR-0089](0089-bounded-cli-startup-arguments.md) 收敛自有启动参数副本，原 I/O 生命周期与预留保留。
 
 ## 决定与理由
 

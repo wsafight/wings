@@ -1,10 +1,12 @@
 # 架构设计
 
+[ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 的启动读取只借用原生 argv，先由计费 process 预留 20 KiB，再按固定数量/总字节边界扫描并复制目录。macOS 使用 libc 参数入口，Linux glibc init-array 只保存指针；正常 Rust 运行时和模块装载顺序保留。
+
 [ADR-0088](adr/0088-owned-cli-stdio.md) 让 CLI 业务 I/O 在 initializer 前从同一 process 预留 12 KiB，再复制 stdin/stdout 描述符并创建固定标准库缓冲；副本和缓冲均在预留释放前销毁。
 
 [ADR-0087](adr/0087-accounted-beam-workload-roots.md) 让业务对照驱动使用与 CLI/TCP 相同的计费根入口；根/门闩从原资源额度支付，不回退到工具模型，不将有界驱动的其他宿主分配写成完整账本。
 
-[ADR-0086](adr/0086-accounted-cli-json.md) 的 CLI 适配器先预留 264 KiB，再创建复用行缓冲和取消标志；serde visitor 仅生成固定消息名和至多 64 个标量，输出直接序列化固定结构。帮助/stderr 全局 I/O、启动参数和完整宿主账本仍未闭环。
+[ADR-0086](adr/0086-accounted-cli-json.md) 的 CLI 适配器先预留 264 KiB，再创建复用行缓冲和取消标志；serde visitor 仅生成固定消息名和至多 64 个标量，输出直接序列化固定结构。帮助/stderr 全局 I/O、可信启动存储和完整宿主账本仍未闭环。
 
 [ADR-0085](adr/0085-module-path-admission.md) 将计费加载拆为路径解析前的原控制预留与元数据检查后的库页预留，同一模块租约持有两部分，保留原总额和末持有者释放顺序。
 

@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0089](docs/adr/0089-bounded-cli-startup-arguments.md) 为 CLI 启动参数预留 20 KiB，借用原生 argv 并限制最多七个参数、含 NUL 总计 16 KiB；只复制目录字节，非 UTF-8 参数沿正常错误路径处理，不调用会提前复制全部参数的迭代器。
+
 [ADR-0088](docs/adr/0088-owned-cli-stdio.md) 为 CLI 业务 stdin/stdout 预留 12 KiB，持有独立缓冲与 close-on-exec 描述符副本，先清理再归还额度；回复仍逐条 flush，启动参数和完整宿主账本仍待收敛。
 
 [ADR-0087](docs/adr/0087-accounted-beam-workload-roots.md) 将六个 BEAM 对照驱动接入计费根，并报告启动/清理后字节；新采集严格校验回执，历史冻结记录保持原样，完整性能门禁仍未通过。
