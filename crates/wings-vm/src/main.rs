@@ -1,4 +1,3 @@
-use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -6,6 +5,7 @@ use wings_abi::DEFAULT_MAX_STEPS;
 use wings_vm::{ResourceAccount, Resources, ScalarModule, StackPool};
 
 mod cli;
+mod cli_io;
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -72,13 +72,13 @@ fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<
     let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let mut adapter = cli::Adapter::new(&account)?;
+    let mut stdio = cli_io::Stdio::new(&account)?;
     let mut process = match heap_records {
         None => module.instantiate_in_pool(&pool)?,
         Some(capacity) => module.instantiate_with_heap(&pool, &account, capacity)?,
     };
-    let mut reader = io::stdin().lock();
-    let mut writer = io::stdout().lock();
-    while let Some(request) = adapter.read_request(&mut reader)? {
+    let (reader, writer) = stdio.streams();
+    while let Some(request) = adapter.read_request(reader)? {
         let handler = process.module().handler(request.message.as_str())?;
         let schema = handler.schema();
         let reply_type = schema.reply;
@@ -89,7 +89,7 @@ fn run(directory: &Path, max_steps: u64, heap_records: Option<usize>) -> Result<
             max_steps,
             adapter.cancellation(),
         )?;
-        adapter.write_reply(&mut writer, reply_type, reply)?;
+        adapter.write_reply(writer, reply_type, reply)?;
     }
     Ok(())
 }

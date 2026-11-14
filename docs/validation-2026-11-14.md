@@ -455,6 +455,16 @@ macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-beam-root-linux.tar.gz` 含 313 份源码、82 个 harness 和 60 个工具/示例，显式包含新回执检查器与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立测试子进程共 529 项通过，完整受限 release AOT 通过；执行后全部 455 项 source/harness/binary hash 一致，313 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-beam-root-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-beam-root-host-sources.log`。客体已停止，交叉 linker 警告保留；该结果不替代原生 Linux CI、完整宿主资源计费或同负载 BEAM 吞吐/整机内存门禁。
 
+## CLI 业务标准 I/O 的独立预留与清理：ADR-0088
+
+基于 `148e1c1`，按 [ADR-0088](adr/0088-owned-cli-stdio.md) 收敛业务 stdin/stdout 的生命周期。旧标准库最小探针观察到锁释放后仍保留 9344 B allocator 请求，预期释放断言在 CPU 20s/墙钟 30s/core 0 的独立 OS 子进程失败；见 `/tmp/wings-cli-stdio-before.log`。它只验证当前 macOS 标准库全局锁的行为，不等于完整 CLI 或 RSS 数值，不硬编码其他平台成本。
+
+新业务 I/O 在复制描述符与 initializer 前预留 12 KiB，包含 8 KiB 输入缓冲、固定 128 B 输出缓冲及控制余量；保留原 264 KiB 请求适配器、16 MiB 三级限额和每回复 flush。副本设置 close-on-exec，退出时先销毁缓冲/副本再归还预留；Drop 不重试未 flush 内容。启动参数、帮助/stderr、完整宿主账本及双门禁仍未完成。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 与 debug/release doc-tests 通过；两种构建各 82 个 harness、535 项测试及完整受限 AOT 通过。六项 I/O 单测覆盖固定控制上界、三级零/少一字节/精确准入且拒绝前不打开文件、两阶段打开失败回滚、close-on-exec/原描述符保留、flush 失败期间持有预留与退出丢弃尾部。真实默认/堆 CLI 均在输入 EOF 前及时回复，断管和目录输入读失败正常退出；回复观测使用原五秒阶段边界，按字节读取有上限，不因缺少换行而无界等待。显式 Wings/BEAM/Python v1 的 45 组业务与 v2 的 18 组业务及原 JSON/桥接拒绝在两种构建全部通过，无新性能结论。见 `/tmp/wings-cli-stdio-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 与 `/tmp/wings-cli-stdio-verify_{counter_equivalence,multi_counter}-{debug,release}.log`。依赖隔离、协程禁 unwind、Python AST、105 份 Markdown 的 1029 条相对路径/围栏及 diff 检查通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-stdio-linux.tar.gz` 含 315 份源码、82 个 harness 和 60 个工具/示例，显式包含新 I/O 模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 535 项测试通过，完整受限 AOT 通过，包括默认/堆 CLI 的交互回复、断管和目录输入错误。执行后全部 457 项 source/harness/binary hash 一致，315 份冻结源码与宿主工作区一致，随后仅补本验证记录。见 `/tmp/wings-cli-stdio-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-stdio-host-sources.log`。客体已停止，交叉 linker 警告保留；不将功能验证替代原生 Linux CI、完整资源账本或同负载 BEAM 吞吐/整机内存门禁。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

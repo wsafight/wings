@@ -4,6 +4,7 @@
 - 状态：已采纳（CLI 请求适配层资源切片）
 - 部分替代：[ADR-0081](0081-accounted-default-cli.md) 尚未计费的逐行缓冲及通用 JSON Value 树路径。
 - 沿用：原 16 MiB 三级逻辑字节额度、64 KiB 输入行上限、64 个 handler 参数及正常返回后输出的顺序。
+- 后续：[ADR-0088](0088-owned-cli-stdio.md) 收敛业务 stdin/stdout 的独立预留、描述符和缓冲清理，原请求适配器预算与协议保留。
 
 ## 决定与理由
 

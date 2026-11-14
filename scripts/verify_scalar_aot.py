@@ -51,6 +51,57 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_cli_stdio(directory):
+    def flushed_reply(child):
+        deadline = time.monotonic() + 5
+        buffer = b""
+        while b"\n" not in buffer:
+            assert len(buffer) < 256, "oversized CLI reply"
+            assert select.select([child.stdout], [], [], max(0, deadline - time.monotonic()))[0], "CLI reply not flushed before EOF"
+            chunk = os.read(child.stdout.fileno(), 256 - len(buffer))
+            assert chunk, "CLI closed before reply"
+            buffer += chunk
+        return json.loads(buffer)
+
+    for options in ([], ["--heap-records", "2"]):
+        arguments = [str(VM), "run", "--trusted", str(directory), *options]
+        for broken_pipe in (False, True):
+            child = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     preexec_fn=limit_child, cwd=ROOT)
+            try:
+                child.stdin.write((json.dumps(message("Inc", 3)) + "\n").encode())
+                child.stdin.flush()
+                assert flushed_reply(child) == {"reply": 3}
+                if broken_pipe:
+                    child.stdout.close()
+                    child.stdout = None
+                child.stdin.write((json.dumps(message("Inc", 4)) + "\n").encode())
+                child.stdin.flush()
+                if not broken_pipe:
+                    assert flushed_reply(child) == {"reply": 7}
+                child.stdin.close()
+                child.stdin = None
+                output, errors = child.communicate(timeout=5)
+                if broken_pipe:
+                    assert child.returncode == 1 and b"broken pipe" in errors.lower(), (child.returncode, errors)
+                    assert output is None and len(errors) <= 256
+                else:
+                    assert child.returncode == 0 and not output and not errors, (child.returncode, output, errors)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+        descriptor = os.open(ROOT, os.O_RDONLY)
+        try:
+            failed_read = subprocess.run(arguments, stdin=descriptor, capture_output=True, timeout=30,
+                                         preexec_fn=limit_child, cwd=ROOT)
+        finally:
+            os.close(descriptor)
+        assert failed_read.returncode == 1 and not failed_read.stdout, failed_read
+        assert failed_read.stderr.startswith(b"wings-vm: ") and len(failed_read.stderr) <= 256, failed_read
+    print("Owned CLI stdio verified: scalar/heap replies before EOF, broken output and read errors; not complete host accounting")
+
+
 def verify_tcp_service(directory):
     executable = TARGET / PROFILE / "examples/tcp_counter"
 
@@ -917,6 +968,7 @@ def main():
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
         verify_cli_input(counter, parent)
+        verify_cli_stdio(counter)
         for count in (16, 64, 256):
             density = json.loads(example("scheduler_density", counter, count).stdout)
             assert density["actors"] == count and density["workers"] == 2

@@ -95,6 +95,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0085](0085-module-path-admission.md) | 模块路径解析前准入原控制预算，再追加原库页预算 | 已采纳（模块加载资源顺序修正） |
 | [0086](0086-accounted-cli-json.md) | CLI 请求缓冲与有界 JSON 解析准入、固定回复和重复字段拒绝 | 已采纳（CLI 请求适配层资源切片） |
 | [0087](0087-accounted-beam-workload-roots.md) | 六个 BEAM 对照驱动的计费根、清理回执与新采集严格校验 | 已采纳（业务对照资源集成切片） |
+| [0088](0088-owned-cli-stdio.md) | CLI 业务 stdin/stdout 的独立预留、固定缓冲、描述符与清理 | 已采纳（CLI I/O 资源切片） |
 
 ## 维护方式
 
