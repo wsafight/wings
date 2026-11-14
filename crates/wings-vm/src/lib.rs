@@ -13,6 +13,7 @@ mod aot_heap;
 mod detached;
 mod execution;
 mod heap;
+mod host_values;
 mod ingress;
 mod ingress_requests;
 mod message_values;
@@ -37,6 +38,7 @@ pub use heap::{
     ByteStateSnapshot, CollectionStats, FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout,
     RecordValue, RootFrame, ShadowRoots,
 };
+pub use host_values::MessageValue;
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
 pub use module::{HandlerId, ScalarModule};

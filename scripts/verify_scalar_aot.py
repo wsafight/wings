@@ -1154,6 +1154,11 @@ def main():
             result = command([VM, "run", "--trusted", byte_messages, "--heap-records", 10],
                              json.dumps(message(name, 65536 << 32)) + "\n", expected=1)
             assert "not JSON arguments" in result.stderr
+        host_values = parent / "host-values"
+        command([COMPILER, "build", ROOT / "examples/host-values.wings", "-o", host_values])
+        result = example("host_values", host_values)
+        assert "Typed host values verified" in result.stdout
+        print(result.stdout.strip())
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
         verify_tcp_service(tcp_artifact)

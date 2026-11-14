@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0094](adr/0094-typed-host-message-values.md) 扩展直接宿主消息的类型化复制入口。复用现有 record/list/bytes 载荷、入口根和受管导入，不暴露堆引用整数，不改变 ABI v15 或源码拼写；宿主准备阶段持目标账户租约，在 registry 锁外复制，发布时重新验证 Pid/generation。接口与生命周期集中在[运行时](runtime.md)。
+
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 在实际 parking 的 registry 锁内重查本 worker 队头，避免空认领后已发布工作仍等待下一次通知。启动准入失败仍按原一毫秒退避，不改固定队列归属、活栈 owner 或迁移协议。
 
 [ADR-0092](adr/0092-concurrent-failure-counter.md) 用独立对照驱动检查双发送者的失败前缀，复用既有候选提交、逐 child 监督终态与有限回复表，不改执行引擎、ABI 或语法。对照协议集中在 [v9](beam-workloads.md#v9双发送者的并发失败前缀)，不扩张为超时/恢复或性能结论。
@@ -178,7 +180,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码 ABI v15 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。普通宿主参数与回复只允许 Int/Bool/Unit；语言消息参数额外允许 RecordInt/有界 IntList/计费 Bytes 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef/BytesRef；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆、无效根与非法字节参数均以状态码返回，不 trap 或 unwind。
+未发布源码 ABI v15 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。宿主原始整数参数与所有回复只允许 Int/Bool/Unit；语言消息与 ADR-0094 类型化宿主消息参数额外允许 RecordInt/有界 IntList/计费 Bytes 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef/BytesRef；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆、无效根与非法字节参数均以状态码返回，不 trap 或 unwind。
 
 薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；无调用及 GC 的 N 条直线 IR 指令成功需 N+1 步。源码函数逐帧计算，受管 GC 另按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 每块扣一步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码 v2–v14 均与当前 v15 拒绝混用，须使用匹配的编译器和 VM。
 

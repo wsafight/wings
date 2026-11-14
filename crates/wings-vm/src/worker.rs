@@ -2,14 +2,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::host_values::HostMessage;
 use crate::ingress::IngressReceiver;
 use crate::ingress_requests::ReplyPublisher;
 use crate::message_values::{BytePayload, ListPayload};
 use crate::timer::DeadlineTimer;
 use crate::{
     CancellationToken, ExecutionSnapshot, ExecutionStatus, HandlerId, HeapStats, IngressSender,
-    PreemptionToken, Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule,
-    ScalarTask, StackPool,
+    MessageValue, PreemptionToken, Reservation, ResourceAccount, ResourceLevel, Resources,
+    ScalarModule, ScalarTask, StackPool,
 };
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
@@ -529,6 +530,94 @@ impl ScalarWorker {
             _charge: charge,
         });
         Ok(request)
+    }
+
+    pub fn send_values(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+    ) -> Result<(), String> {
+        let message = self.host_message(pid, handler, values, false)?;
+        self.enqueue_payload(
+            pid,
+            handler,
+            &message.arguments[..message.count],
+            max_steps,
+            None,
+            message.record_mask,
+            &message.lists,
+            message.bytes,
+        )
+    }
+
+    pub fn request_values(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+        timeout: Duration,
+    ) -> Result<RequestId, String> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or("request deadline is out of range")?;
+        let message = self.host_message(pid, handler, values, true)?;
+        let index = self
+            .requests
+            .iter()
+            .position(|slot| slot.pending.is_none() && slot.generation != 0)
+            .ok_or("request_table_full")?;
+        let request = RequestId {
+            worker: self.identity,
+            slot: index as u32,
+            generation: self.requests[index].generation,
+        };
+        let charge = self.actor(pid)?.account.reserve(Resources {
+            requests: 1,
+            ..Resources::default()
+        })?;
+        self.enqueue_payload(
+            pid,
+            handler,
+            &message.arguments[..message.count],
+            max_steps,
+            Some(request),
+            message.record_mask,
+            &message.lists,
+            message.bytes,
+        )?;
+        self.requests[index].pending = Some(PendingRequest {
+            target: pid,
+            deadline,
+            outcome: None,
+            completion: None,
+            result_taken: false,
+            publisher: true,
+            _charge: charge,
+        });
+        Ok(request)
+    }
+
+    fn host_message(
+        &self,
+        pid: Pid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        request: bool,
+    ) -> Result<HostMessage, String> {
+        let actor = self.actor(pid)?;
+        if !Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner)
+            || handler.schema().is_completion()
+            || handler.schema().reply.is_some() != request
+        {
+            return Err("host message module or handler mode mismatch".into());
+        }
+        if actor.mailbox.count == actor.mailbox.slots.len() {
+            return Err("mailbox_full".into());
+        }
+        HostMessage::copy(handler, values, &actor.account)
     }
 
     pub fn take_reply(&mut self, request: RequestId) -> Result<Option<RequestOutcome>, String> {
@@ -1274,6 +1363,170 @@ fn storage<Value>(
 #[cfg(test)]
 mod payload_tests {
     use super::*;
+
+    #[test]
+    fn typed_host_queues_keep_copies_and_request_tickets_through_cancel_and_rejection() {
+        let limits = Resources {
+            bytes: 32 << 20,
+            processes: 4,
+            messages: 8,
+            requests: 4,
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let mut module = crate::tests::module();
+        let manifest = &mut Arc::get_mut(&mut module.inner).unwrap().manifest;
+        for index in [0, 1] {
+            manifest.handlers[index].parameters =
+                vec![("value".into(), wings_abi::ValueType::BytesRef)];
+        }
+        let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 1).unwrap();
+        let pid = worker
+            .spawn_with_heap(
+                &module,
+                Resources {
+                    bytes: 8 << 20,
+                    ..limits
+                },
+                2,
+                4,
+            )
+            .unwrap();
+        let store = module.handler("Add").unwrap();
+        let query = module.handler("Bump").unwrap();
+        let baseline = vm.used();
+        for (handler, request) in [
+            (&store, true),
+            (&query, false),
+            (&crate::tests::module().handler("Add").unwrap(), false),
+        ] {
+            let result = if request {
+                worker
+                    .request_values(
+                        pid,
+                        handler,
+                        &[MessageValue::Bytes(&[17; 8])],
+                        32,
+                        Duration::from_secs(60),
+                    )
+                    .map(|_| ())
+            } else {
+                worker.send_values(pid, handler, &[MessageValue::Bytes(&[17; 8])], 32)
+            };
+            assert!(result.is_err());
+            assert_eq!(vm.used(), baseline);
+        }
+        assert!(
+            worker
+                .send_values(pid, &store, &[MessageValue::Int(0)], 32)
+                .is_err()
+        );
+        assert!(worker.send(pid, &store, &[0], 32).is_err());
+        assert_eq!(vm.used(), baseline);
+        let account = worker.actor(pid).unwrap().account.clone();
+        let fill = account
+            .reserve(Resources {
+                bytes: account.limit().bytes - account.used().bytes - 8,
+                ..Resources::default()
+            })
+            .unwrap();
+        let filled = vm.used();
+        assert!(
+            worker
+                .send_values(pid, &store, &[MessageValue::Bytes(&[17; 8])], 32)
+                .is_err()
+        );
+        assert!(
+            worker
+                .request_values(
+                    pid,
+                    &query,
+                    &[MessageValue::Bytes(&[17; 8])],
+                    32,
+                    Duration::from_secs(60)
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), filled);
+        drop((fill, account));
+        assert_eq!(vm.used(), baseline);
+        let mut source = [17; 8];
+        worker
+            .send_values(pid, &store, &[MessageValue::Bytes(&source)], 32)
+            .unwrap();
+        source.fill(99);
+        let request = worker
+            .request_values(
+                pid,
+                &query,
+                &[MessageValue::Bytes(&source)],
+                32,
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        worker.cancel_request(request).unwrap();
+        assert_eq!(
+            worker.take_reply(request).unwrap(),
+            Some(RequestOutcome::Cancelled)
+        );
+        assert!(worker.take_reply(request).is_err());
+        let actor = worker.actor(pid).unwrap();
+        assert_eq!(actor.mailbox.slots[0].as_ref().unwrap().bytes.data, [17; 8]);
+        assert_eq!(actor.mailbox.slots[1].as_ref().unwrap().bytes.data, [99; 8]);
+        assert_eq!(actor.account.used().requests, 1);
+        assert_eq!(actor.account.used().messages, 2);
+        let full = vm.used();
+        assert!(
+            worker
+                .send_values(pid, &store, &[MessageValue::Bytes(&source)], 32)
+                .is_err()
+        );
+        assert!(
+            worker
+                .request_values(
+                    pid,
+                    &query,
+                    &[MessageValue::Bytes(&source)],
+                    32,
+                    Duration::from_secs(60)
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), full);
+        let mailbox = &mut worker.actor_mut(pid).unwrap().mailbox;
+        let removed = mailbox.slots[mailbox.head].take();
+        mailbox.head = (mailbox.head + 1) % mailbox.slots.len();
+        mailbox.count -= 1;
+        drop(removed);
+        let full_request = vm.used();
+        assert_eq!(
+            worker
+                .request_values(
+                    pid,
+                    &query,
+                    &[MessageValue::Bytes(&source)],
+                    32,
+                    Duration::from_secs(60)
+                )
+                .err()
+                .unwrap(),
+            "request_table_full"
+        );
+        assert_eq!(vm.used(), full_request);
+        worker.stop(pid).unwrap();
+        assert_eq!(vm.used().requests, 0);
+        let replacement = worker.spawn_with_heap(&module, limits, 2, 4).unwrap();
+        assert_ne!(pid, replacement);
+        let replaced = vm.used();
+        assert!(
+            worker
+                .send_values(pid, &store, &[MessageValue::Bytes(&source)], 32)
+                .is_err()
+        );
+        assert_eq!(vm.used(), replaced);
+        drop((worker, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     fn limits() -> Resources {
         Resources {

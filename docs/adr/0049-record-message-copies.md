@@ -1,5 +1,7 @@
 # ADR-0049：RecordInt 消息的按值复制与入口根
 
+后续 [ADR-0094](0094-typed-host-message-values.md) 部分替代直接宿主标量参数限制，增加类型化内容复制；原始整数接口与引用回复限制保持。
+
 - 日期：2026-11-13
 - 后续：[ADR-0051](0051-bounded-int-list-messages.md) 升至 ABI v12 并增加有界 IntList 消息载荷，RecordInt 复制及入口根契约保留。
 - 状态：已采纳（引用消息切片）

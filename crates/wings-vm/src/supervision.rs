@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use crate::{
-    ExitSnapshot, HandlerId, Pid, ProcessSnapshot, RequestId, RequestOutcome, Reservation,
-    ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarWorker, WorkerEvent,
+    ExitSnapshot, HandlerId, MessageValue, Pid, ProcessSnapshot, RequestId, RequestOutcome,
+    Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarWorker,
+    WorkerEvent,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +232,28 @@ impl ScalarSupervisor {
 
     pub fn take_reply(&mut self, request: RequestId) -> Result<Option<RequestOutcome>, String> {
         self.worker.take_reply(request)
+    }
+
+    pub fn send_values(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+    ) -> Result<(), String> {
+        self.worker.send_values(pid, handler, values, max_steps)
+    }
+
+    pub fn request_values(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+        timeout: Duration,
+    ) -> Result<RequestId, String> {
+        self.worker
+            .request_values(pid, handler, values, max_steps, timeout)
     }
 
     pub fn cancel_request(&mut self, request: RequestId) -> Result<(), String> {

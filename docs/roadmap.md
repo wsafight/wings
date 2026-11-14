@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0094](adr/0094-typed-host-message-values.md) 按第 3/4 项补齐直接宿主向既有 RecordInt/IntList/Bytes 消息的类型化复制入口，保留原语法、ABI、合计上限及请求生命周期；具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、字符串/通用记录、完整账本、原生双平台及同负载 BEAM 双门禁仍未完成。
+
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 推进第 3/5 项，消除 Scheduler 空认领后已有本地就绪项仍进入有界等待的窗口，保留准入失败退避；非零请求期限竞争另有单测证据。长时公平性、完整业务值/账本、原生双平台及同负载 BEAM 双门禁仍未完成。
 
 [ADR-0092](adr/0092-concurrent-failure-counter.md) 推进第 3/6/7 项的双发送者并发失败对照，检查合法成功前缀、候选不提交和健康目标推进。此处不包含 timeout/cancel、重启或长时故障；完整业务值/账本、最新原生双平台与同负载 BEAM 双目标仍未完成。

@@ -1,5 +1,7 @@
 # wings-lang
 
+[ADR-0094](adr/0094-typed-host-message-values.md) 的直接宿主类型化消息使用现有参数类型及复制导入语义，不改变源码拼写、消息入口或回复类型。语法评审稿仍待审核；JSON 与原始整数接口不能据此注入引用。
+
 [ADR-0078](adr/0078-request-publisher-lifetimes.md) 保留异步请求的早期超时/取消事件，但完成事件入队或发起方退出不再提前归还仍排队/执行请求的额度；目标消息结束后才可复用请求槽。已入队事件的能力不可取消，超时结果不撤回对端副作用；满表继续返回 RequestRejected。类型拼写与 ABI v15 不变。
 
 [ADR-0076](adr/0076-accounted-byte-messages.md) 为现有 `send_self`、`send` 和异步 `request` 开放 Bytes 参数，可与 RecordInt、IntList 和标量混用，单条消息所有 Bytes 合计最多 65536 字节。复制的是独立字节值，源后续替换/GC/失败不改变已接受消息；超限或准入失败在发布前拒绝，目标堆不足则目标受管失败。示例 [`examples/byte-messages.wings`](../examples/byte-messages.wings) 沿用 `Int/Bool/Unit`，不改变待审的大小写方案，执行须配置计费堆。引用回复、JSON 原 handle 注入仍不支持，ABI v15 的细节见架构/运行时契约。

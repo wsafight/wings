@@ -1,5 +1,7 @@
 # ADR-0076：计费的 Bytes 复制消息
 
+后续 [ADR-0094](0094-typed-host-message-values.md) 为直接宿主开放类型化字节切片复制，保留原合计上限、计费导入与原始整数限制。
+
 - 日期：2026-11-14
 - 状态：已采纳（有界业务消息切片，MVP 尚未完成）
 - 扩展：[ADR-0051](0051-bounded-int-list-messages.md)、[ADR-0057](0057-accounted-immutable-bytes.md)

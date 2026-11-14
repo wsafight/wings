@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0094](docs/adr/0094-typed-host-message-values.md) 为 ScalarWorker、ScalarSupervisor 和 SchedulerHandle 增加 `send_values`/`request_values`，使用 `MessageValue` 传入独立的记录内容、列表和字节副本。完整受限 AOT 已接入 [`examples/host-values.wings`](examples/host-values.wings)，宿主用法见[运行时](docs/runtime.md)。原始整数/JSON/IngressSender 及回复仍遵守原边界；语法评审稿尚未采纳。
+
 [ADR-0093](docs/adr/0093-scheduler-ready-before-park.md) 修正 Scheduler 空认领与等待之间的就绪发布竞争，保留原准入失败退避；另补非零 deadline 的发布/等待/取消竞争验证，不改变请求期限或强制检查。
 
 [ADR-0092](docs/adr/0092-concurrent-failure-counter.md) 增加双发送者失败前缀的独立 Wings/BEAM 对照，验证候选不提交、每条请求终态与健康目标推进；不改变 ABI 或语法，超时/恢复、原生双平台和性能/内存门禁仍须独立验收。

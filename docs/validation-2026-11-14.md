@@ -559,6 +559,18 @@ macOS AArch64 的 debug/release 各 83 个 harness、555 项测试及 doc-tests 
 
 Linux x86-64 在原 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体中通过 83 个 release harness、555 项测试，以及同限制的 16 次独立定向进程。与 macOS 两种构建合计 48 次定向进程、1152 组清理组合执行；有限重复不代表完整并发状态空间证明。冻结包 `/tmp/wings-termination-order-linux.tar.gz` 保留 327 份源码、83 个 harness、61 个工具/示例，排除语法提案；结束后 471 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-termination-order-linux-{tests,repeat,hashes,stop}.log`，状态回执为 `/tmp/wings-termination-order-linux-status.json`；宿主源核对为 `/tmp/wings-termination-order-host-sources.log`，冻结后仅追加本验证记录。静态检查覆盖 110 份 Markdown、1083 个相对链接和围栏。此轮仍没有最新原生 Linux CI、完整业务值/账本或同负载 BEAM 吞吐及整机内存门禁证据，M0/MVP 状态不变。
 
+## 宿主类型化复制消息（2026-11-14）
+
+按 [ADR-0094](adr/0094-typed-host-message-values.md)，ScalarWorker、ScalarSupervisor 和 SchedulerHandle 增加 `send_values`/`request_values`，以 MessageValue 传入 Int/Bool/Unit、RecordInt 的内容、IntList/Bytes 借用切片。完整检查类型及原 64 参数/64 整数/65536 字节合计边界后，复制到目标账户计费的独占载荷；Scheduler 在 registry 锁外复制，发布前重查完整 Pid/generation，准备期间旧目标退出/slot 复用/关闭都不能把副本送给新 actor。已有根、受管导入、请求终态和原资源上限保持，原始整数/JSON/IngressSender 仍不能提供引用或段编码，所有回复保持标量，语法评审稿不在本片采纳。
+
+六项新单测覆盖精确 schema、全参数预检、零/最大/越界、最高 mask、混合规范分段、源修改独立性、三级准入失败、复制成功后 envelope 准入失败、队满/结果表满的无净预留、已消费取消仍保留目标发布票据、stale/复用/关闭与准备后队列变满的确定顺序交错，以及最终清理。新真实 AOT `examples/host-values.wings`/`host_values` 接入完整验证入口，以混合参数覆盖空值、满 64 KiB 字节、64 节点列表、GC、三类宿主入口、一/二 Scheduler worker、Bool/Unit 标量回复、超时/取消不撤回、目标导入失败与根启动基线清理。每阶段仍三秒，每独立测试/编译/AOT 进程仍 CPU 20 秒/墙钟 30 秒/core 0；不把功能验证写成性能结果。
+
+保留两项测试配置纠正。首次三级准入 fixture 把三层字节上限设成相同值，未给上层计费元数据留空间，填充票据提前被 VM 拒绝；日志 `/tmp/wings-host-values-focused-4.log`，修正为逐层收窄的 8/4/1 MiB，使被测分配分别在指定层拒绝，并完整通过。首次新 AOT 将含 64 节点列表的正常 actor 配成八个堆槽，在 `65536/0/64` 输入上按预期资源规则返回 HeapExhausted；诊断确认 allocated=capacity=8，旧 state 未提交，日志 `/tmp/wings-host-values-aot-focused-debug.log` 与 `/tmp/wings-host-values-aot-initial-heap-diagnostic.log`。正常最大参数场景实际同时存活 64 列表节点、一个记录和两个字节对象，fixture 改为 68 槽；独立二槽目标仍须 Failed 且旧状态为零。没有修改 runtime 堆上限、三级资源总额、步数或 CPU/墙钟门槛，最初失败不删除、不计通过。
+
+macOS AArch64 debug/release 各 84 个 harness、561 项测试、doc-tests 及完整受限 AOT 通过；debug 全部 harness 之后追加的队满交错断言又完整执行最新 245 项库测试，其他源码未变。两种构建各 16 次独立定向进程、48 次新测试执行通过，脚本先验证目标测试存在且每次实际执行数为四/二，防止零测试误报。workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离、禁 unwind、Python AST 和 Markdown 检查通过。日志前缀为 `/tmp/wings-host-values-`：`tests-{debug,release}.log`、`lib-debug-final.log`、`repeat-{debug,release}.log`、`aot-{debug,release}.log` 和各检查日志。本片没有重新采集 BEAM 长测，不将旧冻结测量写成最新原生双平台或双性能门禁结果。
+
+Linux x86-64 在原 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体中通过 84 个 release harness、561 项测试、完整受限 AOT 和 16 次独立定向进程。三种构建合计 48 次定向进程、144 次新单测执行，不能据有限重复宣称完整并发状态空间覆盖。冻结包 `/tmp/wings-host-values-linux.tar.gz` 包含 331 份源码、84 个 harness、62 个工具/示例，排除语法评审稿；结束后 477 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-host-values-linux-{tests,repeat,aot,hashes,stop}.log`，状态回执 `/tmp/wings-host-values-linux-status.json`；宿主核对为 `/tmp/wings-host-values-host-sources.log`，冻结后仅追加本验证记录。静态检查覆盖 111 份 Markdown、1102 个相对链接及围栏。TCG 只提供功能证据，最新原生 Linux CI、完整业务值/账本、长时故障与公平性和同平台同负载 BEAM 吞吐/整机内存双门禁仍未完成。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

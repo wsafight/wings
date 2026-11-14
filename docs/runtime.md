@@ -1,5 +1,24 @@
 # 运行时
 
+[ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数、JSON 和 IngressSender 仍按原标量边界处理。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
+
+宿主调用示例（针对 [`examples/host-values.wings`](../examples/host-values.wings) 的 `Compute`，须先用本 VM 的计费模块创建带堆目标；以下 `handle` 为 SchedulerHandle）：
+
+```rust
+let values = [
+    MessageValue::Bytes(&first),
+    MessageValue::RecordInt(7),
+    MessageValue::IntList(&[3, 5]),
+    MessageValue::Bytes(&second),
+    MessageValue::Bool(true),
+    MessageValue::Unit,
+];
+let mut request = handle.request_values(pid, &compute, &values, 32768, timeout)?;
+let outcome = request.wait(timeout)?;
+```
+
+调用正常返回后源切片即可修改或丢弃；`wait` 返回 None 仅表示本次等待结束，仍可继续等待。请求 TimedOut/Cancelled 不撤回副本，目标导入失败返回 Failed；正常标量回复携带于 Reply。列表总计最多 64 个整数，字节总计最多 65536；每项值须精确匹配 schema，不能将 Int(1) 当作 Bool(true)。ScalarWorker/ScalarSupervisor 的同名方法返回原 RequestId，仍须由宿主驱动 tick 并 take_reply；原构造、队列和请求上限保持。此接口是未发布源码能力，CLI/IngressSender 不会自动转换这些业务值。
+
 [ADR-0093](adr/0093-scheduler-ready-before-park.md) 要求 Scheduler 在等待锁内重查本 worker 的 ready：空认领后新发布的工作立即进入下一轮，其他 worker 的队列不触发自旋，已认领但启动失败仍保留原有界退避。请求期限、预算及超时不撤回业务的契约不变。
 
 [ADR-0092](adr/0092-concurrent-failure-counter.md) 增加双 sender 下的失败提交前缀回归：已接受请求因目标失败终结，关闭后的投递不重试，健康 sibling 完成；每 child 终态保留旧提交状态。运行时契约和原资源限额不变，超时/取消、恢复及长时边界仍独立验证。
@@ -194,7 +213,7 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 [ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt 与有界 IntList 按值复制消息，仍不支持引用回复或后台收集。
 
-[ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。[ADR-0080](adr/0080-central-execution-admission.md) 将保存显式池的行为扩至标量初始化，计费调用/初始化都由核心预留控制容量。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主消息/request 只接受标量，语言 RecordInt/IntList 消息按 ADR-0049/0051 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
+[ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。[ADR-0080](adr/0080-central-execution-admission.md) 将保存显式池的行为扩至标量初始化，计费调用/初始化都由核心预留控制容量。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主原始整数消息/request 只接受标量，类型化宿主消息按 ADR-0094、语言消息按 ADR-0049/0051/0076 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
 
 独立原语不自动接入业务根；当前 AOT 路径已覆盖 RecordInt/IntList 局部、状态、消息入口及 safepoint 根，仍缺引用回复和通用值布局，不是完整业务 GC。原语边界见 [ADR-0018](adr/0018-bounded-record-heap.md)，集成契约见 ADR-0025–0027。
 

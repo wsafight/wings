@@ -1,0 +1,33 @@
+process HostValues {
+  state saved: Int = 0
+
+  fn score(value: Bytes) -> Int {
+    bytes_len(value) * 512 + if bytes_len(value) == 0 { 0 } else {
+      byte_at(value, 0) + byte_at(value, bytes_len(value) - 1)
+    }
+  }
+
+  fn total(first: Bytes, record: RecordInt, values: IntList, second: Bytes, flag: Bool) -> Int {
+    score(first) + score(second) + read_int(record) +
+      if is_empty_ints(values) { 0 } else { head_int(values) +
+        if is_empty_ints(tail_ints(values)) { 0 } else { head_int(tail_ints(values)) }
+      } + if flag { 1 } else { 0 }
+  }
+
+  on Store(first: Bytes, record: RecordInt, values: IntList, second: Bytes, flag: Bool, unit: Unit) {
+    collect()
+    saved = total(first, record, values, second, flag)
+    collect()
+  }
+
+  on Compute(first: Bytes, record: RecordInt, values: IntList, second: Bytes, flag: Bool, unit: Unit) -> Int {
+    collect()
+    saved = total(first, record, values, second, flag)
+    collect()
+    saved
+  }
+
+  on Echo(flag: Bool) -> Bool { flag }
+  on Ack(value: Bytes) -> Unit { collect(); () }
+  on Get -> Int { saved }
+}

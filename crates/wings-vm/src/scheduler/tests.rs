@@ -63,6 +63,191 @@ pub(super) fn module() -> ScalarModule {
 }
 
 #[test]
+fn typed_host_preparation_cannot_publish_to_stopped_reused_or_closed_targets() {
+    for workers in [1, 2] {
+        let limits = Resources {
+            bytes: 32 << 20,
+            processes: 2,
+            messages: 4,
+            requests: 2,
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                workers,
+                capacity: 1,
+                requests: 1,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let handle = scheduler.handle();
+        let mut module = module();
+        Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[1].parameters =
+            vec![("value".into(), ValueType::BytesRef)];
+        Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[3].parameters =
+            vec![("value".into(), ValueType::BytesRef)];
+        let store = module.handler("Store").unwrap();
+        let pid = handle
+            .spawn_with_heap(
+                &module,
+                Resources {
+                    bytes: 8 << 20,
+                    ..limits
+                },
+                1,
+                4,
+            )
+            .unwrap();
+        let baseline = vm.used();
+        assert!(
+            handle
+                .send_values(pid, &store, &[MessageValue::Int(0)], 32)
+                .is_err()
+        );
+        assert!(
+            handle
+                .request_values(
+                    pid,
+                    &store,
+                    &[MessageValue::Bytes(&[1; 8])],
+                    32,
+                    Duration::from_secs(60)
+                )
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        let account = handle
+            .shared
+            .lock()
+            .actor(handle.shared.identity, pid)
+            .unwrap()
+            .account
+            .clone();
+        let (request, publisher) = handle
+            .shared
+            .replies
+            .start(
+                Instant::now() + Duration::from_secs(60),
+                &account,
+                ValueType::Int,
+            )
+            .unwrap();
+        let full = vm.used();
+        assert_eq!(
+            handle
+                .request_values(
+                    pid,
+                    &module.handler("Read").unwrap(),
+                    &[MessageValue::Bytes(&[17; 8])],
+                    32,
+                    Duration::from_secs(60)
+                )
+                .err()
+                .unwrap(),
+            "ingress_requests_full"
+        );
+        assert_eq!(vm.used(), full);
+        drop((request, publisher));
+        assert_eq!(vm.used(), baseline);
+        let fill = account
+            .reserve(Resources {
+                bytes: account.limit().bytes - account.used().bytes - 8,
+                ..Resources::default()
+            })
+            .unwrap();
+        let filled = vm.used();
+        assert!(
+            handle
+                .send_values(pid, &store, &[MessageValue::Bytes(&[17; 8])], 32)
+                .is_err()
+        );
+        assert_eq!(vm.used(), filled);
+        drop((fill, account));
+        let prepared = handle
+            .host_message(pid, &store, &[MessageValue::Bytes(&[17; 8])], false)
+            .unwrap();
+        {
+            let mut state = handle.shared.lock();
+            let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+            let blocker = envelope(
+                actor,
+                &module.handler("Drop").unwrap(),
+                &[],
+                32,
+                0,
+                ListPayload::default(),
+                BytePayload::default(),
+                false,
+                Reply::None,
+            )
+            .unwrap();
+            actor.mailbox.push(blocker).unwrap();
+        }
+        let blocked = vm.used();
+        assert_eq!(
+            handle
+                .publish_values(pid, &store, prepared, 32, None)
+                .err()
+                .unwrap(),
+            "mailbox_full"
+        );
+        assert_eq!(vm.used().bytes + 8, blocked.bytes);
+        {
+            let mut state = handle.shared.lock();
+            let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+            drop(actor.mailbox.pop());
+        }
+        assert_eq!(vm.used(), baseline);
+        let mut source = [17; 4096];
+        let prepared = handle
+            .host_message(pid, &store, &[MessageValue::Bytes(&source)], false)
+            .unwrap();
+        let account = handle
+            .shared
+            .lock()
+            .actor(handle.shared.identity, pid)
+            .unwrap()
+            .account
+            .clone();
+        source.fill(99);
+        assert_eq!(prepared.bytes.data, [17; 4096]);
+        handle.stop(pid).unwrap();
+        assert_eq!(
+            account.used(),
+            Resources {
+                bytes: 4096,
+                ..Resources::default()
+            }
+        );
+        let replacement = handle.spawn_with_heap(&module, limits, 1, 4).unwrap();
+        assert_ne!(replacement, pid);
+        let before = vm.used();
+        assert!(
+            handle
+                .publish_values(pid, &store, prepared, 32, None)
+                .is_err()
+        );
+        assert_eq!(vm.used().bytes + 4096, before.bytes);
+        assert_eq!(account.used(), Resources::default());
+        assert_eq!(handle.snapshot(replacement).unwrap().queued, 0);
+        let prepared = handle
+            .host_message(replacement, &store, &[MessageValue::Bytes(&source)], false)
+            .unwrap();
+        drop(scheduler);
+        assert!(
+            handle
+                .publish_values(replacement, &store, prepared, 32, None)
+                .is_err()
+        );
+        drop((account, handle, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
 fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retry_backoff() {
     let limits = Resources {
         bytes: 32 << 20,

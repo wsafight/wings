@@ -3,12 +3,13 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::host_values::HostMessage;
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
 use crate::message_values::{BytePayload, ListPayload};
 use crate::{
     CancellationToken, DetachedProcess, ExecutionFault, ExecutionSnapshot, HandlerId,
-    IngressRequest, Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule,
-    StackPool,
+    IngressRequest, MessageValue, Reservation, ResourceAccount, ResourceLevel, Resources,
+    ScalarModule, StackPool,
 };
 
 mod ready;
@@ -619,6 +620,114 @@ impl SchedulerHandle {
         drop(retired);
         self.shared.changed.notify_all();
         Ok(())
+    }
+
+    pub fn send_values(
+        &self,
+        pid: SchedulerPid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+    ) -> Result<(), String> {
+        let message = self.host_message(pid, handler, values, false)?;
+        self.publish_values(pid, handler, message, max_steps, None)?;
+        Ok(())
+    }
+
+    pub fn request_values(
+        &self,
+        pid: SchedulerPid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        max_steps: u64,
+        timeout: Duration,
+    ) -> Result<IngressRequest, String> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or("request deadline overflow")?;
+        let message = self.host_message(pid, handler, values, true)?;
+        self.publish_values(pid, handler, message, max_steps, Some(deadline))?
+            .ok_or_else(|| "host request result was not created".into())
+    }
+
+    fn host_message(
+        &self,
+        pid: SchedulerPid,
+        handler: &HandlerId,
+        values: &[MessageValue<'_>],
+        request: bool,
+    ) -> Result<HostMessage, String> {
+        let account = {
+            let state = self.shared.lock();
+            state.open()?;
+            let actor = state.actor(self.shared.identity, pid)?;
+            if actor.stopping
+                || !Arc::ptr_eq(&actor.module.inner, &handler.module.inner)
+                || handler.schema().is_completion()
+                || handler.schema().reply.is_some() != request
+            {
+                return Err("host message module, phase or handler mode mismatch".into());
+            }
+            HostMessage::validate(handler, values)?;
+            if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
+                return Err("mailbox_full".into());
+            }
+            actor.account.clone()
+        };
+        HostMessage::copy(handler, values, &account)
+    }
+
+    fn publish_values(
+        &self,
+        pid: SchedulerPid,
+        handler: &HandlerId,
+        message: HostMessage,
+        max_steps: u64,
+        deadline: Option<Instant>,
+    ) -> Result<Option<IngressRequest>, String> {
+        let mut state = self.shared.lock();
+        state.open()?;
+        let actor = state.actor_mut(self.shared.identity, pid)?;
+        let arguments = &message.arguments[..message.count];
+        validate(
+            actor,
+            handler,
+            arguments,
+            false,
+            message.record_mask,
+            &message.lists,
+            &message.bytes,
+        )?;
+        let mut envelope = envelope(
+            actor,
+            handler,
+            arguments,
+            max_steps,
+            message.record_mask,
+            message.lists,
+            message.bytes,
+            false,
+            Reply::None,
+        )?;
+        let request = if let Some(deadline) = deadline {
+            let reply_type = handler
+                .schema()
+                .reply
+                .ok_or("request requires a reply handler")?;
+            let (request, publisher) =
+                self.shared
+                    .replies
+                    .start(deadline, &actor.account, reply_type)?;
+            envelope.reply = Reply::External(publisher);
+            Some(request)
+        } else {
+            None
+        };
+        actor.mailbox.push(envelope)?;
+        state.enqueue(pid);
+        drop(state);
+        self.shared.changed.notify_all();
+        Ok(request)
     }
 
     pub fn snapshot(&self, pid: SchedulerPid) -> Result<SchedulerSnapshot, String> {

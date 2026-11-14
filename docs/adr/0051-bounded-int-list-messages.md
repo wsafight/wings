@@ -1,5 +1,7 @@
 # ADR-0051：有界 IntList 消息复制
 
+后续 [ADR-0094](0094-typed-host-message-values.md) 为直接宿主开放类型化列表切片复制，保留原合计上限、导入根与原始整数限制。
+
 - 日期：2026-11-13
 - 状态：已采纳（列表消息切片）
 - 扩展：[ADR-0037](0037-immutable-int-lists.md)、[ADR-0049](0049-record-message-copies.md)
