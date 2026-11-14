@@ -343,3 +343,197 @@ impl SchedulerSupervisor {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RequestOutcome;
+    use wings_abi::ValueType;
+
+    #[test]
+    fn termination_publication_follows_heap_mailbox_and_actor_charge_cleanup() {
+        for workers in [1, 2] {
+            for terminal in 0..3 {
+                for caller in 0..4 {
+                    let limits = Resources {
+                        bytes: 32 << 20,
+                        processes: 2,
+                        messages: 4,
+                        requests: 1,
+                    };
+                    let vm = ResourceAccount::vm(limits);
+                    let tenant = vm.tenant_accounted(limits).unwrap();
+                    let mut supervisor = SchedulerSupervisor::new(
+                        &tenant,
+                        SchedulerConfig {
+                            workers,
+                            capacity: 1,
+                            requests: 1,
+                            ..SchedulerConfig::default()
+                        },
+                    )
+                    .unwrap();
+                    let mut module = super::super::tests::module();
+                    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[1].parameters =
+                        vec![("payload".into(), ValueType::BytesRef)];
+                    let child = supervisor
+                        .spawn_with_heap(&module, limits, 2, 16, RestartPolicy::Never)
+                        .unwrap();
+                    let pid = supervisor.current_pid(child).unwrap();
+                    let ticket = supervisor.children[0]
+                        .child
+                        .as_ref()
+                        .unwrap()
+                        .ticket
+                        .clone();
+                    let handle = supervisor.handle();
+                    let mut state = handle.shared.lock();
+                    let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
+                    let account = actor.account.clone();
+                    let mut bytes = BytePayload::new(&account, 1, 4096).unwrap();
+                    bytes.data.resize(4096, 17);
+                    let store = module.handler("Store").unwrap();
+                    let arguments = [ListPayload::encode(0, 4096)];
+                    validate(
+                        actor,
+                        &store,
+                        &arguments,
+                        false,
+                        0,
+                        &ListPayload::default(),
+                        &bytes,
+                    )
+                    .unwrap();
+                    let payload = envelope(
+                        actor,
+                        &store,
+                        &arguments,
+                        32,
+                        0,
+                        ListPayload::default(),
+                        bytes,
+                        false,
+                        Reply::None,
+                    )
+                    .unwrap();
+                    actor.mailbox.push(payload).unwrap();
+                    let deadline = if caller == 2 {
+                        Instant::now()
+                    } else {
+                        Instant::now() + Duration::from_secs(60)
+                    };
+                    let (request, publisher) = handle
+                        .shared
+                        .replies
+                        .start(deadline, &account, ValueType::Int)
+                        .unwrap();
+                    let mut request = Some(request);
+                    if caller == 1 {
+                        request.as_ref().unwrap().cancel().unwrap();
+                    }
+                    if caller == 1 || caller == 2 {
+                        assert_eq!(
+                            request.as_mut().unwrap().try_take().unwrap(),
+                            Some(if caller == 1 {
+                                RequestOutcome::Cancelled
+                            } else {
+                                RequestOutcome::TimedOut
+                            })
+                        );
+                    }
+                    if caller == 3 {
+                        drop(request.take());
+                    }
+                    let message = envelope(
+                        actor,
+                        &module.handler("Read").unwrap(),
+                        &[],
+                        32,
+                        0,
+                        ListPayload::default(),
+                        BytePayload::default(),
+                        false,
+                        Reply::External(publisher),
+                    )
+                    .unwrap();
+                    actor.mailbox.push(message).unwrap();
+                    let termination = match terminal {
+                        0 => SchedulerTermination::Stopped,
+                        1 => SchedulerTermination::Closed,
+                        _ => SchedulerTermination::Failed(SchedulerExitSnapshot {
+                            pid,
+                            worker: 0,
+                            reason: SchedulerExitReason::ExecutionControl,
+                            execution: None,
+                            state_type: ValueType::Int,
+                            committed_state: Some(0),
+                            byte_state: None,
+                            queued: 2,
+                            resources_before_cleanup: account.used(),
+                            handler: [0; 256],
+                            handler_len: 0,
+                        }),
+                    };
+                    actor.termination.as_mut().unwrap().set(termination);
+                    assert_eq!(account.used().processes, 1);
+                    assert_eq!(account.used().messages, 2);
+                    assert_eq!(account.used().requests, 1);
+                    state.enqueue(pid);
+                    let retired = state.retire(handle.shared.identity, pid).unwrap();
+                    drop(state);
+                    std::thread::scope(|scope| {
+                        let outcome = ticket.outcome.lock().unwrap();
+                        assert!(!outcome.published);
+                        let cleanup = scope.spawn(move || drop(retired));
+                        let end = Instant::now() + Duration::from_secs(3);
+                        while account.used().processes != 0 {
+                            assert!(Instant::now() < end, "termination blocked actor cleanup");
+                            std::thread::yield_now();
+                        }
+                        assert_eq!(
+                            account.used(),
+                            Resources {
+                                requests: u64::from(caller == 0),
+                                ..Resources::default()
+                            }
+                        );
+                        if let Some(request) = request.as_mut() {
+                            if caller == 0 {
+                                assert_eq!(
+                                    request.try_take().unwrap(),
+                                    Some(RequestOutcome::Failed)
+                                );
+                            }
+                            assert!(request.try_take().is_err());
+                        }
+                        assert_eq!(account.used(), Resources::default());
+                        assert!(!outcome.published);
+                        drop(outcome);
+                        cleanup.join().unwrap();
+                    });
+                    let outcome = ticket.outcome.lock().unwrap();
+                    assert!(outcome.published);
+                    assert_eq!(outcome.termination, termination);
+                    drop(outcome);
+                    let event = supervisor.poll().unwrap();
+                    assert_eq!(event.child, child);
+                    assert_eq!(event.pid, pid);
+                    assert_eq!(event.termination, termination);
+                    assert_eq!(
+                        event.restart,
+                        match termination {
+                            SchedulerTermination::Stopped => SchedulerRestartStatus::Stopped,
+                            SchedulerTermination::Closed => SchedulerRestartStatus::Closed,
+                            SchedulerTermination::Failed(_) => SchedulerRestartStatus::Disabled,
+                        }
+                    );
+                    assert!(supervisor.poll().is_none());
+                    drop((
+                        request, account, ticket, handle, supervisor, store, module, tenant,
+                    ));
+                    assert_eq!(vm.used(), Resources::default());
+                }
+            }
+        }
+    }
+}

@@ -15,7 +15,7 @@ unsafe extern "C" fn entry(
     wings_abi::STATUS_OK
 }
 
-fn module() -> ScalarModule {
+pub(super) fn module() -> ScalarModule {
     ScalarModule {
         inner: Arc::new(ModuleData {
             manifest: Manifest {

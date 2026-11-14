@@ -547,6 +547,18 @@ macOS AArch64 的 debug/release 各 83 个 harness、554 项测试、doc-tests �
 
 Linux x86-64 使用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。冻结包 `/tmp/wings-scheduler-park-linux.tar.gz` 包含 327 份源码、83 个 harness 与 61 个工具/示例，排除语法评审稿；554 项 release 测试、完整受限 AOT 和同参数的 32 次独立定向进程通过。与 macOS 两种构建合计 96 次定向进程，含 48 次停车决定回归及 96 次正期限测试执行；有限次数不作为完整并发状态空间证明。结束后全部 471 项 source/harness/binary hash 一致，宿主源码仅后补本验证记录不同，日志为 `/tmp/wings-scheduler-park-linux-{tests,aot,repeat,hashes,stop}.log` 与 `/tmp/wings-scheduler-park-host-sources-final.log`。客体已确认 Stopped；Linux 此轮无 BEAM，不把 TCG 或交叉构建计为最新原生 Linux CI、同负载性能/内存或完整 MVP 门禁。最终静态检查覆盖 110 份 Markdown、1082 个相对链接及围栏。
 
+## 监督终态的字段释放顺序回归（2026-11-14）
+
+本轮未发现新的运行时缺陷，补充 [ADR-0056](adr/0056-multi-worker-supervision.md) 已有清理交接契约的确定性回归，不改变执行、请求、监督、资源额度、ABI v15 或待审语法。可信 Rust fixture 在同一 registry 临界区为已配置计费堆的 actor 排入一条拥有 4096 字节独立载荷的消息和一个标量请求，再正常摘除 actor；不声称这等同于生成代码的实际失败、stop 或关闭路径覆盖。
+
+回归组合覆盖一/二 worker，Stopped/Closed/Failed 三种终态元数据，以及调用方继续持有结果、已消费取消、已消费超时、直接丢弃四种生命周期，共 24 组。设置终态后持有终态票据锁，在另一线程销毁已摘除 actor，使最后的发布动作暂时无法完成；在原三秒阶段上限内核对进程、计费堆、字节载荷和 mailbox 消息额度已经释放。尚未消费的调用方可以合法保留一个请求额度，此时结果已经为 Failed 且只可消费一次，消费后旧 process 自身账目归零；释放票据锁后发布端才能完成，poll 只取一次对应终态且不重启。最终在所有句柄释放后核对 VM 账目归零，不把 last_exit 当作清理屏障。
+
+另做一次未提交的字段顺序扰动：临时将 Actor 的终态发布端移到业务字段之前，同一受限回归在三秒上限内以 `termination blocked actor cleanup` 失败，记录在 `/tmp/wings-termination-order-mutation.log`；随后完整恢复生产字段顺序。该失败是验证测试敏感性的人工扰动，不是现有实现缺陷，也没有保留生产代码变更。恢复后的定向测试通过，日志为 `/tmp/wings-termination-order-focused.log`。
+
+macOS AArch64 的 debug/release 各 83 个 harness、555 项测试及 doc-tests 通过；新回归在两种构建下各做 16 次独立子进程重复，每次实际执行唯一指定测试和全部 24 组组合，保留每进程 CPU 20 秒/墙钟 30 秒/core 0。workspace check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check、依赖隔离、禁 unwind、Python AST 和 Markdown 检查通过。日志前缀为 `/tmp/wings-termination-order-`，测试/重复分别为 `tests-{debug,release}.log` 和 `repeat-{debug,release}.log`，各检查单独记录。此处只新增 `cfg(test)` 验证和测试 fixture 可见性，不重跑生产 AOT/BEAM 负载，也不把终态元数据 fixture 当作新的真实执行或性能证据。
+
+Linux x86-64 在原 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体中通过 83 个 release harness、555 项测试，以及同限制的 16 次独立定向进程。与 macOS 两种构建合计 48 次定向进程、1152 组清理组合执行；有限重复不代表完整并发状态空间证明。冻结包 `/tmp/wings-termination-order-linux.tar.gz` 保留 327 份源码、83 个 harness、61 个工具/示例，排除语法提案；结束后 471 项 source/harness/binary hash 一致，客体已确认 Stopped。日志为 `/tmp/wings-termination-order-linux-{tests,repeat,hashes,stop}.log`，状态回执为 `/tmp/wings-termination-order-linux-status.json`；宿主源核对为 `/tmp/wings-termination-order-host-sources.log`，冻结后仅追加本验证记录。静态检查覆盖 110 份 Markdown、1083 个相对链接和围栏。此轮仍没有最新原生 Linux CI、完整业务值/账本或同负载 BEAM 吞吐及整机内存门禁证据，M0/MVP 状态不变。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。
