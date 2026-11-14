@@ -4,14 +4,19 @@
 
 main(Arguments) ->
     try
-        Count = case Arguments of ["10"] -> 100; ["30"] -> 300; _ -> throw(invalid) end,
+        {Count, Destination} = case Arguments of
+            ["10"] -> {100, none}; ["30"] -> {300, none};
+            ["--measure", Path] when Path =/= [] -> {900000, Path}; _ -> throw(invalid) end,
         need(erlang:system_info(otp_release) =:= "29"),
         load_gate(),
-        emit(run(Count)), halt(0)
+        emit(run(Count, Destination)), halt(0)
     catch
-        throw:invalid -> emit(#{version => 7, status => <<"invalid">>}), halt(2);
-        _:_ -> emit(#{version => 7, status => <<"oracle_error">>}), halt(3)
+        throw:invalid -> emit(#{version => version(Arguments), status => <<"invalid">>}), halt(2);
+        _:_ -> emit(#{version => version(Arguments), status => <<"oracle_error">>}), halt(3)
     end.
+
+version(["--measure" | _]) -> 8;
+version(_) -> 7.
 
 need(true) -> ok;
 need(false) -> throw(invalid).
@@ -25,8 +30,13 @@ remaining(Deadline) ->
     Left = Deadline - erlang:monotonic_time(millisecond),
     case Left > 0 of true -> Left; false -> error(stage_deadline) end.
 
-run(Count) ->
-    Deadline = erlang:monotonic_time(millisecond) + 3000,
+run(Count, Destination) ->
+    Measure = Destination =/= none,
+    Deadline = erlang:monotonic_time(millisecond) + case Measure of true -> 120000; false -> 3000 end,
+    Recorder = case Measure of
+        true -> {ok, File} = file:open(Destination, [write, binary, raw, exclusive]), {trace, File, [], 0};
+        false -> {samples, array:new(Count, {fixed, true})}
+    end,
     Parent = self(),
     Entries = [begin
         {Pid, Monitor} = spawn_opt(fun() -> initialize(Parent, Identity) end,
@@ -40,9 +50,11 @@ run(Count) ->
     end, Entries),
     Routes = maps:from_list([{Identity, {Pid, Gate}} || {Identity, Pid, _, Gate} <- Entries]),
     Initial = #{next => 0, count => Count, pending => #{}, hot_pending => none, hot => [], hot_count => 0,
-        values => #{}, received => #{}, routes => Routes, samples => array:new(Count, {fixed, true}),
+        values => #{}, received => #{}, routes => Routes, recorder => Recorder, sampling => false,
         start => erlang:monotonic_time(nanosecond), deadline => Deadline},
+    case Measure of true -> emit(#{event => <<"start">>, warmup_seconds => 30, sample_seconds => 60}); false -> ok end,
     Result = loop(Initial),
+    MeasurementElapsed = elapsed(Result),
     Values = maps:get(values, Result),
     lists:foreach(fun({_, Pid, _, Gate}) ->
         0 = beam_bounded_mailbox:queued(Gate), ok = beam_bounded_mailbox:close(Gate), Pid ! {stop, Parent}
@@ -53,10 +65,12 @@ run(Count) ->
         after remaining(Deadline) -> error(stage_deadline) end
     end, Entries),
     receive _ -> error(trailing_message) after 0 -> ok end,
-    #{version => 7, status => <<"ok">>, mode => <<"smoke">>, actors => 101, state_bytes => 256,
+    #{version => case Measure of true -> 8; false -> 7 end, status => <<"ok">>,
+      mode => case Measure of true -> <<"measure">>; false -> <<"smoke">> end, actors => 101, state_bytes => 256,
       mailbox_capacity => 1, pending_capacity => 255, deadline_ns => 100000000, message_bytes => 32,
-      samples => [tuple_to_list(Sample) || Sample <- array:to_list(maps:get(samples, Result))],
+      samples => finish(maps:get(recorder, Result)),
       hot => lists:reverse(maps:get(hot, Result)), states_verified => true,
+      measurement_elapsed_ns => MeasurementElapsed,
       committed => [maps:get(Identity, Values, 0) || Identity <- lists:seq(1, 101)],
       environment => #{runtime => <<"beam">>, otp => <<"29">>, schedulers => erlang:system_info(schedulers_online)}}.
 
@@ -101,9 +115,10 @@ planned(Index) -> Index div 100 * 10000000.
 
 loop(State) ->
     _ = remaining(maps:get(deadline, State)),
-    Current = start_hot(collect(State, 32)),
+    Current = sampling(start_hot(collect(State, 32))),
     #{next := Next, count := Count, pending := Pending, hot_pending := Hot} = Current,
-    case Next =:= Count andalso map_size(Pending) =:= 0 andalso Hot =:= none of
+    Active = case maps:get(recorder, Current) of {trace, _, _, _} -> elapsed(Current) < 90000000000; _ -> false end,
+    case Next =:= Count andalso map_size(Pending) =:= 0 andalso Hot =:= none andalso not Active of
         true -> Current;
         false ->
             case Next < Count andalso elapsed(Current) >= planned(Next) of
@@ -112,15 +127,20 @@ loop(State) ->
             end
     end.
 
-start_hot(#{next := Next, count := Count, hot_pending := none, hot_count := Completed, routes := Routes} = State) when Next < Count ->
-    true = Completed < 10000,
-    {_Pid, Gate} = maps:get(1, Routes),
-    Sent = elapsed(State), Sequence = Completed + 1,
-    ok = beam_bounded_mailbox:send(Gate, {request, self(), <<Sequence:64, 2:64, 0:128>>}),
-    State#{hot_pending := {Sequence, Sent}};
+start_hot(#{next := Next, count := Count, hot_pending := none, hot_count := Completed, routes := Routes, recorder := Recorder} = State) ->
+    Active = case Recorder of {trace, _, _, _} -> elapsed(State) < 90000000000; _ -> false end,
+    case Next < Count orelse Active of
+        true ->
+            true = Completed < case Recorder of {trace, _, _, _} -> 1000000; _ -> 10000 end,
+            {_Pid, Gate} = maps:get(1, Routes),
+            Sent = elapsed(State), Sequence = Completed + 1,
+            ok = beam_bounded_mailbox:send(Gate, {request, self(), <<Sequence:64, 2:64, 0:128>>}),
+            State#{hot_pending := {Sequence, Sent}, recorder := record_hot(Recorder, Sequence, Sent, 0, 0, 5)};
+        false -> State
+    end;
 start_hot(State) -> State.
 
-arrive(#{next := Index, routes := Routes, samples := Samples, pending := Pending, values := Values} = State) ->
+arrive(#{next := Index, routes := Routes, recorder := Recorder, pending := Pending, values := Values} = State) ->
     Identity = 2 + Index rem 100, Sequence = Index + 1, Planned = planned(Index), Sent = elapsed(State),
     {Pid, Gate} = maps:get(Identity, Routes),
     Admission = case map_size(Pending) =:= 255 of
@@ -129,35 +149,63 @@ arrive(#{next := Index, routes := Routes, samples := Samples, pending := Pending
     end,
     {Status, NextPending, NextValues} = case Admission of
         ok -> Value = maps:get(Identity, Values, 0) + 1,
-            {<<"pending">>, Pending#{Sequence => {Identity, Pid, Value}}, Values#{Identity => Value}};
+            {<<"pending">>, Pending#{Sequence => {Identity, Pid, Value, Sent}}, Values#{Identity => Value}};
         {error, mailbox_full} -> {<<"mailbox_full">>, Pending, Values};
         {error, pending_full} -> {<<"pending_full">>, Pending, Values}
     end,
     Sample = {Sequence, Identity, Planned, Sent, Status, null, null},
-    State#{next := Index + 1, pending := NextPending, values := NextValues, samples := array:set(Index, Sample, Samples)}.
+    State#{next := Index + 1, pending := NextPending, values := NextValues, recorder := record_sample(Recorder, Index, Sample)}.
 
 collect(State, 0) -> State;
 collect(#{routes := Routes, hot_pending := Hot, hot := History, hot_count := Completed, values := Values,
-          pending := Pending, received := Received, samples := Samples} = State, Limit) ->
+          pending := Pending, received := Received, recorder := Recorder} = State, Limit) ->
     {HotPid, _Gate} = maps:get(1, Routes),
     receive
         {reply, HotPid, <<Sequence:64, 3:64, 1000000:64/signed-big, 0:64>>} ->
             Observed = elapsed(State),
             {Sequence, Sent} = Hot,
             true = Sequence =:= Completed + 1,
-            collect(State#{hot_pending := none, hot_count := Sequence, hot := [[Sequence, Sent, Observed, 1000000] | History],
-                values := Values#{1 => Sequence}}, Limit - 1);
+            NextHistory = case Recorder of {trace, _, _, _} -> History; _ -> [[Sequence, Sent, Observed, 1000000] | History] end,
+            collect(State#{hot_pending := none, hot_count := Sequence, hot := NextHistory,
+                recorder := record_hot(Recorder, Sequence, Sent, Observed, 1000000, 6), values := Values#{1 => Sequence}}, Limit - 1);
         {reply, Pid, <<Sequence:64, 3:64, Value:64/signed-big, 0:64>>} ->
             Observed = elapsed(State),
-            {Identity, Pid, Value} = maps:get(Sequence, Pending),
+            {Identity, Pid, Value, Sent} = maps:get(Sequence, Pending),
             true = Value =:= maps:get(Identity, Received, 0) + 1,
-            {Sequence, Identity, Planned, Sent, <<"pending">>, null, null} = array:get(Sequence - 1, Samples),
+            Planned = planned(Sequence - 1),
             Status = case Observed < Planned + 100000000 of true -> <<"reply">>; false -> <<"timed_out">> end,
             Sample = {Sequence, Identity, Planned, Sent, Status, Observed, Value},
             collect(State#{pending := maps:remove(Sequence, Pending), received := Received#{Identity => Value},
-                samples := array:set(Sequence - 1, Sample, Samples)}, Limit - 1);
+                recorder := record_sample(Recorder, Sequence - 1, Sample)}, Limit - 1);
         _ -> error(unexpected_message)
     after 0 -> State
     end.
 
 emit(Value) -> io:put_chars([json:encode(Value), $\n]).
+
+sampling(#{recorder := {trace, _, _, _}, sampling := false} = State) ->
+    case elapsed(State) >= 30000000000 of
+        true -> emit(#{event => <<"sampling">>, elapsed_ns => elapsed(State)}), State#{sampling := true};
+        false -> State
+    end;
+sampling(State) -> State.
+
+record_sample({samples, Samples}, Index, Sample) -> {samples, array:set(Index, Sample, Samples)};
+record_sample(Recorder, _Index, {Sequence, _Identity, _Planned, Sent, Status, Observed, Value}) ->
+    {Kind, Completion, Reply} = case Status of
+        <<"pending">> -> {0, 0, 0}; <<"reply">> -> {1, Observed, Value};
+        <<"timed_out">> -> {2, Observed, Value}; <<"mailbox_full">> -> {3, 0, 0}; <<"pending_full">> -> {4, 0, 0}
+    end,
+    record(Recorder, <<Sequence:64, Sent:64, Completion:64, Reply:64/signed-big, Kind:64>>).
+
+record_hot({samples, _} = Recorder, _Sequence, _Sent, _Observed, _Value, _Kind) -> Recorder;
+record_hot(Recorder, Sequence, Sent, Observed, Value, Kind) ->
+    record(Recorder, <<Sequence:64, Sent:64, Observed:64, Value:64/signed-big, Kind:64>>).
+
+record({trace, File, Buffer, Size}, Event) when Size + 40 > 65536 ->
+    ok = file:write(File, lists:reverse(Buffer)), {trace, File, [Event], 40};
+record({trace, File, Buffer, Size}, Event) -> {trace, File, [Event | Buffer], Size + 40}.
+
+finish({samples, Samples}) -> [tuple_to_list(Sample) || Sample <- array:to_list(Samples)];
+finish({trace, File, Buffer, _Size}) ->
+    ok = file:write(File, lists:reverse(Buffer)), ok = file:close(File), [].

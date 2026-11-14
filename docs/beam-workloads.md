@@ -165,13 +165,30 @@ python3 scripts/verify_fairness.py --compare-beam --output target/fairness-smoke
 WINGS_PROFILE=release python3 scripts/verify_fairness.py --compare-beam --output target/fairness-smoke-release
 ```
 
-`--artifact`可复用匹配可信产物；默认完整AOT只执行Wings/模型，缺少OTP29的显式三端失败、不回退。尚无公平性30s/60s/五次重复、OS单核硬配额、独立请求让出到实际让出时间戳和过载分组；不把心跳延迟代替候选让出p99<5ms，也不将此短测称MVP或BEAM双目标通过。
+`--artifact`可复用匹配可信产物；默认完整AOT只执行Wings/模型，缺少OTP29的显式三端失败、不回退。独立30s/60s/五次重复见v8；OS单核硬配额、让出观测覆盖和过载分组仍待验收。不把心跳延迟代替候选让出p99<5ms，也不将此短测称MVP或BEAM双目标通过。
 
 [ADR-0071](adr/0071-observed-atomic-yield.md) 另提供 [`observed_yield`](../crates/wings-vm/examples/observed_yield.rs) 独立 fixture，用同一可信产物执行预请求与远端线程请求，并由 `verify_fairness.py` 在原限制内调用。只有真实 coroutine 返回后确认才产生观测；远端请求若在业务结束后才到达则单列未消费、延迟为 null。它不修改 v7 的 Scheduler/BEAM 业务或默认 worker token，也不将两个独立样本当作同 worker fairness 让出统计；该门禁仍待完成。
 
 [ADR-0072](adr/0072-scheduler-yield-observation.md) 增加 Wings 独立 `--trusted <artifact> 10|30 --observe`，由同一 verifier 调用。只启用每 worker 64 条计费 FIFO，不改上述 actor/业务、4096 steps 片或 1ms quantum。另存 `yield_observation.samples:[sequence,actor,requested_ns,yielded_ns]`，时间以 Scheduler 启动后的独立观测起点为零，不冒充心跳 t0；保留配置初始化期间发生的样本。直接驱动每轮最多取 32 条，宿主历史最多 4096 条，超出判失败；FIFO 满拒绝新样本并计 dropped，最终停机收齐后核对请求与队列守恒。输出含每 actor/总样本 nearest-rank 分位，零样本为 null、少于 10000 不报 p999；丢样显式标不完整。短测可能一个 timer 请求也没有，不靠提高 quantum、关闭步骤片或增加热任务工作量凑观测；BEAM 与默认模式不受此诊断影响，尚无长时公平性/性能结论。
 
 实际 timer 边界另由 [`scheduler_yield`](../crates/wings-vm/examples/scheduler_yield.rs) 用原 `mailbox-boundary.wings` 的 Hold 做 AOT 回归：双 worker、1ms quantum、无限步骤片、每 worker 一槽 FIFO，验证真实让出、身份、丢样与取消清理。它不是 v7 业务的采样参数，不参与 BEAM 性能排名。
+
+## v8：连续 CPU 与突发心跳长测
+
+[ADR-0077](adr/0077-streamed-fairness-measurement.md) 为 v7 增加独立 `--measure`，固定连续 30 秒预热/60 秒采样、900000 次心跳，五对交替顺序。101×256 B、mailbox 1、一个真实百万次 checked 加法热任务及其余 100 actor 每 10ms 同刻 burst、255 冷 pending 加一热 pending、计划后 100ms deadline 均不变；原短测及其限制保持。收齐最后计划后仍存活的热/冷实际结果，再检查全部状态和清理。单 worker/在线 scheduler 仍不是 OS 单核硬配额。
+
+每条事件为 40 B `>QQQqQ`：心跳 `[sequence,sent_ns,observed_ns,value,kind]` 的类型 0 接受、1 按时回复、2 超时实际回复、3 mailbox_full、4 pending_full；接受/拒绝时 observed/value 为零。序号决定 actor `2+(sequence-1)%100` 和计划 `floor((sequence-1)/100)*10ms`。热任务用独立序号的 5 接受/6 完成，每次完成值必须百万。Wings 可选的类型 7 为 `[sequence,requested_ns,yielded_ns,actor,7]`，时钟相对初始化前观测起点；最终 `observation_offset_ns` 是业务 t0 距该起点的偏移。不要用它直接充当心跳时钟，或把心跳延迟称为让出延迟。运行端最多 64 KiB buffer，不保留完整样本数组；最终控制输出含空 samples/hot 和完整状态/计数。
+
+独立 verifier 重放完整事件，拒绝重复/缺失、假 pending_full、提前结束 CPU、错误时基/值/FIFO、截断和未 drain。计划在 30 秒前归预热，其余归采样，迟到完成不重新归组；每个冷 actor 固定采样段 6000 次到达，p999 因少于 10000 条返回 null，仍报 p99/最大值和全部拒绝/超时。全局分位、生成迟到、热任务按起始阶段的耗时和实际落在采样窗内的完成率分别列出。让出样本分组按请求时刻减观测偏移；初始化样本仍落盘，丢样、合并/清除和无数据保留。离线分位仅在业务退出后用固定时段限定的数组计算，验证器内存不属于受管业务堆，后续轮次驱动 RSS 也会反映 allocator 保留，不能据此当作纯 VM 内存。
+
+```sh
+cargo build --release --workspace --locked --bins --examples
+target/release/wings-compile build examples/beam-fairness.wings -o target/long-fairness
+WINGS_PROFILE=release python3 scripts/verify_fairness_measurement.py --compare-beam
+WINGS_PROFILE=release python3 scripts/measure_fairness.py --artifact target/long-fairness --output target/long-fairness-v8
+```
+
+增加 `--observe` 会为五对中的 Wings 启用原 64 槽计费 FIFO；仪器模式单列，不能写成默认性能结果。两次观测的请求时间各自单调、返回时间各自单调，但后继请求可能先于上一轮确认到达，不能据区间重叠拒绝合法记录。`measurement_elapsed_ns` 保留业务循环退出时间，完整采样窗不得早于 90 秒，即便最后一批心跳计划在 89.99 秒。运行器冻结源/runner/产物/BEAM/验证器与 hash，沿用 CPU 240 秒/墙钟 130 秒/业务阶段 120 秒/禁 core、文件与 observed RSS 安全停止和分口径平台内存采样。全局 `tail_candidate_pass` 仅按既有候选规则展示，`fairness_gate_proven` 始终 false：CPU 硬配额、监测开销、过载/非过载分组、原生双平台及同负载吞吐/整机内存双目标仍须验收，不因某轮分位较好或全部正常退出判定 MVP。
 
 ## 代表性负载与性能验收冻结条件
 

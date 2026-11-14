@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0077](docs/adr/0077-streamed-fairness-measurement.md) 增加独立公平性长测：连续 CPU 与突发心跳的 30s/60s 五对采样，逐条流式事件、每 actor 延迟及可选让出时间戳。原短测边界不变；运行方式见 [v8 协议](docs/beam-workloads.md#v8连续-cpu-与突发心跳长测)，本机结果含队满和观测缺样，完整保留在[验证记录](docs/validation-2026-11-14.md)，不构成公平性或 MVP 门禁通过。
+
 [ADR-0076](docs/adr/0076-accounted-byte-messages.md) 为现有语言消息开放 Bytes 复制参数，单条合计至多 64 KiB，发送暂存/目标导入均计费并分块检查。源码 ABI v15，旧产物须重编译；类型拼写不变，不采纳待审语法稿。构建 `examples/byte-messages.wings` 后，可用 `cargo run -p wings-vm --example byte_messages -- --trusted <产物目录>` 验证，完整 AOT 也包含该回归。
 
 [ADR-0075](docs/adr/0075-platform-memory-observation.md) 为长测补 Linux PSS、macOS physical footprint 和主机压缩/swap 原始观测，分口径保存身份、缺失与采样器成本。`python3 scripts/verify_memory.py` 执行本机有界验证；不等于完整内存或 BEAM 性能门禁。

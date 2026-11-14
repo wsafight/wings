@@ -34,6 +34,7 @@ def validate_yields(result):
     require(type(samples) is list and len(samples) == counters["taken"] <= 4096, "yield history size")
     require(counters["confirmed"] == 0 or bool(samples), "yield first accepted sample missing")
     previous_sequence = 0
+    previous_request = 0
     previous_yield = 0
     delays = []
     by_actor = [[] for _ in range(101)]
@@ -42,8 +43,10 @@ def validate_yields(result):
         sequence, actor, requested, yielded = sample
         require(previous_sequence < integer(sequence, 1) <= counters["confirmed"], "yield sequence")
         require(1 <= integer(actor, 1) <= 101, "yield actor")
-        require(previous_yield <= integer(requested) <= integer(yielded) < 3_000_000_000, "yield monotonic clock")
+        require(previous_request <= integer(requested) <= integer(yielded) < 3_000_000_000
+                and previous_yield <= yielded, "yield monotonic clock")
         previous_sequence = sequence
+        previous_request = requested
         previous_yield = yielded
         delays.append(yielded - requested)
         by_actor[actor - 1].append(yielded - requested)
@@ -62,6 +65,9 @@ def yield_model_tests():
               "samples": [[1, 1, 0, 10], [3, 101, 10, 30]]}
     summary = validate_yields(result)
     require(summary["max_ns"] == 20 and not summary["complete"], "yield sample loss not disclosed")
+    overlap = copy.deepcopy(result)
+    overlap["samples"][1][2] = 9
+    require(validate_yields(overlap)["max_ns"] == 21, "later request may precede earlier confirmation")
     empty = {key: (False if type(value) is bool else [] if key == "samples" else 64 if key == "capacity" else 0)
              for key, value in result.items()}
     summary = validate_yields(empty)
@@ -73,12 +79,16 @@ def yield_model_tests():
         changed[key] = value
         forged.append(changed)
     for row, column, value in ((0, 0, 2), (1, 0, 1), (1, 0, 4), (0, 1, 0), (0, 1, 102),
-                               (1, 2, 9), (1, 3, 9), (1, 3, 3_000_000_000), (0, 2, False)):
+                               (1, 2, -1), (1, 3, 9), (1, 3, 3_000_000_000), (0, 2, False)):
         changed = copy.deepcopy(result)
         changed["samples"][row][column] = value
         forged.append(changed)
     changed = copy.deepcopy(result)
     changed.update({"samples": [], "taken": 0, "dropped": 3})
+    forged.append(changed)
+    changed = copy.deepcopy(result)
+    changed["samples"][0][2] = 5
+    changed["samples"][1][2] = 4
     forged.append(changed)
     for changed in forged:
         try:

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0077](adr/0077-streamed-fairness-measurement.md) 的独立 v8 公平性长测连续预热 30s/采样 60s、固定五对，不重复启动短测替代。运行端以有界 buffer 保留热/冷实际事件，离线核对全部 900000 个计划、实际 pending、CPU 完整结果与每 actor 状态；按计划区分阶段，迟到结果保留。每 actor 分位/最大等待、热任务完成率、生成迟到和可选让出延迟分列；诊断开销模式、丢样和无数据显式披露。原有短测/完整 AOT 时限不变，CPU 硬配额、过载分组、原生双平台和同负载吞吐/整机内存门禁仍未通过。
+
 [ADR-0076](adr/0076-accounted-byte-messages.md) 须验证 Bytes 消息的精确合计边界、空值/最高 mask、混合记录/列表参数、三级准入/净转移/失败回滚，不能以原 handle 注入冒充复制。真实 AOT 在原 3 秒阶段及 CPU 20 秒/墙钟 30 秒边界下检查自发送、异步请求、一/双 worker、发送方后续 GC/失败、目标导入失败/旧状态与保留队列/取消清理；长时测量和完整业务值门禁独立。
 
 [ADR-0075](adr/0075-platform-memory-observation.md) 在 v6 原采样点分列 Linux RSS/PSS/private/shared/SwapPss、macOS resident/physical footprint 和主机压缩/swap。冻结 C helper/source/编译命令，记录 PID/start_id、前后 census、时间窗与 helper 成本；拓扑变化/读取错误时完整性为 false、平台总数为 null，不删除缺失值或相加不同口径。仍缺每进程压缩/swap、整体共享/内核成本和观察器偏差验收，不据字段存在宣布整机内存门禁通过。

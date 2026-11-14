@@ -238,6 +238,36 @@ Linux 沿用 2 vCPU/4 GiB、Ubuntu 24.04 x86-64 QEMU TCG 隔离客体，交叉�
 
 更新最后的故障断言 fixture 后，核对 296 份源码及新 fixture binary SHA-256，在原 CPU 20 秒/墙钟 30 秒/禁 core 的 AOT 子进程及业务 CPU 5 秒/墙钟 10 秒/阶段 3 秒内，从头完整 release AOT 通过，见 `/tmp/wings-byte-messages-linux-final-{hashes,aot}.log`；测试后正常停止客体，见 `/tmp/wings-byte-messages-linux-final-stop.log`。客体仍无 OTP、原生 debug/clippy/MSRV/doc-tests，不替代原生 Linux 或双平台门禁。现有 Bytes 消息切片也不代表字符串、通用记录、引用回复、完整账本或 MVP 已完成。
 
+## 连续 CPU 与突发心跳长测：ADR-0077
+
+基于 `ab520c0`，按 [ADR-0077](adr/0077-streamed-fairness-measurement.md) 增加独立 v8。未修改 runtime、ABI v15、语言或待审语法；原 v7 的 10/30ms、百万次 checked 加法、101×256 B、mailbox 1、255+1 实际 pending 和全部短测/AOT 时限保持。长测连续预热 30s/采样 60s，共 900000 次计划心跳；最后 burst 在 89.99 秒，CPU 仍续发至 90 秒窗口结束，再收齐结果、核对全部状态并退出。`measurement_elapsed_ns` 独立证明完整窗口，没有将循环短测或 89.99 秒提前退出写成 90 秒。
+
+运行端固定 64 KiB buffer 写 40 B 事件，原始接受/拒绝/实际完成与热任务逐条保留；独立重放检查完整计划、每目标 FIFO/值、实际 pending、CPU 完整返回和最终提交/清理。全局及每 actor 分列延迟、超时、拒绝和最大等待，单 actor 采样段 6000 条到达，p999 为 null。新增有界模型覆盖 20 份伪造历史、缺失/截断、255 在途超时保留、CPU 提前结束、trace 独占创建、严格 CLI 及复用采样 collector；模型不冒充长测。
+
+早期模型用普通 `invoke` 检查已存在 trace，因其主动拒绝 stderr 而先报 harness 错误；改用已有有界命令路径断言真实 exit 3 和原文件不变，没有放宽被测行为。审计 token 的既有 `later_request_survives_confirmation_and_poisoned_lock_recovers` 回归时，发现短/长 verifier 错将两次请求到确认的区间重叠判为非法；修正为请求时间各自单调、确认时间各自单调、每对请求不晚于确认，保留逆序/越界拒绝，并新增合法重叠模型。没有改变 token、请求/消费/确认计数或丢样契约。
+
+### 本机与隔离功能验证
+
+macOS 环境同上，debug/release workspace/all-targets 各 503 项通过；check、all-targets clippy `-D warnings`、fmt、Rust 1.85.0 all-targets check 通过。原限完整 debug AOT 通过，初次 release 在既有 TCP overflow 场景读首条回复时遇到 `ConnectionResetError`，保留 `/tmp/wings-fairness-long-aot-release.log`。为该错误补服务端退出/完整报告诊断，未更改 100ms I/O、请求或业务边界；无并行重型任务后完整两种构建均通过，见 `/tmp/wings-fairness-long-{window,final}-aot-{debug,release}.log`。首次原因没有独立证实，不归因于未实施的优化，也不据成功重跑抹掉失败。显式 v7、v8 有界模型与真实 BEAM 两种构建通过；v6 collector 显式三端回归通过。
+
+Linux 仍为 Ubuntu 24.04 x86-64、2 vCPU/4 GiB、QEMU TCG 隔离客体。交叉构建并冻结 299 份源码、81 个 release harness 和 59 份工具/示例，SHA-256 一致；503 项及包含新模型的完整原限 AOT 通过，见 `/tmp/wings-fairness-long-linux-{tests,aot}.log`。随后正常停止客体再做本机长测，见 `/tmp/wings-fairness-long-linux-stop.log`；客体没有 OTP 或原生 Rust debug/clippy/MSRV/doc-tests，不替代原生 Linux 门禁。重叠验证及结果比例修正后，重新核对 300 份源码/证据和 59 份 binary hash，再完整原限 AOT 通过并停止客体，见 `/tmp/wings-fairness-long-linux-final-{hashes,aot,stop}.log`；Rust binary 与原 503 项测试时一致，没有用旧 binary 代替修改后的 Rust。
+
+### 默认模式五对 30s/60s
+
+在 macOS M3 Pro、OTP 29/ERTS 17.1.1 JIT、release 下交替顺序完成五对；当时已停止客体及构建/测试任务，但主机未隔离、没有 CPU 硬配额，电源/热状态/QoS/核分配仍缺失。原始目录 `target/fairness-long-v8`，日志 `/tmp/wings-fairness-long-paired.log`，数据及全部原始文件 SHA-256 见 [JSON 摘要](fairness-long-macos-2026-11-14.json)。两端各 3000000 次采样到达；十轮全部收齐真实结果、最终状态与资源清理通过。
+
+Wings 共 2999709 次按时回复、291 次 mailbox 满、无超时或 pending_full，尾延迟候选 4/5；BEAM 共 3000000 次按时回复、无拒绝/超时，候选 5/5。Wings 第三轮的 291 次拒绝不重试、不删样；拒绝发生时生成迟到范围 0.03175–5.619208ms，尚不能独立确定原因。每 actor 的结果仍在原始 JSON，拒绝组及最大等待在摘要保留，没有用全局 p99 较低掩盖拒绝。热任务采样窗内真实完整百万次加法的完成率：Wings 266.07–277.25 次/秒，BEAM 86.07–88.12 次/秒；它是本次负载和未受控环境下的观测，不是最大持续吞吐或双平台结论。
+
+所有平台内存样本读取完整；各轮 driver 加捕获后代的 observed physical footprint peak：Wings 19661736–57705528 B、BEAM 72041912–95258208 B。RSS、footprint 和主机 compressor/swap 分列，不能混加。驱动在后续轮次还可能含离线重放的 allocator 保留；未独立证明增长归因或观察器偏差，不将范围写成纯 VM 内存，更不能以该结果宣布整机内存门禁通过。
+
+### 独立让出诊断与证据复核
+
+默认五对均关闭观测。另冻结一份带重叠验证修正的源码/同一 runner 与产物，单独运行 Wings `--observe` 的 30s/60s；它不属于五对默认性能样本，也不宣称五次观测重复。实际 requests 3、consumed/confirmed/published/taken 各 2、cleared 1、coalesced/dropped/retained 各 0，均守恒；两条样本都在预热，采样窗口无数据，p50/p99/p999 为 null。原 4096 steps/1ms quantum 不调整来凑样本；FIFO 完整不等于让出延迟门禁通过。见 `/tmp/wings-fairness-long-observed.log` 和原始 `observed-wings.*`。
+
+十份默认 trace 用当时冻结 verifier、单份诊断用独立冻结的修正 verifier 全部重新重放，两个完整输入 hash 集及 58 份原始文件 hash 核对一致，见 `/tmp/wings-fairness-long-evidence-audit.log`。原冻结文件和旧结果不回写；重叠修正不影响关闭观测的默认数据。MVP、公平性、CPU 硬配额、过载分组、原生双平台及同负载吞吐/整机内存双门禁均未据此通过。
+
+最终源码本机 debug/release all-targets 各 503 项及完整原限 AOT 再通过，见 `/tmp/wings-fairness-long-close-{tests,aot}-{debug,release}.log`。当前 verifier 再重放一份默认 Wings、一份默认 BEAM 和独立观测，核对原结果及补充拒绝/超时比例、按时回复率；58 个原始文件与证据 JSON hash 一致，见 `/tmp/wings-fairness-long-current-replay.log`。check/clippy/fmt/MSRV、依赖隔离、禁止 unwind feature、Python AST、94 份 Markdown 路径/围栏和 diff 空白检查通过。语法评审草案继续未采纳、不 stage；未推送或发布。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

@@ -1,0 +1,3747 @@
+{
+  "schema": 1,
+  "date": "2026-11-14",
+  "protocol": 8,
+  "base_commit": "ab520c0487dcda673050a06600fbea8ffeb770ad",
+  "abi": 15,
+  "raw_directory": "target/fairness-long-v8",
+  "configuration": {
+    "actors": 101,
+    "state_bytes": 256,
+    "mailbox_capacity": 1,
+    "cold_actors": 100,
+    "cold_burst_period_ns": 10000000,
+    "cpu_checked_additions_per_task": 1000000,
+    "cold_pending": 255,
+    "hot_pending": 1,
+    "deadline_ns": 100000000,
+    "warmup_seconds": 30,
+    "sample_seconds": 60,
+    "paired_repetitions": 5,
+    "default_yield_observation": false
+  },
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cpu": "Apple M3 Pro",
+    "page_bytes": 16384,
+    "host_isolation": "unverified; exploratory integration measurement, not acceptance",
+    "unrecorded_environment": [
+      "thermal state",
+      "power mode",
+      "QoS",
+      "core assignment"
+    ],
+    "limits": {
+      "cpu_seconds": 240,
+      "wall_seconds": 130,
+      "stage_seconds": 120,
+      "file_bytes": 10737418240,
+      "observed_rss_stop_bytes": 1073741824
+    }
+  },
+  "aggregate": {
+    "wings": {
+      "runs": 5,
+      "sample_arrivals": 3000000,
+      "reply": 2999709,
+      "timed_out": 0,
+      "mailbox_full": 291,
+      "pending_full": 0,
+      "tail_candidate_passes": 4,
+      "cpu_completions_per_second_range": [
+        266.06666666666666,
+        277.25
+      ],
+      "observed_tree_plus_driver_footprint_peak_range_bytes": [
+        19661736,
+        57705528
+      ]
+    },
+    "beam": {
+      "runs": 5,
+      "sample_arrivals": 3000000,
+      "reply": 3000000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "tail_candidate_passes": 5,
+      "cpu_completions_per_second_range": [
+        86.06666666666666,
+        88.11666666666666
+      ],
+      "observed_tree_plus_driver_footprint_peak_range_bytes": [
+        72041912,
+        95258208
+      ]
+    }
+  },
+  "runs": [
+    {
+      "runtime": "wings",
+      "repetition": 1,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 483500,
+      "p99_ns": 897875,
+      "p999_ns": 1853125,
+      "max_ns": 8030542,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 112917,
+        "p99_ns": 334375,
+        "p999_ns": 626458,
+        "max_ns": 7447000
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 8197,
+        "sample_started_completions": 16453,
+        "completed_in_sample": 16453,
+        "completions_per_second": 274.21666666666664,
+        "samples": 16453,
+        "p50_ns": 3469875,
+        "p99_ns": 4559833,
+        "p999_ns": 4958750,
+        "max_ns": 11581542
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1849300,
+      "trace_bytes": 73972000,
+      "sha256": "666cb9469e0f66e5a3151928060ef56bff7af59fe7c4a892fa58584ff04d6e7d",
+      "platform_memory": {
+        "samples": 91,
+        "complete_samples": 91,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 27574272,
+          "physical_footprint_bytes": 19661736
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 29556736,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 63292,
+        "p99_max_ns": 1003667,
+        "max_wait_ns": 8030542,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 1,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 185795,
+      "p99_ns": 349045,
+      "p999_ns": 442379,
+      "max_ns": 3601087,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 39962,
+        "p99_ns": 266587,
+        "p999_ns": 345462,
+        "max_ns": 3568420
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 2618,
+        "sample_started_completions": 5287,
+        "completed_in_sample": 5287,
+        "completions_per_second": 88.11666666666666,
+        "samples": 5287,
+        "p50_ns": 11332083,
+        "p99_ns": 11997792,
+        "p999_ns": null,
+        "max_ns": 21538334
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1815810,
+      "trace_bytes": 72632400,
+      "sha256": "996bccd70c91cacfa4a55efe8cf6090ab5f62832e49c43757ca9f25cb412557c",
+      "platform_memory": {
+        "samples": 88,
+        "complete_samples": 88,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 117686272,
+          "physical_footprint_bytes": 72041912
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 119570432,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 266045,
+        "p99_max_ns": 394795,
+        "max_wait_ns": 3601087,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 2,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 188208,
+      "p99_ns": 358375,
+      "p999_ns": 497458,
+      "max_ns": 7268000,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 40625,
+        "p99_ns": 272708,
+        "p999_ns": 347791,
+        "max_ns": 7233166
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 2637,
+        "sample_started_completions": 5282,
+        "completed_in_sample": 5282,
+        "completions_per_second": 88.03333333333333,
+        "samples": 5282,
+        "p50_ns": 11316792,
+        "p99_ns": 13069250,
+        "p999_ns": null,
+        "max_ns": 22025084
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1815838,
+      "trace_bytes": 72633520,
+      "sha256": "ae669d23d8954b67520a9fac57785f484e617a05501439cb6f41199cafd68709",
+      "platform_memory": {
+        "samples": 88,
+        "complete_samples": 88,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 150339584,
+          "physical_footprint_bytes": 80807400
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 152223744,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 273166,
+        "p99_max_ns": 413500,
+        "max_wait_ns": 7268000,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 2,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 482583,
+      "p99_ns": 897500,
+      "p999_ns": 1040375,
+      "max_ns": 3441541,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 110625,
+        "p99_ns": 324458,
+        "p999_ns": 373291,
+        "max_ns": 3240666
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 8278,
+        "sample_started_completions": 16635,
+        "completed_in_sample": 16635,
+        "completions_per_second": 277.25,
+        "samples": 16635,
+        "p50_ns": 3393834,
+        "p99_ns": 4548875,
+        "p999_ns": 4705292,
+        "max_ns": 10960792
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1849826,
+      "trace_bytes": 73993040,
+      "sha256": "4a53b9ae5df2ce4c6657b9b950f04c5ade41c23f8e1425f4b0e8c409f565dc9c",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 122634240,
+          "physical_footprint_bytes": 48464880
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 124502016,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 61541,
+        "p99_max_ns": 1000791,
+        "max_wait_ns": 3441541,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 3,
+      "arrivals": 600000,
+      "reply": 599709,
+      "timed_out": 0,
+      "mailbox_full": 291,
+      "pending_full": 0,
+      "samples": 599709,
+      "p50_ns": 502208,
+      "p99_ns": 997000,
+      "p999_ns": 5195583,
+      "max_ns": 22645625,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 111958,
+        "p99_ns": 344583,
+        "p999_ns": 3854791,
+        "max_ns": 15157166
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 8251,
+        "sample_started_completions": 16341,
+        "completed_in_sample": 16341,
+        "completions_per_second": 272.35,
+        "samples": 16341,
+        "p50_ns": 3530375,
+        "p99_ns": 4663458,
+        "p999_ns": 10268667,
+        "max_ns": 27109458
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": false,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1848893,
+      "trace_bytes": 73955720,
+      "sha256": "852bb0c67fd0185d5527b5b79cd8e95bf950c56f7c47db8954407816ccbead26",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 127926272,
+          "physical_footprint_bytes": 50988016
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 129728512,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 131000,
+        "p99_max_ns": 1318791,
+        "max_wait_ns": 22645625,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": [
+          {
+            "actor": 2,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20692125
+          },
+          {
+            "actor": 3,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20692666
+          },
+          {
+            "actor": 4,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20693000
+          },
+          {
+            "actor": 5,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20693250
+          },
+          {
+            "actor": 6,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20693541
+          },
+          {
+            "actor": 7,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20693833
+          },
+          {
+            "actor": 8,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20694125
+          },
+          {
+            "actor": 9,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20694333
+          },
+          {
+            "actor": 10,
+            "timed_out": 0,
+            "mailbox_full": 2,
+            "pending_full": 0,
+            "max_ns": 20694500
+          },
+          {
+            "actor": 11,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20694666
+          },
+          {
+            "actor": 12,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20694833
+          },
+          {
+            "actor": 13,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695000
+          },
+          {
+            "actor": 14,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695166
+          },
+          {
+            "actor": 15,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695333
+          },
+          {
+            "actor": 16,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695458
+          },
+          {
+            "actor": 17,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695625
+          },
+          {
+            "actor": 18,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695791
+          },
+          {
+            "actor": 19,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20695958
+          },
+          {
+            "actor": 20,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20696916
+          },
+          {
+            "actor": 21,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697083
+          },
+          {
+            "actor": 22,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697250
+          },
+          {
+            "actor": 23,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697375
+          },
+          {
+            "actor": 24,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697541
+          },
+          {
+            "actor": 25,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697708
+          },
+          {
+            "actor": 26,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20697833
+          },
+          {
+            "actor": 27,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698000
+          },
+          {
+            "actor": 28,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698125
+          },
+          {
+            "actor": 29,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698250
+          },
+          {
+            "actor": 30,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698416
+          },
+          {
+            "actor": 31,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698541
+          },
+          {
+            "actor": 32,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698708
+          },
+          {
+            "actor": 33,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698833
+          },
+          {
+            "actor": 34,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20698958
+          },
+          {
+            "actor": 35,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699125
+          },
+          {
+            "actor": 36,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699250
+          },
+          {
+            "actor": 37,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699375
+          },
+          {
+            "actor": 38,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699500
+          },
+          {
+            "actor": 39,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699625
+          },
+          {
+            "actor": 40,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699750
+          },
+          {
+            "actor": 41,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20699875
+          },
+          {
+            "actor": 42,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700000
+          },
+          {
+            "actor": 43,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700125
+          },
+          {
+            "actor": 44,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700250
+          },
+          {
+            "actor": 45,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700375
+          },
+          {
+            "actor": 46,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700500
+          },
+          {
+            "actor": 47,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700625
+          },
+          {
+            "actor": 48,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700750
+          },
+          {
+            "actor": 49,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700875
+          },
+          {
+            "actor": 50,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20700958
+          },
+          {
+            "actor": 51,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20701083
+          },
+          {
+            "actor": 52,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20702208
+          },
+          {
+            "actor": 53,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20702291
+          },
+          {
+            "actor": 54,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20702416
+          },
+          {
+            "actor": 55,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20702541
+          },
+          {
+            "actor": 56,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20702625
+          },
+          {
+            "actor": 57,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20682250
+          },
+          {
+            "actor": 58,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20683125
+          },
+          {
+            "actor": 59,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20683458
+          },
+          {
+            "actor": 60,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20683666
+          },
+          {
+            "actor": 61,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20683791
+          },
+          {
+            "actor": 62,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20683916
+          },
+          {
+            "actor": 63,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684083
+          },
+          {
+            "actor": 64,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684208
+          },
+          {
+            "actor": 65,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684333
+          },
+          {
+            "actor": 66,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684500
+          },
+          {
+            "actor": 67,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684625
+          },
+          {
+            "actor": 68,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684750
+          },
+          {
+            "actor": 69,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20684875
+          },
+          {
+            "actor": 70,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685041
+          },
+          {
+            "actor": 71,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685166
+          },
+          {
+            "actor": 72,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685291
+          },
+          {
+            "actor": 73,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685416
+          },
+          {
+            "actor": 74,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685541
+          },
+          {
+            "actor": 75,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685666
+          },
+          {
+            "actor": 76,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685791
+          },
+          {
+            "actor": 77,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20685916
+          },
+          {
+            "actor": 78,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686041
+          },
+          {
+            "actor": 79,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686125
+          },
+          {
+            "actor": 80,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686250
+          },
+          {
+            "actor": 81,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686375
+          },
+          {
+            "actor": 82,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686500
+          },
+          {
+            "actor": 83,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686583
+          },
+          {
+            "actor": 84,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686708
+          },
+          {
+            "actor": 85,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686791
+          },
+          {
+            "actor": 86,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20686916
+          },
+          {
+            "actor": 87,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20687041
+          },
+          {
+            "actor": 88,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20687125
+          },
+          {
+            "actor": 89,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 20691416
+          },
+          {
+            "actor": 90,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22398250
+          },
+          {
+            "actor": 91,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22645333
+          },
+          {
+            "actor": 92,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22645500
+          },
+          {
+            "actor": 93,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22645625
+          },
+          {
+            "actor": 94,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22634916
+          },
+          {
+            "actor": 95,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22635333
+          },
+          {
+            "actor": 96,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22635583
+          },
+          {
+            "actor": 97,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22635791
+          },
+          {
+            "actor": 98,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22636000
+          },
+          {
+            "actor": 99,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22636083
+          },
+          {
+            "actor": 100,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22636208
+          },
+          {
+            "actor": 101,
+            "timed_out": 0,
+            "mailbox_full": 3,
+            "pending_full": 0,
+            "max_ns": 22636333
+          }
+        ]
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 3,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 196417,
+      "p99_ns": 423834,
+      "p999_ns": 1665459,
+      "max_ns": 3280792,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 43625,
+        "p99_ns": 298667,
+        "p999_ns": 911750,
+        "max_ns": 3082750
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 2569,
+        "sample_started_completions": 5182,
+        "completed_in_sample": 5182,
+        "completions_per_second": 86.36666666666666,
+        "samples": 5182,
+        "p50_ns": 11444041,
+        "p99_ns": 13981292,
+        "p999_ns": null,
+        "max_ns": 43373625
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1815502,
+      "trace_bytes": 72620080,
+      "sha256": "3384b706b6c9874c6c67fb4870351960cbd5dae8976946dd63fa0223285a27de",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 189382656,
+          "physical_footprint_bytes": 89736728
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 191823872,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 344792,
+        "p99_max_ns": 496792,
+        "max_wait_ns": 3280792,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 4,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 193524,
+      "p99_ns": 393893,
+      "p999_ns": 1323982,
+      "max_ns": 6250268,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 42518,
+        "p99_ns": 287399,
+        "p999_ns": 818310,
+        "max_ns": 5787393
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 2562,
+        "sample_started_completions": 5212,
+        "completed_in_sample": 5212,
+        "completions_per_second": 86.86666666666666,
+        "samples": 5212,
+        "p50_ns": 11432417,
+        "p99_ns": 13133834,
+        "p999_ns": null,
+        "max_ns": 25374916
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1815548,
+      "trace_bytes": 72621920,
+      "sha256": "2df25c3031bb60a315561b397d69afb4586e240f8607ecefe96e18a06dc18db5",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 190922752,
+          "physical_footprint_bytes": 90981888
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 193363968,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 305060,
+        "p99_max_ns": 451024,
+        "max_wait_ns": 6250268,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 4,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 488791,
+      "p99_ns": 929166,
+      "p999_ns": 2316125,
+      "max_ns": 7458208,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 111166,
+        "p99_ns": 333208,
+        "p999_ns": 804875,
+        "max_ns": 6846208
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 7997,
+        "sample_started_completions": 16331,
+        "completed_in_sample": 16331,
+        "completions_per_second": 272.18333333333334,
+        "samples": 16331,
+        "p50_ns": 3500167,
+        "p99_ns": 4581791,
+        "p999_ns": 8700333,
+        "max_ns": 17112791
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1848656,
+      "trace_bytes": 73946240,
+      "sha256": "ffda208faba4fd4d1c5f465441938ca09b057ffc291eaec5b8e364f5a587a7db",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 154861568,
+          "physical_footprint_bytes": 56230968
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 156712960,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 94625,
+        "p99_max_ns": 1058875,
+        "max_wait_ns": 7458208,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 5,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 506958,
+      "p99_ns": 1014958,
+      "p999_ns": 2877500,
+      "max_ns": 9047000,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 114125,
+        "p99_ns": 354416,
+        "p999_ns": 1856333,
+        "max_ns": 8474583
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 8076,
+        "sample_started_completions": 15964,
+        "completed_in_sample": 15964,
+        "completions_per_second": 266.06666666666666,
+        "samples": 15964,
+        "p50_ns": 3606250,
+        "p99_ns": 4722917,
+        "p999_ns": 10638709,
+        "max_ns": 16558875
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1848080,
+      "trace_bytes": 73923200,
+      "sha256": "85f505587ed3a161480c7e52da288689c3873ed8293f0205e7f72373bf025fcc",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 156352512,
+          "physical_footprint_bytes": 57705528
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 158302208,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 141416,
+        "p99_max_ns": 1268166,
+        "max_wait_ns": 9047000,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 5,
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 195321,
+      "p99_ns": 388917,
+      "p999_ns": 793071,
+      "max_ns": 3380126,
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 42917,
+        "p99_ns": 285487,
+        "p999_ns": 423362,
+        "max_ns": 3260001
+      },
+      "warmup": {
+        "reply": 300000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 2569,
+        "sample_started_completions": 5164,
+        "completed_in_sample": 5164,
+        "completions_per_second": 86.06666666666666,
+        "samples": 5164,
+        "p50_ns": 11528125,
+        "p99_ns": 13539542,
+        "p999_ns": null,
+        "max_ns": 25303959
+      },
+      "yield_observation": null,
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1815466,
+      "trace_bytes": 72618640,
+      "sha256": "c4399d821ab555b3149e2ea44307889d02fd13d7522ef2715765267206093409",
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 202817536,
+          "physical_footprint_bytes": 95258208
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "rss_tree_plus_driver_peak_bytes": 205307904,
+      "per_actor_summary": {
+        "actors": 100,
+        "arrivals_each": 6000,
+        "p99_min_ns": 301917,
+        "p99_max_ns": 446696,
+        "max_wait_ns": 3380126,
+        "p999_ns": null,
+        "p999_reason": "6000 arrivals per cold actor, fewer than 10000 replies",
+        "actors_with_refusal_or_timeout": []
+      }
+    }
+  ],
+  "third_wings_refusals": {
+    "count": 291,
+    "first_sequence": 315201,
+    "last_sequence": 483900,
+    "first_sent_ns": 31520031750,
+    "last_sent_ns": 48384534916,
+    "generator_lateness_range_ns": [
+      31750,
+      5619208
+    ],
+    "cause": "unproven; retained original refusals, no business retry or input/limit change"
+  },
+  "single_instrumented_diagnostic": {
+    "paired": false,
+    "repetitions": 1,
+    "result": {
+      "arrivals": 600000,
+      "reply": 600000,
+      "timed_out": 0,
+      "mailbox_full": 0,
+      "pending_full": 0,
+      "samples": 600000,
+      "p50_ns": 509292,
+      "p99_ns": 972958,
+      "p999_ns": 1156125,
+      "max_ns": 9352667,
+      "per_actor": [
+        {
+          "actor": 2,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 37708,
+          "p99_ns": 66708,
+          "p999_ns": null,
+          "max_ns": 1818292
+        },
+        {
+          "actor": 3,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 62083,
+          "p99_ns": 97708,
+          "p999_ns": null,
+          "max_ns": 1846000
+        },
+        {
+          "actor": 4,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 67292,
+          "p99_ns": 103958,
+          "p999_ns": null,
+          "max_ns": 1917375
+        },
+        {
+          "actor": 5,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 94375,
+          "p99_ns": 134083,
+          "p999_ns": null,
+          "max_ns": 2028042
+        },
+        {
+          "actor": 6,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 99583,
+          "p99_ns": 142167,
+          "p999_ns": null,
+          "max_ns": 2028375
+        },
+        {
+          "actor": 7,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 104583,
+          "p99_ns": 150250,
+          "p999_ns": null,
+          "max_ns": 2048458
+        },
+        {
+          "actor": 8,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 132125,
+          "p99_ns": 181125,
+          "p999_ns": null,
+          "max_ns": 3798708
+        },
+        {
+          "actor": 9,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 137958,
+          "p99_ns": 191292,
+          "p999_ns": null,
+          "max_ns": 3799333
+        },
+        {
+          "actor": 10,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 143958,
+          "p99_ns": 201083,
+          "p999_ns": null,
+          "max_ns": 3799542
+        },
+        {
+          "actor": 11,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 150000,
+          "p99_ns": 208750,
+          "p999_ns": null,
+          "max_ns": 3813500
+        },
+        {
+          "actor": 12,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 178417,
+          "p99_ns": 240208,
+          "p999_ns": null,
+          "max_ns": 8791333
+        },
+        {
+          "actor": 13,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 184375,
+          "p99_ns": 252042,
+          "p999_ns": null,
+          "max_ns": 8791458
+        },
+        {
+          "actor": 14,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 190500,
+          "p99_ns": 259208,
+          "p999_ns": null,
+          "max_ns": 8791542
+        },
+        {
+          "actor": 15,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 197708,
+          "p99_ns": 268792,
+          "p999_ns": null,
+          "max_ns": 8791625
+        },
+        {
+          "actor": 16,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 203458,
+          "p99_ns": 275000,
+          "p999_ns": null,
+          "max_ns": 8791667
+        },
+        {
+          "actor": 17,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 234167,
+          "p99_ns": 304292,
+          "p999_ns": null,
+          "max_ns": 8793917
+        },
+        {
+          "actor": 18,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 240625,
+          "p99_ns": 316750,
+          "p999_ns": null,
+          "max_ns": 8794000
+        },
+        {
+          "actor": 19,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 247167,
+          "p99_ns": 326542,
+          "p999_ns": null,
+          "max_ns": 8794083
+        },
+        {
+          "actor": 20,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 254375,
+          "p99_ns": 334375,
+          "p999_ns": null,
+          "max_ns": 8794167
+        },
+        {
+          "actor": 21,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 260333,
+          "p99_ns": 346125,
+          "p999_ns": null,
+          "max_ns": 8794208
+        },
+        {
+          "actor": 22,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 265667,
+          "p99_ns": 352792,
+          "p999_ns": null,
+          "max_ns": 8794292
+        },
+        {
+          "actor": 23,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 290000,
+          "p99_ns": 378958,
+          "p999_ns": null,
+          "max_ns": 8794375
+        },
+        {
+          "actor": 24,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 295458,
+          "p99_ns": 393042,
+          "p999_ns": null,
+          "max_ns": 8794458
+        },
+        {
+          "actor": 25,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 301708,
+          "p99_ns": 403583,
+          "p999_ns": null,
+          "max_ns": 8794500
+        },
+        {
+          "actor": 26,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 308250,
+          "p99_ns": 411250,
+          "p999_ns": null,
+          "max_ns": 8794583
+        },
+        {
+          "actor": 27,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 314083,
+          "p99_ns": 422458,
+          "p999_ns": null,
+          "max_ns": 8794667
+        },
+        {
+          "actor": 28,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 320000,
+          "p99_ns": 430458,
+          "p999_ns": null,
+          "max_ns": 8794708
+        },
+        {
+          "actor": 29,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 326292,
+          "p99_ns": 440000,
+          "p999_ns": null,
+          "max_ns": 8794792
+        },
+        {
+          "actor": 30,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 344250,
+          "p99_ns": 458750,
+          "p999_ns": null,
+          "max_ns": 8794833
+        },
+        {
+          "actor": 31,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 350000,
+          "p99_ns": 470875,
+          "p999_ns": null,
+          "max_ns": 8794875
+        },
+        {
+          "actor": 32,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 358333,
+          "p99_ns": 478042,
+          "p999_ns": null,
+          "max_ns": 8794958
+        },
+        {
+          "actor": 33,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 364667,
+          "p99_ns": 489417,
+          "p999_ns": null,
+          "max_ns": 8795000
+        },
+        {
+          "actor": 34,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 370833,
+          "p99_ns": 495875,
+          "p999_ns": null,
+          "max_ns": 8795083
+        },
+        {
+          "actor": 35,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 377833,
+          "p99_ns": 505333,
+          "p999_ns": null,
+          "max_ns": 8795125
+        },
+        {
+          "actor": 36,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 384417,
+          "p99_ns": 510708,
+          "p999_ns": null,
+          "max_ns": 8795167
+        },
+        {
+          "actor": 37,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 390458,
+          "p99_ns": 522375,
+          "p999_ns": null,
+          "max_ns": 8795250
+        },
+        {
+          "actor": 38,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 407417,
+          "p99_ns": 542125,
+          "p999_ns": null,
+          "max_ns": 8795292
+        },
+        {
+          "actor": 39,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 413583,
+          "p99_ns": 552542,
+          "p999_ns": null,
+          "max_ns": 8795333
+        },
+        {
+          "actor": 40,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 421875,
+          "p99_ns": 563333,
+          "p999_ns": null,
+          "max_ns": 8795417
+        },
+        {
+          "actor": 41,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 428083,
+          "p99_ns": 574167,
+          "p999_ns": null,
+          "max_ns": 8795458
+        },
+        {
+          "actor": 42,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 435250,
+          "p99_ns": 583458,
+          "p999_ns": null,
+          "max_ns": 8795542
+        },
+        {
+          "actor": 43,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 442000,
+          "p99_ns": 592792,
+          "p999_ns": null,
+          "max_ns": 8795625
+        },
+        {
+          "actor": 44,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 448458,
+          "p99_ns": 604125,
+          "p999_ns": null,
+          "max_ns": 8795667
+        },
+        {
+          "actor": 45,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 454500,
+          "p99_ns": 611458,
+          "p999_ns": null,
+          "max_ns": 8795708
+        },
+        {
+          "actor": 46,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 461042,
+          "p99_ns": 621875,
+          "p999_ns": null,
+          "max_ns": 8795750
+        },
+        {
+          "actor": 47,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 478000,
+          "p99_ns": 642583,
+          "p999_ns": null,
+          "max_ns": 8795792
+        },
+        {
+          "actor": 48,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 483875,
+          "p99_ns": 653208,
+          "p999_ns": null,
+          "max_ns": 8796000
+        },
+        {
+          "actor": 49,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 491875,
+          "p99_ns": 662333,
+          "p999_ns": null,
+          "max_ns": 8830000
+        },
+        {
+          "actor": 50,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 498625,
+          "p99_ns": 673542,
+          "p999_ns": null,
+          "max_ns": 8848917
+        },
+        {
+          "actor": 51,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 505000,
+          "p99_ns": 683542,
+          "p999_ns": null,
+          "max_ns": 8857667
+        },
+        {
+          "actor": 52,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 512042,
+          "p99_ns": 693000,
+          "p999_ns": null,
+          "max_ns": 8882167
+        },
+        {
+          "actor": 53,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 518167,
+          "p99_ns": 701458,
+          "p999_ns": null,
+          "max_ns": 8943375
+        },
+        {
+          "actor": 54,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 525042,
+          "p99_ns": 711417,
+          "p999_ns": null,
+          "max_ns": 8946083
+        },
+        {
+          "actor": 55,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 531500,
+          "p99_ns": 721167,
+          "p999_ns": null,
+          "max_ns": 8963667
+        },
+        {
+          "actor": 56,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 537792,
+          "p99_ns": 729458,
+          "p999_ns": null,
+          "max_ns": 8967625
+        },
+        {
+          "actor": 57,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 555208,
+          "p99_ns": 748708,
+          "p999_ns": null,
+          "max_ns": 9008958
+        },
+        {
+          "actor": 58,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 561208,
+          "p99_ns": 760042,
+          "p999_ns": null,
+          "max_ns": 9015333
+        },
+        {
+          "actor": 59,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 569750,
+          "p99_ns": 768875,
+          "p999_ns": null,
+          "max_ns": 9042292
+        },
+        {
+          "actor": 60,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 575958,
+          "p99_ns": 774667,
+          "p999_ns": null,
+          "max_ns": 9044833
+        },
+        {
+          "actor": 61,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 582458,
+          "p99_ns": 784292,
+          "p999_ns": null,
+          "max_ns": 9056750
+        },
+        {
+          "actor": 62,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 589042,
+          "p99_ns": 794375,
+          "p999_ns": null,
+          "max_ns": 9065917
+        },
+        {
+          "actor": 63,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 595458,
+          "p99_ns": 803042,
+          "p999_ns": null,
+          "max_ns": 9066083
+        },
+        {
+          "actor": 64,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 602125,
+          "p99_ns": 816458,
+          "p999_ns": null,
+          "max_ns": 9102625
+        },
+        {
+          "actor": 65,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 608750,
+          "p99_ns": 828333,
+          "p999_ns": null,
+          "max_ns": 9116125
+        },
+        {
+          "actor": 66,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 615292,
+          "p99_ns": 835625,
+          "p999_ns": null,
+          "max_ns": 9133625
+        },
+        {
+          "actor": 67,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 621667,
+          "p99_ns": 844000,
+          "p999_ns": null,
+          "max_ns": 9136750
+        },
+        {
+          "actor": 68,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 638417,
+          "p99_ns": 865250,
+          "p999_ns": null,
+          "max_ns": 9139875
+        },
+        {
+          "actor": 69,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 644917,
+          "p99_ns": 874000,
+          "p999_ns": null,
+          "max_ns": 9143042
+        },
+        {
+          "actor": 70,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 653125,
+          "p99_ns": 882083,
+          "p999_ns": null,
+          "max_ns": 9156583
+        },
+        {
+          "actor": 71,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 658750,
+          "p99_ns": 891542,
+          "p999_ns": null,
+          "max_ns": 9162958
+        },
+        {
+          "actor": 72,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 665250,
+          "p99_ns": 899958,
+          "p999_ns": null,
+          "max_ns": 9163125
+        },
+        {
+          "actor": 73,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 671000,
+          "p99_ns": 907000,
+          "p999_ns": null,
+          "max_ns": 9169167
+        },
+        {
+          "actor": 74,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 676917,
+          "p99_ns": 911958,
+          "p999_ns": null,
+          "max_ns": 9175333
+        },
+        {
+          "actor": 75,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 683250,
+          "p99_ns": 927958,
+          "p999_ns": null,
+          "max_ns": 9175500
+        },
+        {
+          "actor": 76,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 689958,
+          "p99_ns": 934958,
+          "p999_ns": null,
+          "max_ns": 9181292
+        },
+        {
+          "actor": 77,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 695083,
+          "p99_ns": 949458,
+          "p999_ns": null,
+          "max_ns": 9192667
+        },
+        {
+          "actor": 78,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 701458,
+          "p99_ns": 955583,
+          "p999_ns": null,
+          "max_ns": 9206875
+        },
+        {
+          "actor": 79,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 707167,
+          "p99_ns": 960500,
+          "p999_ns": null,
+          "max_ns": 9212667
+        },
+        {
+          "actor": 80,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 723083,
+          "p99_ns": 975583,
+          "p999_ns": null,
+          "max_ns": 9213708
+        },
+        {
+          "actor": 81,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 727375,
+          "p99_ns": 984208,
+          "p999_ns": null,
+          "max_ns": 9216792
+        },
+        {
+          "actor": 82,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 733458,
+          "p99_ns": 990167,
+          "p999_ns": null,
+          "max_ns": 9237958
+        },
+        {
+          "actor": 83,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 738417,
+          "p99_ns": 995917,
+          "p999_ns": null,
+          "max_ns": 9253833
+        },
+        {
+          "actor": 84,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 743083,
+          "p99_ns": 1000958,
+          "p999_ns": null,
+          "max_ns": 9259583
+        },
+        {
+          "actor": 85,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 748375,
+          "p99_ns": 1006792,
+          "p999_ns": null,
+          "max_ns": 9272792
+        },
+        {
+          "actor": 86,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 753583,
+          "p99_ns": 1012792,
+          "p999_ns": null,
+          "max_ns": 9279167
+        },
+        {
+          "actor": 87,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 757875,
+          "p99_ns": 1019875,
+          "p999_ns": null,
+          "max_ns": 9279333
+        },
+        {
+          "actor": 88,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 762542,
+          "p99_ns": 1026583,
+          "p999_ns": null,
+          "max_ns": 9286167
+        },
+        {
+          "actor": 89,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 765833,
+          "p99_ns": 1029917,
+          "p999_ns": null,
+          "max_ns": 9288833
+        },
+        {
+          "actor": 90,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 772875,
+          "p99_ns": 1036750,
+          "p999_ns": null,
+          "max_ns": 9295208
+        },
+        {
+          "actor": 91,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 778250,
+          "p99_ns": 1042500,
+          "p999_ns": null,
+          "max_ns": 9301583
+        },
+        {
+          "actor": 92,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 783833,
+          "p99_ns": 1046458,
+          "p999_ns": null,
+          "max_ns": 9306750
+        },
+        {
+          "actor": 93,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 795250,
+          "p99_ns": 1062625,
+          "p999_ns": null,
+          "max_ns": 9308292
+        },
+        {
+          "actor": 94,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 799958,
+          "p99_ns": 1064375,
+          "p999_ns": null,
+          "max_ns": 9319958
+        },
+        {
+          "actor": 95,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 806042,
+          "p99_ns": 1070333,
+          "p999_ns": null,
+          "max_ns": 9324000
+        },
+        {
+          "actor": 96,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 811042,
+          "p99_ns": 1077917,
+          "p999_ns": null,
+          "max_ns": 9329042
+        },
+        {
+          "actor": 97,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 815708,
+          "p99_ns": 1080625,
+          "p999_ns": null,
+          "max_ns": 9334875
+        },
+        {
+          "actor": 98,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 820625,
+          "p99_ns": 1085750,
+          "p999_ns": null,
+          "max_ns": 9339917
+        },
+        {
+          "actor": 99,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 825083,
+          "p99_ns": 1091958,
+          "p999_ns": null,
+          "max_ns": 9343875
+        },
+        {
+          "actor": 100,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 832292,
+          "p99_ns": 1098667,
+          "p999_ns": null,
+          "max_ns": 9346042
+        },
+        {
+          "actor": 101,
+          "reply": 6000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0,
+          "arrivals": 6000,
+          "samples": 6000,
+          "p50_ns": 837000,
+          "p99_ns": 1103250,
+          "p999_ns": null,
+          "max_ns": 9352667
+        }
+      ],
+      "generator_lateness": {
+        "samples": 600000,
+        "p50_ns": 111917,
+        "p99_ns": 324333,
+        "p999_ns": 382125,
+        "max_ns": 8885333
+      },
+      "warmup": {
+        "reply": 299900,
+        "timed_out": 0,
+        "mailbox_full": 100,
+        "pending_full": 0
+      },
+      "cpu": {
+        "warmup_started_completions": 7717,
+        "sample_started_completions": 15572,
+        "completed_in_sample": 15572,
+        "completions_per_second": 259.53333333333336,
+        "samples": 15572,
+        "p50_ns": 3690792,
+        "p99_ns": 4699125,
+        "p999_ns": 5727041,
+        "max_ns": 15158708
+      },
+      "yield_observation": {
+        "requests": 3,
+        "coalesced": 0,
+        "consumed": 2,
+        "cleared": 1,
+        "confirmed": 2,
+        "retained": 0,
+        "taken": 2,
+        "dropped": 0,
+        "published": 2,
+        "samples": 0,
+        "p50_ns": null,
+        "p99_ns": null,
+        "p999_ns": null,
+        "max_ns": null,
+        "complete": true,
+        "has_data": false,
+        "per_actor": [
+          {
+            "actor": 1,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 2,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 3,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 4,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 5,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 6,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 7,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 8,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 9,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 10,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 11,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 12,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 13,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 14,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 15,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 16,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 17,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 18,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 19,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 20,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 21,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 22,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 23,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 24,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 25,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 26,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 27,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 28,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 29,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 30,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 31,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 32,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 33,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 34,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 35,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 36,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 37,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 38,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 39,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 40,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 41,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 42,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 43,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 44,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 45,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 46,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 47,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 48,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 49,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 50,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 51,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 52,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 53,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 54,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 55,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 56,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 57,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 58,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 59,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 60,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 61,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 62,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 63,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 64,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 65,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 66,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 67,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 68,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 69,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 70,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 71,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 72,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 73,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 74,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 75,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 76,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 77,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 78,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 79,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 80,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 81,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 82,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 83,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 84,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 85,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 86,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 87,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 88,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 89,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 90,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 91,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 92,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 93,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 94,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 95,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 96,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 97,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 98,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 99,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 100,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          },
+          {
+            "actor": 101,
+            "samples": 0,
+            "p50_ns": null,
+            "p99_ns": null,
+            "p999_ns": null,
+            "max_ns": null
+          }
+        ]
+      },
+      "tail_candidate_pass": true,
+      "fairness_gate_proven": false,
+      "drained": true,
+      "events": 1846480,
+      "trace_bytes": 73859200,
+      "sha256": "39d73f1530056aba555a8e3a80ea9a3bf08aa7678efb68a4ab4fdb78aafb8407"
+    },
+    "observation_control": {
+      "capacity": 64,
+      "cleared": 1,
+      "coalesced": 0,
+      "confirmed": 2,
+      "consumed": 2,
+      "dropped": 0,
+      "overflowed": false,
+      "pending": false,
+      "published": 2,
+      "requests": 3,
+      "retained": 0,
+      "samples": [],
+      "taken": 2
+    },
+    "default_performance_result": false
+  },
+  "evidence_audit": {
+    "all_eleven_traces_independently_replayed_with_frozen_verifiers": true,
+    "both_frozen_input_sets_hash_verified": true,
+    "primary_source": "frozen/source/scripts/measure_fairness.py",
+    "diagnostic_source": "diagnostic-frozen/source/scripts/measure_fairness.py",
+    "diagnostic_clock_correction": "later request may precede prior confirmation; requests and confirmations each remain monotonic",
+    "log": "/tmp/wings-fairness-long-evidence-audit.log"
+  },
+  "raw_sha256": {
+    "1-beam.events.bin": "996bccd70c91cacfa4a55efe8cf6090ab5f62832e49c43757ca9f25cb412557c",
+    "1-beam.json": "464818bbccd23e59775ca9742396970dd1e0502c5e1e2e3c905893093697fdf6",
+    "1-beam.memory.jsonl": "b378f64a5078527b9134d5447e99e1891648869317b6e94ba10032e24ae8c9fa",
+    "1-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1-beam.stdout.jsonl": "f9d5734065483da516bd6d5bb96943ec6da24284b8e57a33e2d13ce3bb805a7f",
+    "1-wings.events.bin": "666cb9469e0f66e5a3151928060ef56bff7af59fe7c4a892fa58584ff04d6e7d",
+    "1-wings.json": "9cc8d4c51f884cb2ed37dde91f2fdbd929cb008e9908ff9bc4bcfcf2b505b3ed",
+    "1-wings.memory.jsonl": "0a5004abc91f8762758db8b17688f0076d28e96b06a2d7e81547380a98791cbb",
+    "1-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1-wings.stdout.jsonl": "4a24d75152f77408cf2bd7c0df03e502aed3b4e725e449de1970543ffeb5b9f3",
+    "2-beam.events.bin": "ae669d23d8954b67520a9fac57785f484e617a05501439cb6f41199cafd68709",
+    "2-beam.json": "ceca1867071f9594246915313f9615fa94b8e4b9c92ecc84148130b8225f4e5a",
+    "2-beam.memory.jsonl": "9c6dffac8ba9ceaeb5310e1b29ce626903dfe4bc264a77122698f0289a473dcf",
+    "2-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2-beam.stdout.jsonl": "2e7ffa452035f8cc109911bb610eed36dacc23607ae7f44e38e995ddb5915dcd",
+    "2-wings.events.bin": "4a53b9ae5df2ce4c6657b9b950f04c5ade41c23f8e1425f4b0e8c409f565dc9c",
+    "2-wings.json": "9793a6b11f05d44e24b6cac5bfd3fb9a3ce94dea5ab6cd77c82f291ff9f5a35c",
+    "2-wings.memory.jsonl": "74bb3ca63d48a93eafde71f452f51fea13b8b0fe2ca7c7c9ef20dcaaa8a135fe",
+    "2-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "2-wings.stdout.jsonl": "1a7daa095e89f4d123a478bc15ffa9f79305bbb2275d59a67baf1c87e10fd42b",
+    "3-beam.events.bin": "3384b706b6c9874c6c67fb4870351960cbd5dae8976946dd63fa0223285a27de",
+    "3-beam.json": "9bec7721652abb8b02d992a44a7e0f01bd6a1ab1e37fcbd067145ea8fdd39235",
+    "3-beam.memory.jsonl": "db77b9ba833aacc8430ca5134a25869d1539a9679d8fbc773672e4f3d0c01598",
+    "3-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "3-beam.stdout.jsonl": "272f6ac5afc1a91b3df0d06a9d056211868989d56a2a686eb3f972b9626adec3",
+    "3-wings.events.bin": "852bb0c67fd0185d5527b5b79cd8e95bf950c56f7c47db8954407816ccbead26",
+    "3-wings.json": "a73f786789f942deaee73549eb2005631108d6b017af4222fc05eaa57c4f57c8",
+    "3-wings.memory.jsonl": "f89cc396d973b56807667478f6df137ed1e04ecb0bcf11f2e671394cd488dba8",
+    "3-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "3-wings.stdout.jsonl": "a30eb9f11cced2dc809d4c00d4dea0634be393944338e337c890054197411d0c",
+    "4-beam.events.bin": "2df25c3031bb60a315561b397d69afb4586e240f8607ecefe96e18a06dc18db5",
+    "4-beam.json": "15828afb5260d1d004a3b977adc7f637396eea2d7bb143ea4d3dae8e1e6b0390",
+    "4-beam.memory.jsonl": "871ed376ed710e6d8a1ca132e4b6c585dae794bb41cb5b0156fd635a298b2d8f",
+    "4-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "4-beam.stdout.jsonl": "acf6010c05c4c624556c28aa5622a5118ca1deb7a4e370aa0e58535781d8ffad",
+    "4-wings.events.bin": "ffda208faba4fd4d1c5f465441938ca09b057ffc291eaec5b8e364f5a587a7db",
+    "4-wings.json": "fb20a6f137339a2bda7b0b3d85377f7ed3fa7b68d0733f4e339c4adb83ee0e82",
+    "4-wings.memory.jsonl": "649a8abc2f3b5aea2bc5f4bd23f5634ca9612c9887ad7599ce0f8a339beefee5",
+    "4-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "4-wings.stdout.jsonl": "a00d9ac154cbbca42c00f5f5943b22c42c8d528454059f22dedd3c77762018ce",
+    "5-beam.events.bin": "c4399d821ab555b3149e2ea44307889d02fd13d7522ef2715765267206093409",
+    "5-beam.json": "3980e924b0d2b31fbcbd46759cdb1970605625f9d8737d3ac17cce804fc2fb5c",
+    "5-beam.memory.jsonl": "3fc26250fcc45b3f9a54e5ea04697e59777adc9c6f9cbbb6c1628168a82c5a46",
+    "5-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "5-beam.stdout.jsonl": "6dae6abeeaea27bfb2ac227d9882a7a1be181e5179d9b65c623bb935a56ba7c3",
+    "5-wings.events.bin": "85f505587ed3a161480c7e52da288689c3873ed8293f0205e7f72373bf025fcc",
+    "5-wings.json": "815f2247ed25c5bd468160daa6f2e1b4ea1f46168e5e3d4561ee82264390e211",
+    "5-wings.memory.jsonl": "d12d1ea2b3c597e42f1c13ff61120bcf4174f440f092ed373d70102b5d1da724",
+    "5-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "5-wings.stdout.jsonl": "15908a80ad59b554bda2a82624e77886fa8780da66c8a1c1bcfb05220b155077",
+    "diagnostic-environment.json": "bd1508ea416ae155267b34789d36beed7e62392fdcf879cff1feb351c01c9a3f",
+    "environment.json": "5a64470ee2a106a8be4a1821ace270e6e9da316b87d82fae7f4c592eeb9417ad",
+    "observed-wings.events.bin": "39d73f1530056aba555a8e3a80ea9a3bf08aa7678efb68a4ab4fdb78aafb8407",
+    "observed-wings.json": "317812e943c7bfe916446e006e2628b6ba4b64a84b255f483461fe64fe7d6184",
+    "observed-wings.memory.jsonl": "2a070b3e8d90e639d7c73e6d2a2b1cbd05c7186d1b84591375ce9ac6d32cd654",
+    "observed-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "observed-wings.stdout.jsonl": "617165e14978479c9b2fda395fde6c40a132542bd2f5f46558964a50d414cd54",
+    "report.json": "1a52713b736a05211da9efa948759dc0c17a75967977b53a50c79865c86fe8c6"
+  },
+  "limitations": [
+    "No OS CPU hard quota or host isolation acceptance",
+    "Per-actor and grouped data remain in raw result JSON; summary does not replace replayable traces",
+    "Footprint includes Python driver and captured descendants; later runs may include allocator retention from offline verification",
+    "Host compressor/swap and process footprint are distinct; observer/helper costs remain separately recorded",
+    "Diagnostic had two total yield records, both before sampling; sample-window p99 is null",
+    "No fairness saturation/overload grouping, native Linux or dual-platform acceptance",
+    "No maximum sustainable throughput or same-workload throughput/memory acceptance"
+  ],
+  "fairness_gate_proven": false,
+  "memory_gate_proven": false,
+  "mvp_complete": false
+}

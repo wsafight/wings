@@ -1,3 +1,5 @@
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -22,8 +24,25 @@ struct Sample {
 
 struct Pending {
     index: usize,
+    sent: u64,
     expected: i64,
     request: IngressRequest,
+}
+
+fn event(
+    trace: &mut BufWriter<File>,
+    sequence: u64,
+    first: u64,
+    second: u64,
+    value: i64,
+    kind: u64,
+) -> Result<(), String> {
+    for field in [sequence, first, second, value as u64, kind] {
+        trace
+            .write_all(&field.to_be_bytes())
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn decode(text: &str) -> Result<usize, String> {
@@ -65,6 +84,7 @@ fn collect(
     samples: &mut [Sample],
     start: Instant,
     cursor: &mut usize,
+    trace: &mut Option<BufWriter<File>>,
 ) -> Result<(), String> {
     for _ in 0..pending.len().min(32) {
         if *cursor >= pending.len() {
@@ -82,14 +102,23 @@ fn collect(
         if value != entry.expected {
             return Err("fairness per-target FIFO/value".into());
         }
-        let sample = &mut samples[entry.index];
-        sample.observed = Some(observed);
-        sample.value = Some(value);
-        sample.status = if observed < planned(entry.index) + DEADLINE_NS {
-            "reply"
+        let timely = observed < planned(entry.index) + DEADLINE_NS;
+        let status = if timely { "reply" } else { "timed_out" };
+        if let Some(trace) = trace {
+            event(
+                trace,
+                entry.index as u64 + 1,
+                entry.sent,
+                observed,
+                value,
+                if timely { 1 } else { 2 },
+            )?;
         } else {
-            "timed_out"
-        };
+            let sample = &mut samples[entry.index];
+            sample.observed = Some(observed);
+            sample.value = Some(value);
+            sample.status = status;
+        }
     }
     Ok(())
 }
@@ -99,13 +128,14 @@ fn collect_yields(
     pids: &[SchedulerPid],
     start: Instant,
     samples: &mut Vec<Value>,
+    trace: &mut Option<BufWriter<File>>,
 ) -> Result<usize, String> {
     let mut count = 0;
     for _ in 0..32 {
         let Some(sample) = handle.take_yield_sample(0)? else {
             break;
         };
-        if samples.len() == 4096 {
+        if trace.is_none() && samples.len() == 4096 {
             return Err("fairness yield history limit".into());
         }
         let identity = pids
@@ -113,28 +143,52 @@ fn collect_yields(
             .position(|pid| *pid == sample.pid)
             .ok_or("fairness yield pid")?
             + 1;
-        samples.push(json!([
-            sample.sequence,
-            identity,
-            sample
-                .observation
-                .requested_at
-                .checked_duration_since(start)
-                .ok_or("fairness yield origin")?
-                .as_nanos() as u64,
-            sample
-                .observation
-                .yielded_at
-                .checked_duration_since(start)
-                .ok_or("fairness yield clock")?
-                .as_nanos() as u64
-        ]));
+        let requested = sample
+            .observation
+            .requested_at
+            .checked_duration_since(start)
+            .ok_or("fairness yield origin")?
+            .as_nanos() as u64;
+        let yielded = sample
+            .observation
+            .yielded_at
+            .checked_duration_since(start)
+            .ok_or("fairness yield clock")?
+            .as_nanos() as u64;
+        if let Some(trace) = trace {
+            event(
+                trace,
+                sample.sequence,
+                requested,
+                yielded,
+                identity as i64,
+                7,
+            )?;
+        } else {
+            samples.push(json!([sample.sequence, identity, requested, yielded]));
+        }
         count += 1;
     }
     Ok(count)
 }
 
-fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, String> {
+fn execute(
+    directory: &Path,
+    count: usize,
+    observe: bool,
+    destination: Option<&Path>,
+) -> Result<Value, String> {
+    let mut trace = destination
+        .map(|destination| {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination)
+                .map(|file| BufWriter::with_capacity(65536, file))
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let measure = trace.is_some();
     let vm = ResourceAccount::vm(limits());
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let tenant = vm.tenant_accounted(limits())?;
@@ -151,11 +205,11 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
     )?;
     let handle = scheduler.handle();
     let observation_start = Instant::now();
-    let mut yield_samples = Vec::with_capacity(if observe { 4096 } else { 0 });
+    let mut yield_samples = Vec::with_capacity(if observe && !measure { 4096 } else { 0 });
     let configure = module.handler("Configure")?;
     let cpu = module.handler("Cpu")?;
     let pulse = module.handler("Pulse")?;
-    let deadline = observation_start + Duration::from_secs(3);
+    let deadline = observation_start + Duration::from_secs(if measure { 120 } else { 3 });
     let mut pids = Vec::with_capacity(ACTORS);
     for identity in 1..=ACTORS {
         remaining(deadline)?;
@@ -181,21 +235,53 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
         }
         pids.push(pid);
     }
-    let mut samples = Vec::with_capacity(count);
+    let mut samples = Vec::with_capacity(if measure { 0 } else { count });
     let mut pending = Vec::with_capacity(MAX_PENDING);
     let mut committed = [0i64; ACTORS];
-    let mut hot_samples = Vec::with_capacity(32);
+    let mut hot_samples = Vec::with_capacity(if measure { 0 } else { 32 });
+    let mut hot_count = 0;
     let mut hot_request = None;
     let mut hot_sent = 0;
     let mut cursor = 0;
     let mut next = 0;
     let start = Instant::now();
-    while next < count || !pending.is_empty() || hot_request.is_some() {
+    let observation_offset = start.duration_since(observation_start).as_nanos() as u64;
+    let mut sampling = false;
+    if measure {
+        println!(
+            "{}",
+            json!({"event": "start", "warmup_seconds": 30, "sample_seconds": 60})
+        );
+        std::io::stdout()
+            .flush()
+            .map_err(|error| error.to_string())?;
+    }
+    while next < count
+        || !pending.is_empty()
+        || hot_request.is_some()
+        || measure && elapsed(start) < 90_000_000_000
+    {
         remaining(deadline)?;
         if observe {
-            collect_yields(&handle, &pids, observation_start, &mut yield_samples)?;
+            collect_yields(
+                &handle,
+                &pids,
+                observation_start,
+                &mut yield_samples,
+                &mut trace,
+            )?;
         }
-        collect(&mut pending, &mut samples, start, &mut cursor)?;
+        if measure && !sampling && elapsed(start) >= 30_000_000_000 {
+            println!(
+                "{}",
+                json!({"event": "sampling", "elapsed_ns": elapsed(start)})
+            );
+            std::io::stdout()
+                .flush()
+                .map_err(|error| error.to_string())?;
+            sampling = true;
+        }
+        collect(&mut pending, &mut samples, start, &mut cursor, &mut trace)?;
         if let Some(request) = hot_request.as_mut() {
             let request: &mut IngressRequest = request;
             if let Some(outcome) = request.try_take()? {
@@ -203,28 +289,31 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
                 if outcome != RequestOutcome::Reply(1_000_000) {
                     return Err(format!("fairness incomplete CPU {outcome:?}"));
                 }
-                hot_samples.push(json!([
-                    hot_samples.len() + 1,
-                    hot_sent,
-                    observed,
-                    1_000_000
-                ]));
+                hot_count += 1;
+                if let Some(trace) = &mut trace {
+                    event(trace, hot_count, hot_sent, observed, 1_000_000, 6)?;
+                } else {
+                    hot_samples.push(json!([hot_count, hot_sent, observed, 1_000_000]));
+                }
                 committed[0] += 1;
                 hot_request = None;
             }
         }
-        if hot_request.is_none() && next < count {
-            if hot_samples.len() == 10000 {
+        if hot_request.is_none() && (next < count || measure && elapsed(start) < 90_000_000_000) {
+            if hot_count == if measure { 1_000_000 } else { 10000 } {
                 return Err("fairness CPU sample limit".into());
             }
             hot_sent = elapsed(start);
             hot_request = Some(handle.request(
                 pids[0],
                 &cpu,
-                &[hot_samples.len() as i64 + 1, 2, 0, 0],
+                &[hot_count as i64 + 1, 2, 0, 0],
                 CPU_STEPS,
                 remaining(deadline)?,
             )?);
+            if let Some(trace) = &mut trace {
+                event(trace, hot_count + 1, hot_sent, 0, 0, 5)?;
+            }
         }
         if next == count || elapsed(start) < planned(next) {
             std::thread::yield_now();
@@ -246,6 +335,7 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
                     committed[actor] += 1;
                     pending.push(Pending {
                         index: next,
+                        sent,
                         expected: committed[actor],
                         request,
                     });
@@ -255,14 +345,25 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
                 Err(error) => return Err(error),
             }
         };
-        samples.push(Sample {
-            sent,
-            observed: None,
-            value: None,
-            status,
-        });
+        if let Some(trace) = &mut trace {
+            let kind = match status {
+                "pending" => 0,
+                "mailbox_full" => 3,
+                "pending_full" => 4,
+                _ => unreachable!(),
+            };
+            event(trace, next as u64 + 1, sent, 0, 0, kind)?;
+        } else {
+            samples.push(Sample {
+                sent,
+                observed: None,
+                value: None,
+                status,
+            });
+        }
         next += 1;
     }
+    let measurement_elapsed = elapsed(start);
     for (index, pid) in pids.iter().enumerate() {
         loop {
             remaining(deadline)?;
@@ -304,7 +405,14 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
     drop(scheduler);
     remaining(deadline)?;
     let yield_observation = if observe {
-        while collect_yields(&handle, &pids, observation_start, &mut yield_samples)? != 0 {}
+        while collect_yields(
+            &handle,
+            &pids,
+            observation_start,
+            &mut yield_samples,
+            &mut trace,
+        )? != 0
+        {}
         let statistics = handle
             .yield_statistics(0)?
             .ok_or("missing scheduler yield statistics")?;
@@ -317,34 +425,62 @@ fn execute(directory: &Path, count: usize, observe: bool) -> Result<Value, Strin
     } else {
         Value::Null
     };
+    if let Some(trace) = &mut trace {
+        trace.flush().map_err(|error| error.to_string())?;
+    }
     drop((handle, configure, cpu, pulse, module, tenant));
     if vm.used() != Resources::default() {
         return Err("fairness retained resources".into());
     }
     Ok(
-        json!({"version": 7, "status": "ok", "mode": "smoke", "actors": ACTORS,
+        json!({"version": if measure { 8 } else { 7 }, "status": "ok", "mode": if measure { "measure" } else { "smoke" }, "actors": ACTORS,
         "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": MAX_PENDING,
         "deadline_ns": DEADLINE_NS, "message_bytes": 32, "samples": samples, "hot": hot_samples,
         "committed": committed.to_vec(), "states_verified": true, "resources_released": true,
         "yield_observation": yield_observation,
+        "observation_offset_ns": observation_offset,
+        "measurement_elapsed_ns": measurement_elapsed,
         "environment": {"runtime": "wings", "workers": 1, "slice_steps": 4096, "quantum_ns": 1_000_000}}),
     )
 }
 
 fn main() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    let observe = arguments.len() == 4 && arguments[3] == "--observe";
-    let count = if (arguments.len() == 3 || observe) && arguments[0] == "--trusted" {
+    let measure = arguments
+        .get(2)
+        .is_some_and(|argument| argument == "--measure");
+    let observe = arguments
+        .last()
+        .is_some_and(|argument| argument == "--observe");
+    let count = if measure
+        && arguments
+            .first()
+            .is_some_and(|argument| argument == "--trusted")
+        && (arguments.len() == 4 && !observe || arguments.len() == 5 && observe)
+    {
+        Ok(900000)
+    } else if !measure
+        && (arguments.len() == 3 || arguments.len() == 4 && observe)
+        && arguments[0] == "--trusted"
+    {
         decode(&arguments[2])
     } else {
         Err("arguments".into())
     };
     let (code, result) = match count {
-        Ok(count) => match execute(Path::new(&arguments[1]), count, observe) {
+        Ok(count) => match execute(
+            Path::new(&arguments[1]),
+            count,
+            observe,
+            measure.then(|| Path::new(&arguments[3])),
+        ) {
             Ok(result) => (0, result),
             Err(error) => {
                 eprintln!("{error}");
-                (3, json!({"version": 7, "status": "oracle_error"}))
+                (
+                    3,
+                    json!({"version": if measure { 8 } else { 7 }, "status": "oracle_error"}),
+                )
             }
         },
         Err(_) => (2, json!({"version": 7, "status": "invalid"})),

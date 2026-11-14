@@ -88,7 +88,15 @@ def verify_tcp_service(directory):
                 connection.settimeout(2)
                 return connection
 
-            exercise(connect)
+            try:
+                exercise(connect)
+            except (AssertionError, OSError) as error:
+                try:
+                    output, errors = child.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    output, errors = child.communicate(timeout=5)
+                raise AssertionError(f"TCP scenario {expected}: exit={child.returncode}, report={output!r}, stderr={errors!r}") from error
             output, errors = child.communicate(timeout=5)
             assert child.returncode == 0 and not errors, (child.returncode, output, errors)
             report = json.loads(output)
@@ -1066,6 +1074,7 @@ def main():
         fairness = parent / "beam-fairness"
         command([COMPILER, "build", ROOT / "examples/beam-fairness.wings", "-o", fairness])
         command([sys.executable, ROOT / "scripts/verify_fairness.py", "--artifact", fairness])
+        command([sys.executable, ROOT / "scripts/verify_fairness_measurement.py"])
         senders_counter = parent / "beam-senders-counter"
         command([COMPILER, "build", ROOT / "examples/beam-senders-counter.wings", "-o", senders_counter])
         command([sys.executable, ROOT / "scripts/verify_senders_counter.py", "--artifact", senders_counter])

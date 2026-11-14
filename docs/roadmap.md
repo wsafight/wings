@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0077](adr/0077-streamed-fairness-measurement.md) 为第 5/7 项接独立长时 CPU/突发心跳采样，保留原业务、255+1 pending 和短测边界。本机 30s/60s 五对及单独观测已完成；Wings 4/5、BEAM 5/5 通过尾延迟候选，但有 291 次队满、观测采样无数据，CPU 硬配额/过载分组/原生双平台仍不完整；MVP 未完成。
+
 [ADR-0076](adr/0076-accounted-byte-messages.md) 推进第 3/4 项的 Bytes 消息：单条合计 64 KiB、源/目标分别准入、发布时净转移、分块复制、入口根及取消/超时/失败清理。ABI v15 不改类型拼写。字符串/通用记录、引用回复、全部资源账本、长时公平性和原生双平台 BEAM 双门禁仍待完成，MVP 未完成。
 
 [ADR-0075](adr/0075-platform-memory-observation.md) 补第 7 项的 Linux PSS/macOS physical footprint 与主机压缩/swap 原始采样，保留身份/错误/缺失与监测成本。平台口径不混算，仍非完整整机内存、CPU 硬配额、原生双平台或 BEAM 双门禁验收，MVP 未完成。
@@ -156,7 +158,7 @@ OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接�
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList 消息根按 ADR-0049/0051 接入，但引用回复和通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
-BEAM 对照已固化 [v1–v7 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070 增加同 worker CPU/突发心跳短时业务。正确性和部分测量仍不等同完整基线；并发失败、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
+BEAM 对照已固化 [v1–v8 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测。正确性和部分测量仍不等同完整基线；并发失败、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
 
 [ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
 

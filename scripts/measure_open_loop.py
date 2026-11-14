@@ -189,7 +189,7 @@ def memory_snapshot(root, probe=None):
             "platform_memory": {"complete": False, "status": "not_configured"}}
 
 
-def measurement(command, trace, destination, name, rate, memory_probe=None):
+def measurement(command, trace, destination, name, rate, memory_probe=None, *, validator=validate_trace):
     environment = os.environ.copy()
     for variable in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
         environment.pop(variable, None)
@@ -263,7 +263,7 @@ def measurement(command, trace, destination, name, rate, memory_probe=None):
         require(not buffer and len(events) == 3, "incomplete control output")
         require(events[0] == {"event": "start", "warmup_seconds": 30, "sample_seconds": 60}, "start control")
         require(events[1].get("event") == "sampling" and integer(events[1]["elapsed_ns"]) >= WARMUP_NS, "sampling control")
-        summary = validate_trace(trace, name, rate, events[-1])
+        summary = validator(trace, name, rate, events[-1])
         manifest.update({"status": "ok", "summary": summary, "result": events[-1],
                          "rss_tree_plus_driver_peak_bytes": peak, "wall_seconds": time.monotonic() - started})
     except BaseException as error:

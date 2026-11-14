@@ -84,6 +84,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0074](0074-bounded-concurrent-recovery.md) | 并发超时/取消保留队列、stop 竞争、旧状态与全新监督重启 | 已采纳（既有恢复契约回归） |
 | [0075](0075-platform-memory-observation.md) | 长测原生分口径内存、PID 身份、缺失/null 与观测成本 | 已采纳（平台内存采样入口） |
 | [0076](0076-accounted-byte-messages.md) | Bytes 消息暂存计费、目标净转移、分块导入与入口根 | 已采纳（有界业务消息切片） |
+| [0077](0077-streamed-fairness-measurement.md) | 连续 CPU/突发心跳长测、流式重放、每 actor 与让出时基 | 已采纳（长测入口；公平性门禁未通过） |
 
 ## 维护方式
 
