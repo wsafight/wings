@@ -61,7 +61,7 @@ impl Drop for Stdio {
     }
 }
 
-fn duplicate(descriptor: libc::c_int) -> io::Result<File> {
+pub(super) fn duplicate(descriptor: libc::c_int) -> io::Result<File> {
     loop {
         let copied = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 3) };
         if copied >= 0 {

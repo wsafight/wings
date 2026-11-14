@@ -6,40 +6,52 @@ use wings_vm::{ResourceAccount, Resources, ScalarModule, StackPool};
 mod cli;
 mod cli_args;
 mod cli_io;
+mod cli_report;
 
 fn main() -> ExitCode {
-    match start() {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("wings-vm: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn start() -> Result<ExitCode, String> {
     let limits = Resources {
         bytes: 16 << 20,
         processes: 1,
         messages: 0,
         requests: 0,
     };
-    let vm = ResourceAccount::vm_accounted(limits)?;
+    let vm = match ResourceAccount::vm_accounted(limits) {
+        Ok(vm) => vm,
+        Err(_) => {
+            cli_report::startup_failed();
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut reporter = match cli_report::Reporter::new(&vm) {
+        Ok(reporter) => reporter,
+        Err(_) => {
+            cli_report::startup_failed();
+            return ExitCode::FAILURE;
+        }
+    };
+    match start(&vm, &mut reporter) {
+        Ok(code) => code,
+        Err(error) => {
+            reporter.report(format_args!("wings-vm: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn start(vm: &ResourceAccount, reporter: &mut cli_report::Reporter) -> Result<ExitCode, String> {
+    let limits = vm.limit();
     let tenant = vm.tenant_accounted(limits)?;
     let account = tenant.process_accounted(limits)?;
     let startup = match cli_args::Startup::new(&account) {
         Ok(startup) => startup,
         Err(error) => {
-            eprintln!("{error}");
+            reporter.report(format_args!("{error}"));
             return Ok(ExitCode::from(2));
         }
     };
     match startup.command() {
         cli_args::Command::Help => {
-            println!(
-                "{}\n\nRuns only trusted host-native AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM. Each handler defaults to 1000000 execution steps. Both execution modes use fixed 16 MiB VM/tenant/process logical byte limits. Startup accepts at most seven arguments and 16 KiB including terminators, excluding the executable name.",
-                cli_args::USAGE
-            );
+            reporter.help().map_err(|error| error.to_string())?;
         }
         cli_args::Command::Run {
             directory,
@@ -47,7 +59,7 @@ fn start() -> Result<ExitCode, String> {
             heap_records,
         } => {
             run(
-                &vm,
+                vm,
                 &tenant,
                 &account,
                 Path::new(directory),

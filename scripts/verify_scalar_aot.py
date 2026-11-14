@@ -51,6 +51,42 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_cli_reporting(directory, parent):
+    for arguments, expected, close_output, close_errors in (
+        (["--help"], 1, True, False), (["--help"], 1, True, True),
+        (["--unknown"], 2, False, True),
+        (["run", "--trusted", parent / "absent-artifact"], 1, False, True),
+    ):
+        descriptors = []
+        def closed_pipe():
+            reader, writer = os.pipe()
+            os.close(reader)
+            descriptors.append(writer)
+            return writer
+        try:
+            result = subprocess.run([str(VM), *map(str, arguments)], input=b"",
+                                    stdout=closed_pipe() if close_output else subprocess.PIPE,
+                                    stderr=closed_pipe() if close_errors else subprocess.PIPE,
+                                    timeout=30, cwd=ROOT, preexec_fn=limit_child)
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+        assert result.returncode == expected and not result.stdout, (arguments, result)
+        if not close_errors:
+            assert result.stderr.startswith(b"wings-vm: ") and b"broken pipe" in result.stderr.lower(), result
+            assert b"panicked" not in result.stderr and len(result.stderr) <= 4096
+    artifact = parent / "oversized-diagnostic"
+    artifact.mkdir()
+    (artifact / ("program.dylib" if os.uname().sysname == "Darwin" else "program.so")).write_bytes(b"")
+    (artifact / "manifest.json").write_bytes(json.dumps("\x7f" * 60000, ensure_ascii=False).encode())
+    for options in ([], ["--heap-records", "2"]):
+        result = command([VM, "run", "--trusted", artifact, *options], expected=1)
+        assert not result.stdout and result.stderr.startswith("wings-vm: "), result
+        assert result.stderr.endswith("... [truncated]\n") and len(result.stderr.encode()) <= 4096, len(result.stderr.encode())
+        assert "panicked" not in result.stderr
+    print("Bounded CLI reporting verified: broken help/diagnostic pipes, preserved exits and 4096-byte diagnostics; source error allocation remains separate")
+
+
 def verify_cli_arguments(directory, parent):
     def run(arguments, expected, text=b""):
         result = subprocess.run([os.fsencode(VM), *[os.fsencode(value) for value in arguments]],
@@ -1009,6 +1045,7 @@ def main():
         verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
+        verify_cli_reporting(counter, parent)
         verify_cli_arguments(counter, parent)
         verify_cli_input(counter, parent)
         verify_cli_stdio(counter)

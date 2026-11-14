@@ -477,6 +477,16 @@ macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.
 
 Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-argv-linux.tar.gz` 含 317 份源码、82 个 harness 和 60 个工具/示例，显式包含新启动参数模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 541 项测试通过，完整受限 AOT 通过。glibc init-array 的参数捕获经真实 CLI 执行验证；非 UTF-8 目录别名在默认/堆模式均返回真实 AOT 回复 7，参数超限、非 UTF-8 选项、JSON/I/O 与全部业务回归继续通过。执行后全部 459 项 source/harness/binary hash 一致，317 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-cli-argv-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-argv-host-sources.log`。客体已停止，交叉 linker 警告保留；不把功能验证当作原生 Linux CI、完整资源账本或同负载 BEAM 吞吐/整机内存证据。
 
+## CLI 帮助与诊断的计费输出：ADR-0090
+
+基于 `c988af1`，按 [ADR-0090](adr/0090-bounded-cli-reporting.md) 收敛控制输出。旧真实 CLI 帮助 stdout 断管时由 println panic、退出 101；64 KiB 内的 60,002 B 非法清单字符串产生 360,083 B stderr，见 `/tmp/wings-cli-report-before.log`。两项探针均在 CPU 20s/墙钟 30s/core 0 子进程运行，非法库为空文件且错误发生在清单解析、没有装载执行。
+
+新控制输出在原 VM 16 MiB 限额内预留 8 KiB，包含固定 4 KiB 诊断缓冲和独立 stderr 描述符；帮助按需复制 stdout，直接写静态文本。正常错误前缀和 2/1 退出码保留，断管不 panic；诊断最多 4096 B，按 UTF-8 边界截断并标注。此处仅约束自有输出缓冲和对外字节，来源错误 String 的构造/生命周期仍须收敛；根/诊断初始化失败只走固定静态应急文本，不用工具根回退。
+
+macOS AArch64 的 workspace check、all-target clippy `-D warnings`、Rust 1.85.0 all-target check、fmt 和 debug/release doc-tests 通过；两种构建各 82 个 harness、546 项测试与完整受限 AOT 通过。五项控制输出单测覆盖固定上界、VM 零/少一字节/精确准入且拒绝前不打开描述符、错误层级/打开失败回滚、UTF-8/边界截断及缓冲复用、原描述符所有者保留/副本清理和写失败不 panic。真实帮助 stdout 断管退出 1，参数/运行错误在 stderr 断管下保留 2/1，帮助两端同时断管也正常失败；默认/堆两模式的非法产物诊断不超过 4096 B 且带截断标记，原参数/JSON/业务 I/O 继续通过。显式 Wings/BEAM/Python v1 的 45 组业务、v2 的 18 组业务及原 JSON/桥接拒绝在两种构建全部通过，未新增长时性能结果。日志为 `/tmp/wings-cli-report-{check,clippy,msrv,fmt,tests-debug,tests-release,doctests-debug,doctests-release,aot-debug,aot-release}.log` 与 `/tmp/wings-cli-report-verify_{counter_equivalence,multi_counter}-{debug,release}.log`。依赖隔离、协程禁 unwind、Python AST、107 份 Markdown 的 1049 条相对路径/围栏及 diff 检查通过。
+
+Linux x86-64 沿用 Ubuntu 24.04、2 vCPU/4 GiB、无宿主挂载的 QEMU TCG 隔离客体。release 冻结包 `/tmp/wings-cli-report-linux.tar.gz` 含 319 份源码、82 个 harness 和 60 个工具/示例，显式包含新控制输出模块与 ADR，排除语法评审稿。原 CPU 20s/墙钟 30s/core 0 的独立子进程共 546 项测试通过，完整受限 AOT 通过，包括帮助/诊断断管、默认/堆两模式非法产物的 4096 B 边界与原参数/JSON/I/O/业务回归。执行后全部 461 项 source/harness/binary hash 一致，319 份冻结源码与宿主工作区一致，随后仅补本验证记录。日志为 `/tmp/wings-cli-report-linux-{tests,aot,hashes,stop}.log` 与 `/tmp/wings-cli-report-host-sources.log`。客体已停止，交叉 linker 警告保留；不替代来源错误分配、完整宿主账本、原生 Linux CI 或同负载 BEAM 吞吐/整机内存验收。
+
 ## 未完成门禁
 
 - 最新源码的原生 Linux 构建/clippy/MSRV/doc-tests 和原生双平台 CI，不能用 QEMU TCG 或 macOS 交叉编译替代。

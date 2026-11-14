@@ -97,6 +97,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0087](0087-accounted-beam-workload-roots.md) | 六个 BEAM 对照驱动的计费根、清理回执与新采集严格校验 | 已采纳（业务对照资源集成切片） |
 | [0088](0088-owned-cli-stdio.md) | CLI 业务 stdin/stdout 的独立预留、固定缓冲、描述符与清理 | 已采纳（CLI I/O 资源切片） |
 | [0089](0089-bounded-cli-startup-arguments.md) | CLI 原生参数借用、数量/字节边界及目录副本的三级准入 | 已采纳（CLI 启动资源切片） |
+| [0090](0090-bounded-cli-reporting.md) | CLI 帮助/诊断的 VM 级预留、有界输出和断管处理 | 已采纳（CLI 控制输出切片） |
 
 ## 维护方式
 
