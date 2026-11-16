@@ -76,6 +76,7 @@ impl ReplyTable {
                     | ValueType::Unit
                     | ValueType::Ref
                     | ValueType::ListRef
+                    | ValueType::BytesRef
             )
         {
             return Err(
@@ -280,6 +281,14 @@ impl ReplyPublisher {
     pub(crate) fn complete_list(self, value: crate::IntListReply) {
         self.table
             .finish(self.slot, self.generation, RequestOutcome::ReplyList(value));
+    }
+
+    pub(crate) fn complete_bytes(self, value: crate::BytesReply) {
+        self.table.finish(
+            self.slot,
+            self.generation,
+            RequestOutcome::ReplyBytes(value),
+        );
     }
     pub(crate) fn complete(self, value: i64) {
         self.table
@@ -552,7 +561,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         let baseline = vm.used();
         assert!(table.start(deadline, &foreign, ValueType::Int).is_err());
-        assert!(table.start(deadline, &first, ValueType::BytesRef).is_err());
+        assert!(table.start(deadline, &first, ValueType::Pid).is_err());
         assert_eq!(vm.used(), baseline);
         let (mut one, publisher_one) = table.start(deadline, &first, ValueType::Bool).unwrap();
         let (mut two, publisher_two) = table.start(deadline, &second, ValueType::Int).unwrap();

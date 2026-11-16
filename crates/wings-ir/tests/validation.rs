@@ -67,6 +67,8 @@ fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
     program.validate().unwrap();
     program.handlers[0].reply = Some(ValueType::BytesRef);
     assert!(program.validate().is_err());
+    program.handlers[0].function.reply = 3;
+    program.validate().unwrap();
 }
 
 fn valid_program() -> Program {
@@ -433,6 +435,7 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
         ValueType::Unit,
         ValueType::Ref,
         ValueType::ListRef,
+        ValueType::BytesRef,
     ] {
         let mut typed = program.clone();
         let register = typed.handlers[0].function.instructions.len();
@@ -442,6 +445,8 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
                 Operation::EmptyInts
             } else if reply == ValueType::Ref {
                 Operation::RecordInt(1)
+            } else if reply == ValueType::BytesRef {
+                Operation::FillBytes(1, 1)
             } else {
                 Operation::Constant(0)
             },
@@ -457,6 +462,7 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
             ValueType::Unit,
             ValueType::Ref,
             ValueType::ListRef,
+            ValueType::BytesRef,
         ] {
             if other != reply {
                 typed.handlers[1].parameters[2].1 = other;
@@ -536,7 +542,7 @@ fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
     }
     let mut wrong = program;
     wrong.handlers[0].reply = Some(ValueType::BytesRef);
-    rejects(&wrong, "cannot cross scalar IR");
+    assert!(wrong.validate().is_err());
 }
 
 #[test]
@@ -1068,7 +1074,7 @@ fn rejects_record_forging_type_confusion_and_boundary_references() {
     }
     let mut program = valid_program();
     program.handlers[0].reply = Some(ValueType::BytesRef);
-    rejects(&program, "cannot cross scalar IR boundaries");
+    assert!(program.validate().is_err());
 }
 
 #[test]

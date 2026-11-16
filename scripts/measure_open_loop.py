@@ -323,13 +323,13 @@ def main():
         shutil.copy2(aot.ROOT / "scripts" / filename, frozen / filename)
     require(sum(path.stat().st_size for path in artifact.rglob("*") if path.is_file()) < 16 << 20, "artifact bytes")
     shutil.copytree(artifact, frozen / "artifact")
-    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=aot.ROOT).decode().split("\0")
+    tracked = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=aot.ROOT).decode().split("\0")
     tracked += ["scripts/measure_open_loop.py", "scripts/verify_measurement.py", "scripts/measure_memory.py",
                 "scripts/measure_memory.c", "scripts/verify_memory.py", "scripts/verify_resource_receipt.py",
                 "docs/adr/0075-platform-memory-observation.md"]
     source_directory = frozen / "source"
     for name in sorted(set(tracked)):
-        if name and (aot.ROOT / name).is_file():
+        if name and not name.startswith("docs/proposals/") and (aot.ROOT / name).is_file():
             destination = source_directory / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(aot.ROOT / name, destination)

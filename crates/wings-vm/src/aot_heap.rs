@@ -370,7 +370,8 @@ pub(crate) unsafe fn import_arguments(
         crate::execution::runtime_checkpoint(context, true)?;
         if bytes.mask & bit != 0 {
             let (start, length) = ListPayload::segment(*argument);
-            let encoded = unsafe { import_bytes(context, &bytes.data[start..start + length]) }?;
+            let encoded =
+                unsafe { import_bytes(context, &bytes.as_slice()[start..start + length]) }?;
             unsafe { root_incoming(context, index, encoded) }?;
             *argument = encoded as i64;
             continue;

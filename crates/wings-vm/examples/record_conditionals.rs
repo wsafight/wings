@@ -55,6 +55,7 @@ fn main() {
                     assert_eq!(task.snapshot().unwrap().phase, ExecutionPhase::Suspended);
                 }
                 ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
+                ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
                 ExecutionStatus::Complete(reply) => {
                     expected = if first == 1 && second == 1 {
                         19

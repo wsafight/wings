@@ -3,6 +3,7 @@
 - 日期：2026-11-15
 - 状态：已采纳（计费列表回复切片；平台验证另记，MVP 尚未完成）
 - 部分替代：[ADR-0096](0096-copied-record-replies.md) 对 IntList 回复的限制；Bytes 和通用记录回复另行实现。
+- Bytes 回复限制由 [ADR-0098](0098-accounted-byte-replies.md) 替代；其余历史理由保留。
 
 ## 决定
 

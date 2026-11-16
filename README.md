@@ -26,11 +26,13 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，RecordInt 与最多 64 元素的 IntList 可按内容复制回复；字节回复、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-15。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；字符串/通用记录、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-16。
 
 ## 开发
 
-[ADR-0097](docs/adr/0097-accounted-int-list-replies.md) 接入有界 IntList 回复：原协程保留出口根并逐节点检查，复制为独立计费的 `IntListReply` 后才提交候选状态。宿主使用 `invoke_list`、`CompleteList` 或 `ReplyList` 取得拥有的结果，JSON 输出 `{"reply":{"int_list":[...]}}`；非成功语言完成事件为空列表。示例见 [`examples/list-replies.wings`](examples/list-replies.wings)，平台证据见[验证记录](docs/validation-2026-11-15.md)，Bytes 与通用业务值回复仍未完成。
+[ADR-0098](docs/adr/0098-accounted-byte-replies.md) 补齐 0..=64 KiB Bytes 回复：原协程分块导出并保留出口根，独立结果存储与控制先计费，再提交候选状态。宿主使用 `invoke_bytes`、`CompleteBytes` 或 `ReplyBytes`；完成事件在发起方堆分块导入。示例见 [`examples/bytes-replies.wings`](examples/bytes-replies.wings)，验证证据及剩余 MVP 门禁见[验证记录](docs/validation-2026-11-16.md)。
+
+[ADR-0097](docs/adr/0097-accounted-int-list-replies.md) 接入有界 IntList 回复：原协程保留出口根并逐节点检查，复制为独立计费的 `IntListReply` 后才提交候选状态。宿主使用 `invoke_list`、`CompleteList` 或 `ReplyList` 取得拥有的结果，JSON 输出 `{"reply":{"int_list":[...]}}`；非成功语言完成事件为空列表。示例见 [`examples/list-replies.wings`](examples/list-replies.wings)，平台证据见[验证记录](docs/validation-2026-11-15.md)，Bytes 回复由 ADR-0098 补齐，通用业务值回复仍未完成。
 
 [ADR-0096](docs/adr/0096-copied-record-replies.md) 接入现有 RecordInt 的内容复制回复，目标验证先于状态提交，语言完成入口在发起方计费堆导入记录。宿主结果只持 i64 字段副本，JSON 输出带 record_int 字段；仍为 ABI v15，不改变语法拼写。真实示例为 [`examples/record-replies.wings`](examples/record-replies.wings) 与 [`examples/record-reply-state.wings`](examples/record-reply-state.wings)，具体平台证据见[验证记录](docs/validation-2026-11-14.md)。
 

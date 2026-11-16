@@ -118,7 +118,8 @@ impl Handler {
                         | ValueType::Bool
                         | ValueType::Unit
                         | ValueType::Ref
-                        | ValueType::ListRef),
+                        | ValueType::ListRef
+                        | ValueType::BytesRef),
                     ),
                 ],
             ) => Some(*ty),
@@ -203,13 +204,6 @@ impl Program {
         {
             return Err("Pid is only supported as a local value".into());
         }
-        if self
-            .handlers
-            .iter()
-            .any(|handler| matches!(handler.reply, Some(ValueType::BytesRef)))
-        {
-            return Err("byte references cannot cross scalar IR boundaries".into());
-        }
         if self.handlers.len() > MAX_HANDLERS {
             return Err("too many handlers for the scalar prototype".into());
         }
@@ -264,6 +258,7 @@ impl Program {
                                 | ValueType::Unit
                                 | ValueType::Ref
                                 | ValueType::ListRef
+                                | ValueType::BytesRef
                         )
                     ) || callback.completion_reply() != target.reply
                         || target.parameters.len() != arguments.len()
@@ -275,7 +270,7 @@ impl Program {
                             })
                     {
                         return Err(
-                            "request requires scalar, RecordInt or IntList reply, matching completion event and matching parameters"
+                            "request requires scalar, RecordInt, IntList or Bytes reply, matching completion event and matching parameters"
                                 .into(),
                         );
                     }

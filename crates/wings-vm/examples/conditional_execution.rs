@@ -38,6 +38,7 @@ fn main() {
             match execution.resume(1).unwrap() {
                 ExecutionStatus::Suspended => {}
                 ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
+                ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
                 ExecutionStatus::Complete(reply) => {
                     assert_eq!(reply, Some(expected));
                     completed = true;

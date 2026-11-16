@@ -131,6 +131,12 @@ pub(super) fn worker(
                     active,
                     Ok(Some(RequestOutcome::ReplyList(reply))),
                 ),
+                Ok(ExecutionStatus::CompleteBytes(reply)) => finish(
+                    &shared,
+                    index,
+                    active,
+                    Ok(Some(RequestOutcome::ReplyBytes(reply))),
+                ),
                 Err(error) => finish(&shared, index, active, Err(error)),
             }
         }
@@ -301,6 +307,7 @@ fn finish(
         Reply::External(publisher) => match outcome {
             RequestOutcome::Reply(value) => publisher.complete(value),
             RequestOutcome::ReplyList(value) => publisher.complete_list(value),
+            RequestOutcome::ReplyBytes(value) => publisher.complete_bytes(value),
             _ => drop(publisher),
         },
         Reply::Language(key) => state.finish(key, outcome),

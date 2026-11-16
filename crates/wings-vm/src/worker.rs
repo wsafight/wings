@@ -38,6 +38,7 @@ pub struct RequestId {
 pub enum RequestOutcome {
     Reply(i64),
     ReplyList(crate::IntListReply),
+    ReplyBytes(crate::BytesReply),
     TimedOut,
     Cancelled,
     Failed,
@@ -879,6 +880,26 @@ impl ScalarWorker {
                     }
                     Ok(WorkerEvent::Delivered(pid))
                 }
+                Ok(ExecutionStatus::CompleteBytes(reply)) => {
+                    let active = self.slots[index]
+                        .actor
+                        .as_mut()
+                        .expect("running actor")
+                        .active
+                        .take()
+                        .expect("completed message");
+                    match (active.message.request, active.message.external) {
+                        (Some(request), None) => {
+                            self.finish_request(request, RequestOutcome::ReplyBytes(reply))
+                        }
+                        (None, Some(publisher)) => publisher.complete_bytes(reply),
+                        _ => {
+                            self.remove(index);
+                            return Err("byte reply does not match message kind".into());
+                        }
+                    }
+                    Ok(WorkerEvent::Delivered(pid))
+                }
                 Err(reason) => {
                     let actor = self.slots[index].actor.as_ref().expect("failed actor");
                     let name = &actor
@@ -1227,9 +1248,10 @@ impl ScalarWorker {
                     | wings_abi::ValueType::Unit
                     | wings_abi::ValueType::Ref
                     | wings_abi::ValueType::ListRef
+                    | wings_abi::ValueType::BytesRef
             )
         ) {
-            return Err("request requires a scalar, RecordInt or IntList reply".into());
+            return Err("request requires a scalar, RecordInt, IntList or Bytes reply".into());
         }
         let callback = module
             .manifest()
@@ -1337,6 +1359,7 @@ impl ScalarWorker {
             retire_request(&mut self.requests[index]);
             let mut arguments = [0; MAX_ARGUMENTS];
             let mut lists = ListPayload::default();
+            let mut bytes = BytePayload::default();
             arguments[0] = completion.capability;
             (arguments[1], arguments[2]) = match outcome {
                 RequestOutcome::Reply(value) => (0, value),
@@ -1344,6 +1367,11 @@ impl ScalarWorker {
                     lists.count = value.as_slice().len();
                     lists.values[..lists.count].copy_from_slice(value.as_slice());
                     (0, ListPayload::encode(0, lists.count))
+                }
+                RequestOutcome::ReplyBytes(value) => {
+                    let length = value.as_slice().len();
+                    bytes = BytePayload::completion(Some(value));
+                    (0, ListPayload::encode(0, length))
                 }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
@@ -1356,6 +1384,12 @@ impl ScalarWorker {
             {
                 lists.mask = 4;
             }
+            if completion.handler.schema().completion_reply()
+                == Some(wings_abi::ValueType::BytesRef)
+                && bytes.mask == 0
+            {
+                bytes = BytePayload::completion(None);
+            }
             let message = Message {
                 handler: completion.handler,
                 arguments,
@@ -1366,7 +1400,7 @@ impl ScalarWorker {
                 external: None,
                 record_mask,
                 lists,
-                bytes: BytePayload::default(),
+                bytes,
                 _charge: completion.charge,
             };
             let actor = self.actor_mut(owner).expect("completion recipient");
@@ -1408,99 +1442,123 @@ mod payload_tests {
     use super::*;
 
     #[test]
-    fn list_completion_waits_for_mailbox_capacity_and_releases_results_when_owner_exits() {
-        for owner_exits in [false, true] {
-            let limits = Resources {
-                bytes: 32 << 20,
-                processes: 4,
-                messages: 8,
-                requests: 4,
-            };
-            let vm = ResourceAccount::vm(limits);
-            let tenant = vm.tenant_accounted(limits).unwrap();
-            let mut module = crate::tests::module();
-            let data = Arc::get_mut(&mut module.inner).unwrap();
-            data.manifest.handlers.push(wings_artifact::Handler {
-                name: "DoneList".into(),
-                reply: None,
-                parameters: vec![
-                    ("id".into(), wings_abi::ValueType::RequestId),
-                    ("status".into(), wings_abi::ValueType::Int),
-                    ("value".into(), wings_abi::ValueType::ListRef),
-                ],
-            });
-            let mut entries = data.entries.to_vec();
-            entries.push(crate::tests::list_completion);
-            data.entries = entries.into_boxed_slice();
-            data.manifest.validate().unwrap();
-            let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
-            let owner = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
-            let target = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
-            let target_account = worker.actor(target).unwrap().account.clone();
-            let target_baseline = target_account.used();
-            let retained =
-                crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap();
-            worker
-                .send(owner, &module.handler("Add").unwrap(), &[0], 128)
-                .unwrap();
-            let account = worker.actor(owner).unwrap().account.clone();
-            worker.requests[0].pending = Some(PendingRequest {
-                target,
-                deadline: Instant::now() + Duration::from_secs(60),
-                outcome: Some(RequestOutcome::ReplyList(retained.clone())),
-                publisher: false,
-                result_taken: false,
-                completion: Some(Completion {
-                    owner,
-                    capability: 17,
-                    handler: module.handler("DoneList").unwrap(),
-                    budget: 128,
-                    charge: account
+    fn reference_completion_waits_for_mailbox_capacity_and_releases_results_when_owner_exits() {
+        for reply_type in [
+            wings_abi::ValueType::ListRef,
+            wings_abi::ValueType::BytesRef,
+        ] {
+            for owner_exits in [false, true] {
+                let limits = Resources {
+                    bytes: 32 << 20,
+                    processes: 4,
+                    messages: 8,
+                    requests: 4,
+                };
+                let vm = ResourceAccount::vm(limits);
+                let tenant = vm.tenant_accounted(limits).unwrap();
+                let mut module = crate::tests::module();
+                let data = Arc::get_mut(&mut module.inner).unwrap();
+                data.manifest.handlers.push(wings_artifact::Handler {
+                    name: "DoneList".into(),
+                    reply: None,
+                    parameters: vec![
+                        ("id".into(), wings_abi::ValueType::RequestId),
+                        ("status".into(), wings_abi::ValueType::Int),
+                        ("value".into(), reply_type),
+                    ],
+                });
+                let mut entries = data.entries.to_vec();
+                entries.push(if reply_type == wings_abi::ValueType::ListRef {
+                    crate::tests::list_completion
+                } else {
+                    crate::tests::bytes_completion
+                });
+                data.entries = entries.into_boxed_slice();
+                data.manifest.validate().unwrap();
+                let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 2).unwrap();
+                let owner = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
+                let target = worker.spawn_with_heap(&module, limits, 1, 4).unwrap();
+                let target_account = worker.actor(target).unwrap().account.clone();
+                let target_baseline = target_account.used();
+                let retained = if reply_type == wings_abi::ValueType::ListRef {
+                    RequestOutcome::ReplyList(
+                        crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap(),
+                    )
+                } else {
+                    let mut payload = BytePayload::new(&target_account, 1, 2).unwrap();
+                    payload.data.extend_from_slice(&[0, 255]);
+                    RequestOutcome::ReplyBytes(
+                        crate::BytesReply::from_payload(&target_account, payload).unwrap(),
+                    )
+                };
+                worker
+                    .send(owner, &module.handler("Add").unwrap(), &[0], 128)
+                    .unwrap();
+                let account = worker.actor(owner).unwrap().account.clone();
+                worker.requests[0].pending = Some(PendingRequest {
+                    target,
+                    deadline: Instant::now() + Duration::from_secs(60),
+                    outcome: Some(retained.clone()),
+                    publisher: false,
+                    result_taken: false,
+                    completion: Some(Completion {
+                        owner,
+                        capability: 17,
+                        handler: module.handler("DoneList").unwrap(),
+                        budget: 128,
+                        charge: account
+                            .reserve(Resources {
+                                messages: 1,
+                                bytes: std::mem::size_of::<Message>() as u64,
+                                ..Resources::default()
+                            })
+                            .unwrap(),
+                    }),
+                    _charge: account
                         .reserve(Resources {
-                            messages: 1,
-                            bytes: std::mem::size_of::<Message>() as u64,
+                            requests: 1,
                             ..Resources::default()
                         })
                         .unwrap(),
-                }),
-                _charge: account
-                    .reserve(Resources {
-                        requests: 1,
-                        ..Resources::default()
-                    })
-                    .unwrap(),
-            });
-            let baseline = vm.used();
-            worker.flush_completions();
-            assert_eq!(vm.used(), baseline);
-            assert!(
-                worker.requests[0]
-                    .pending
-                    .as_ref()
-                    .unwrap()
-                    .completion
-                    .is_some()
-            );
-            if owner_exits {
-                worker.stop(owner).unwrap();
-            } else {
-                let actor = worker.actor_mut(owner).unwrap();
-                actor.mailbox.slots[actor.mailbox.head].take();
-                actor.mailbox.count = 0;
+                });
+                let baseline = vm.used();
                 worker.flush_completions();
-                let actor = worker.actor_mut(owner).unwrap();
-                let message = actor.mailbox.slots[actor.mailbox.head].take().unwrap();
-                actor.mailbox.count = 0;
-                assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
-                assert!(message.lists.valid(&message.arguments[..3], 4));
-                assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                assert_eq!(vm.used(), baseline);
+                assert!(
+                    worker.requests[0]
+                        .pending
+                        .as_ref()
+                        .unwrap()
+                        .completion
+                        .is_some()
+                );
+                if owner_exits {
+                    worker.stop(owner).unwrap();
+                } else {
+                    let actor = worker.actor_mut(owner).unwrap();
+                    actor.mailbox.slots[actor.mailbox.head].take();
+                    actor.mailbox.count = 0;
+                    worker.flush_completions();
+                    let actor = worker.actor_mut(owner).unwrap();
+                    let message = actor.mailbox.slots[actor.mailbox.head].take().unwrap();
+                    actor.mailbox.count = 0;
+                    assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
+                    if reply_type == wings_abi::ValueType::ListRef {
+                        assert!(message.lists.valid(&message.arguments[..3], 4));
+                        assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                    } else {
+                        assert!(message.bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(message.bytes.as_slice(), [0, 255]);
+                        assert!(message.bytes.data.is_empty());
+                    }
+                }
+                assert!(worker.requests[0].pending.is_none());
+                assert!(target_account.used().bytes > target_baseline.bytes);
+                drop(retained);
+                assert_eq!(target_account.used(), target_baseline);
+                drop((worker, target_account, account, tenant));
+                assert_eq!(vm.used(), Resources::default());
             }
-            assert!(worker.requests[0].pending.is_none());
-            assert!(target_account.used().bytes > target_baseline.bytes);
-            drop(retained);
-            assert_eq!(target_account.used(), target_baseline);
-            drop((worker, target_account, account, tenant));
-            assert_eq!(vm.used(), Resources::default());
         }
     }
 
@@ -1543,6 +1601,7 @@ mod payload_tests {
             ValueType::Unit,
             ValueType::Ref,
             ValueType::ListRef,
+            ValueType::BytesRef,
         ] {
             for callback in [
                 ValueType::Int,
@@ -1550,6 +1609,7 @@ mod payload_tests {
                 ValueType::Unit,
                 ValueType::Ref,
                 ValueType::ListRef,
+                ValueType::BytesRef,
             ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
@@ -1582,11 +1642,15 @@ mod payload_tests {
                         entries[2] = crate::tests::record_reply;
                     } else if reply == ValueType::ListRef {
                         entries[2] = crate::tests::list_reply;
+                    } else if reply == ValueType::BytesRef {
+                        entries[2] = crate::tests::bytes_reply;
                     }
                     entries.push(if callback == ValueType::Ref {
                         crate::tests::record_completion
                     } else if callback == ValueType::ListRef {
                         crate::tests::list_completion
+                    } else if callback == ValueType::BytesRef {
+                        crate::tests::bytes_completion
                     } else {
                         scalar_completion
                     });
@@ -1637,11 +1701,13 @@ mod payload_tests {
                             assert_eq!(exit.committed_state, Some(0));
                             assert_eq!(
                                 exit.execution.fault,
-                                Some(if reply == ValueType::ListRef {
-                                    crate::ExecutionFault::InvalidRoot
-                                } else {
-                                    crate::ExecutionFault::InvalidOutput
-                                })
+                                Some(
+                                    if matches!(reply, ValueType::ListRef | ValueType::BytesRef) {
+                                        crate::ExecutionFault::InvalidRoot
+                                    } else {
+                                        crate::ExecutionFault::InvalidOutput
+                                    }
+                                )
                             );
                         }
                         assert_eq!(vm.used().requests, 0);

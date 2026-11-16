@@ -1412,6 +1412,18 @@ def main():
         result = invoke(list_replies, [message("Make", 17, 1)], expected=1)
         assert not result.stdout and "heap" in result.stderr
         request_roots = parent / "request-roots"
+        bytes_replies = parent / "bytes-replies"
+        command([COMPILER, "build", ROOT / "examples/bytes-replies.wings", "-o", bytes_replies])
+        result = example("bytes_replies", bytes_replies)
+        assert "72 language scenarios" in result.stdout
+        print(result.stdout.strip())
+        bytes_run = [VM, "run", "--trusted", bytes_replies, "--heap-records", 8]
+        for length in [0, 1, 256, 257, 65536]:
+            result = command(bytes_run, "".join(json.dumps(request) + "\n" for request in [message("Make", length), message("Current"), message("Candidate"), message("Marker")]))
+            values = {"bytes": [255] * length}
+            assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
+        result = command(bytes_run, json.dumps(message("Make", 65537)) + "\n", expected=1)
+        assert not result.stdout
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])
         command([sys.executable, Path(__file__), "--check-loop-roots", loops])

@@ -9,8 +9,8 @@ use crate::aot_heap::AotHeap;
 use crate::message_values::{BytePayload, ListPayload};
 use crate::stack_pool::PooledStack;
 use crate::{
-    CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken, Reservation,
-    ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
+    BytesReply, CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken,
+    Reservation, ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
 };
 
 thread_local! {
@@ -25,6 +25,7 @@ type InvocationResult = (
     Option<Box<AotHeap>>,
     Checkpoint,
     Option<IntListReply>,
+    Option<BytesReply>,
 );
 type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
 
@@ -151,7 +152,7 @@ pub(crate) fn initialize(
         [wings_abi::ValueType::Unit; 2],
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
-        CoroutineResult::Return((status, output, heap, _, _)) => Ok((status, output, heap)),
+        CoroutineResult::Return((status, output, heap, _, _, _)) => Ok((status, output, heap)),
         CoroutineResult::Yield(_) => {
             if !matches!(
                 coroutine.resume(ResumeCommand::Cancel),
@@ -169,6 +170,7 @@ pub enum ExecutionStatus {
     Suspended,
     Complete(Option<i64>),
     CompleteList(IntListReply),
+    CompleteBytes(BytesReply),
 }
 
 enum ResumeCommand {
@@ -527,7 +529,7 @@ fn new_coroutine(
                 effect: None,
                 yield_requested: None,
             };
-            return (STATUS_CANCELLED, output, heap, checkpoint, None);
+            return (STATUS_CANCELLED, output, heap, checkpoint, None, None);
         };
         let mut control = InvocationControl {
             yielder,
@@ -570,6 +572,7 @@ fn new_coroutine(
             wings_abi::STATUS_INVALID_ROOT
         };
         let mut list = None;
+        let mut bytes = None;
         if status == STATUS_OK && output_types[1] == wings_abi::ValueType::ListRef {
             let roots = [output.reply as u64, output.state as u64];
             let frame = wings_abi::ShadowFrame {
@@ -598,6 +601,28 @@ fn new_coroutine(
             }
             context.roots = std::ptr::null();
         }
+        if status == STATUS_OK && output_types[1] == wings_abi::ValueType::BytesRef {
+            let roots = [output.reply as u64, output.state as u64];
+            let frame = wings_abi::ShadowFrame {
+                previous: std::ptr::null(),
+                slots: roots.as_ptr(),
+                count: 1 + usize::from(output_types[0].is_reference()),
+            };
+            context.roots = &frame;
+            let mut arguments = [output.reply];
+            match unsafe { crate::aot_heap::export_bytes(&mut context, &mut arguments, 1) } {
+                Ok(payload) => match heap
+                    .as_ref()
+                    .ok_or_else(|| "missing reply heap".to_string())
+                    .and_then(|heap| BytesReply::from_payload(&heap.account, payload))
+                {
+                    Ok(value) => bytes = Some(value),
+                    Err(_) => status = wings_abi::STATUS_HEAP_EXHAUSTED,
+                },
+                Err(error) => status = error,
+            }
+            context.roots = std::ptr::null();
+        }
         let checkpoint = Checkpoint {
             remaining_steps: context.remaining_steps,
             heap: heap.as_deref().map(AotHeap::stats),
@@ -607,7 +632,7 @@ fn new_coroutine(
         if let Some(heap) = &mut heap {
             heap.clear_incoming();
         }
-        (status, output, heap, checkpoint, list)
+        (status, output, heap, checkpoint, list, bytes)
     });
     Ok(coroutine)
 }
@@ -667,7 +692,7 @@ fn resume_invocation(
             active.effect = checkpoint.effect;
             Ok(ExecutionStatus::Suspended)
         }
-        CoroutineResult::Return((status, output, heap, checkpoint, list)) => {
+        CoroutineResult::Return((status, output, heap, checkpoint, list, bytes)) => {
             let handler = active.handler;
             let mut snapshot = active.snapshot;
             snapshot.remaining_steps = checkpoint.remaining_steps;
@@ -675,7 +700,7 @@ fn resume_invocation(
             active.coroutine.take();
             invocation.take();
             process.heap = heap;
-            let result = process.finish_invocation(handler, status, output, list);
+            let result = process.finish_invocation(handler, status, output, list, bytes);
             snapshot.phase = if result.is_ok() {
                 ExecutionPhase::Complete
             } else {

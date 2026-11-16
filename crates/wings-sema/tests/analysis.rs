@@ -31,12 +31,11 @@ fn byte_i64_builtins_require_explicit_byte_and_integer_operands() {
 }
 
 #[test]
-fn bytes_are_typed_immutable_message_roots_but_not_replies() {
+fn bytes_are_typed_immutable_message_and_reply_roots() {
     checked(
         "process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 255) } state data: Bytes = fill_bytes(4, 0); on Set(value: Int) -> Int { let old = data; data = if true { changed(old) } else { fill_bytes(value, 7) }; collect(); bytes_len(data) + byte_at(old, 0) } }",
     );
     for text in [
-        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bytes { data } }",
         "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bool { data == data } }",
         "process P { state data: Bytes = empty_ints(); on Read -> Int { bytes_len(data) } }",
         "process P { state data: Bytes = fill_bytes(1, true); on Read -> Int { byte_at(1, 0) } }",
@@ -51,6 +50,7 @@ fn bytes_are_typed_immutable_message_roots_but_not_replies() {
     checked(
         "process P { state data: Bytes = fill_bytes(1, 0); on Start { let child = spawn_self(); send(child, Store, data); send_self(Store, data); let pending = request(child, Size, Done, 1000, data); collect() } on Store(value: Bytes) { data = value } on Size(value: Bytes) -> Int { bytes_len(value) } on Done(id: RequestId, status: Int, value: Int) {} }",
     );
+    checked("process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bytes { data } }");
 }
 
 fn handler(body: &str) -> String {
@@ -208,8 +208,9 @@ fn request_completion_values_match_copyable_replies_without_coercion() {
         ("Unit", "()"),
         ("RecordInt", "record_int(7)"),
         ("IntList", "empty_ints()"),
+        ("Bytes", "fill_bytes(1, 7)"),
     ] {
-        for completion in ["Int", "Bool", "Unit", "RecordInt", "IntList"] {
+        for completion in ["Int", "Bool", "Unit", "RecordInt", "IntList", "Bytes"] {
             let text = format!(
                 "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {reply} {{ {literal} }} on Done(id: RequestId, status: Int, value: {completion}) {{ () }} }}"
             );
@@ -469,7 +470,7 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
 }
 
 #[test]
-fn accepts_record_and_list_replies_but_rejects_byte_replies() {
+fn accepts_record_list_and_byte_replies() {
     checked(
         "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
     );
@@ -484,11 +485,7 @@ fn accepts_record_and_list_replies_but_rejects_byte_replies() {
         "expected RecordInt",
     );
     checked("process P { state n: Int = 0; on Get -> IntList { empty_ints() } }");
-    assert_error(
-        "process P { state n: Int = 0; on Get -> Bytes { fill_bytes(1, 0) } }",
-        "T011",
-        "not supported in message",
-    );
+    checked("process P { state n: Int = 0; on Get -> Bytes { fill_bytes(1, 0) } }");
     checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
     checked("process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }");
     checked(

@@ -8,6 +8,8 @@ pub(crate) struct BytePayload {
     pub mask: u64,
     pub data: Vec<u8>,
     charge: Option<Reservation>,
+    reply: Option<crate::BytesReply>,
+    completion: bool,
 }
 
 impl BytePayload {
@@ -29,17 +31,42 @@ impl BytePayload {
             mask,
             data,
             charge: Some(charge),
+            reply: None,
+            completion: false,
         })
+    }
+
+    pub(crate) fn completion(reply: Option<crate::BytesReply>) -> Self {
+        Self {
+            mask: 4,
+            reply,
+            completion: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.reply
+            .as_ref()
+            .map_or(&self.data, crate::BytesReply::as_slice)
+    }
+
+    pub(crate) fn take_charge(&mut self) -> Option<Reservation> {
+        self.charge.take()
     }
 
     pub(crate) fn valid(&self, arguments: &[i64], expected_mask: u64) -> bool {
         if arguments.len() > 64
             || self.mask != expected_mask
-            || self.data.len() > MAX_MESSAGE_BYTES
+            || self.as_slice().len() > MAX_MESSAGE_BYTES
             || self.data.capacity() != self.data.len()
             || (arguments.len() < 64 && self.mask >> arguments.len() != 0)
-            || self.charge.as_ref().map(|charge| charge.amount().bytes)
-                != (self.mask != 0).then_some(self.data.len() as u64)
+            || (self.completion
+                && (self.mask != 4 || !self.data.is_empty() || self.charge.is_some()))
+            || (!self.completion && self.reply.is_some())
+            || (!self.completion
+                && self.charge.as_ref().map(|charge| charge.amount().bytes)
+                    != (self.mask != 0).then_some(self.data.len() as u64))
         {
             return false;
         }
@@ -47,16 +74,19 @@ impl BytePayload {
         for (index, argument) in arguments.iter().enumerate() {
             if self.mask & (1u64 << index) != 0 {
                 let (start, length) = ListPayload::segment(*argument);
-                if start != cursor || length > self.data.len() - cursor {
+                if start != cursor || length > self.as_slice().len() - cursor {
                     return false;
                 }
                 cursor += length;
             }
         }
-        cursor == self.data.len()
+        cursor == self.as_slice().len()
     }
 
     pub(crate) fn transfer(&mut self, target: &ResourceAccount) -> Result<(), String> {
+        if self.completion {
+            return Err("shared byte completion cannot be transferred as a message".into());
+        }
         if let Some(charge) = &mut self.charge {
             charge.transfer(target)?;
         }

@@ -154,12 +154,18 @@ impl State {
                 .expect("ready completion");
             let completion = pending.completion.take().expect("completion route");
             let mut lists = ListPayload::default();
+            let mut bytes = BytePayload::default();
             let (status, value) = match pending.outcome.clone().expect("terminal completion") {
                 RequestOutcome::Reply(value) => (0, value),
                 RequestOutcome::ReplyList(value) => {
                     lists.count = value.as_slice().len();
                     lists.values[..lists.count].copy_from_slice(value.as_slice());
                     (0, ListPayload::encode(0, lists.count))
+                }
+                RequestOutcome::ReplyBytes(value) => {
+                    let length = value.as_slice().len();
+                    bytes = BytePayload::completion(Some(value));
+                    (0, ListPayload::encode(0, length))
                 }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
@@ -176,6 +182,12 @@ impl State {
             {
                 lists.mask = 4;
             }
+            if completion.handler.schema().completion_reply()
+                == Some(wings_abi::ValueType::BytesRef)
+                && bytes.mask == 0
+            {
+                bytes = BytePayload::completion(None);
+            }
             let message = Envelope {
                 handler: completion.handler,
                 arguments,
@@ -183,7 +195,7 @@ impl State {
                 max_steps: completion.max_steps,
                 record_mask,
                 lists,
-                bytes: BytePayload::default(),
+                bytes,
                 system: true,
                 reply: Reply::None,
                 _charge: completion.charge,
@@ -338,6 +350,7 @@ impl Shared {
                                 | wings_abi::ValueType::Unit
                                 | wings_abi::ValueType::Ref
                                 | wings_abi::ValueType::ListRef
+                                | wings_abi::ValueType::BytesRef
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {

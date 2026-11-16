@@ -1,5 +1,7 @@
 # ADR-0076：计费的 Bytes 复制消息
 
+Bytes 回复限制由 [ADR-0098](0098-accounted-byte-replies.md) 替代；原消息契约保持。
+
 后续 [ADR-0094](0094-typed-host-message-values.md) 为直接宿主开放类型化字节切片复制，保留原合计上限、计费导入与原始整数限制。
 
 - 日期：2026-11-14

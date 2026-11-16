@@ -14,6 +14,7 @@ use wings_artifact::{FORMAT_VERSION, Handler, Manifest};
 use crate::module::ModuleData;
 use crate::*;
 
+mod bytes_replies;
 mod diagnostics;
 mod ingress;
 mod ingress_requests;
@@ -249,6 +250,66 @@ pub(crate) unsafe extern "C" fn list_completion(
         };
     }
     STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn bytes_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [0i64; 3];
+    let mut reference = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_FILL_BYTES,
+            scratch.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: reference as i64,
+            }
+        };
+    }
+    status
+}
+
+pub(crate) unsafe extern "C" fn bytes_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [unsafe { *arguments.add(2) }, 0, 0];
+    let mut length = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_BYTES_LEN,
+            scratch.as_ptr() as usize as u64,
+            &mut length,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state: *arguments.add(1) * 100 + length as i64,
+                reply: 0,
+            }
+        };
+    }
+    status
 }
 
 pub(crate) unsafe extern "C" fn record_completion(

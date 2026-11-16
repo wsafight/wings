@@ -83,7 +83,7 @@ fn bytes_state_and_message_schema_round_trip_but_reply_handles_are_rejected() {
     );
     manifest.handlers[0].parameters[0].1 = ValueType::Int;
     manifest.handlers[0].reply = Some(ValueType::BytesRef);
-    rejects(&manifest, "references cannot cross");
+    manifest.validate().unwrap();
 }
 
 fn rejects(manifest: &Manifest, message: &str) {
@@ -207,6 +207,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
         ValueType::Unit,
         ValueType::Ref,
         ValueType::ListRef,
+        ValueType::BytesRef,
     ] {
         let mut manifest = manifest();
         manifest.handlers[0].parameters = vec![
@@ -231,7 +232,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
             assert!(!invalid.handlers[0].is_completion());
             assert!(invalid.validate().is_err());
         }
-        for wrong in [ValueType::BytesRef, ValueType::Pid, ValueType::RequestId] {
+        for wrong in [ValueType::Pid, ValueType::RequestId] {
             let mut invalid = manifest.clone();
             invalid.handlers[0].parameters[2].1 = wrong;
             assert_eq!(invalid.handlers[0].completion_reply(), None);

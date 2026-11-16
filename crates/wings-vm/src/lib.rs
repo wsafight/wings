@@ -10,6 +10,7 @@ use wings_abi::{
 use wings_artifact::Manifest;
 
 mod aot_heap;
+mod bytes_reply;
 mod detached;
 mod execution;
 mod heap;
@@ -31,6 +32,7 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
+pub use bytes_reply::BytesReply;
 pub use detached::DetachedProcess;
 pub use execution::{
     ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, ScalarExecution, ScalarTask,
@@ -146,6 +148,9 @@ impl ScalarProcess {
         if self.module.manifest().handlers[index].reply == Some(ValueType::ListRef) {
             return Err("list reply requires invoke_list or explicit execution".into());
         }
+        if self.module.manifest().handlers[index].reply == Some(ValueType::BytesRef) {
+            return Err("byte reply requires invoke_bytes or explicit execution".into());
+        }
         let mut execution = self.start_index(index, arguments, max_steps, || {
             (
                 cancellation.cloned().unwrap_or_default(),
@@ -157,6 +162,7 @@ impl ScalarProcess {
                 ExecutionStatus::Complete(reply) => return Ok(reply),
                 ExecutionStatus::Suspended => {}
                 ExecutionStatus::CompleteList(_) => unreachable!("validated scalar reply"),
+                ExecutionStatus::CompleteBytes(_) => unreachable!("validated scalar reply"),
             }
         }
     }
@@ -180,6 +186,30 @@ impl ScalarProcess {
                 ExecutionStatus::CompleteList(reply) => return Ok(reply),
                 ExecutionStatus::Suspended => {}
                 ExecutionStatus::Complete(_) => unreachable!("validated list reply"),
+                ExecutionStatus::CompleteBytes(_) => unreachable!("validated list reply"),
+            }
+        }
+    }
+
+    pub fn invoke_bytes(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<BytesReply, String> {
+        let index = self.validate_invocation(name, arguments)?;
+        if self.module.manifest().handlers[index].reply != Some(ValueType::BytesRef) {
+            return Err("invoke_bytes requires a Bytes reply".into());
+        }
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (cancellation.clone(), PreemptionToken::default())
+        })?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::CompleteBytes(reply) => return Ok(reply),
+                ExecutionStatus::Suspended => {}
+                _ => unreachable!("validated byte reply"),
             }
         }
     }
@@ -276,6 +306,7 @@ impl ScalarProcess {
         status: u32,
         output: ScalarOutput,
         list: Option<IntListReply>,
+        bytes: Option<BytesReply>,
     ) -> Result<ExecutionStatus, String> {
         if let Err(error) = check_status(status) {
             self.failed = true;
@@ -294,7 +325,9 @@ impl ScalarProcess {
                     return Err("entry returned an invalid record reply".into());
                 }
             }
-        } else if handler.reply == Some(ValueType::ListRef) && list.is_some() {
+        } else if (handler.reply == Some(ValueType::ListRef) && list.is_some())
+            || (handler.reply == Some(ValueType::BytesRef) && bytes.is_some())
+        {
             0
         } else if handler
             .reply
@@ -315,6 +348,9 @@ impl ScalarProcess {
             return Err(error);
         }
         self.state = output.state;
+        if let Some(bytes) = bytes {
+            return Ok(ExecutionStatus::CompleteBytes(bytes));
+        }
         match list {
             Some(list) if handler.reply == Some(ValueType::ListRef) => {
                 Ok(ExecutionStatus::CompleteList(list))

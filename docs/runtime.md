@@ -1,5 +1,9 @@
 # 运行时
 
+[ADR-0098](adr/0098-accounted-byte-replies.md) 接入 `ScalarProcess::invoke_bytes`、`ExecutionStatus::CompleteBytes` 和 `RequestOutcome::ReplyBytes`。`BytesReply::as_slice()` 借用 0..=65536 字节，Clone 共享独立计费结果；末拥有者释放存储与控制票据，目标停止不提前归还。原标量调用在执行前拒绝字节回复，CLI 流式输出 `{"reply":{"bytes":[...]}}`，输入引用边界不变。
+
+Bytes 完成事件 mask 为 4，规范段从 0 开始，非成功为长度 0。信封保留目标结果租约直到原栈分块导入/退出清理；发起方堆副本另外准入，不共享可变业务数据、不在 Scheduler 锁内复制字节。队满保留路由；超时/取消不撤回目标执行，发起方退出/导入失败及迟到回复沿原 publisher 生命周期清理。具体试验与剩余门禁见[验证记录](validation-2026-11-16.md)。
+
 [ADR-0097](adr/0097-accounted-int-list-replies.md) 接入至多 64 元素的 IntList 回复与计费结果拥有者，语言完成信封复用原 ListPayload，在发起方堆重建；非成功事件为空列表。结果保留期间不依赖目标堆，不提前释放存储票据，原唯一终态与发布者生命周期保持。
 
 同步宿主以 `ScalarProcess::invoke_list(name, arguments, max_steps, cancellation)` 返回 `IntListReply`；原 `invoke`/`invoke_controlled`/`invoke_handler` 在执行前拒绝列表回复。`ScalarExecution`/`ScalarTask` 返回 `ExecutionStatus::CompleteList`，worker、监督、Scheduler 和固定 ingress 返回 `RequestOutcome::ReplyList`，后者保持 Clone/Eq，但不再 Copy。`IntListReply::as_slice()` 借用内容，Clone 共享已计费存储；目标停止或账户句柄释放后，最后一个结果拥有者仍负责归还目标进程/租户/VM 预留。单次回复超过 64 元素为 ReplyRejected，出口取消/预算或存储预留失败均不提交候选状态。
@@ -97,7 +101,7 @@ v2 与 v5/v6 驱动将池创建纳入原阶段计时，仍逐 actor 绑定；开
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 的八字节读取固定有界、不分配；替换仍沿 Bytes 原账户、精确源根、每块最多 256 字节和取消清理契约，需同时容纳旧/新对象。先验证完整范围，再预留/复制，不从负数或极端 offset 形成越界访问。ABI v14 复用原 scratch/context，未开放原 handle 消息或原生沙箱。
 
-[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；Bytes 复制消息见 ADR-0076，字节回复、字符串和完整业务值仍未完成。
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 将 Bytes 作为精确堆中的不可变叶节点：每个对象占一个槽，固定所有权表计入堆容量，独立 buffer 在分配前由原进程三级预留。构造/复制每块最多 256 字节且检查预算/取消，未发布 builder 在暂停时仍计费、失败/取消时释放；不可跨堆发布。预留/槽不足分别只 GC 重试一次，compiler 源根和宿主持久根保留旧对象，复制替换需要同时容纳旧/新 buffer。清扫或堆退出释放 buffer 与票据，不扫描二进制内容为引用；heap_stats 包括已发布数据，账户 used 另包含未发布数据。单次 allocator 最多 64 KiB，不提供硬实时保证；Bytes 复制消息见 ADR-0076，字节回复另见 ADR-0098，字符串和完整业务值仍未完成。
 
 [ADR-0056](adr/0056-multi-worker-supervision.md) 的 SchedulerSupervisor 通过固定子表与每实例唯一终态票据实现宿主 one-for-one 恢复。poll 一次至多消费一个退出，受管失败且滚动窗口仍准入时创建全新 state/堆和 Pid，旧请求已终结、旧消息不重放。并发失败不能互相覆盖终态；stop/关闭不重启，初始化/资源拒绝或强度超限不自动重试。host handle 的结果租约仍可延长旧账户，但票据不持有业务资源。需显式 poll，不提供语言 supervision/link/monitor。
 
@@ -219,11 +223,11 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 `RootFrame` 按作用域维护显式根，嵌套帧只操作自己的槽；帧 Drop 清除本帧根，不回收业务对象。收集只使用传入的这一张 `ShadowRoots`，调用者必须先汇总全部活跃根；其他根表和宿主保存的未发布 handle 不自动保活。`collect` 先验证根，错误时不改变堆；随后按布局标记引用并回收不可达槽，活对象不移动，回收后旧代次失效。完整工作上限受固定槽数、字段数和根数限定，不承诺停顿目标。
 
-[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt 与有界 IntList 按值复制消息，RecordInt/IntList 回复分别沿 ADR-0096/0097 复制，仍无字节回复或后台收集。
+[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt、有界 IntList 和 Bytes 按值复制消息，对应回复分别沿 ADR-0096/0097/0098 复制，仍无后台收集。
 
 [ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。[ADR-0080](adr/0080-central-execution-admission.md) 将保存显式池的行为扩至标量初始化，计费调用/初始化都由核心预留控制容量。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主原始整数消息/request 只接受标量，类型化宿主消息按 ADR-0094、语言消息按 ADR-0049/0051/0076 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
 
-独立原语不自动接入业务根；当前 AOT 路径已覆盖 RecordInt/IntList 局部、状态、消息入口、回复及 safepoint 根，仍缺字节回复和通用值布局，不是完整业务 GC。原语边界见 [ADR-0018](adr/0018-bounded-record-heap.md)，集成契约见 ADR-0025–0027、0096–0097。
+独立原语不自动接入业务根；当前 AOT 路径已覆盖 RecordInt/IntList/Bytes 局部、状态、消息入口、回复及 safepoint 根，仍缺通用值布局，不是完整业务 GC。原语边界见 [ADR-0018](adr/0018-bounded-record-heap.md)，集成契约见 ADR-0025–0027、0057、0096–0098。
 
 ### 隔离机制：语言级封闭 + 段隔离堆
 

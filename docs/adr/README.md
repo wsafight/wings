@@ -105,6 +105,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0095](0095-typed-scalar-request-events.md) | 语言异步 Int/Bool/Unit 回复与精确类型完成入口 | 已采纳（标量完成事件切片） |
 | [0096](0096-copied-record-replies.md) | RecordInt 回复的目标检查、内容复制和完成导入 | 已采纳（固定记录回复切片） |
 | [0097](0097-accounted-int-list-replies.md) | IntList 出口根、分块复制和计费结果所有权 | 已采纳（计费列表回复切片） |
+| [0098](0098-accounted-byte-replies.md) | Bytes 出口根、计费结果租约及分块完成导入 | 已采纳（有界字节回复切片） |
 
 ## 维护方式
 

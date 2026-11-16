@@ -152,6 +152,8 @@ WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --ar
 
 本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。ADR-0075 另完成 mixed-4k 原规模五对长测，见[验证记录](validation-2026-11-14.md#分口径平台内存观测adr-0075)和 [JSON 摘要](open-loop-memory-mixed-macos-2026-11-14.json)：两端各仅一轮通过候选尾延迟，拒绝/超时及一份不完整采样均保留。没有饱和扫描、CPU 硬配额或完整平台内存验收，不作最大持续吞吐/整机内存领先结论；其余两组与长时 fairness 仍待验证。
 
+2026-11-16 的 ABI v15/Bytes 回复源码另完成 mixed-4k 1000/s 五对探索性复测，见[验证记录](validation-2026-11-16.md#实际结果)和 [JSON 摘要](open-loop-mixed-macos-2026-11-16.json)。十轮均无拒绝/超时，两端各 5/5 满足候选尾延迟，但 Wings 每轮 p99 高于 BEAM；驱动加后代的 RSS/footprint 采样较低不等于整机内存领先。未扫描饱和点、未落实 CPU 硬配额，不能据此宣布双目标或 MVP 达标。
+
 ## v7：百万次加法与突发心跳的短时验证
 
 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 和 [`beam-fairness.wings`](../examples/beam-fairness.wings) 将下表fairness行接入有界正确性：101个actor各保留完整256 B state/独立ID，mailbox1；Wings只有一个worker，BEAM只有一个在线scheduler（`+S 1:1`），但未设置OS单核硬配额。热actor1每个CPU请求从零执行恰好1000000次checked +1，回复百万、state计数加一；以六层非递归受管函数逐级十次调用，不改语法/ABI，不在每次加法分配Bytes，也不使用一次+百万代替。BEAM使用相同六层checked业务，保留原生reduction调度。

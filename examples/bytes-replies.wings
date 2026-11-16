@@ -1,0 +1,47 @@
+process BytesReplies {
+  state data: Bytes = fill_bytes(0, 0)
+
+  on Make(length: Int) -> Bytes {
+    data = fill_bytes(length, 255)
+    collect()
+    data
+  }
+  on Echo(input: Bytes) -> Bytes { collect(); data = input; collect(); input }
+  on Current -> Bytes { collect(); data }
+  on Candidate -> Bytes { let old = data; data = fill_bytes(1, 77); collect(); old }
+  on Fail -> Bytes { data = fill_bytes(1, 99); let failed = 1 / 0; data }
+  on Clear { data = fill_bytes(0, 0); collect() }
+  on Marker -> Int { if bytes_len(data) == 0 { -1 } else { byte_at(data, 0) } }
+
+  on Start(length: Int, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
+    let target = if same { self_pid() } else { spawn_self() }
+    let pending = if fail {
+      request(target, Fail, Done, timeout)
+    } else {
+      request(target, Make, Done, timeout, length)
+    }
+    if cancel { cancel_request(pending) } else { () }
+    data = fill_bytes(1, 9)
+    9
+  }
+  on Done(id: RequestId, status: Int, result: Bytes) {
+    collect()
+    let length = bytes_len(result)
+    let edges = if length == 0 { 0 } else { byte_at(result, 0) + byte_at(result, length - 1) }
+    data = replace_i64_be(replace_i64_be(replace_i64_be(fill_bytes(24, 0), 0, 9), 8, length), 16, edges)
+    collect()
+    send_self(Mark, status)
+  }
+  on Mark(status: Int) { data = replace_i64_be(data, 0, status) }
+  on CompletedStatus -> Int { read_i64_be(data, 0) }
+  on CompletedLength -> Int { read_i64_be(data, 8) }
+  on CompletedEdges -> Int { read_i64_be(data, 16) }
+  on Completed -> Int { if bytes_len(data) == 24 { read_i64_be(data, 0) } else { 9 } }
+
+  on Initial -> Bytes { data }
+  on StartImportFail -> Int {
+    let target = spawn_self()
+    let pending = request(target, Initial, Done, 60000)
+    9
+  }
+}

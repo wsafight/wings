@@ -302,6 +302,7 @@ pub fn analyze(text: &str) -> Analysis {
                                     | Type::Unit
                                     | Type::RecordInt
                                     | Type::IntList
+                                    | Type::Bytes
                             )
                         ]
                     ))
@@ -314,7 +315,7 @@ pub fn analyze(text: &str) -> Analysis {
             }
             let reply = handler.reply_type.as_ref().map(|name| {
                 let ty = checker.declared_type(name);
-                if !matches!(ty, Type::RecordInt | Type::IntList) {
+                if !matches!(ty, Type::RecordInt | Type::IntList | Type::Bytes) {
                     checker.external_type(&ty, name.span);
                 }
                 ty
@@ -576,11 +577,12 @@ impl Checker {
                                     | Type::Unit
                                     | Type::RecordInt
                                     | Type::IntList
+                                    | Type::Bytes
                             )
                         ) {
                             self.error(
                                 "T018",
-                                "request requires an Int, Bool, Unit, RecordInt or IntList reply handler",
+                                "request requires a scalar, RecordInt, IntList or Bytes reply handler",
                                 arguments[1].span,
                             );
                         }
@@ -595,7 +597,7 @@ impl Checker {
                     }
                     if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.len() == 3
                         && parameters[0].1 == Type::RequestId && parameters[1].1 == Type::Int
-                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit | Type::RecordInt | Type::IntList)
+                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit | Type::RecordInt | Type::IntList | Type::Bytes)
                         && Some(&parameters[2].1) == reply_type.as_ref())
                     {
                         self.error(

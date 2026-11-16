@@ -172,6 +172,7 @@ impl IngressReceiver {
                         | ValueType::Unit
                         | ValueType::Ref
                         | ValueType::ListRef
+                        | ValueType::BytesRef
                 )
             })
             || schema.parameters.len() > MAX_ARGUMENTS
