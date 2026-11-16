@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0101](adr/0101-empty-language-request-maintenance.md) 候选通过存活计数、双端回收及真实 AOT 回归，但 hot-queue 原 10000/s、30s/60s/五对中候选出现 86 次超时、更多队满，收益不稳定，已回退。完整拒绝/迟发/内存与回退验证见[记录](validation-empty-request-optimization-2026-11-16.md)，不把固定速率或局部测试当作吞吐上限/MVP。
+
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 候选通过实际 timed wait 的早/晚重置、取消旧期限、过期 arm 和关闭回归，但 hot-queue 10000/s 原 30s/60s/五对无稳定收益，故回退。两版均含 ADR-0099；保留全部拒绝/超时和回退后验证，不以功能通过、最好轮次或两个中位数之比宣布性能门禁通过。
 
 [ADR-0099](adr/0099-unready-result-poll-fast-path.md) 须以持结果表锁的确定性测试证明未就绪轮询免锁，并检查原 deadline、取消/发布/Drop、槽代次与三级准入。优化前后沿同业务 30s/60s/五对交替重复，保留全部尾延迟、拒绝、超时与分口径内存；不把一次 profile 或局部结果当作尾延迟根因、原生双平台或 BEAM 双目标通过。

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0101](adr/0101-empty-language-request-maintenance.md) 的第 3/5/7 项空请求维护实验已因五对无稳定收益回退；当前源码恢复已提交基线，失败证据保留。M0/MVP、最新原生双平台及同负载 BEAM 双门禁仍未完成。
+
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的第 5/7 项计时通知实验已回退，hot-queue 五对结果及候选退化保留；当前 timer 不变。后续应继续区分发生器迟发、OS 调度和受管执行开销，不能因局部功能通过宣布 M0/MVP 或双平台 BEAM 双目标达标。
 
 [ADR-0099](adr/0099-unready-result-poll-fast-path.md) 在第 3/7 项既有宿主结果表加入计费原子就绪快路径，只消除期限前未就绪轮询的全表加锁。性能须同业务配对比较，完整 MVP 和原生双平台 BEAM 双门禁仍未完成。

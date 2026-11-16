@@ -108,6 +108,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0098](0098-accounted-byte-replies.md) | Bytes 出口根、计费结果租约及分块完成导入 | 已采纳（有界字节回复切片） |
 | [0099](0099-unready-result-poll-fast-path.md) | 计费每槽原子就绪标志、期限前未就绪轮询免锁 | 已采纳（局部轮询优化） |
 | [0100](0100-coalesced-deadline-timer-notifications.md) | 按实际等待期限合并 arm/disarm 冗余计时通知 | 实验后回退（无稳定收益，保留失败证据） |
+| [0101](0101-empty-language-request-maintenance.md) | 锁内存活计数与空语言请求表维护快路径 | 实验后回退（无稳定收益，保留失败证据） |
 
 ## 维护方式
 

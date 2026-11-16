@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0101](adr/0101-empty-language-request-maintenance.md) 的同锁存活计数/空表提前返回候选已回退，当前语言请求表维护与双端票据沿原路径；仍不把超时/取消或事件入队当作发布端结束。
+
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 记录已回退的 timer 通知合并实验；当前沿用每次 arm/disarm 原锁内更新并通知的正确性基线，stop 唤醒/join。候选未成为运行契约，量子、预算、原子检查和资源上限不变。
 
 [ADR-0099](adr/0099-unready-result-poll-fast-path.md) 的宿主 `IngressRequest::try_take` 先以 Acquire 读固定每槽就绪标志；false 且尚未到原期限时直接返回 None。发布/取消在原结果表锁内选择终态并 Release 标记，复用时先清标志；期限到达强制走原锁内检查。`wait`、一次消费、迟到 publisher 保留容量和原计费上限不变。

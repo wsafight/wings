@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0101](adr/0101-empty-language-request-maintenance.md) 的空语言请求表维护快路径在 hot-queue 五对中未建立稳定收益，已回退计数与提前返回；当前沿原 Scheduler 维护扫描、双端回收和宿主结果表，不改 ABI/预算/容量。
+
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的计时通知合并实验已因 hot-queue 五对无稳定收益回退。当前仍在原锁内 arm/disarm 并无条件通知，stop 唤醒/join；不采用候选的实际等待状态字段，不改 quantum、safepoint 或 ABI。
 
 [ADR-0099](adr/0099-unready-result-poll-fast-path.md) 为宿主结果表预付费固定每槽原子就绪标志。未就绪且未到原请求期限的 `try_take` 不锁全表，其余情况仍在原锁内确定和消费唯一终态；不在锁外读取结果，不改 ABI 或发布者生命周期。
