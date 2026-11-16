@@ -19,6 +19,8 @@
 | [2026-11-14 验证记录](docs/validation-2026-11-14.md) | 大容量派发、初始化池、并发恢复、平台内存观测、计费 Bytes 消息和剩余门禁 |
 | [2026-11-15 验证记录](docs/validation-2026-11-15.md) | 计费 IntList 回复、出口根、结果所有权与平台验证边界 |
 | [2026-11-16 验证记录](docs/validation-2026-11-16.md) | 计费 Bytes 回复、debug/release 验证、mixed-4k 五对内存/延迟试测与剩余 MVP 门禁 |
+| [2026-11-16 轮询优化验证](docs/validation-optimization-2026-11-16.md) | 宿主结果未就绪免锁、确定性回归与同负载前后配对实验 |
+| [2026-11-16 计时通知优化验证](docs/validation-timer-optimization-2026-11-16.md) | hot-queue 五对计时通知实验、退化数据与回退验证 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

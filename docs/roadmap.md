@@ -1,5 +1,9 @@
 # 风险与里程碑
 
+[ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的第 5/7 项计时通知实验已回退，hot-queue 五对结果及候选退化保留；当前 timer 不变。后续应继续区分发生器迟发、OS 调度和受管执行开销，不能因局部功能通过宣布 M0/MVP 或双平台 BEAM 双目标达标。
+
+[ADR-0099](adr/0099-unready-result-poll-fast-path.md) 在第 3/7 项既有宿主结果表加入计费原子就绪快路径，只消除期限前未就绪轮询的全表加锁。性能须同业务配对比较，完整 MVP 和原生双平台 BEAM 双门禁仍未完成。
+
 [ADR-0098](adr/0098-accounted-byte-replies.md) 按第 3/4 项补齐有界 Bytes 回复、计费结果所有权及完成导入；具体证据见[验证记录](validation-2026-11-16.md)。字符串/通用记录、完整启动/装载资源账本、长时公平/过载/故障、最新原生双平台以及同负载 BEAM 吞吐/整机内存双门禁仍未完成，不能宣布 MVP 完成。
 
 [ADR-0097](adr/0097-accounted-int-list-replies.md) 按第 3/4 项补齐有界 IntList 回复、计费结果与完成导入，平台证据见[验证记录](validation-2026-11-15.md)；Bytes 回复由 ADR-0098 补齐，通用业务值、完整账本、公平/故障、原生双平台及 BEAM 双门禁保持未完成。

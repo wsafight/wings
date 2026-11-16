@@ -4,6 +4,7 @@
 - 状态：已采纳（重复控制元数据消除切片；macOS 功能已验证，Linux 与完整门禁另记）
 - 部分替代：[ADR-0054](0054-bounded-multi-worker-scheduler.md) 的逐 actor 三类型结果表
 - 扩展：[ADR-0047](0047-cross-thread-ingress-requests.md)
+- 后续：[ADR-0099](0099-unready-result-poll-fast-path.md) 消除未就绪结果轮询的全表锁，保留共享容量与发布/回收锁。
 
 ## 决定与理由
 

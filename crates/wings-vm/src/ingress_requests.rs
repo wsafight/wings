@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ pub struct IngressRequest {
     slot: usize,
     generation: u64,
     active: bool,
+    deadline: Instant,
 }
 
 pub(crate) struct ReplyPublisher {
@@ -22,6 +24,7 @@ pub(crate) struct ReplyPublisher {
 pub(crate) struct ReplyTable {
     slots: Mutex<Box<[ReplySlot]>>,
     changed: Condvar,
+    ready: Box<[AtomicBool]>,
     account: ResourceAccount,
     _charge: Reservation,
 }
@@ -42,8 +45,9 @@ struct Pending {
 impl ReplyTable {
     pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Arc<Self>, String> {
         let charge = account.reserve(Resources {
-            bytes: (std::mem::size_of::<Self>() + capacity * std::mem::size_of::<ReplySlot>() + 128)
-                as u64,
+            bytes: (std::mem::size_of::<Self>()
+                + capacity * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
+                + 128) as u64,
             ..Resources::default()
         })?;
         let mut slots = Vec::new();
@@ -54,9 +58,15 @@ impl ReplyTable {
             generation: 1,
             pending: None,
         });
+        let mut ready = Vec::new();
+        ready
+            .try_reserve_exact(capacity)
+            .map_err(|_| "ingress result readiness allocation failed")?;
+        ready.resize_with(capacity, || AtomicBool::new(false));
         Ok(Arc::new(Self {
             slots: Mutex::new(slots.into_boxed_slice()),
             changed: Condvar::new(),
+            ready: ready.into_boxed_slice(),
             account: account.clone(),
             _charge: charge,
         }))
@@ -97,6 +107,7 @@ impl ReplyTable {
         };
         let slot = &mut slots[index];
         let generation = slot.generation;
+        self.ready[index].store(false, Ordering::Release);
         slot.pending = Some(Pending {
             deadline,
             outcome: None,
@@ -111,6 +122,7 @@ impl ReplyTable {
                 slot: index,
                 generation,
                 active: true,
+                deadline,
             },
             ReplyPublisher {
                 table: self.clone(),
@@ -140,6 +152,7 @@ impl ReplyTable {
             });
         }
         pending.publisher = false;
+        self.ready[index].store(true, Ordering::Release);
         let retired = retire(slot);
         drop(slots);
         drop(retired);
@@ -169,6 +182,9 @@ impl IngressRequest {
     pub fn try_take(&mut self) -> Result<Option<RequestOutcome>, String> {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
+        }
+        if !self.table.ready[self.slot].load(Ordering::Acquire) && Instant::now() < self.deadline {
+            return Ok(None);
         }
         let mut slots = self
             .table
@@ -245,6 +261,7 @@ impl IngressRequest {
                 RequestOutcome::Cancelled
             });
         }
+        self.table.ready[self.slot].store(true, Ordering::Release);
         drop(slots);
         self.table.changed.notify_all();
         Ok(())
@@ -306,6 +323,145 @@ impl Drop for ReplyPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unready_result_poll_does_not_lock_slots_and_reuse_clears_readiness() {
+        let account = ResourceAccount::vm(Resources {
+            bytes: 8192,
+            requests: 1,
+            ..Resources::default()
+        });
+        let table = ReplyTable::new(&account, 1).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        for cancel in [false, true] {
+            let (mut request, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
+            assert!(!table.ready[0].load(Ordering::Acquire));
+            {
+                let slots = table.slots.lock().unwrap();
+                assert!(slots[0].pending.as_ref().unwrap().outcome.is_none());
+                assert_eq!(request.try_take().unwrap(), None);
+            }
+            if cancel {
+                request.cancel().unwrap();
+                assert!(table.ready[0].load(Ordering::Acquire));
+                assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Cancelled));
+                assert_eq!(account.used().requests, 1);
+                drop(publisher);
+            } else {
+                publisher.complete(17);
+                assert!(table.ready[0].load(Ordering::Acquire));
+                assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Reply(17)));
+            }
+            assert!(request.try_take().is_err());
+            assert_eq!(account.used().requests, 0);
+        }
+        drop(table);
+        assert_eq!(account.used(), Resources::default());
+    }
+
+    #[test]
+    fn unready_result_still_observes_deadline_and_retains_publisher_capacity() {
+        let account = ResourceAccount::vm(Resources {
+            bytes: 8192,
+            requests: 1,
+            ..Resources::default()
+        });
+        let table = ReplyTable::new(&account, 1).unwrap();
+        let (mut request, publisher) = table
+            .start(Instant::now(), &account, ValueType::BytesRef)
+            .unwrap();
+        assert!(!table.ready[0].load(Ordering::Acquire));
+        assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::TimedOut));
+        assert_eq!(account.used().requests, 1);
+        assert!(
+            table
+                .start(Instant::now(), &account, ValueType::Int)
+                .is_err()
+        );
+        drop(publisher);
+        assert_eq!(account.used().requests, 0);
+        drop((request, table));
+        assert_eq!(account.used(), Resources::default());
+    }
+
+    #[test]
+    fn readiness_storage_is_admitted_before_allocation_at_each_tier() {
+        let required = (std::mem::size_of::<ReplyTable>()
+            + 64 * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
+            + 128) as u64;
+        for restricted in 0..3 {
+            let limits = |level| Resources {
+                bytes: required - u64::from(level == restricted),
+                requests: 1,
+                ..Resources::default()
+            };
+            let vm = ResourceAccount::vm(limits(0));
+            let tenant = vm.tenant(limits(1)).unwrap();
+            let process = tenant.process(limits(2)).unwrap();
+            assert!(ReplyTable::new(&process, 64).is_err());
+            assert_eq!(vm.used(), Resources::default());
+        }
+        let limits = Resources {
+            bytes: required,
+            requests: 1,
+            ..Resources::default()
+        };
+        let account = ResourceAccount::vm(limits);
+        let table = ReplyTable::new(&account, 64).unwrap();
+        assert_eq!(account.used().bytes, required);
+        drop(table);
+        assert_eq!(account.used(), Resources::default());
+    }
+
+    #[test]
+    fn readiness_is_per_slot_and_concurrent_publication_is_consumed_once() {
+        let account = ResourceAccount::vm(Resources {
+            bytes: 1 << 20,
+            requests: 64,
+            ..Resources::default()
+        });
+        let table = ReplyTable::new(&account, 64).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut requests = Vec::new();
+        let mut publishers = Vec::new();
+        for index in 0..64 {
+            let (request, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
+            assert_eq!(request.slot, index);
+            requests.push(request);
+            publishers.push(publisher);
+        }
+        let gate = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let gate = &gate;
+            scope.spawn(move || {
+                gate.wait();
+                for (index, publisher) in publishers.into_iter().enumerate().rev() {
+                    publisher.complete(index as i64);
+                    std::thread::yield_now();
+                }
+            });
+            let slots = table.slots.lock().unwrap();
+            gate.wait();
+            for request in &mut requests {
+                assert_eq!(request.try_take().unwrap(), None);
+            }
+            drop(slots);
+            for (index, request) in requests.iter_mut().enumerate() {
+                loop {
+                    assert!(Instant::now() < deadline);
+                    if let Some(outcome) = request.try_take().unwrap() {
+                        assert_eq!(outcome, RequestOutcome::Reply(index as i64));
+                        assert!(request.try_take().is_err());
+                        break;
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        });
+        assert_eq!(account.used().requests, 0);
+        drop((requests, table));
+        assert_eq!(account.used(), Resources::default());
+    }
 
     #[test]
     fn positive_deadline_wait_and_publication_respect_operation_bounds_and_reuse() {

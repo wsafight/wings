@@ -1,5 +1,9 @@
 # 架构设计
 
+[ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的计时通知合并实验已因 hot-queue 五对无稳定收益回退。当前仍在原锁内 arm/disarm 并无条件通知，stop 唤醒/join；不采用候选的实际等待状态字段，不改 quantum、safepoint 或 ABI。
+
+[ADR-0099](adr/0099-unready-result-poll-fast-path.md) 为宿主结果表预付费固定每槽原子就绪标志。未就绪且未到原请求期限的 `try_take` 不锁全表，其余情况仍在原锁内确定和消费唯一终态；不在锁外读取结果，不改 ABI 或发布者生命周期。
+
 [ADR-0098](adr/0098-accounted-byte-replies.md) 将 Bytes 回复接入原协程出口根和至多 256 字节的分块导出，复制/结果控制准入全部成功后才提交状态。结果拥有独立存储及原目标账户票据；完成信封仅借不可变结果租约，在发起方通过分块导入生成独立业务值，不在 Scheduler 锁内整块复制。沿 ABI v15 和原 4352 字节控制预留，不代表完整资源账本或 MVP 验收。
 
 [ADR-0097](adr/0097-accounted-int-list-replies.md) 接入有界 IntList 回复：原协程为候选/回复建立出口根并逐节点检查，复制为独立计费结果后才提交。继续 ABI v15，原生代码、schema、结果拥有者与完成导入的输入边界分别验证。结果只持不可变内容及预留，不保留 actor、模块、堆或执行栈。

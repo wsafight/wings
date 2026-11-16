@@ -4,6 +4,7 @@
 - 状态：已采纳（外部请求切片）
 - 扩展：[ADR-0046](0046-bounded-cross-thread-ingress.md) 的单向入口限制
 - 相关：[ADR-0021](0021-bounded-requests.md)、[ADR-0045](0045-concurrent-resource-admission.md)
+- 后续：[ADR-0099](0099-unready-result-poll-fast-path.md) 为未就绪且未到期限的宿主轮询增加计费原子快路径；终态仍由原锁保护。
 
 ## 决定与理由
 

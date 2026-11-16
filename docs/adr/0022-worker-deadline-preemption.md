@@ -3,6 +3,7 @@
 - 日期：2026-11-12
 - 状态：已采纳（标量 worker 计时切片）
 - 补充：[单 worker](0020-single-worker-mailbox.md)、[活栈恢复](0011-scalar-stackful-resume.md)
+- 后续实验：[ADR-0100](0100-coalesced-deadline-timer-notifications.md) 曾合并不需要提前唤醒的通知，五对无稳定收益后已回退，本记录的实现保持。
 
 ## 决定
 

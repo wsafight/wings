@@ -1,5 +1,9 @@
 # 运行时
 
+[ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 记录已回退的 timer 通知合并实验；当前沿用每次 arm/disarm 原锁内更新并通知的正确性基线，stop 唤醒/join。候选未成为运行契约，量子、预算、原子检查和资源上限不变。
+
+[ADR-0099](adr/0099-unready-result-poll-fast-path.md) 的宿主 `IngressRequest::try_take` 先以 Acquire 读固定每槽就绪标志；false 且尚未到原期限时直接返回 None。发布/取消在原结果表锁内选择终态并 Release 标记，复用时先清标志；期限到达强制走原锁内检查。`wait`、一次消费、迟到 publisher 保留容量和原计费上限不变。
+
 [ADR-0098](adr/0098-accounted-byte-replies.md) 接入 `ScalarProcess::invoke_bytes`、`ExecutionStatus::CompleteBytes` 和 `RequestOutcome::ReplyBytes`。`BytesReply::as_slice()` 借用 0..=65536 字节，Clone 共享独立计费结果；末拥有者释放存储与控制票据，目标停止不提前归还。原标量调用在执行前拒绝字节回复，CLI 流式输出 `{"reply":{"bytes":[...]}}`，输入引用边界不变。
 
 Bytes 完成事件 mask 为 4，规范段从 0 开始，非成功为长度 0。信封保留目标结果租约直到原栈分块导入/退出清理；发起方堆副本另外准入，不共享可变业务数据、不在 Scheduler 锁内复制字节。队满保留路由；超时/取消不撤回目标执行，发起方退出/导入失败及迟到回复沿原 publisher 生命周期清理。具体试验与剩余门禁见[验证记录](validation-2026-11-16.md)。
