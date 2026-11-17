@@ -289,6 +289,8 @@ fn compile_body(
                 | Operation::StringFromBytes(_)
                 | Operation::StringBytes(_)
                 | Operation::StringLen(_)
+                | Operation::StringAt(_, _)
+                | Operation::StringSlice(_)
                 | Operation::ConcatStrings(_, _)
                 | Operation::EqualStrings(_, _)
                 | Operation::StringLiteral(_)
@@ -784,6 +786,8 @@ fn compile_body(
             | Operation::StringFromBytes(_)
             | Operation::StringBytes(_)
             | Operation::StringLen(_)
+            | Operation::StringAt(_, _)
+            | Operation::StringSlice(_)
             | Operation::ConcatStrings(_, _)
             | Operation::EqualStrings(_, _) => {
                 let output = heap_output.expect("heap operation scratch");
@@ -797,6 +801,13 @@ fn compile_body(
                     Operation::StringLen(value) => {
                         (wings_abi::HEAP_STRING_LEN, [Some(value), None, None])
                     }
+                    Operation::StringAt(value, index) => {
+                        (wings_abi::HEAP_STRING_AT, [Some(value), Some(index), None])
+                    }
+                    Operation::StringSlice([value, start, length]) => (
+                        wings_abi::HEAP_STRING_SLICE,
+                        [Some(value), Some(start), Some(length)],
+                    ),
                     Operation::ConcatStrings(left, right) => (
                         wings_abi::HEAP_CONCAT_STRINGS,
                         [Some(left), Some(right), None],

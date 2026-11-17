@@ -38,6 +38,44 @@ fn string_equality_validates_both_types_and_keeps_last_use_operands_rooted() {
 }
 
 #[test]
+fn string_index_and_slice_validate_scalar_operands_and_root_the_source() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("Aé😀".into()),
+        ),
+        instruction(ValueType::Int, Operation::Constant(1)),
+        instruction(ValueType::Int, Operation::StringAt(1, 2)),
+        instruction(ValueType::Int, Operation::Constant(1)),
+        instruction(ValueType::StringRef, Operation::StringSlice([1, 2, 4])),
+        instruction(ValueType::Int, Operation::StringLen(5)),
+    ];
+    function.state = 0;
+    function.reply = 6;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[3].contains(&1));
+    assert!(roots.at[5].contains(&1));
+    assert!(roots.at[6].contains(&5));
+    for (index, ty, operation) in [
+        (3, ValueType::StringRef, Operation::StringAt(1, 2)),
+        (3, ValueType::Int, Operation::StringAt(0, 2)),
+        (3, ValueType::Int, Operation::StringAt(1, 1)),
+        (5, ValueType::Int, Operation::StringSlice([1, 2, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([0, 2, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([1, 1, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([1, 2, 1])),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
 fn named_record_ir_rejects_forged_schema_field_types_and_external_signatures() {
     let mut program = valid_program();
     program.records = vec![

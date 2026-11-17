@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md) 补 MVP 第 4 项 String 的基本字符读取/子串操作，UTF-8 扫描按 Unicode scalar value 分块且切片独立计费。ABI v22；定向 Debug/Release 真实 AOT、块边界、错误状态、取消/GC 与额度清理通过；完整 scalar AOT 套件仍受间歇 TCP 启动和 fairness 超时阻断。它不关闭完整资源账本、Linux 原生验证、公平/故障长测及双平台 BEAM 双门禁，MVP 未完成，见[验证记录](validation-string-slicing-2026-11-18.md)。
+
 [ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 推进第 5/7 项的持续观测：保留原始满额失败，以固定预算区分完整业务与不完整诊断。原生双平台、CPU 硬配额、过载分组、完整公平性分布与 BEAM 吞吐/整机内存仍未完成，不能以新的观测模式代替验收。
 
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 推进第 5/7 项的观测来源：补齐步骤片实际恢复调用区间，保留原子让出事件的独立含义和默认关闭路径。仍需冻结长测协议、每 actor 饥饿检查、过载分组、CPU 硬配额与原生双平台门禁，不因诊断与有界 AOT 通过而完成 MVP。

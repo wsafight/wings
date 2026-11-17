@@ -939,13 +939,111 @@ unsafe fn string_count(
     }
 }
 
+unsafe fn string_byte_range(
+    context: &mut ScalarContext,
+    reference: HeapRef,
+    start: usize,
+    end: usize,
+) -> Result<(usize, usize), u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut byte_offset = 0;
+    let mut scalar_index = 0;
+    let mut start_offset = (start == 0).then_some(0);
+    let mut end_offset = (end == 0).then_some(0);
+    loop {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let (chunk_bytes, found_start, found_end, total_bytes) = {
+            let heap = unsafe { &*pointer };
+            let data = heap
+                .heap
+                .string_bytes(reference)
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+            if byte_offset == data.len() {
+                (0, None, None, data.len())
+            } else {
+                let chunk_end = (byte_offset + 256).min(data.len());
+                let chunk = &data[byte_offset..chunk_end];
+                let text = match std::str::from_utf8(chunk) {
+                    Ok(text) => text,
+                    Err(error) if error.error_len().is_none() && chunk_end < data.len() => {
+                        std::str::from_utf8(&chunk[..error.valid_up_to()])
+                            .map_err(|_| wings_abi::STATUS_INVALID_STRING)?
+                    }
+                    Err(_) => return Err(wings_abi::STATUS_INVALID_STRING),
+                };
+                let mut found_start = None;
+                let mut found_end = None;
+                for (offset, character) in text.char_indices() {
+                    if scalar_index == start {
+                        found_start = Some(byte_offset + offset);
+                    }
+                    if scalar_index == end {
+                        found_end = Some(byte_offset + offset);
+                    }
+                    scalar_index += 1;
+                    let next_offset = byte_offset + offset + character.len_utf8();
+                    if scalar_index == start {
+                        found_start = Some(next_offset);
+                    }
+                    if scalar_index == end {
+                        found_end = Some(next_offset);
+                    }
+                }
+                (text.len(), found_start, found_end, data.len())
+            }
+        };
+        if let Some(offset) = found_start {
+            start_offset = Some(offset);
+        }
+        if let Some(offset) = found_end {
+            end_offset = Some(offset);
+        }
+        if let (Some(start), Some(end)) = (start_offset, end_offset) {
+            return Ok((start, end));
+        }
+        if byte_offset == total_bytes {
+            if scalar_index == start {
+                start_offset = Some(total_bytes);
+            }
+            if scalar_index == end {
+                end_offset = Some(total_bytes);
+            }
+            return match (start_offset, end_offset) {
+                (Some(start), Some(end)) => Ok((start, end)),
+                _ => Err(wings_abi::STATUS_INVALID_STRING_INDEX),
+            };
+        }
+        byte_offset += chunk_bytes;
+    }
+}
+
+unsafe fn string_at(
+    context: &mut ScalarContext,
+    reference: HeapRef,
+    index: usize,
+) -> Result<u64, u32> {
+    let end = index
+        .checked_add(1)
+        .ok_or(wings_abi::STATUS_INVALID_STRING_INDEX)?;
+    let (start, end) = unsafe { string_byte_range(context, reference, index, end) }?;
+    let heap = unsafe { &*context.heap_data.cast::<AotHeap>() };
+    let data = heap
+        .heap
+        .string_bytes(reference)
+        .map_err(|_| STATUS_INVALID_ROOT)?;
+    let text =
+        std::str::from_utf8(&data[start..end]).map_err(|_| wings_abi::STATUS_INVALID_STRING)?;
+    Ok(text.chars().next().ok_or(wings_abi::STATUS_INVALID_ROOT)? as u32 as u64)
+}
+
 unsafe fn string_call(
     context: &mut ScalarContext,
     operation: u32,
     arguments: [i64; 3],
 ) -> Result<u64, u32> {
     use wings_abi::{
-        HEAP_CONCAT_STRINGS, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN, STATUS_INVALID_STRING,
+        HEAP_CONCAT_STRINGS, HEAP_STRING_AT, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN,
+        HEAP_STRING_SLICE, STATUS_INVALID_STRING, STATUS_INVALID_STRING_INDEX,
     };
     let pointer = context.heap_data.cast::<AotHeap>();
     let from_bytes = operation == HEAP_STRING_FROM_BYTES;
@@ -953,7 +1051,12 @@ unsafe fn string_call(
         .heap
         .import_reference(arguments[0] as u64)
         .map_err(|_| STATUS_INVALID_ROOT)?;
+    if operation == HEAP_STRING_AT {
+        let index = usize::try_from(arguments[1]).map_err(|_| STATUS_INVALID_STRING_INDEX)?;
+        return unsafe { string_at(context, source, index) };
+    }
     let mut sources = [Some(source), None];
+    let mut ranges = [(0, 0); 2];
     if operation == HEAP_STRING_LEN || from_bytes {
         let count = unsafe { string_count(context, source, from_bytes) }?;
         if operation == HEAP_STRING_LEN {
@@ -979,7 +1082,18 @@ unsafe fn string_call(
             }
             .map_err(|_| STATUS_INVALID_ROOT)?
             .len();
+            ranges[index] = (0, lengths[index]);
         }
+    }
+    if operation == HEAP_STRING_SLICE {
+        let start = usize::try_from(arguments[1]).map_err(|_| STATUS_INVALID_STRING_INDEX)?;
+        let length = usize::try_from(arguments[2]).map_err(|_| STATUS_INVALID_STRING_INDEX)?;
+        let end = start
+            .checked_add(length)
+            .ok_or(STATUS_INVALID_STRING_INDEX)?;
+        let (byte_start, byte_end) = unsafe { string_byte_range(context, source, start, end) }?;
+        ranges[0] = (byte_start, byte_end - byte_start);
+        lengths[0] = ranges[0].1;
     }
     let length = lengths[0]
         .checked_add(lengths[1])
@@ -995,9 +1109,9 @@ unsafe fn string_call(
                 .map_err(|_| STATUS_HEAP_EXHAUSTED)?
         }
     };
-    for (reference, length) in sources.into_iter().zip(lengths) {
+    for (reference, (source_offset, length)) in sources.into_iter().zip(ranges) {
         if let Some(reference) = reference {
-            for start in (0..length).step_by(256) {
+            for chunk_offset in (0..length).step_by(256) {
                 crate::execution::runtime_checkpoint(context, true)?;
                 let heap = unsafe { &*pointer };
                 let data = if from_bytes {
@@ -1006,9 +1120,10 @@ unsafe fn string_call(
                     heap.heap.string_bytes(reference)
                 }
                 .map_err(|_| STATUS_INVALID_ROOT)?;
-                buffer
-                    .data
-                    .extend_from_slice(&data[start..(start + 256).min(length)]);
+                buffer.data.extend_from_slice(
+                    &data[source_offset + chunk_offset
+                        ..source_offset + (chunk_offset + 256).min(length)],
+                );
             }
         }
     }
@@ -1230,7 +1345,12 @@ pub(crate) unsafe extern "C" fn heap_call(
             Err(status) => status,
         };
     }
-    if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_STRING_LITERAL).contains(&operation) {
+    if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_STRING_LITERAL).contains(&operation)
+        || matches!(
+            operation,
+            wings_abi::HEAP_STRING_AT | wings_abi::HEAP_STRING_SLICE
+        )
+    {
         let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
         let result = if operation == wings_abi::HEAP_STRING_LITERAL {
             unsafe { string_literal(context, arguments) }

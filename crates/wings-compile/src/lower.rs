@@ -461,9 +461,9 @@ impl Lowerer<'_> {
                         self.push(ValueType::Int, Operation::ReadInt(value))
                     }
                     "collect" => self.push(ValueType::Unit, Operation::Collect),
-                    "string_from_bytes" | "string_bytes" | "string_len" | "concat_strings"
-                    | "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" | "read_i64_be"
-                    | "replace_i64_be" => {
+                    "string_from_bytes" | "string_bytes" | "string_len" | "string_at"
+                    | "string_slice" | "concat_strings" | "fill_bytes" | "bytes_len"
+                    | "byte_at" | "replace_byte" | "read_i64_be" | "replace_i64_be" => {
                         let values = arguments
                             .iter()
                             .map(|argument| self.expression(argument))
@@ -476,6 +476,13 @@ impl Lowerer<'_> {
                                 (ValueType::BytesRef, Operation::StringBytes(values[0]))
                             }
                             "string_len" => (ValueType::Int, Operation::StringLen(values[0])),
+                            "string_at" => {
+                                (ValueType::Int, Operation::StringAt(values[0], values[1]))
+                            }
+                            "string_slice" => (
+                                ValueType::StringRef,
+                                Operation::StringSlice([values[0], values[1], values[2]]),
+                            ),
                             "concat_strings" => (
                                 ValueType::StringRef,
                                 Operation::ConcatStrings(values[0], values[1]),
@@ -727,6 +734,36 @@ mod tests {
                 }
             }));
         }
+    }
+
+    #[test]
+    fn string_index_and_slice_lower_to_typed_rooted_intrinsics() {
+        let program = lower("process P { state text: String = \"Aé😀\"; fn part(value: String, start: Int) -> String { string_slice(value, start, string_len(value) - start) } on At(index: Int) -> Int { string_at(text, index) } on Part(start: Int) -> String { part(text, start) } }").unwrap();
+        let at = &program.handlers[0].function;
+        let index = at
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::StringAt(_, _)))
+            .unwrap();
+        assert_eq!(at.instructions[index].ty, ValueType::Int);
+        assert!(
+            at.root_plan().at[index]
+                .iter()
+                .any(|root| { at.instructions[*root].ty == ValueType::StringRef })
+        );
+        let slice = &program.functions[0].function;
+        let index = slice
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::StringSlice(_)))
+            .unwrap();
+        assert_eq!(slice.instructions[index].ty, ValueType::StringRef);
+        assert!(
+            slice.root_plan().at[index]
+                .iter()
+                .any(|root| { slice.instructions[*root].ty == ValueType::StringRef })
+        );
+        program.validate().unwrap();
     }
 
     #[test]

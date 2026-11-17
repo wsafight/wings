@@ -1,0 +1,143 @@
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use wings_vm::{
+    CancellationToken, ExecutionStatus, PreemptionToken, ResourceAccount, Resources, ScalarModule,
+    StackPool,
+};
+
+fn limits() -> Resources {
+    Resources {
+        bytes: 64 << 20,
+        processes: 2,
+        messages: 2,
+        requests: 2,
+    }
+}
+
+fn assert_invalid(
+    module: &ScalarModule,
+    tenant: &ResourceAccount,
+    baseline: Resources,
+    handler: &str,
+) -> Result<(), String> {
+    let account = tenant.process_accounted(limits())?;
+    let pool = StackPool::new_accounted(tenant, 1, 0)?.for_process(&account)?;
+    let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
+    let result = match handler {
+        "NegativeIndex" => process.invoke(handler, &[]).map(|_| ()),
+        _ => process
+            .invoke_string(handler, &[], 1_000_000, &CancellationToken::default())
+            .map(|_| ()),
+    };
+    assert!(result.is_err());
+    drop((process, pool, account));
+    assert_eq!(tenant.used(), baseline);
+    Ok(())
+}
+
+fn main() -> Result<(), String> {
+    let path = std::env::args_os()
+        .nth(1)
+        .ok_or("usage: string_slicing ARTIFACT")?;
+    let vm = ResourceAccount::vm_accounted(limits())?;
+    let module = unsafe { ScalarModule::load_accounted(Path::new(&path), &vm) }?;
+    let tenant = vm.tenant_accounted(limits())?;
+    let baseline = tenant.used();
+    let account = tenant.process_accounted(limits())?;
+    let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
+    let mut process = module.instantiate_with_heap(&pool, &account, 1024)?;
+
+    for (index, expected) in [65, 233, 20013, 128512, 90].into_iter().enumerate() {
+        assert_eq!(process.invoke("At", &[index as i64])?, Some(expected));
+    }
+    for (start, length, expected) in [
+        (0, 5, "Aé中😀Z"),
+        (1, 3, "é中😀"),
+        (2, 2, "中😀"),
+        (5, 0, ""),
+        (0, 0, ""),
+    ] {
+        assert_eq!(
+            process
+                .invoke_string(
+                    "Slice",
+                    &[start, length],
+                    1_000_000,
+                    &CancellationToken::default()
+                )?
+                .as_str(),
+            expected
+        );
+    }
+    assert_eq!(
+        process
+            .invoke_string("Boundary", &[], 1_000_000, &CancellationToken::default())?
+            .as_str(),
+        "😀"
+    );
+    assert_eq!(process.invoke("Fill", &[])?, Some(65536));
+    assert_eq!(
+        process
+            .invoke_string("Last", &[], 1_000_000, &CancellationToken::default())?
+            .as_str(),
+        "a"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut execution = process.start_controlled(
+        "Slice",
+        &[0, 65536],
+        1_000_000,
+        &CancellationToken::default(),
+        &PreemptionToken::default(),
+    )?;
+    let mut suspensions = 0;
+    loop {
+        assert!(Instant::now() < deadline);
+        match execution.resume(1)? {
+            ExecutionStatus::Suspended => suspensions += 1,
+            ExecutionStatus::CompleteString(value) => {
+                assert_eq!(value.as_str().len(), 65536);
+                break;
+            }
+            other => return Err(format!("unexpected string slice status: {other:?}")),
+        }
+    }
+    assert!(suspensions >= 256);
+    drop(execution);
+    process.invoke("Clear", &[])?;
+    process.invoke("Sweep", &[])?;
+    assert_eq!(process.heap_stats().unwrap().allocated, 1);
+    drop((process, pool, account));
+    assert_eq!(tenant.used(), baseline);
+
+    let account = tenant.process_accounted(limits())?;
+    let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
+    let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
+    process.invoke("Fill", &[])?;
+    let cancellation = CancellationToken::default();
+    let mut execution = process.start_controlled(
+        "Slice",
+        &[0, 65536],
+        1_000_000,
+        &cancellation,
+        &PreemptionToken::default(),
+    )?;
+    for _ in 0..64 {
+        assert_eq!(execution.resume(1)?, ExecutionStatus::Suspended);
+    }
+    cancellation.cancel();
+    assert!(execution.resume(1).is_err());
+    drop(execution);
+    drop((process, pool, account));
+    assert_eq!(tenant.used(), baseline);
+
+    for handler in ["NegativeIndex", "PastEnd", "NegativeLength", "Overflow"] {
+        assert_invalid(&module, &tenant, baseline, handler)?;
+    }
+    println!(
+        "Unicode scalar indexing/slicing verified: bounds, chunk edges, 64 KiB, suspension, cancellation and cleanup"
+    );
+    Ok(())
+}

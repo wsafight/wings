@@ -61,6 +61,8 @@ pub enum Operation {
     StringFromBytes(Register),
     StringBytes(Register),
     StringLen(Register),
+    StringAt(Register, Register),
+    StringSlice([Register; 3]),
     ConcatStrings(Register, Register),
     EqualStrings(Register, Register),
     SendSelf {
@@ -581,6 +583,17 @@ impl Function {
                     instruction.ty == ValueType::Int
                         && types.get(value) == Some(&ValueType::StringRef)
                 }
+                Operation::StringAt(value, index) => {
+                    instruction.ty == ValueType::Int
+                        && types.get(value) == Some(&ValueType::StringRef)
+                        && types.get(index) == Some(&ValueType::Int)
+                }
+                Operation::StringSlice([value, start, length]) => {
+                    instruction.ty == ValueType::StringRef
+                        && types.get(value) == Some(&ValueType::StringRef)
+                        && types.get(start) == Some(&ValueType::Int)
+                        && types.get(length) == Some(&ValueType::Int)
+                }
                 Operation::ConcatStrings(left, right) => {
                     instruction.ty == ValueType::StringRef
                         && types.get(left) == Some(&ValueType::StringRef)
@@ -852,6 +865,7 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::StringFromBytes(value)
         | Operation::StringBytes(value)
         | Operation::StringLen(value) => ([Some(value), None], &[]),
+        Operation::StringAt(value, index) => ([Some(value), Some(index)], &[]),
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
             ([Some(value), None], &[])
         }
@@ -866,6 +880,7 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         Operation::ReplaceByte(ref arguments) | Operation::ReplaceI64Be(ref arguments) => {
             ([None, None], arguments.as_slice())
         }
+        Operation::StringSlice(ref arguments) => ([None, None], arguments.as_slice()),
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
         Operation::Call { ref arguments, .. } => ([None, None], arguments),
         Operation::RecordNew { ref arguments, .. } => ([None, None], arguments),

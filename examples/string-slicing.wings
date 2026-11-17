@@ -1,0 +1,21 @@
+process StringSlicing {
+  state text: String = "Aé中😀Z";
+
+  on At(index: Int) -> Int { string_at(text, index) }
+  on Slice(start: Int, length: Int) -> String { string_slice(text, start, length) }
+  on Boundary -> String {
+    let value = concat_strings(string_from_bytes(fill_bytes(255, 97)), "😀z");
+    string_slice(value, 255, 1)
+  }
+  on Fill -> Int {
+    text = string_from_bytes(fill_bytes(65536, 97));
+    string_len(text)
+  }
+  on Last -> String { string_slice(text, 65535, 1) }
+  on NegativeIndex -> Int { string_at(text, -1) }
+  on PastEnd -> String { string_slice(text, 5, 1) }
+  on NegativeLength -> String { string_slice(text, 0, -1) }
+  on Overflow -> String { string_slice(text, 9223372036854775807, 9223372036854775807) }
+  on Clear -> Unit { text = ""; collect(); }
+  on Sweep -> Unit { collect(); }
+}

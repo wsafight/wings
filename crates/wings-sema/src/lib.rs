@@ -181,6 +181,8 @@ pub fn analyze(text: &str) -> Analysis {
                         | "string_from_bytes"
                         | "string_bytes"
                         | "string_len"
+                        | "string_at"
+                        | "string_slice"
                         | "concat_strings"
                         | "send_self"
                         | "self_pid"
@@ -912,6 +914,8 @@ impl Checker {
                     "string_from_bytes" => (vec![Type::Bytes], Type::String),
                     "string_bytes" => (vec![Type::String], Type::Bytes),
                     "string_len" => (vec![Type::String], Type::Int),
+                    "string_at" => (vec![Type::String, Type::Int], Type::Int),
+                    "string_slice" => (vec![Type::String, Type::Int, Type::Int], Type::String),
                     "concat_strings" => (vec![Type::String, Type::String], Type::String),
                     "record_int" => (vec![Type::Int], Type::RecordInt),
                     "read_int" => (vec![Type::RecordInt], Type::Int),

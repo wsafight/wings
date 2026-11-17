@@ -465,7 +465,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 21
+    assert manifest["abi"] == 22
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -556,7 +556,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v21 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v22 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -777,7 +777,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 21 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 22 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -1594,6 +1594,25 @@ def main():
         assert "Accounted UTF-8 strings:" in result.stdout
         assert "Accounted String messages:" in result.stdout
         print(result.stdout.strip())
+        slicing = parent / "string-slicing"
+        command([COMPILER, "build", ROOT / "examples/string-slicing.wings", "-o", slicing])
+        result = cargo_example("wings-vm", "string_slicing", slicing)
+        assert "Unicode scalar indexing/slicing verified:" in result.stdout
+        print(result.stdout.strip())
+        slicing_run = [VM, "run", "--trusted", slicing, "--heap-records", 16]
+        requests = [message("At", index) for index in range(5)] + [
+            message("Slice", 0, 5), message("Slice", 1, 3), message("Slice", 2, 2),
+            message("Slice", 5, 0), message("Boundary"), message("Fill"), message("Last"),
+        ]
+        result = command(slicing_run, "".join(json.dumps(request) + "\n" for request in requests))
+        replies = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+        assert replies == [65, 233, 20013, 128512, 90, {"string": "Aé中😀Z"},
+                           {"string": "é中😀"}, {"string": "中😀"}, {"string": ""},
+                           {"string": "😀"}, 65536, {"string": "a"}]
+        for request in [message("NegativeIndex"), message("PastEnd"), message("NegativeLength"), message("Overflow")]:
+            result = command(slicing_run, json.dumps(request) + "\n", expected=1)
+            assert not result.stdout
+            assert "string index or slice is out of bounds" in result.stderr
         string_run = [VM, "run", "--trusted", strings, "--heap-records", 16]
         equality = parent / "string-equality"
         command([COMPILER, "build", ROOT / "examples/string-equality.wings", "-o", equality])

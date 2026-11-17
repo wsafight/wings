@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes/String 和具名不可变记录，覆盖分支、state while、有界非递归 fn 调用帧与精确 GC。String/Bytes 是 0..=64 KiB 的计费值；具名记录支持嵌套字段、本地/state/fn、消息参数和 ADR-0116 的有界独立回复，回复完成事件按名义 schema 重建。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。字符串索引/切片、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整资源账本、M0 与同业务 BEAM 性能/内存门禁尚未验证。更新日期：2026-11-18。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes/String 和具名不可变记录，覆盖分支、state while、有界非递归 fn 调用帧与精确 GC。String/Bytes 是 0..=64 KiB 的计费值；String 按 Unicode scalar value 索引/切片，切片为独立计费副本；具名记录支持嵌套字段、本地/state/fn、消息参数和 ADR-0116 的有界独立回复，回复完成事件按名义 schema 重建。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整资源账本、M0 与同业务 BEAM 性能/内存门禁尚未验证。更新日期：2026-11-18。
 
 ## 开发
+
+[ADR-0127](docs/adr/0127-accounted-string-indexing-and-slicing.md) 增加按 Unicode scalar value 的 String 索引和独立计费切片，使用 ABI v22；验证与资源/失败边界见[记录](docs/validation-string-slicing-2026-11-18.md)。功能切片不替代完整账本或 MVP 门禁。
 
 [ADR-0125](docs/adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](docs/adr/0126-bounded-resume-trace-retention.md) 将恢复区间接入独立长测：保留 v12 满额失败，v13 在原上限内显式计两类丢样并继续原业务；原 v7/v8 与 BEAM 入口保持。冻结运行和验证状态见[记录](docs/validation-resume-fairness-2026-11-18.md)，缺样分位不作完整公平性结论。
 

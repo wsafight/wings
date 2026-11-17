@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 21;
+pub const SCALAR_ABI_VERSION: u32 = 22;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -20,6 +20,7 @@ pub const STATUS_REQUEST_REJECTED: u32 = 12;
 pub const STATUS_INVALID_BYTES: u32 = 13;
 pub const STATUS_REPLY_REJECTED: u32 = 14;
 pub const STATUS_INVALID_STRING: u32 = 15;
+pub const STATUS_INVALID_STRING_INDEX: u32 = 16;
 pub const EFFECT_SEND_SELF: u32 = 0;
 pub const EFFECT_SELF_PID: u32 = 1;
 pub const EFFECT_SPAWN_SELF: u32 = 2;
@@ -48,6 +49,8 @@ pub const HEAP_STRING_LITERAL: u32 = 18;
 pub const HEAP_RECORD_NEW: u32 = 19;
 pub const HEAP_RECORD_FIELD: u32 = 20;
 pub const HEAP_EQUAL_STRINGS: u32 = 21;
+pub const HEAP_STRING_AT: u32 = 22;
+pub const HEAP_STRING_SLICE: u32 = 23;
 pub const MAX_SHADOW_ROOTS: usize = 64;
 pub const MAX_RECORD_REPLY_NODES: usize = 64;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;

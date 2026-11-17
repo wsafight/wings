@@ -491,6 +491,10 @@ fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
         ("collect(1); 0", "T013", "expects 0"),
         ("record_int(); 0", "T013", "expects 1"),
         ("record_int(1, 2); 0", "T013", "found 2"),
+        ("string_at(\"x\"); 0", "T013", "expects 2"),
+        ("string_at(\"x\", true); 0", "T005", "expected Int"),
+        ("string_slice(\"x\", 0); 0", "T013", "expects 3"),
+        ("string_slice(\"x\", 0, 1) == \"x\"", "T005", "expected Int"),
         ("request(1); 0", "T013", "requires pid"),
         ("let collect = 1; collect(); 0", "T012", "shadows a builtin"),
         (
