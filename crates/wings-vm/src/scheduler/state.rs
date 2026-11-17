@@ -167,6 +167,11 @@ impl State {
                     bytes = BytePayload::completion(Some(value));
                     (0, ListPayload::encode(0, length))
                 }
+                RequestOutcome::ReplyString(value) => {
+                    let length = value.as_str().len();
+                    bytes = BytePayload::string_completion(Some(value));
+                    (0, ListPayload::encode(0, length))
+                }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
                 RequestOutcome::Failed => (3, 0),
@@ -187,6 +192,12 @@ impl State {
                 && bytes.mask == 0
             {
                 bytes = BytePayload::completion(None);
+            }
+            if completion.handler.schema().completion_reply()
+                == Some(wings_abi::ValueType::StringRef)
+                && bytes.mask == 0
+            {
+                bytes = BytePayload::string_completion(None);
             }
             let message = Envelope {
                 handler: completion.handler,
@@ -351,6 +362,7 @@ impl Shared {
                                 | wings_abi::ValueType::Ref
                                 | wings_abi::ValueType::ListRef
                                 | wings_abi::ValueType::BytesRef
+                                | wings_abi::ValueType::StringRef
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {

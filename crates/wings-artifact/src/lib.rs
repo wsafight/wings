@@ -41,7 +41,8 @@ impl Handler {
                         | ValueType::Unit
                         | ValueType::Ref
                         | ValueType::ListRef
-                        | ValueType::BytesRef),
+                        | ValueType::BytesRef
+                        | ValueType::StringRef),
                     ),
                 ],
             ) => Some(*ty),
@@ -86,19 +87,6 @@ impl Manifest {
         }
         if self.state.is_capability() {
             return Err("Pid/RequestId state is not supported".into());
-        }
-        if self.handlers.iter().any(|handler| {
-            handler.reply == Some(ValueType::StringRef)
-                || (handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::RequestId)
-                    && handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| *ty == ValueType::StringRef))
-        }) {
-            return Err("String replies and completion values are not supported".into());
         }
         if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_capability)

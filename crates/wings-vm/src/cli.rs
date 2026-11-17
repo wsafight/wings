@@ -58,6 +58,30 @@ enum Reply {
 }
 
 impl Adapter {
+    pub fn write_string_reply(
+        &self,
+        writer: &mut impl Write,
+        value: &wings_vm::StringReply,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct StringBody<'value> {
+            string: &'value str,
+        }
+        #[derive(Serialize)]
+        struct StringResponse<'value> {
+            reply: StringBody<'value>,
+        }
+        let response = StringResponse {
+            reply: StringBody {
+                string: value.as_str(),
+            },
+        };
+        serde_json::to_writer(&mut *writer, &response).map_err(|error| error.to_string())?;
+        writeln!(writer)
+            .and_then(|_| writer.flush())
+            .map_err(|error| error.to_string())
+    }
+
     pub fn write_bytes_reply(
         &self,
         writer: &mut impl Write,

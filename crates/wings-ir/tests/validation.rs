@@ -94,12 +94,9 @@ fn string_ir_preserves_typed_roots_and_rejects_forged_operands_and_boundaries() 
     let mut invalid = program.clone();
     invalid.handlers[0].reply = Some(ValueType::StringRef);
     invalid.handlers[0].function.reply = 5;
-    assert!(
-        invalid
-            .validate()
-            .unwrap_err()
-            .contains("String replies and completion")
-    );
+    invalid.validate().unwrap();
+    invalid.handlers[0].reply = Some(ValueType::BytesRef);
+    assert!(invalid.validate().is_err());
 }
 
 #[test]

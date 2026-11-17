@@ -65,7 +65,7 @@ fn manifest() -> Manifest {
 }
 
 #[test]
-fn string_state_and_parameters_round_trip_but_string_replies_are_rejected() {
+fn string_state_parameters_replies_and_completions_round_trip() {
     let mut valid = manifest();
     valid.state = ValueType::StringRef;
     valid.validate().unwrap();
@@ -94,8 +94,17 @@ fn string_state_and_parameters_round_trip_but_string_replies_are_rejected() {
                 ];
             }
         }
-        rejects(&invalid, "String replies and completion");
-        assert!(invalid.encode().is_err());
+        invalid.validate().unwrap();
+        let value: Value = serde_json::from_slice(&invalid.encode().unwrap()).unwrap();
+        let decoded = Directory::new().read_json(&value).unwrap();
+        if boundary == 1 {
+            assert_eq!(decoded.handlers[0].reply, Some(ValueType::StringRef));
+        } else {
+            assert_eq!(
+                decoded.handlers[0].completion_reply(),
+                Some(ValueType::StringRef)
+            );
+        }
     }
 }
 

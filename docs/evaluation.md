@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0106](adr/0106-accounted-string-replies.md) 须覆盖 String/Bytes 独立类型与 callback 精确匹配、最大/Unicode/NUL 内容、出口预算/取消/GC 根、三级存储/控制拒绝、结果跨 actor 退出存活、满完成队列和末 owner 清理。真实 AOT 验证 direct/单 worker/一双 worker、ingress/监督、72 组完成情形与 CLI，原限不放宽；结果见[记录](validation-string-replies-2026-11-17.md)。
+
 [ADR-0105](adr/0105-accounted-string-messages.md) 须验证 String/Bytes 共用合计上限、独立类型/内容、混合记录/列表入口根、UTF-8 分块、三级拒绝回滚及预算/取消清理；真实 AOT 覆盖单/双 worker、发布后失败、超时和停止。执行限额保持 CPU 20s/墙钟 30s/core 0/阶段 3s，结果见[验证记录](validation-string-messages-2026-11-17.md)，不替代完整 MVP 或 BEAM 双门禁。
 
 [ADR-0104](adr/0104-bounded-string-literals.md) 须验证双引号/反斜杠/六种转义、直接 UTF-8/非法控制/错误恢复、解码后 64 KiB 和 IR 合计 1 MiB；常量与受管副本不共享计费生命周期。runtime 覆盖 UTF-8 跨块、三级预留/取消/预算回滚，真实 AOT 核对大字面量 initializer/fn/handler、根/GC/让出、一/双 worker 与原额度清理；旧 ABI 拒绝、平台及 BEAM 门禁保持，结果见[验证记录](validation-string-literals-2026-11-17.md)。

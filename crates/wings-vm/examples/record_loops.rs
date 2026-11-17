@@ -73,6 +73,9 @@ fn main() {
                 }
                 ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
                 ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
+                ExecutionStatus::CompleteString(value) => {
+                    panic!("unexpected string reply: {value:?}")
+                }
                 ExecutionStatus::Complete(reply) => {
                     assert!(!cancel);
                     assert_eq!(reply, Some(30));

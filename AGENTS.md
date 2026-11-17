@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0106 开放计费 String 回复、独立 StringReply/ReplyString/CompleteString 和匹配完成事件，非成功终态导入空字符串；出口根/分块复制与 UTF-8 校验、末结果租约清理保持。源码 ABI v19，EffectRequest 80 B/context 88 B/控制预留 4352 B 不变，旧产物须重编译；通用记录、完整账本及原生双平台/BEAM 双门禁仍未完成。
+
 - ADR-0105 开放 String 语言/宿主消息参数，与 Bytes 共用单条合计 64 KiB、独立掩码与计费副本；源码 ABI v18、EffectRequest 80 B/context 88 B，控制预留仍 4352 B，旧产物须重编译。目标分块校验 UTF-8 并保留入口根，String 回复、通用记录、完整账本及原生双平台/BEAM 双门禁仍未完成。
 
 - ADR-0104 补双引号 UTF-8 字面量及六种显式转义，单值解码至多 64 KiB、IR 合计至多 1 MiB；常量存只读模块段，每次执行先三级准入再分块复制为独立 String，保留 GC/取消/预算与模块租约。源码 ABI 为 v17，context/EffectRequest 布局不变，旧产物须重编译；String 消息/回复、通用记录与完整账本及双平台 BEAM 门禁仍未完成，不改待审大小写提案。

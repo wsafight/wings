@@ -47,6 +47,12 @@ impl BytePayload {
         }
     }
 
+    pub(crate) fn string_completion(reply: Option<crate::StringReply>) -> Self {
+        let mut payload = Self::completion(reply.map(|reply| reply.storage()));
+        payload.string_mask = 4;
+        payload
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         self.reply
             .as_ref()
@@ -66,7 +72,7 @@ impl BytePayload {
             || (arguments.len() < 64 && self.mask >> arguments.len() != 0)
             || (self.completion
                 && (self.mask != 4
-                    || self.string_mask != 0
+                    || !matches!(self.string_mask, 0 | 4)
                     || !self.data.is_empty()
                     || self.charge.is_some()))
             || (!self.completion && self.reply.is_some())

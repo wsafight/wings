@@ -53,6 +53,7 @@ fn main() {
             ExecutionStatus::Suspended => {}
             ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
+            ExecutionStatus::CompleteString(value) => panic!("unexpected string reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert_eq!(reply, Some(30));
                 assert_eq!(snapshot.phase, ExecutionPhase::Complete);

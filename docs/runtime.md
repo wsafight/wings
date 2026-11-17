@@ -1,6 +1,8 @@
 # 运行时
 
-[ADR-0105](adr/0105-accounted-string-messages.md) 增加 String 语言/宿主消息参数：源暂存先准入，发布净转移到目标，目标导入另行预留并至多 256 B 校验/复制。String/Bytes 共用单条合计 64 KiB；独立类型掩码和入口根保持精确 GC。请求超时/取消不撤回已发布消息，String 回复仍拒绝。
+[ADR-0106](adr/0106-accounted-string-replies.md) 的 StringReply 独立于 BytesReply，分块验证 UTF-8 后共享不可变结果存储与计费租约，不保留 actor/模块/堆/栈。出口根保活候选及结果，副本/控制拒绝不提交候选；完成事件 String 参数重新计费导入，非成功终态为空值，满队列/owner 退出/迟到 publisher 沿原双端生命周期。
+
+[ADR-0105](adr/0105-accounted-string-messages.md) 增加 String 语言/宿主消息参数：源暂存先准入，发布净转移到目标，目标导入另行预留并至多 256 B 校验/复制。String/Bytes 共用单条合计 64 KiB；独立类型掩码和入口根保持精确 GC。请求超时/取消不撤回已发布消息，该参数切片的回复限制由 ADR-0106 扩展。
 
 [ADR-0104](adr/0104-bounded-string-literals.md) 的字符串字面量通过可信模块只读数据进入 runtime，先核对长度/三级预留，再每至多 256 字节检查并验证/复制 UTF-8。暂停保持代码租约与未发布缓冲，取消/预算/额度失败正常释放，空值也分配独立 String 槽。静态地址不进入消息或状态；本轮不驻留共享、不改执行控制预留，不把模块逻辑预算等同装载器实际 RSS。
 

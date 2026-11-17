@@ -616,9 +616,14 @@ impl SchedulerHandle {
                 | wings_abi::ValueType::Unit
                 | wings_abi::ValueType::Ref
                 | wings_abi::ValueType::ListRef
-                | wings_abi::ValueType::BytesRef),
+                | wings_abi::ValueType::BytesRef
+                | wings_abi::ValueType::StringRef),
             ) => ty,
-            _ => return Err("request requires a scalar, RecordInt, IntList or Bytes reply".into()),
+            _ => {
+                return Err(
+                    "request requires a scalar, RecordInt, IntList, Bytes or String reply".into(),
+                );
+            }
         };
         let mut message = envelope(
             actor,

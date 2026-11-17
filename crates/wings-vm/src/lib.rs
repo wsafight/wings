@@ -24,6 +24,7 @@ mod preemption;
 mod resources;
 mod scheduler;
 mod stack_pool;
+mod string_reply;
 mod supervision;
 mod timer;
 mod wakeup;
@@ -57,6 +58,7 @@ pub use scheduler::{
     SchedulerTermination, SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
+pub use string_reply::StringReply;
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};
 pub use worker::{
@@ -152,6 +154,9 @@ impl ScalarProcess {
         if self.module.manifest().handlers[index].reply == Some(ValueType::BytesRef) {
             return Err("byte reply requires invoke_bytes or explicit execution".into());
         }
+        if self.module.manifest().handlers[index].reply == Some(ValueType::StringRef) {
+            return Err("string reply requires invoke_string or explicit execution".into());
+        }
         let mut execution = self.start_index(index, arguments, max_steps, || {
             (
                 cancellation.cloned().unwrap_or_default(),
@@ -164,6 +169,7 @@ impl ScalarProcess {
                 ExecutionStatus::Suspended => {}
                 ExecutionStatus::CompleteList(_) => unreachable!("validated scalar reply"),
                 ExecutionStatus::CompleteBytes(_) => unreachable!("validated scalar reply"),
+                ExecutionStatus::CompleteString(_) => unreachable!("validated scalar reply"),
             }
         }
     }
@@ -188,6 +194,7 @@ impl ScalarProcess {
                 ExecutionStatus::Suspended => {}
                 ExecutionStatus::Complete(_) => unreachable!("validated list reply"),
                 ExecutionStatus::CompleteBytes(_) => unreachable!("validated list reply"),
+                ExecutionStatus::CompleteString(_) => unreachable!("validated list reply"),
             }
         }
     }
@@ -211,6 +218,29 @@ impl ScalarProcess {
                 ExecutionStatus::CompleteBytes(reply) => return Ok(reply),
                 ExecutionStatus::Suspended => {}
                 _ => unreachable!("validated byte reply"),
+            }
+        }
+    }
+
+    pub fn invoke_string(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<StringReply, String> {
+        let index = self.validate_invocation(name, arguments)?;
+        if self.module.manifest().handlers[index].reply != Some(ValueType::StringRef) {
+            return Err("invoke_string requires a String reply".into());
+        }
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (cancellation.clone(), PreemptionToken::default())
+        })?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::CompleteString(reply) => return Ok(reply),
+                ExecutionStatus::Suspended => {}
+                _ => unreachable!("validated string reply"),
             }
         }
     }
@@ -317,7 +347,7 @@ impl ScalarProcess {
         status: u32,
         output: ScalarOutput,
         list: Option<IntListReply>,
-        bytes: Option<BytesReply>,
+        bytes: Option<string_reply::BufferReply>,
     ) -> Result<ExecutionStatus, String> {
         if let Err(error) = check_status(status) {
             self.failed = true;
@@ -337,7 +367,16 @@ impl ScalarProcess {
                 }
             }
         } else if (handler.reply == Some(ValueType::ListRef) && list.is_some())
-            || (handler.reply == Some(ValueType::BytesRef) && bytes.is_some())
+            || matches!(
+                (handler.reply, &bytes),
+                (
+                    Some(ValueType::BytesRef),
+                    Some(string_reply::BufferReply::Bytes(_))
+                ) | (
+                    Some(ValueType::StringRef),
+                    Some(string_reply::BufferReply::String(_))
+                )
+            )
         {
             0
         } else if handler
@@ -360,7 +399,10 @@ impl ScalarProcess {
         }
         self.state = output.state;
         if let Some(bytes) = bytes {
-            return Ok(ExecutionStatus::CompleteBytes(bytes));
+            return Ok(match bytes {
+                string_reply::BufferReply::Bytes(value) => ExecutionStatus::CompleteBytes(value),
+                string_reply::BufferReply::String(value) => ExecutionStatus::CompleteString(value),
+            });
         }
         match list {
             Some(list) if handler.reply == Some(ValueType::ListRef) => {

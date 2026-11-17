@@ -39,6 +39,7 @@ pub enum RequestOutcome {
     Reply(i64),
     ReplyList(crate::IntListReply),
     ReplyBytes(crate::BytesReply),
+    ReplyString(crate::StringReply),
     TimedOut,
     Cancelled,
     Failed,
@@ -911,6 +912,26 @@ impl ScalarWorker {
                     }
                     Ok(WorkerEvent::Delivered(pid))
                 }
+                Ok(ExecutionStatus::CompleteString(reply)) => {
+                    let active = self.slots[index]
+                        .actor
+                        .as_mut()
+                        .expect("running actor")
+                        .active
+                        .take()
+                        .expect("completed message");
+                    match (active.message.request, active.message.external) {
+                        (Some(request), None) => {
+                            self.finish_request(request, RequestOutcome::ReplyString(reply))
+                        }
+                        (None, Some(publisher)) => publisher.complete_string(reply),
+                        _ => {
+                            self.remove(index);
+                            return Err("string reply does not match message kind".into());
+                        }
+                    }
+                    Ok(WorkerEvent::Delivered(pid))
+                }
                 Err(reason) => {
                     let actor = self.slots[index].actor.as_ref().expect("failed actor");
                     let name = &actor
@@ -1260,9 +1281,12 @@ impl ScalarWorker {
                     | wings_abi::ValueType::Ref
                     | wings_abi::ValueType::ListRef
                     | wings_abi::ValueType::BytesRef
+                    | wings_abi::ValueType::StringRef
             )
         ) {
-            return Err("request requires a scalar, RecordInt, IntList or Bytes reply".into());
+            return Err(
+                "request requires a scalar, RecordInt, IntList, Bytes or String reply".into(),
+            );
         }
         let callback = module
             .manifest()
@@ -1384,6 +1408,11 @@ impl ScalarWorker {
                     bytes = BytePayload::completion(Some(value));
                     (0, ListPayload::encode(0, length))
                 }
+                RequestOutcome::ReplyString(value) => {
+                    let length = value.as_str().len();
+                    bytes = BytePayload::string_completion(Some(value));
+                    (0, ListPayload::encode(0, length))
+                }
                 RequestOutcome::TimedOut => (1, 0),
                 RequestOutcome::Cancelled => (2, 0),
                 RequestOutcome::Failed => (3, 0),
@@ -1400,6 +1429,12 @@ impl ScalarWorker {
                 && bytes.mask == 0
             {
                 bytes = BytePayload::completion(None);
+            }
+            if completion.handler.schema().completion_reply()
+                == Some(wings_abi::ValueType::StringRef)
+                && bytes.mask == 0
+            {
+                bytes = BytePayload::string_completion(None);
             }
             let message = Message {
                 handler: completion.handler,
@@ -1457,6 +1492,7 @@ mod payload_tests {
         for reply_type in [
             wings_abi::ValueType::ListRef,
             wings_abi::ValueType::BytesRef,
+            wings_abi::ValueType::StringRef,
         ] {
             for owner_exits in [false, true] {
                 let limits = Resources {
@@ -1481,6 +1517,8 @@ mod payload_tests {
                 let mut entries = data.entries.to_vec();
                 entries.push(if reply_type == wings_abi::ValueType::ListRef {
                     crate::tests::list_completion
+                } else if reply_type == wings_abi::ValueType::StringRef {
+                    crate::tests::string_completion
                 } else {
                     crate::tests::bytes_completion
                 });
@@ -1495,6 +1533,11 @@ mod payload_tests {
                     RequestOutcome::ReplyList(
                         crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap(),
                     )
+                } else if reply_type == wings_abi::ValueType::StringRef {
+                    RequestOutcome::ReplyString(crate::tests::copied_string_reply(
+                        &target_account,
+                        "中😀",
+                    ))
                 } else {
                     let mut payload = BytePayload::new(&target_account, 1, 2).unwrap();
                     payload.data.extend_from_slice(&[0, 255]);
@@ -1553,10 +1596,28 @@ mod payload_tests {
                     let actor = worker.actor_mut(owner).unwrap();
                     let message = actor.mailbox.slots[actor.mailbox.head].take().unwrap();
                     actor.mailbox.count = 0;
-                    assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
+                    assert_eq!(
+                        message.arguments[..3],
+                        [
+                            17,
+                            0,
+                            ListPayload::encode(
+                                0,
+                                if reply_type == wings_abi::ValueType::StringRef {
+                                    7
+                                } else {
+                                    2
+                                }
+                            )
+                        ]
+                    );
                     if reply_type == wings_abi::ValueType::ListRef {
                         assert!(message.lists.valid(&message.arguments[..3], 4));
                         assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                    } else if reply_type == wings_abi::ValueType::StringRef {
+                        assert!(message.bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(message.bytes.string_mask, 4);
+                        assert_eq!(message.bytes.as_slice(), "中😀".as_bytes());
                     } else {
                         assert!(message.bytes.valid(&message.arguments[..3], 4));
                         assert_eq!(message.bytes.as_slice(), [0, 255]);
@@ -1613,6 +1674,7 @@ mod payload_tests {
             ValueType::Ref,
             ValueType::ListRef,
             ValueType::BytesRef,
+            ValueType::StringRef,
         ] {
             for callback in [
                 ValueType::Int,
@@ -1621,6 +1683,7 @@ mod payload_tests {
                 ValueType::Ref,
                 ValueType::ListRef,
                 ValueType::BytesRef,
+                ValueType::StringRef,
             ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
@@ -1653,6 +1716,8 @@ mod payload_tests {
                         entries[2] = crate::tests::record_reply;
                     } else if reply == ValueType::ListRef {
                         entries[2] = crate::tests::list_reply;
+                    } else if reply == ValueType::StringRef {
+                        entries[2] = crate::tests::string_reply;
                     } else if reply == ValueType::BytesRef {
                         entries[2] = crate::tests::bytes_reply;
                     }
@@ -1660,6 +1725,8 @@ mod payload_tests {
                         crate::tests::record_completion
                     } else if callback == ValueType::ListRef {
                         crate::tests::list_completion
+                    } else if callback == ValueType::StringRef {
+                        crate::tests::string_completion
                     } else if callback == ValueType::BytesRef {
                         crate::tests::bytes_completion
                     } else {
@@ -1713,7 +1780,12 @@ mod payload_tests {
                             assert_eq!(
                                 exit.execution.fault,
                                 Some(
-                                    if matches!(reply, ValueType::ListRef | ValueType::BytesRef) {
+                                    if matches!(
+                                        reply,
+                                        ValueType::ListRef
+                                            | ValueType::BytesRef
+                                            | ValueType::StringRef
+                                    ) {
                                         crate::ExecutionFault::InvalidRoot
                                     } else {
                                         crate::ExecutionFault::InvalidOutput

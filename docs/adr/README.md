@@ -113,6 +113,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0103](0103-accounted-utf8-string-values.md) | 独立计费 UTF-8 String、本地/状态/函数和分块内建 | 已采纳（业务值切片） |
 | [0104](0104-bounded-string-literals.md) | 有界 UTF-8 字面量、只读模块常量与分块计费副本 | 已采纳（字符串构造切片） |
 | [0105](0105-accounted-string-messages.md) | String 参数独立类型复制、共享 Bytes 上限与三级计费 | 已采纳（消息参数切片） |
+| [0106](0106-accounted-string-replies.md) | String 独立计费结果、出口根与匹配完成事件 | 已采纳（字符串交互切片） |
 
 ## 维护方式
 

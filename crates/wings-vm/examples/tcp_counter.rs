@@ -230,7 +230,8 @@ fn handle_connection(
             }
             RequestOutcome::Failed
             | RequestOutcome::ReplyList(_)
-            | RequestOutcome::ReplyBytes(_) => {
+            | RequestOutcome::ReplyBytes(_)
+            | RequestOutcome::ReplyString(_) => {
                 report.failed += 1;
                 (4, 3)
             }

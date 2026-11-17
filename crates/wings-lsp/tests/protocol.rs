@@ -40,13 +40,18 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
         open(&mut server, URI, 2, messages)[0]["params"]["diagnostics"],
         json!([])
     );
-    let invalid = "process P { state n: Int = 0; on Get -> String { \"\" } }";
+    let replies = "process P { state n: Int = 0; on Get -> String { \"\" } }";
+    assert_eq!(
+        open(&mut server, URI, 3, replies)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let invalid = "process P { state n: Int = 0; on Get -> String { fill_bytes(0, 0) } }";
     assert!(
-        open(&mut server, URI, 3, invalid)[0]["params"]["diagnostics"]
+        open(&mut server, URI, 4, invalid)[0]["params"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["code"] == "T011")
+            .any(|item| item["code"] == "T005")
     );
 }
 

@@ -7,7 +7,11 @@ use wings_artifact::{Handler, Manifest};
 
 #[test]
 fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirement() {
-    for reply_type in [ValueType::ListRef, ValueType::BytesRef] {
+    for reply_type in [
+        ValueType::ListRef,
+        ValueType::BytesRef,
+        ValueType::StringRef,
+    ] {
         for workers in [1, 2] {
             for owner_exits in [false, true] {
                 let limits = Resources {
@@ -34,6 +38,8 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                 data.manifest.handlers[0].parameters[2].1 = reply_type;
                 data.entries[0] = if reply_type == ValueType::ListRef {
                     crate::tests::list_completion
+                } else if reply_type == ValueType::StringRef {
+                    crate::tests::string_completion
                 } else {
                     crate::tests::bytes_completion
                 };
@@ -66,6 +72,11 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                     RequestOutcome::ReplyList(
                         crate::IntListReply::copy(&target_account, &[i64::MIN, i64::MAX]).unwrap(),
                     )
+                } else if reply_type == ValueType::StringRef {
+                    RequestOutcome::ReplyString(crate::tests::copied_string_reply(
+                        &target_account,
+                        "中😀",
+                    ))
                 } else {
                     let mut payload = BytePayload::new(&target_account, 1, 2).unwrap();
                     payload.data.extend_from_slice(&[0, 255]);
@@ -125,10 +136,28 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                         .unwrap()
                         .mailbox
                         .pop();
-                    assert_eq!(message.arguments[..3], [17, 0, ListPayload::encode(0, 2)]);
+                    assert_eq!(
+                        message.arguments[..3],
+                        [
+                            17,
+                            0,
+                            ListPayload::encode(
+                                0,
+                                if reply_type == ValueType::StringRef {
+                                    7
+                                } else {
+                                    2
+                                }
+                            )
+                        ]
+                    );
                     if reply_type == ValueType::ListRef {
                         assert!(message.lists.valid(&message.arguments[..3], 4));
                         assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                    } else if reply_type == ValueType::StringRef {
+                        assert!(message.bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(message.bytes.string_mask, 4);
+                        assert_eq!(message.bytes.as_slice(), "中😀".as_bytes());
                     } else {
                         assert!(message.bytes.valid(&message.arguments[..3], 4));
                         assert_eq!(message.bytes.as_slice(), [0, 255]);
@@ -245,6 +274,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
             ValueType::Ref,
             ValueType::ListRef,
             ValueType::BytesRef,
+            ValueType::StringRef,
         ] {
             for callback in [
                 ValueType::Int,
@@ -253,6 +283,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                 ValueType::Ref,
                 ValueType::ListRef,
                 ValueType::BytesRef,
+                ValueType::StringRef,
             ] {
                 for corrupt in [false, true] {
                     if corrupt && (reply == ValueType::Int || callback != reply) {
@@ -286,6 +317,8 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         crate::tests::record_completion
                     } else if callback == ValueType::ListRef {
                         crate::tests::list_completion
+                    } else if callback == ValueType::StringRef {
+                        crate::tests::string_completion
                     } else if callback == ValueType::BytesRef {
                         crate::tests::bytes_completion
                     } else {
@@ -297,6 +330,8 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         data.entries[3] = crate::tests::record_reply;
                     } else if reply == ValueType::ListRef {
                         data.entries[3] = crate::tests::list_reply;
+                    } else if reply == ValueType::StringRef {
+                        data.entries[3] = crate::tests::string_reply;
                     } else if reply == ValueType::BytesRef {
                         data.entries[3] = crate::tests::bytes_reply;
                     }
@@ -356,7 +391,12 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                             assert_eq!(
                                 exit.reason,
                                 SchedulerExitReason::Managed(
-                                    if matches!(reply, ValueType::ListRef | ValueType::BytesRef) {
+                                    if matches!(
+                                        reply,
+                                        ValueType::ListRef
+                                            | ValueType::BytesRef
+                                            | ValueType::StringRef
+                                    ) {
                                         ExecutionFault::InvalidRoot
                                     } else {
                                         ExecutionFault::InvalidOutput

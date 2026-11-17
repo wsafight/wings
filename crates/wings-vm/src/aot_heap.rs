@@ -252,6 +252,7 @@ pub(crate) unsafe fn export_lists(
     Ok(payload)
 }
 
+#[cfg(test)]
 pub(crate) unsafe fn export_bytes(
     context: &mut ScalarContext,
     arguments: &mut [i64],

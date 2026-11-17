@@ -56,6 +56,9 @@ fn main() {
                 }
                 ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
                 ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
+                ExecutionStatus::CompleteString(value) => {
+                    panic!("unexpected string reply: {value:?}")
+                }
                 ExecutionStatus::Complete(reply) => {
                     expected = if first == 1 && second == 1 {
                         19

@@ -22,6 +22,7 @@ impl BytesReply {
     ) -> Result<Self, String> {
         if account.level() != ResourceLevel::Process
             || payload.mask != 1
+            || payload.string_mask != 0
             || !payload.valid(
                 &[crate::message_values::ListPayload::encode(
                     0,

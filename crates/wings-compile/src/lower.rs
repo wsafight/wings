@@ -490,7 +490,7 @@ mod tests {
     fn strings_cannot_bypass_message_reply_or_bytes_type_boundaries() {
         for source in [
             "process P { state count: Int = 0; on Set(value: String) { count = string_len(value) } on Wrong { send_self(Set, fill_bytes(0, 0)) } }",
-            "process P { state count: Int = 0; on Read -> String { string_from_bytes(fill_bytes(0, 0)) } }",
+            "process P { state count: Int = 0; on Read -> String { fill_bytes(0, 0) } }",
             "process P { state data: String = fill_bytes(0, 0); }",
             "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Bool { data == data } }",
             "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { byte_at(data, 0) } }",

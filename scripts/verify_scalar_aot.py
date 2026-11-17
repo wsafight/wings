@@ -364,7 +364,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 18
+    assert manifest["abi"] == 19
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -455,7 +455,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v18 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v19 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -676,7 +676,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 18 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 19 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -1431,6 +1431,14 @@ def main():
         bytes_replies = parent / "bytes-replies"
         command([COMPILER, "build", ROOT / "examples/bytes-replies.wings", "-o", bytes_replies])
         strings = parent / "string-values"
+        string_replies = parent / "string-replies"
+        command([COMPILER, "build", ROOT / "examples/string-replies.wings", "-o", string_replies])
+        result = example("string_replies", string_replies)
+        assert "72 language scenarios" in result.stdout
+        print(result.stdout.strip())
+        string_reply_run = [VM, "run", "--trusted", string_replies, "--heap-records", 8]
+        result = command(string_reply_run, json.dumps(message("Unicode")) + "\n")
+        assert json.loads(result.stdout)["reply"] == {"string": "中😀\0\n\r\t\\\""}
         command([COMPILER, "build", ROOT / "examples/string-values.wings", "-o", strings])
         result = example("string_values", strings)
         assert "Accounted UTF-8 strings:" in result.stdout

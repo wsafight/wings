@@ -27,6 +27,7 @@ mod record_replies;
 mod request_events;
 mod scheduler;
 mod stack_boundary;
+mod string_replies;
 mod string_values;
 mod supervision;
 mod worker_wait;
@@ -281,6 +282,87 @@ pub(crate) unsafe extern "C" fn bytes_reply(
         };
     }
     status
+}
+
+pub(crate) unsafe extern "C" fn string_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [b"".as_ptr() as usize as i64, 0, 0];
+    let mut reference = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_STRING_LITERAL,
+            scratch.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: reference as i64,
+            };
+        }
+    }
+    status
+}
+
+pub(crate) unsafe extern "C" fn string_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [unsafe { *arguments.add(2) }, 0, 0];
+    let mut length = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_STRING_LEN,
+            scratch.as_ptr() as usize as u64,
+            &mut length,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state: *arguments.add(1) * 100 + length as i64,
+                reply: 0,
+            };
+        }
+    }
+    status
+}
+
+pub(crate) fn copied_string_reply(account: &ResourceAccount, text: &str) -> StringReply {
+    let flag = std::sync::atomic::AtomicU32::new(0);
+    let mut context = ScalarContext {
+        cancellation: &flag,
+        remaining_steps: 4096,
+        yield_request: &flag,
+        slice_remaining: 4096,
+        slow_path: None,
+        data: std::ptr::null_mut(),
+        stack_limit: 0,
+        roots: std::ptr::null(),
+        heap_call: None,
+        heap_data: std::ptr::null_mut(),
+        effect_call: None,
+    };
+    let mut payload = crate::message_values::BytePayload::new(account, 1, text.len()).unwrap();
+    payload.string_mask = 1;
+    payload.data.extend_from_slice(text.as_bytes());
+    StringReply::from_payload(account, payload, &mut context).unwrap()
 }
 
 pub(crate) unsafe extern "C" fn bytes_completion(

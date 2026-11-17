@@ -4,6 +4,8 @@
 - 状态：已采纳（消息参数切片）
 - 延续：[ADR-0103](0103-accounted-utf8-string-values.md) 的独立类型与 [ADR-0076](0076-accounted-byte-messages.md) 的复制/净转移协议。
 
+后续：[ADR-0106](0106-accounted-string-replies.md) 扩展 String 回复与完成值，替代本文当时的回复限制；参数合计上限与复制协议保持。
+
 ## 决定
 
 开放 String handler 参数与 send_self/send/request 的参数，以及宿主 `MessageValue::String(&str)`。String 与 Bytes 共用一条消息最多 65536 编码字节的上限，不分别累加额度；同一引用出现两次按两份内容计数。单独 String 掩码区分类型，不能拿 Bytes 或裸整数冒充 String。String 回复仍拒绝，后续独立接入，不把转换后传 Bytes 称原生 String 回复。

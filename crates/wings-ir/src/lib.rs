@@ -125,7 +125,8 @@ impl Handler {
                         | ValueType::Unit
                         | ValueType::Ref
                         | ValueType::ListRef
-                        | ValueType::BytesRef),
+                        | ValueType::BytesRef
+                        | ValueType::StringRef),
                     ),
                 ],
             ) => Some(*ty),
@@ -211,19 +212,6 @@ impl Program {
             }
             paths.push(path);
         }
-        if self.handlers.iter().any(|handler| {
-            handler.reply == Some(ValueType::StringRef)
-                || (handler
-                    .parameters
-                    .iter()
-                    .any(|(_, ty)| *ty == ValueType::RequestId)
-                    && handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| *ty == ValueType::StringRef))
-        }) {
-            return Err("String replies and completion values are not supported".into());
-        }
         if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
                 handler.reply.is_some_and(ValueType::is_capability)
@@ -290,6 +278,7 @@ impl Program {
                                 | ValueType::Ref
                                 | ValueType::ListRef
                                 | ValueType::BytesRef
+                                | ValueType::StringRef
                         )
                     ) || callback.completion_reply() != target.reply
                         || target.parameters.len() != arguments.len()
@@ -301,7 +290,7 @@ impl Program {
                             })
                     {
                         return Err(
-                            "request requires scalar, RecordInt, IntList or Bytes reply, matching completion event and matching parameters"
+                            "request requires scalar, RecordInt, IntList, Bytes or String reply, matching completion event and matching parameters"
                                 .into(),
                         );
                     }

@@ -8,6 +8,7 @@ use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarO
 use crate::aot_heap::AotHeap;
 use crate::message_values::{BytePayload, ListPayload};
 use crate::stack_pool::PooledStack;
+use crate::string_reply::BufferReply;
 use crate::{
     BytesReply, CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken,
     Reservation, ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
@@ -25,7 +26,7 @@ type InvocationResult = (
     Option<Box<AotHeap>>,
     Checkpoint,
     Option<IntListReply>,
-    Option<BytesReply>,
+    Option<BufferReply>,
 );
 type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
 
@@ -173,6 +174,7 @@ pub enum ExecutionStatus {
     Complete(Option<i64>),
     CompleteList(IntListReply),
     CompleteBytes(BytesReply),
+    CompleteString(crate::StringReply),
 }
 
 enum ResumeCommand {
@@ -603,7 +605,12 @@ fn new_coroutine(
             }
             context.roots = std::ptr::null();
         }
-        if status == STATUS_OK && output_types[1] == wings_abi::ValueType::BytesRef {
+        if status == STATUS_OK
+            && matches!(
+                output_types[1],
+                wings_abi::ValueType::BytesRef | wings_abi::ValueType::StringRef
+            )
+        {
             let roots = [output.reply as u64, output.state as u64];
             let frame = wings_abi::ShadowFrame {
                 previous: std::ptr::null(),
@@ -612,15 +619,39 @@ fn new_coroutine(
             };
             context.roots = &frame;
             let mut arguments = [output.reply];
-            match unsafe { crate::aot_heap::export_bytes(&mut context, &mut arguments, 1) } {
-                Ok(payload) => match heap
-                    .as_ref()
-                    .ok_or_else(|| "missing reply heap".to_string())
-                    .and_then(|heap| BytesReply::from_payload(&heap.account, payload))
-                {
-                    Ok(value) => bytes = Some(value),
-                    Err(_) => status = wings_abi::STATUS_HEAP_EXHAUSTED,
-                },
+            let is_string = output_types[1] == wings_abi::ValueType::StringRef;
+            match unsafe {
+                crate::aot_heap::export_buffers(
+                    &mut context,
+                    &mut arguments,
+                    u64::from(!is_string),
+                    u64::from(is_string),
+                )
+            } {
+                Ok(payload) => {
+                    let account = heap.as_ref().map(|heap| heap.account.clone());
+                    let result =
+                        account
+                            .ok_or(wings_abi::STATUS_INVALID_ROOT)
+                            .and_then(|account| {
+                                if is_string {
+                                    crate::StringReply::from_payload(
+                                        &account,
+                                        payload,
+                                        &mut context,
+                                    )
+                                    .map(BufferReply::String)
+                                } else {
+                                    BytesReply::from_payload(&account, payload)
+                                        .map(BufferReply::Bytes)
+                                        .map_err(|_| wings_abi::STATUS_HEAP_EXHAUSTED)
+                                }
+                            });
+                    match result {
+                        Ok(value) => bytes = Some(value),
+                        Err(error) => status = error,
+                    }
+                }
                 Err(error) => status = error,
             }
             context.roots = std::ptr::null();

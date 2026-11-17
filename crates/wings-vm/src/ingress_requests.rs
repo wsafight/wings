@@ -87,6 +87,7 @@ impl ReplyTable {
                     | ValueType::Ref
                     | ValueType::ListRef
                     | ValueType::BytesRef
+                    | ValueType::StringRef
             )
         {
             return Err(
@@ -295,6 +296,13 @@ impl Drop for IngressRequest {
 }
 
 impl ReplyPublisher {
+    pub(crate) fn complete_string(self, value: crate::StringReply) {
+        self.table.finish(
+            self.slot,
+            self.generation,
+            RequestOutcome::ReplyString(value),
+        );
+    }
     pub(crate) fn complete_list(self, value: crate::IntListReply) {
         self.table
             .finish(self.slot, self.generation, RequestOutcome::ReplyList(value));

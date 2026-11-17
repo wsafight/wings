@@ -93,6 +93,16 @@ fn run(
         let schema = handler.schema();
         let reply_type = schema.reply;
         let arguments = request.arguments.scalars(&schema.parameters)?;
+        if reply_type == Some(wings_abi::ValueType::StringRef) {
+            let reply = process.invoke_string(
+                &schema.name,
+                &arguments[..schema.parameters.len()],
+                max_steps,
+                adapter.cancellation(),
+            )?;
+            adapter.write_string_reply(writer, &reply)?;
+            continue;
+        }
         if reply_type == Some(wings_abi::ValueType::BytesRef) {
             let reply = process.invoke_bytes(
                 &schema.name,

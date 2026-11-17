@@ -101,7 +101,7 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 18);
+    assert_eq!(SCALAR_ABI_VERSION, 19);
     assert_eq!(wings_abi::HEAP_STRING_LITERAL, 18);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
