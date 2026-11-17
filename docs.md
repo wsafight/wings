@@ -35,6 +35,7 @@
 | [2026-11-17 TCP 启动取证](docs/validation-tcp-startup-2026-11-17.md) | 完整握手绝对 deadline、失败日志、原限复验及动态加载采样边界 |
 | [2026-11-17 具名记录消息验证](docs/validation-named-record-messages-2026-11-17.md) | 有界叶值展开、目标重建、单/双 worker、失败/取消/停止及全量回归 |
 | [2026-11-17 标量账户绑定验证](docs/validation-scalar-account-binding-2026-11-17.md) | 原 process 身份、换池拒绝、脱栈迁移、元数据租约与真实 BEAM 回归 |
+| [2026-11-17 类型化跨线程入口验证](docs/validation-typed-ingress-2026-11-17.md) | 计费混合副本、原标量拒绝、GC/失败/停止、请求双端租约与全量回归 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

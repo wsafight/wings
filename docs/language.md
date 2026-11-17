@@ -1,5 +1,7 @@
 # wings-lang
 
+宿主固定跨线程入口可按 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 用 MessageValue 传入 String/Bytes/IntList/RecordInt 等独立内容副本；不改变源码类型/语法或允许原堆引用跨进程，JSON 参数仍只接受标量，具名记录按清单叶签名传值。
+
 ## 有界具名记录
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 开放 process 内具名不可变记录，构造参数按字段声明顺序，使用 `value.field` 读取；同形状不同名的记录不兼容。可运行完整示例见 [`examples/named-records.wings`](../examples/named-records.wings)。

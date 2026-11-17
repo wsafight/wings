@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 的 `IngressSender::send_values`/`request_values` 接受 MessageValue 叶值并在发布前独立复制，String/Bytes 合计 64 KiB、列表合计 64 整数、参数及入口各最多 64，全部沿原三级额度。原 `send`/`request` 仍仅标量；目标原栈分块导入和精确根保活，失败不提交 state；满/关闭释放未发布副本，WakeFailed 仍已接收，timeout/cancel/Drop 不撤回消息。末 sender/result 只保留控制/账户租约，不保留 actor/代码；不是通用 reactor。
+
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 补纯标量进程身份约束：计费初始化的原 process 身份随实例/脱栈镜像保留，显式调用和 attach 拒绝其他账户、未绑定或工具池；失败不改 state/账目、不借栈、不触发 token 工厂、不消费镜像，原账户满额时也不能改借兄弟账户。最后实例/镜像释放后才允许账户元数据退账。同账户换池/线程及旧未绑定工具语义保留，不改变容量、预算或 ABI。
 
 [ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 的具名记录消息复用既有计费叶值复制：源码参数有界展开，源暂存/发布净转移/目标导入沿原路径；目标业务前重建独立记录并由精确根保活。重建失败不进入 handler、不提交候选 state，不撤回此前副作用。空记录也计入 64 节点展开界，原堆槽、列表/字节合计和 4352 B 控制预留不变；不提供原引用跨进程或具名记录回复。
@@ -40,7 +42,7 @@ Bytes 完成事件 mask 为 4，规范段从 0 开始，非成功为长度 0。�
 
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 补语言请求的 Bool/Unit 回复。单 worker 与 Scheduler 在预留/发布前核对目标回复与完成第三参数类型；成功输出沿原规范编码检查，非成功完成使用类型默认值。原 status、唯一终态、超时/取消保留、队满背压、预算、计费与清理顺序保持。
 
-[ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数、JSON 和 IngressSender 的输入仍按原标量边界处理。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
+[ADR-0094](adr/0094-typed-host-message-values.md) 为直接宿主入口提供 `MessageValue` 与 `send_values`/`request_values`。记录传整数内容、列表/字节传借用切片，先完整检查，再复制为目标账户计费的独占载荷；原始整数和 JSON 仍按原标量边界处理，IngressSender 由 ADR-0115 增加独立类型化方法。Scheduler 的宿主复制在 registry 锁外进行，发布时重查完整身份；请求期限从调用开始计算，接受后的超时/取消不撤回消息。
 
 宿主调用示例（针对 [`examples/host-values.wings`](../examples/host-values.wings) 的 `Compute`，须先用本 VM 的计费模块创建带堆目标；以下 `handle` 为 SchedulerHandle）：
 
@@ -147,9 +149,9 @@ RecordInt 语言消息按 [ADR-0049](adr/0049-record-message-copies.md) 用固�
 
 真实 I/O 验证示例 `tcp_counter` 只绑定临时 IPv4 loopback 端口，单适配线程、最多八连接/每连接 64 帧、固定 32 B 收发，绝对读写 deadline 不随部分传输刷新；请求超时不重试，断连不回滚 state。线程、listener 和连接逻辑预算先准入，Drop 停止并 join，详见 [ADR-0048](adr/0048-bounded-loopback-service.md)；kernel/allocator 的全部内部开销仍非精确计量。
 
-宿主可用 `open_request_ingress` 配置固定标量回复入口；`IngressSender::request` 返回唯一结果 handle 与已接收通知状态。结果 `try_take` 或外部线程 `wait` 只终结一次；超时/取消/丢弃不撤回消息，结果槽在调用者结束且消息完成后才回收。请求预算、代次、失败/关闭与双端租约见 [ADR-0047](adr/0047-cross-thread-ingress-requests.md)；不等于语言同步 call 或完整 I/O。
+宿主可用 `open_request_ingress` 配置固定回复入口，支持标量及已开放的内容回复；`IngressSender::request` 或 ADR-0115 的 `request_values` 返回唯一结果 handle 与已接收通知状态。结果 `try_take` 或外部线程 `wait` 只终结一次；超时/取消/丢弃不撤回消息，结果槽在调用者结束且消息完成后才回收。请求预算、代次、失败/关闭与双端租约见 [ADR-0047](adr/0047-cross-thread-ingress-requests.md)；不等于语言同步 call 或完整 I/O。
 
-宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的标量单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 成功表示已接收，`IngressWake::WakeFailed` 也已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
+宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的固定单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 仅标量，ADR-0115 的 `send_values` 另复制业务内容。成功与 `IngressWake::WakeFailed` 都表示已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
 
 代码租约与模块 VM 级准入按 [ADR-0044](adr/0044-native-module-leases.md) 实现：clone/HandlerId/实例共享一次预留，跨 VM 计费执行拒绝；最后一个活栈先正常取消返回，再交还 Library 和预算。旧可信非计费工具入口保留，不将该兼容路径称为完整三级准入。
 

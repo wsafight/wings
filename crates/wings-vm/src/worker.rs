@@ -791,9 +791,9 @@ impl ScalarWorker {
                             request: None,
                             system: false,
                             external: envelope.reply,
-                            record_mask: 0,
-                            lists: ListPayload::default(),
-                            bytes: BytePayload::default(),
+                            record_mask: envelope.record_mask,
+                            lists: envelope.lists,
+                            bytes: envelope.bytes,
                             _charge: envelope.charge,
                         });
                         actor.mailbox.count += 1;

@@ -3,8 +3,13 @@ use std::time::{Duration, Instant};
 
 use wings_abi::ValueType;
 
+use crate::host_values::HostMessage;
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
-use crate::{HandlerId, IngressRequest, Reservation, ResourceAccount, Resources, WorkerNotifier};
+use crate::message_values::{BytePayload, ListPayload};
+use crate::{
+    HandlerId, IngressRequest, MessageValue, Reservation, ResourceAccount, Resources,
+    WorkerNotifier,
+};
 
 const MAX_ARGUMENTS: usize = 64;
 
@@ -46,11 +51,50 @@ struct Ring {
 pub(crate) struct Envelope {
     pub(crate) arguments: [i64; MAX_ARGUMENTS],
     pub(crate) count: usize,
+    pub(crate) record_mask: u64,
+    pub(crate) lists: ListPayload,
+    pub(crate) bytes: BytePayload,
     pub(crate) charge: Reservation,
     pub(crate) reply: Option<ReplyPublisher>,
 }
 
 impl IngressSender {
+    pub fn send_values(&self, values: &[MessageValue<'_>]) -> Result<IngressWake, String> {
+        if self.shared.replies.is_some() {
+            return Err("send requires a one-way ingress".into());
+        }
+        let message = self.copy_values(values)?;
+        self.publish_message(message, None, || self.shared.notifier.notify())
+    }
+
+    pub fn request_values(
+        &self,
+        values: &[MessageValue<'_>],
+        timeout: Duration,
+    ) -> Result<(IngressRequest, IngressWake), String> {
+        let (reply_type, replies) = self
+            .shared
+            .replies
+            .as_ref()
+            .ok_or("request requires a reply ingress")?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or("ingress request deadline overflow")?;
+        let message = self.copy_values(values)?;
+        let (request, publisher) = replies.start(deadline, &self.shared.account, *reply_type)?;
+        let wake =
+            self.publish_message(message, Some(publisher), || self.shared.notifier.notify())?;
+        Ok((request, wake))
+    }
+
+    fn copy_values(&self, values: &[MessageValue<'_>]) -> Result<HostMessage, String> {
+        HostMessage::copy_types(
+            self.shared.parameters[..self.shared.count].iter().copied(),
+            values,
+            &self.shared.account,
+        )
+    }
+
     pub fn send(&self, arguments: &[i64]) -> Result<IngressWake, String> {
         if self.shared.replies.is_some() {
             return Err("send requires a one-way ingress".into());
@@ -104,16 +148,38 @@ impl IngressSender {
         notify: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<IngressWake, String> {
         self.validate_arguments(arguments)?;
+        let mut owned = [0; MAX_ARGUMENTS];
+        owned[..arguments.len()].copy_from_slice(arguments);
+        self.publish_message(
+            HostMessage {
+                arguments: owned,
+                count: arguments.len(),
+                record_mask: 0,
+                lists: ListPayload::default(),
+                bytes: BytePayload::default(),
+            },
+            reply,
+            notify,
+        )
+    }
+
+    fn publish_message(
+        &self,
+        payload: HostMessage,
+        reply: Option<ReplyPublisher>,
+        notify: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<IngressWake, String> {
         let charge = self.shared.account.reserve(Resources {
             messages: 1,
             bytes: self.shared.message_bytes,
             ..Resources::default()
         })?;
-        let mut owned = [0; MAX_ARGUMENTS];
-        owned[..arguments.len()].copy_from_slice(arguments);
         let message = Envelope {
-            arguments: owned,
-            count: arguments.len(),
+            arguments: payload.arguments,
+            count: payload.count,
+            record_mask: payload.record_mask,
+            lists: payload.lists,
+            bytes: payload.bytes,
             charge,
             reply,
         };
@@ -175,12 +241,20 @@ impl IngressReceiver {
                 )
             })
             || schema.parameters.len() > MAX_ARGUMENTS
-            || schema
-                .parameters
-                .iter()
-                .any(|(_, ty)| !matches!(ty, ValueType::Int | ValueType::Bool | ValueType::Unit))
+            || schema.parameters.iter().any(|(_, ty)| {
+                !matches!(
+                    ty,
+                    ValueType::Int
+                        | ValueType::Bool
+                        | ValueType::Unit
+                        | ValueType::Ref
+                        | ValueType::ListRef
+                        | ValueType::BytesRef
+                        | ValueType::StringRef
+                )
+            })
         {
-            return Err("ingress requires a scalar handler".into());
+            return Err("ingress requires supported message values and reply types".into());
         }
         let bytes = std::mem::size_of::<Shared>()
             + capacity * std::mem::size_of::<Option<Envelope>>()
@@ -272,6 +346,217 @@ impl Drop for IngressReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed_fixture(
+        types: &[ValueType],
+        reply: Option<ValueType>,
+        capacity: usize,
+    ) -> (
+        ResourceAccount,
+        ResourceAccount,
+        ResourceAccount,
+        crate::WorkerParker,
+        IngressReceiver,
+        IngressSender,
+    ) {
+        let limit = Resources {
+            bytes: 2 << 20,
+            messages: 4,
+            requests: 4,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limit);
+        let tenant = vm.tenant(limit).unwrap();
+        let process = tenant.process(limit).unwrap();
+        let mut module = crate::tests::module();
+        let data = Arc::get_mut(&mut module.inner).unwrap();
+        data.manifest.handlers[0].parameters = types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| (format!("value_{index}"), *ty))
+            .collect();
+        data.manifest.handlers[0].reply = reply;
+        let parker = crate::WorkerParker::new_accounted(&process).unwrap();
+        let (receiver, sender) = IngressReceiver::new(
+            &process,
+            module.handler("Add").unwrap(),
+            capacity,
+            128,
+            2048,
+            parker.notifier(),
+        )
+        .unwrap();
+        (vm, tenant, process, parker, receiver, sender)
+    }
+
+    #[test]
+    fn typed_ingress_copies_mixed_values_and_preserves_scalar_rejection() {
+        let types = [
+            ValueType::Ref,
+            ValueType::ListRef,
+            ValueType::StringRef,
+            ValueType::BytesRef,
+            ValueType::Bool,
+            ValueType::Unit,
+        ];
+        let (vm, tenant, account, parker, receiver, sender) = typed_fixture(&types, None, 1);
+        let baseline = vm.used();
+        assert!(sender.send(&[0; 6]).is_err());
+        let mut text = String::from("中😀\0");
+        let mut bytes = vec![17; 65536 - text.len()];
+        let mut integers = [i64::MIN; 64];
+        sender
+            .send_values(&[
+                MessageValue::RecordInt(7),
+                MessageValue::IntList(&integers),
+                MessageValue::String(&text),
+                MessageValue::Bytes(&bytes),
+                MessageValue::Bool(true),
+                MessageValue::Unit,
+            ])
+            .unwrap();
+        let full = vm.used();
+        assert_eq!(full.bytes, baseline.bytes + 65536 + 2048);
+        assert_eq!(full.messages, 1);
+        assert!(
+            sender
+                .send_values(&[
+                    MessageValue::RecordInt(7),
+                    MessageValue::IntList(&integers),
+                    MessageValue::String(&text),
+                    MessageValue::Bytes(&bytes),
+                    MessageValue::Bool(true),
+                    MessageValue::Unit
+                ])
+                .is_err()
+        );
+        assert_eq!(vm.used(), full);
+        text.clear();
+        bytes.fill(99);
+        integers.fill(99);
+        let envelope = receiver.take().unwrap();
+        assert_eq!(envelope.record_mask, 1);
+        assert_eq!(envelope.lists.mask, 2);
+        assert_eq!(envelope.lists.values, [i64::MIN; 64]);
+        assert_eq!(envelope.bytes.mask, 12);
+        assert_eq!(envelope.bytes.string_mask, 4);
+        assert_eq!(&envelope.bytes.data[..8], "中😀\0".as_bytes());
+        assert!(envelope.bytes.data[8..].iter().all(|byte| *byte == 17));
+        drop(envelope);
+        assert_eq!(vm.used(), baseline);
+        drop((receiver, sender, parker, account, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn typed_ingress_validates_limits_and_each_account_before_publication() {
+        let (vm, tenant, account, parker, receiver, sender) =
+            typed_fixture(&[ValueType::BytesRef, ValueType::ListRef], None, 1);
+        let baseline = vm.used();
+        for values in [
+            vec![MessageValue::Int(0), MessageValue::IntList(&[])],
+            vec![MessageValue::Bytes(&[0; 65537]), MessageValue::IntList(&[])],
+            vec![MessageValue::Bytes(&[]), MessageValue::IntList(&[0; 65])],
+            vec![],
+        ] {
+            assert!(sender.send_values(&values).is_err());
+            assert_eq!(vm.used(), baseline);
+        }
+        for owner in [&account, &tenant, &vm] {
+            let fill = owner
+                .reserve(Resources {
+                    bytes: owner.limit().bytes - owner.used().bytes,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let full = vm.used();
+            assert!(
+                sender
+                    .send_values(&[MessageValue::Bytes(&[1]), MessageValue::IntList(&[])])
+                    .is_err()
+            );
+            assert_eq!(vm.used(), full);
+            assert!(receiver.take().is_none());
+            drop(fill);
+        }
+        drop(receiver);
+        assert!(
+            sender
+                .send_values(&[MessageValue::Bytes(&[1]), MessageValue::IntList(&[])])
+                .unwrap_err()
+                .contains("closed")
+        );
+        assert_eq!(vm.used(), baseline);
+        drop((sender, parker, account, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn typed_ingress_timeout_cancel_and_drop_retain_the_old_publisher() {
+        for terminal in 0..3 {
+            let (vm, tenant, account, parker, receiver, sender) =
+                typed_fixture(&[ValueType::StringRef], Some(ValueType::Int), 1);
+            let baseline = vm.used();
+            let timeout = if terminal == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(1)
+            };
+            let (mut request, _) = sender
+                .request_values(&[MessageValue::String("hello")], timeout)
+                .unwrap();
+            if terminal == 1 {
+                request.cancel().unwrap();
+            }
+            if terminal != 2 {
+                assert_eq!(
+                    request.try_take().unwrap(),
+                    Some(if terminal == 0 {
+                        crate::RequestOutcome::TimedOut
+                    } else {
+                        crate::RequestOutcome::Cancelled
+                    })
+                );
+            }
+            drop(request);
+            let full = vm.used();
+            assert_eq!(full.requests, 1);
+            assert!(
+                sender
+                    .request_values(&[MessageValue::String("other")], Duration::ZERO)
+                    .is_err()
+            );
+            assert_eq!(vm.used(), full);
+            let envelope = receiver.take().unwrap();
+            assert_eq!(envelope.bytes.data, b"hello");
+            assert_eq!(vm.used(), full);
+            drop(envelope);
+            assert_eq!(vm.used(), baseline);
+            drop((sender, receiver, parker, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn typed_ingress_notification_failure_keeps_the_published_copy() {
+        let (vm, tenant, account, parker, receiver, sender) =
+            typed_fixture(&[ValueType::StringRef], None, 1);
+        let baseline = vm.used();
+        let payload = sender.copy_values(&[MessageValue::String("中😀")]).unwrap();
+        assert_eq!(
+            sender
+                .publish_message(payload, None, || Err(std::io::Error::other("fixture")))
+                .unwrap(),
+            IngressWake::WakeFailed
+        );
+        assert_eq!(vm.used().messages, baseline.messages + 1);
+        let envelope = receiver.take().unwrap();
+        assert_eq!(envelope.bytes.data, "中😀".as_bytes());
+        drop(envelope);
+        assert_eq!(vm.used(), baseline);
+        drop((receiver, sender, parker, account, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     #[test]
     fn notifier_error_is_accepted_not_a_retryable_rejection() {

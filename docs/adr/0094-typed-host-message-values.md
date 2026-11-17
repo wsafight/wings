@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（直接宿主消息切片；平台验证另记，MVP 尚未完成）
+- 后续：[ADR-0115](0115-typed-cross-thread-ingress.md) 将相同内容复制检查接入固定跨线程入口，保留原标量方法拒绝原 handle。
 - 扩展：[ADR-0049](0049-record-message-copies.md)、[ADR-0051](0051-bounded-int-list-messages.md)、[ADR-0076](0076-accounted-byte-messages.md)
 - 部分替代：上述决定对直接宿主消息只能接收标量的限制；原始整数、JSON 和 IngressSender 接口的限制保留。
 

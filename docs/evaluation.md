@@ -16,6 +16,8 @@ cargo test --release --workspace --doc --locked
 
 ## 增量验收契约
 
+[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 验证混合类型跨线程副本、64 KiB/64 整数含界与超界、三级拒绝零变化、满/关闭/旧 sender 和 WakeFailed 已接收；请求 timeout/cancel/Drop 仍占旧 publisher。`examples/typed-ingress.wings` 与 `typed_ingress` 真实 AOT 覆盖逐片导入/GC、目标导入失败/停止/旧提交及清理，纳入完整 AOT 脚本，原限不变。
+
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 先复现纯标量直接调用和 detach 后换账户的旧缺陷；验证兄弟/其他 tenant/跨 VM/工具池拒绝、拒绝前不执行 token 工厂、满额不能借其他账户、正确池重试与同账户跨线程保留提交值，以及末镜像释放账户元数据。真实 AOT 覆盖计费模块及原全量回归，不放宽 4352 B 控制、CPU/墙钟或业务时限；结果见[记录](validation-scalar-account-binding-2026-11-17.md)。
 
 [ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 验证嵌套/空记录、混合叶类型、名义类型拒绝、一次实参求值、记录节点及叶值合计 64 含界/超界与重复子树有界拒绝。真实 AOT 验证目标重建/精确根/GC、逐片预算/停止、单/双 worker 语言请求、消息发布后源失败、入口导入失败、既有合计限额和取消不撤回；原限不变，记录回复及完整 MVP 仍独立验收。

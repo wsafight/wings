@@ -2,6 +2,7 @@
 
 - 日期：2026-11-13
 - 状态：已采纳（外部事件前置切片）
+- 后续：[ADR-0115](0115-typed-cross-thread-ingress.md) 增加类型化内容复制入口，原标量 API 保留，不开放原引用整数。
 - 补充：[ADR-0020](0020-single-worker-mailbox.md) 的宿主发送入口
 - 替代：[ADR-0041](0041-worker-deadline-parking.md) 的私有 notifier 限制
 - 前置：[并发资源准入](0045-concurrent-resource-admission.md)

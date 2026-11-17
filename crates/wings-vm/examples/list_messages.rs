@@ -232,12 +232,28 @@ fn main() {
                     .is_err()
             );
         }
-        assert!(worker.open_ingress(parent, &handler, 1, 8192).is_err());
-        assert!(
-            worker
-                .open_request_ingress(parent, &handler, 1, 8192)
-                .is_err()
-        );
+        assert_eq!(vm.used(), baseline);
+        let mut probe = ScalarWorker::new(&tenant, 1).unwrap();
+        probe.enable_wait().unwrap();
+        let target = probe.spawn_with_heap(&module, limits(), 1, 7).unwrap();
+        let sender = if handler.schema().reply.is_some() {
+            probe
+                .open_request_ingress(target, &handler, 1, 8192)
+                .unwrap()
+        } else {
+            probe.open_ingress(target, &handler, 1, 8192).unwrap()
+        };
+        let registered = vm.used();
+        for argument in [1, 2i64 << 32, -1] {
+            assert!(sender.send(&[argument]).is_err());
+            assert!(
+                sender
+                    .request(&[argument], Duration::from_secs(60))
+                    .is_err()
+            );
+            assert_eq!(vm.used(), registered);
+        }
+        drop((sender, probe));
     }
     assert_eq!(vm.used(), baseline);
     worker

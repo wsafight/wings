@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 将固定跨线程 ingress 的参数扩至既有类型化叶值复制。sender 只持固定 schema、ring、账户/通知/结果租约，不含代码/actor owner；同线程宿主和 ingress 共用类型及合计限额检查，目标沿既有受管导入。ABI/4352 B 不变，不开放跨堆原 handle 或通用 reactor。
+
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 使所有从 process 计费池初始化的实例保存原账户身份，纯标量不再只检查模块 VM。调用在控制/栈准入和 token 创建前校验；可发送的脱栈镜像搬运账户租约而非栈池，attach 校验后才消费镜像。同账户跨线程重绑不重跑 initializer，ABI v21 与 4352 B 控制上界不变。
 
 [ADR-0111](adr/0111-bounded-string-content-equality.md) 的源码 ABI v21 增加 String 内容相等堆操作和专用 Bool IR，不让通用整数 Compare 接受引用；codegen 发布两个最后使用输入的精确根，callback 分块比较并可让出。context 88 B、EffectRequest 80 B/4352 B 控制预留不变，旧产物重编译。
@@ -56,7 +58,7 @@
 
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 补齐反向组合检查：计费根及后代只接收本 VM 的计费模块，不自动补租约；旧工具树保持原用途。
 
-[ADR-0083](adr/0083-accounted-module-execution.md) 将计费模块的 VM 绑定延伸到所有初始化/执行/镜像接回入口：池必须绑定本 VM 的 process，默认 TLS 工具池在创建前即拒绝。未计费模块的独立工具路径保留；带堆实例仍要求原账户，标量显式选择本 VM 的其他 process 池规则不变，不增加隐式根或账户。
+[ADR-0083](adr/0083-accounted-module-execution.md) 将计费模块的 VM 绑定延伸到所有初始化/执行/镜像接回入口：池必须绑定本 VM 的 process，默认 TLS 工具池在创建前即拒绝。未计费模块的独立工具路径保留；带堆实例要求原账户，纯标量创建后的账户选择由 ADR-0114 收紧，不增加隐式根或账户。
 
 [ADR-0082](adr/0082-bounded-tcp-segments.md) 修正有限 TCP 示例的 socket 边界：macOS 接受后先限制 TCP_MAXSEG，再重设原 16 KiB 收发缓冲；读写后持续核对原 64 KiB 上限，配置失败与缓冲拒绝分别计数。没有改变执行核心、语言或 ABI v15，也不将配置前内核容量或用户态预留写成 OS 硬限制。
 
@@ -116,9 +118,9 @@
 
 [ADR-0048](adr/0048-bounded-loopback-service.md) 的 loopback TCP Counter 由一个有预算的外部适配线程接收固定帧，经有界请求入口交给原 worker；native I/O 不进入业务线程。线程/连接数、缓冲及等待有明确上限，错误先停止并 join，再释放 VM；该示例不是通用 reactor 或可部署的网络执行引擎。
 
-[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 在固定外部入口上增加标量请求模式：结果表无模块/actor 引用，调用者与消息发布者共同持有有界槽位和资源票据；worker 提交 state 后才发布回复。外部 Condvar 等待不进入受管 handler，不修改 ABI 或 M:N 执行权。
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 在固定外部入口上增加请求模式，参数后由 ADR-0115 扩为类型化副本：结果表无模块/actor 引用，调用者与消息发布者共同持有有界槽位和资源票据；worker 提交 state 后才发布回复。外部 Condvar 等待不进入受管 handler，不修改 ABI 或 M:N 执行权。
 
-[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 让外部线程通过固定计费 ingress 发布标量单向消息，并通知原线程 worker；HandlerId、actor 和活栈不跨线程。ring 与 OS 通知预算跟随最后 handle，不由 worker 提前释放。多 worker 执行权、引用消息和真实服务 I/O 仍须独立完成。
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 让外部线程通过固定计费 ingress 发布单向消息并通知原线程 worker，类型化内容副本后由 ADR-0115 扩展；HandlerId、actor 和活栈不跨线程。ring 与 OS 通知预算跟随最后 handle，不由 worker 提前释放；不据此声称通用 reactor 或 M:N 完成。
 
 资源账户按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 用同 VM 共享门闩串行提交三级四维准入、净转移和归还；只在固定长度计数更新中持锁，不在锁内执行分配/业务/OS 等待或协程切换。账户与票据自动 Send/Sync，actor/活栈仍保持原线程执行权。
 

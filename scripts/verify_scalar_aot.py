@@ -1216,6 +1216,11 @@ def main():
         result = example("host_values", host_values)
         assert "Typed host values verified" in result.stdout
         print(result.stdout.strip())
+        typed_ingress = parent / "typed-ingress"
+        command([COMPILER, "build", ROOT / "examples/typed-ingress.wings", "-o", typed_ingress])
+        result = example("typed_ingress", typed_ingress)
+        assert "Typed ingress verified" in result.stdout
+        print(result.stdout.strip())
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
         verify_tcp_service(tcp_artifact)

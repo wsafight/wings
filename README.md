@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0115](docs/adr/0115-typed-cross-thread-ingress.md) 为固定跨线程入口补 `send_values`/`request_values`，独立复制 String/Bytes/IntList/RecordInt 等叶值，目标沿原计费/GC/分块导入；原标量 API、容量及超时不撤回语义不变。构建后用 `target/debug/examples/typed_ingress --trusted target/typed-ingress-aot` 验证，产物先由 `target/debug/wings-compile build examples/typed-ingress.wings -o target/typed-ingress-aot` 生成；这不是完整 reactor 或 MVP。
+
 [ADR-0114](docs/adr/0114-scalar-process-account-binding.md) 修复纯标量实例可通过换执行池或迁移镜像改借其他账户的问题。计费初始化后始终绑定原 process，同账户换池/线程仍允许；拒绝不执行业务或消费镜像，ABI、原控制预留及限额不变，仍非完整 MVP。
 
 [ADR-0113](docs/adr/0113-bounded-named-record-message-expansion.md) 补具名记录单向/请求消息参数，按字段有界展开并在目标独立重建，保留计费复制、精确根及所有原限。ABI v21 不变；具名记录回复与完整 MVP 门禁仍待完成。
@@ -156,9 +158,9 @@ ABI v12 按 [ADR-0049](docs/adr/0049-record-message-copies.md) 和 [ADR-0051](do
 
 受限 TCP Counter 示例使用真实 loopback socket、固定 32 B 帧及一个有预算的适配线程，业务仍在原 worker 执行；连接/帧数和 I/O deadline 均有限，见 [ADR-0048](docs/adr/0048-bounded-loopback-service.md)。运行：`cargo run --locked -p wings-compile -- build examples/tcp-counter.wings -o target/tcp-counter`，再 `cargo run --locked -p wings-vm --example tcp_counter -- --trusted target/tcp-counter 1 4`。它只输出临时监听地址并等待有限请求，不是生产网络 VM 或 BEAM 等价性能负载。
 
-`ScalarWorker::open_request_ingress` 可将单个外部入口绑定为 Int/Bool/Unit 或 RecordInt 内容回复协议，输入参数仍仅接受标量；发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位。超时/取消不撤回已接收消息；示例 `worker_ingress_requests`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。仍不提供网络服务或语言阻塞请求。
+`ScalarWorker::open_request_ingress` 可将单个外部入口绑定为标量或 RecordInt/IntList/Bytes/String 内容回复协议；原 `request` 输入仅标量，ADR-0115 的 `request_values` 支持类型化独立副本。发送端取得唯一 `IngressRequest`，固定结果表在取走结果且消息完成后才释放槽位，超时/取消不撤回消息；示例 `worker_ingress_requests` 与 `typed_ingress`，见 [ADR-0047](docs/adr/0047-cross-thread-ingress-requests.md)。不提供语言阻塞请求或通用网络服务。
 
-宿主可在配置等待后用 `ScalarWorker::open_ingress` 注册单 actor 单入口的固定跨线程队列，发送端只传 Int/Bool/Unit，并以原票据转入 mailbox；关闭后旧 sender 拒绝，最后 sender 释放前保留控制与通知预算。示例 `worker_ingress`，契约见 [ADR-0046](docs/adr/0046-bounded-cross-thread-ingress.md)。这不是网络服务、引用消息或 M:N。
+宿主可在配置等待后用 `ScalarWorker::open_ingress` 注册单 actor 单入口的固定跨线程队列，`send` 只传 Int/Bool/Unit，ADR-0115 的 `send_values` 另支持内容副本，并以原票据转入 mailbox；关闭后旧 sender 拒绝，最后 sender 释放前保留控制与通知预算。示例 `worker_ingress` 与 `typed_ingress`，契约见 [ADR-0046](docs/adr/0046-bounded-cross-thread-ingress.md)。不传原堆 handle，也不是通用网络服务或 M:N。
 
 资源账户与预留票据支持跨线程共享/归还，同 VM 的三级四维准入和净转移通过一个门闩串行提交，失败不留半账；见 [ADR-0045](docs/adr/0045-concurrent-resource-admission.md)。actor/活栈仍绑定原线程，这不是 M:N，也没有无锁或吞吐领先结论。
 

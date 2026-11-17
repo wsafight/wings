@@ -27,15 +27,23 @@ impl HostMessage {
         handler: &HandlerId,
         values: &[MessageValue<'_>],
     ) -> Result<(u64, usize), String> {
-        if values.len() > 64 || values.len() != handler.schema().parameters.len() {
+        Self::validate_types(
+            handler.schema().parameters.iter().map(|(_, ty)| *ty),
+            values,
+        )
+    }
+
+    fn validate_types(
+        types: impl ExactSizeIterator<Item = ValueType>,
+        values: &[MessageValue<'_>],
+    ) -> Result<(u64, usize), String> {
+        if values.len() > 64 || values.len() != types.len() {
             return Err("host message requires matching parameters and at most 64 values".into());
         }
         let mut list_count = 0;
         let mut byte_count = 0;
         let mut byte_mask = 0;
-        for (index, (value, (_, expected))) in
-            values.iter().zip(&handler.schema().parameters).enumerate()
-        {
+        for (index, (value, expected)) in values.iter().zip(types).enumerate() {
             let actual = match value {
                 MessageValue::Int(_) => ValueType::Int,
                 MessageValue::Bool(_) => ValueType::Bool,
@@ -67,7 +75,7 @@ impl HostMessage {
                     ValueType::StringRef
                 }
             };
-            if actual != *expected {
+            if actual != expected {
                 return Err("host message value type does not match handler schema".into());
             }
         }
@@ -79,7 +87,19 @@ impl HostMessage {
         values: &[MessageValue<'_>],
         account: &ResourceAccount,
     ) -> Result<Self, String> {
-        let (byte_mask, byte_count) = Self::validate(handler, values)?;
+        Self::copy_types(
+            handler.schema().parameters.iter().map(|(_, ty)| *ty),
+            values,
+            account,
+        )
+    }
+
+    pub(crate) fn copy_types(
+        types: impl ExactSizeIterator<Item = ValueType>,
+        values: &[MessageValue<'_>],
+        account: &ResourceAccount,
+    ) -> Result<Self, String> {
+        let (byte_mask, byte_count) = Self::validate_types(types, values)?;
         let bytes = if byte_mask == 0 {
             BytePayload::default()
         } else {

@@ -109,7 +109,6 @@ fn main() {
     let baseline = vm.used();
     let store = module.handler("Store").unwrap();
     assert!(worker.send(pid, &store, &[1], 4096).is_err());
-    assert!(worker.open_ingress(pid, &store, 1, 4096).is_err());
     assert!(
         worker
             .request(
@@ -121,12 +120,26 @@ fn main() {
             )
             .is_err()
     );
-    assert!(
-        worker
-            .open_request_ingress(pid, &module.handler("Compute").unwrap(), 1, 4096)
-            .is_err()
-    );
     assert_eq!(vm.used(), baseline);
+    for name in ["Store", "Compute"] {
+        let mut probe = ScalarWorker::new(&tenant, 1).unwrap();
+        probe.enable_wait().unwrap();
+        let target = probe.spawn_with_heap(&module, limits(), 1, 2).unwrap();
+        let handler = module.handler(name).unwrap();
+        let sender = if handler.schema().reply.is_some() {
+            probe
+                .open_request_ingress(target, &handler, 1, 4096)
+                .unwrap()
+        } else {
+            probe.open_ingress(target, &handler, 1, 4096).unwrap()
+        };
+        let registered = vm.used();
+        assert!(sender.send(&[1]).is_err());
+        assert!(sender.request(&[1], Duration::from_secs(60)).is_err());
+        assert_eq!(vm.used(), registered);
+        drop((sender, probe));
+        assert_eq!(vm.used(), baseline);
+    }
     worker
         .request(
             pid,
