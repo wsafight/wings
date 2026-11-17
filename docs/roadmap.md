@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 为第 6 项补持续环境中的双发送者失败前缀、槽复用和资源清理；显式 900 轮长测与普通三轮回归分开。它没有补齐长时超时/取消、自动重启强度与过载竞争，最新原生双平台及 BEAM 双目标仍须独立验收；[实际验证](validation-failure-soak-2026-11-18.md) 不改 MVP 未完成的状态。
+
 [ADR-0118](adr/0118-native-sync-storage-admission.md) 修复第 4 项根门闩与退出票据遗漏 macOS 原生同步后备存储的问题，准入后在共享发布前完成初始化。该缺口有修复前分配计数器失败证据；完整分配/装载账本、公平/过载/长时故障、原生双平台和 BEAM 双门禁仍待完成，MVP 未完成。
 
 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 将第 4 项具名记录回复接入可运行 CLI，以固定遍历控制流式输出字段对象，仍只接受原标量 JSON 输入。完整分配/装载账本、公平/过载/长时故障、原生双平台与 BEAM 同负载吞吐/整机内存门禁仍待完成；实际验证见[CLI 记录输出记录](validation-cli-record-replies-2026-11-18.md)。
@@ -242,7 +244,7 @@ OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接�
 
 [ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList/Bytes 消息根按 ADR-0049/0051/0076 接入，对应回复由 ADR-0096–0098 补充；通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
 
-BEAM 对照已固化 [v1–v9 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测，ADR-0092 补双发送者并发失败前缀。正确性和部分测量仍不等同完整基线；长时并发故障、超时竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
+BEAM 对照已固化 [v1–v10 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测，ADR-0092 补双发送者并发失败前缀，ADR-0120 补持续环境的失败生命周期。正确性和部分测量仍不等同完整基线；长时取消/超时/自动恢复与过载竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
 
 [ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
 

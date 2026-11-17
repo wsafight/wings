@@ -217,6 +217,29 @@ WINGS_PROFILE=release python3 scripts/verify_concurrent_failure.py --compare-bea
 
 默认完整 AOT 包含 Wings/模型；仅显式 `--compare-beam` 执行 OTP 29，缺少则失败。三种状态分别覆盖空流、单/双 sender 注入、竞争失败、健康 sibling、跨窗口关闭、100 目标及 i64 边界；枚举小流全部交错生成模型正例，再拒绝伪造前缀、假失败、错误状态、重复/丢失终态和非法输入。不据此宣称完整并发故障或 MVP 完成。
 
+## v10：持续环境的失败生命周期
+
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 共用 v9 的 Rust/BEAM 业务核心、相同输入和前缀 oracle，新增独立容器入口。Wings 全程保留同一 VM、module、tenant、Scheduler 与 supervisor；BEAM 保留同一 VM、驱动及已装载模块。每轮新建相同业务目标，两个真实 sender 各窗口 16/最多 128 请求，mailbox 32/共享结果 32；失败目标保留旧提交状态，健康目标完成全部请求，再等待 actor/sender 终态。没有自动重启或重发。
+
+独立 `--soak` 固定 30s 预热/60s 采样，每 100ms 计划一轮，共 900 轮，不丢弃迟发或提前结束；每轮仍限 3s，整体阶段 120s、CPU 240s、墙钟 130s、禁 core，原 VM/tenant 256 MiB、process 4 MiB、两 worker 和业务堆/栈限额不变。标准输入复用 v9 的 48 B/32 B 桥接或严格 JSON，但必须有两条非空流、注入失败与实际健康目标业务。当前固定 workload 为 3 actor、每 sender 128 条、delta 1/2、第 19 条向 actor 1 注入失败；完整状态大小在 256/4096/65536 B 中显式选择。
+
+每轮后及下一轮目标仍存活时，Wings 验证旧完整 Pid/child ID 查询和 send/request 拒绝；BEAM 验证旧 Pid 已死、旧 CAS gate 关闭并拒绝发送。每轮 Wings 的 process/message/request 归零，逻辑字节只允许冷 Scheduler 基线加 0..4 个原固定栈槽；缓存没有冒充为零成本。完整环境关闭后根 used 精确回到非零启动基线。BEAM 的进程/port 数只作本端诊断，不归一为 Wings 逻辑账户。
+
+`cached_stacks` 是账面差额的槽数推导，不是各 worker 的独立映射普查；有界等式不能单独排除所有同尺寸漏计，完整账本继续独立验收。
+
+独占 trace JSONL 使用固定 64 KiB 写缓冲、64 MiB 上限。每轮含计划/实际时刻、全部结果/前缀、旧身份检查及保留账目；驱动冻结源码/runner/输入/产物和 oracle，前后校验 hash，逐行重放并保留失败的部分 trace、控制/错误和 invalid manifest。RSS 观察仅为安全停止，不替代平台内存口径。
+
+```sh
+cargo build --workspace --bins --examples --locked
+python3 scripts/verify_failure_soak.py
+python3 scripts/verify_failure_soak.py --compare-beam
+cargo build --release --workspace --bins --examples --locked
+target/release/wings-compile build examples/beam-failure-counter.wings -o target/failure-soak-aot
+WINGS_PROFILE=release python3 scripts/measure_failure_soak.py --artifact target/failure-soak-aot --output target/failure-soak-4k --state-bytes 4096 --compare-beam
+```
+
+默认 AOT 只执行 `--verify-soak` 三轮、三种 state 和模型伪造拒绝；原短子进程 CPU 5s/墙钟 10s 不变。只有显式 `--compare-beam` 跑 OTP 29，无模型回退；只有 `measure_failure_soak.py` 启动固定长测。实际结果见[验证记录](validation-failure-soak-2026-11-18.md)。这没有覆盖长时 timeout/cancel、自动重启强度、过载竞争、完整内存、CPU 硬配额或最新原生双平台，不宣称完整故障或 MVP 门禁通过。
+
 ## 代表性负载与性能验收冻结条件
 
 这些是同业务对照的固定小集合，不展开整个笛卡尔积。v5执行四组非fairness短时验证，v6接独立长时入口，v7补fairness短时业务；均不自动构成完整性能验收。普通Idle与活跃场景都保持32 B逻辑请求/成功回复；逻辑state仍包含计数器与actor ID。actor ID为`1..N`，活动集合取前`A`个；其余保留状态但不处理业务消息，不冬眠。更大actor数、其他payload、冬眠与M:N另立协议版本。

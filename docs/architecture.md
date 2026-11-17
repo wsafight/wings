@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 的 v10 诊断在同一 VM/模块/Scheduler/supervisor 内重复失败生命周期，共用 v9 业务核心及 oracle，按完整 Pid/child 代次拒绝旧入口。每轮清理后仅允许原两 worker 各最多两个栈缓存，退出整个环境再核对根基线；不改变执行 ABI、调度、计费或监督契约。
+
 [ADR-0118](adr/0118-native-sync-storage-admission.md) 在 macOS 的根启动和共享控制公式中包含标准 Mutex/Condvar 的原生后备存储。内部构造在已有准入之后、共享发布之前完成惰性初始化，避免首次共享使用或并发初始化额外分配；保留标准库实现。Linux 内联 futex 不加后备字节，ABI v21、manifest v2 与原执行控制预留不变。
 
 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 为 CLI 增加具名记录回复的 JSON 字段对象输出；仅遍历 `RecordReply` 的独立 schema/叶值，固定帧数组沿原 adapter 控制预留，不分配 JSON 树或完整输出副本，不改变受管 ABI、manifest、原业务载荷或 JSON 参数范围。

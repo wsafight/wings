@@ -3,6 +3,7 @@
 - 日期：2026-11-14
 - 状态：已采纳（并发失败正确性切片，不是性能验收）
 - 依据：[ADR-0065](0065-two-sender-counter-fifo.md)、[ADR-0074](0074-bounded-concurrent-recovery.md)
+- 后续：[ADR-0120](0120-persistent-concurrent-failure-soak.md) 复用本业务核心增加独立持续环境与槽复用验证，原 v9 协议/短测限额不变；不等同完整长时故障或恢复门禁。
 
 ## 决定与边界
 

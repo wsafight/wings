@@ -1445,6 +1445,7 @@ def main():
         failure_counter = parent / "beam-failure-counter"
         command([COMPILER, "build", ROOT / "examples/beam-failure-counter.wings", "-o", failure_counter])
         command([sys.executable, ROOT / "scripts/verify_concurrent_failure.py", "--artifact", failure_counter])
+        command([sys.executable, ROOT / "scripts/verify_failure_soak.py", "--artifact", failure_counter])
         mailbox_boundary = parent / "mailbox-boundary"
         command([COMPILER, "build", ROOT / "examples/mailbox-boundary.wings", "-o", mailbox_boundary])
         example("scheduler_overload", mailbox_boundary)

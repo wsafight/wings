@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 增加持续 VM 中的双发送者失败生命周期。三轮普通回归与固定 30s/60s、900 轮的显式长测分开，逐条重放前缀、终态、旧身份和计费缓存；原 v9 窗口/限额保持。实际条件、失败与缺失门禁见[记录](validation-failure-soak-2026-11-18.md)，不据此宣布完整 timeout/cancel/恢复、BEAM 吞吐/内存或 MVP 通过。
+
 [调用参数诊断与候选回退](validation-invocation-arguments-2026-11-18.md) 区分分配计数器的确定性变化与真实 hot-queue 的迟发/超时/拒绝。保留全数组传递失败、小参数消除分配但端到端未建立收益的冻结候选；正式实现沿原 Vec，新增 0/1/8/9/64 参数及 65 拒绝的原受限 AOT 主程序回归，不以减少分配推导 MVP 通过。
 
 [2026-11-18 迁移间隔消融](validation-handler-migration-batch-2026-11-18.md) 在隔离 release 副本上以同一 hot-queue 负载比较每次与每八次 handler 返回迁移，保留两对反序、原 30s/60s 和完整重放。候选没有稳定收益，未进入正式实现；四轮的拒绝、预热超时和缺失门禁均公开，不视为五对性能验收。

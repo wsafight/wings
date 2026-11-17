@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0120](docs/adr/0120-persistent-concurrent-failure-soak.md) 增加独立持续失败生命周期入口：同一 VM/Scheduler 内逐轮复用槽，两个发送者竞争失败、健康目标推进，检查完整请求前缀、旧身份拒绝和计费缓存。默认完整 AOT 只验证三轮；显式 `measure_failure_soak.py` 才跑 30s 预热/60s 采样，实际结果见[验证记录](docs/validation-failure-soak-2026-11-18.md)。未覆盖长时取消/自动恢复或完整 MVP 门禁。
+
 [ADR-0118](docs/adr/0118-native-sync-storage-admission.md) 修复 macOS 标准同步对象首次使用才分配原生存储的计费缺口：根启动增加实际 mutex 后备字节，共享同步对象在准入后、发布前初始化；监督退出票据也覆盖该存储。本机根基线为 232 B，历史冻结回执不回写，原额度不变；验证见[同步计费记录](docs/validation-native-sync-accounting-2026-11-18.md)。完整 MVP 门禁仍待完成。
 
 [ADR-0115](docs/adr/0115-typed-cross-thread-ingress.md) 为固定跨线程入口补 `send_values`/`request_values`，独立复制 String/Bytes/IntList/RecordInt 等叶值，目标沿原计费/GC/分块导入；原标量 API、容量及超时不撤回语义不变。构建后用 `target/debug/examples/typed_ingress --trusted target/typed-ingress-aot` 验证，产物先由 `target/debug/wings-compile build examples/typed-ingress.wings -o target/typed-ingress-aot` 生成；这不是完整 reactor 或 MVP。

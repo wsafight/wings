@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 的持续诊断保留同一 Scheduler/supervisor，通过新建 child 后拒绝上一代 Pid 的查询/send/request，以及本轮终止后的旧 child 拒绝验证槽复用。注入失败不提交候选，健康目标完整推进；每轮三维活动资源归零，保留的 guarded stack 缓存仍计费，最终关闭才回到根启动基线。这是显式新建，不是自动重启。
+
 按 [ADR-0118](adr/0118-native-sync-storage-admission.md)，直接创建的 macOS Mutex/Condvar 后备存储先计费并在发布前初始化。根计入 mutex 后备成本，退出票据控制余量覆盖 Arc 头与 mutex；结果表、ingress、Scheduler、timer 和让出观测沿足够的既有预留。最后同步对象 owner 释放后销毁后备对象；完整 allocator/装载与系统成本仍另行验收，原资源限额不变。
 
 CLI 按 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 输出独立具名记录结果，固定 64 槽遍历帧包含在原 264 KiB adapter 预算中。输出只借用结果内容，完成写入与 flush 后释放结果；写/flush 失败退出，不回滚此前已提交 state。JSON 编码膨胀不增加业务载荷上限，不改变 process/tenant/VM 额度或 ABI。
