@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 在宿主 handler 名称查询前复用清单的非空/256 UTF-8 字节/无控制字符规则；不合格固定报错，合法未知名保留有界的原诊断。先拒绝再扫描，不执行 handler 或改变账户；错误仍由宿主持有，完整错误生命周期计费另行验收。
+
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 复用原取消/超时不撤回语义验证持续监督：publisher 完成前结果即使已消费仍保留准入，stop 不重启；已取消 Fail 必须实际执行并触发一次全新实例和后续强度超限。每轮显式新 child 各有独立重启历史，槽复用不能使前代 Pid/child ID 复活；运行时协议不变。
 
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 的持续诊断保留同一 Scheduler/supervisor，通过新建 child 后拒绝上一代 Pid 的查询/send/request，以及本轮终止后的旧 child 拒绝验证槽复用。注入失败不提交候选，健康目标完整推进；每轮三维活动资源归零，保留的 guarded stack 缓存仍计费，最终关闭才回到根启动基线。这是显式新建，不是自动重启。

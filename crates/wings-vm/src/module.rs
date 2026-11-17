@@ -156,6 +156,9 @@ impl ScalarModule {
     }
 
     pub fn handler(&self, name: &str) -> Result<HandlerId, String> {
+        if !wings_artifact::valid_name(name) {
+            return Err("invalid handler name".into());
+        }
         let index = self
             .inner
             .manifest
@@ -237,6 +240,29 @@ impl HandlerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handler_lookup_rejects_invalid_external_names_without_entry() {
+        let module = crate::tests::module();
+        let known = module.handler("Get").unwrap();
+        assert_eq!(known.schema().name, "Get");
+        for name in [
+            String::new(),
+            "x".repeat(257),
+            "界".repeat(86),
+            "x\ny".into(),
+            "x\0y".into(),
+            "x\u{7f}y".into(),
+        ] {
+            assert_eq!(module.handler(&name).err().unwrap(), "invalid handler name");
+        }
+        for name in ["missing".into(), "x".repeat(256), "界".repeat(85) + "x"] {
+            assert_eq!(
+                module.handler(&name).err().unwrap(),
+                format!("unknown handler {name}")
+            );
+        }
+    }
 
     #[test]
     fn module_control_admission_precedes_path_resolution_and_rolls_back() {

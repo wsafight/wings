@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0122](0122-bounded-handler-lookup-diagnostics.md) | 宿主 handler 名称沿清单规则预检、有界错误来源与零分配成功路径 | 已采纳（资源拒绝路径修正） |
 | [0121](0121-persistent-cancellation-recovery.md) | 持续 Scheduler 的超时/取消、stop 竞争和一次重启强度验证 | 已采纳（持续恢复验证） |
 | [0120](0120-persistent-concurrent-failure-soak.md) | 持续 VM 的双发送者失败生命周期、槽复用与独立重放 | 已采纳（长时故障验证切片） |
 | [0119](0119-inline-small-invocation-arguments.md) | 调用参数分配诊断、小参数内联候选与原存储回退 | 实验后回退（仅保留诊断） |

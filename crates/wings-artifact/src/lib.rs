@@ -8,7 +8,7 @@ use wings_abi::{SCALAR_ABI_VERSION, ValueType, host_target};
 
 mod preflight;
 
-const MAX_NAME_BYTES: usize = 256;
+pub const MAX_NAME_BYTES: usize = 256;
 pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
@@ -184,6 +184,6 @@ impl Manifest {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control)
 }

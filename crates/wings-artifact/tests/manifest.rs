@@ -17,6 +17,33 @@ use wings_artifact::{
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn public_name_rule_matches_manifest_utf8_boundaries_and_controls() {
+    for name in ["x".repeat(256), "界".repeat(85) + "x", "with space".into()] {
+        assert!(wings_artifact::valid_name(&name));
+        let mut value = manifest();
+        value.process = name.clone();
+        value.handlers[0].name = name;
+        value.validate().unwrap();
+    }
+    for name in [
+        String::new(),
+        "x".repeat(257),
+        "界".repeat(86),
+        "a\nb".into(),
+        "a\0b".into(),
+        "a\u{7f}b".into(),
+    ] {
+        assert!(!wings_artifact::valid_name(&name));
+        let mut value = manifest();
+        value.process = name.clone();
+        assert!(value.validate().is_err());
+        value.process = "Valid".into();
+        value.handlers[0].name = name;
+        assert!(value.validate().is_err());
+    }
+}
+
+#[test]
 fn named_record_manifest_checks_schema_identity_and_blocks_external_handles() {
     let mut value = manifest();
     value.records = vec![wings_abi::RecordSchema {

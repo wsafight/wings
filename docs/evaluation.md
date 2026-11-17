@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 的独立分配计数器在 process/tenant/VM 满额时核对直接模块和进程入口的未知名字错误，保留 3 MiB 来源放大失败与修复后 20 B 固定错误；UTF-8/控制字符/原状态和清理条件见[记录](validation-handler-lookup-2026-11-18.md)。这不是全部错误分配已计费或 MVP 通过。
+
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 增加同一 Scheduler 中的超时/取消、stop 竞争和监督恢复复用。原一/双 worker、三秒阶段/队列容量不变，新增独立逐条请求和失败重启记录；普通三轮与显式 900 轮分开，实际检查及缺失门禁见[记录](validation-recovery-reuse-2026-11-18.md)。没有等价 BEAM 恢复协议，不视为完整故障或 MVP 验收。
 
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 增加持续 VM 中的双发送者失败生命周期。三轮普通回归与固定 30s/60s、900 轮的显式长测分开，逐条重放前缀、终态、旧身份和计费缓存；原 v9 窗口/限额保持。实际条件、失败与缺失门禁见[记录](validation-failure-soak-2026-11-18.md)，不据此宣布完整 timeout/cancel/恢复、BEAM 吞吐/内存或 MVP 通过。

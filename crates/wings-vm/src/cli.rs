@@ -4,10 +4,10 @@ use std::io::{BufRead, Write};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use wings_abi::ValueType;
+use wings_artifact::{MAX_NAME_BYTES, valid_name};
 use wings_vm::{CancellationToken, Reservation, ResourceAccount, ResourceLevel, Resources};
 
 const MAX_LINE_BYTES: usize = 64 << 10;
-const MAX_NAME_BYTES: usize = 256;
 const MAX_ARGUMENTS: usize = 64;
 const CONTROL_BYTES: usize = 8 << 10;
 const ADAPTER_BYTES: u64 = (4 * MAX_LINE_BYTES + CONTROL_BYTES) as u64;
@@ -259,10 +259,7 @@ impl<'de> Deserialize<'de> for MessageName {
             }
 
             fn visit_str<Error: de::Error>(self, value: &str) -> Result<Self::Value, Error> {
-                if value.is_empty()
-                    || value.len() > MAX_NAME_BYTES
-                    || value.chars().any(char::is_control)
-                {
+                if !valid_name(value) {
                     return Err(Error::custom("invalid message name"));
                 }
                 let mut name = MessageName {

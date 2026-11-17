@@ -1231,6 +1231,8 @@ def main():
         symbol_source.write_text("int wings_module_fixture(void) { return 0; }\n")
         command([os.environ.get("CC", "cc"), "-dynamiclib" if os.uname().sysname == "Darwin" else "-shared", "-fPIC", symbol_source, "-o", invalid_module_symbol / library_name])
         example("module_accounting", counter, invalid_module_manifest, invalid_module_library, invalid_module_symbol)
+        result = example("handler_lookup", counter)
+        print(result.stdout.splitlines()[-1])
         example("resource_accounts")
         print(example("sync_accounting").stdout, end="")
         example("record_heap")

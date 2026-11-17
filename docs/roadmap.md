@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 补第 4/6 项的宿主错误来源边界，修复满额账户下未知名字仍生成任意长错误的问题。真实回归见[记录](validation-handler-lookup-2026-11-18.md)，完整诊断/装载账本、原生双平台和同业务 BEAM 双目标仍待完成，MVP 未完成。
+
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 为第 3/6 项补持续 Scheduler 中的超时/取消、stop 竞争和监督重启强度验证，一/双 worker 同容量复用。实际结果见[记录](validation-recovery-reuse-2026-11-18.md)；等价 BEAM 恢复、长时过载/服务 I/O、完整账本/内存和原生双平台仍独立验收，MVP 未完成。
 
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 为第 6 项补持续环境中的双发送者失败前缀、槽复用和资源清理；显式 900 轮长测与普通三轮回归分开。它没有补齐长时超时/取消、自动重启强度与过载竞争，最新原生双平台及 BEAM 双目标仍须独立验收；[实际验证](validation-failure-soak-2026-11-18.md) 不改 MVP 未完成的状态。
