@@ -3,6 +3,7 @@
 - 日期：2026-11-17
 - 状态：已采纳（MVP 业务值切片）
 - 扩展：[ADR-0096](0096-copied-record-replies.md)、[ADR-0097](0097-accounted-int-list-replies.md)、[ADR-0098](0098-accounted-byte-replies.md) 与 [ADR-0106](0106-accounted-string-replies.md) 的叶值回复路径。
+- 后续：[ADR-0117](0117-streamed-cli-record-replies.md) 将具名记录结果接入 CLI 流式 JSON 输出，输入仍限原标量。
 
 ## 决定
 

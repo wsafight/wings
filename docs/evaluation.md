@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0117](adr/0117-streamed-cli-record-replies.md) 的 CLI 验证包含全部叶类型、嵌套/空根、32 层记录、signed i64、UTF-8/转义，以及 65536 B String/Bytes 编码膨胀后的完整输出。保留标量输入拒绝、正常 state 查询、超界/业务失败无成功输出、破管/flush 错误及原 adapter 控制大小检查；实际全量结果见[验证记录](validation-cli-record-replies-2026-11-18.md)，不替代原生双平台或 BEAM 双门禁。
+
 ## 可复现全量测试
 
 按 [ADR-0110](adr/0110-reproducible-bounded-workspace-validation.md) 使用仓库内入口，输出目录必须不存在：

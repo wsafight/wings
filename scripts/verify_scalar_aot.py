@@ -52,6 +52,65 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_cli_record_replies(directory):
+    arguments = [VM, "run", "--trusted", directory, "--heap-records", 16]
+    requests = [message("Value", -(2**63)), message("Read"), message("Value", 2**63 - 2),
+                message("Read"), message("EmptyValue"), message("Text")]
+    result = command(arguments, "".join(json.dumps(item) + "\n" for item in requests))
+    values = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+    for value, expected in ((values[0], -(2**63)), (values[2], 2**63 - 2)):
+        assert value == {"key": expected, "detail": {"label": {"string": "aaa"}, "accepted": True,
+                         "values": {"int_list": [expected]}, "bytes": {"bytes": [255, 255]},
+                         "saved": {"record_int": expected + 1}, "empty": {}, "unit": None}}, value
+    assert values[1] == 1 and values[3] == 2 and values[4] == {}, values
+    assert values[5] == {"label": {"string": "中文😀\n\"\\"}, "accepted": False, "values": {"int_list": []},
+                         "bytes": {"bytes": []}, "saved": {"record_int": 0}, "empty": {}, "unit": None}, values[5]
+    for name in ("Boundary", "EscapedBoundary", "BinaryBoundary"):
+        result = command(arguments, json.dumps(message(name)) + "\n" + json.dumps(message("Read")) + "\n")
+        assert result.stdout.count("\n") == 2 and len(result.stdout.encode()) > 65536, name
+        value, state = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+        if name == "Boundary":
+            assert value["detail"]["label"] == {"string": "a" * 65535} and value["detail"]["bytes"] == {"bytes": [255]}
+            assert state == 42, state
+        elif name == "EscapedBoundary":
+            assert value["label"] == {"string": "\0" * 65536} and value["bytes"] == {"bytes": []}
+            assert state == 0, state
+        else:
+            assert value["bytes"] == {"bytes": [255] * 65536} and value["label"] == {"string": ""}
+            assert state == 0, state
+    for name, diagnostic in (("TooLarge", "65536 bytes"), ("Fail", "division by zero")):
+        result = command(arguments, json.dumps(message(name)) + "\n", expected=1)
+        assert not result.stdout and diagnostic in result.stderr and "panicked" not in result.stderr, result
+    for invalid in ({"value": 1}, [1], "raw", None):
+        result = command(arguments, json.dumps(message("Value", invalid)) + "\n", expected=1)
+        assert not result.stdout and result.stderr.startswith("wings-vm: "), result
+    reader, writer = os.pipe()
+    os.close(reader)
+    try:
+        result = subprocess.run([str(value) for value in arguments], input=json.dumps(message("Value", 7)),
+                                text=True, stdout=writer, stderr=subprocess.PIPE, timeout=30,
+                                cwd=ROOT, preexec_fn=limit_child)
+    finally:
+        os.close(writer)
+    assert result.returncode == 1 and "broken pipe" in result.stderr.lower() and "panicked" not in result.stderr, result
+    source = directory.parent / "cli-deep-records.wings"
+    records = ["record R0 { value: Int }"]
+    expression = "R0(7)"
+    for index in range(1, 32):
+        records.append(f"record R{index} {{ inner: R{index - 1} }}")
+        expression = f"R{index}({expression})"
+    source.write_text("process P { " + " ".join(records) + " state n: Int = 0; on Read -> R31 { " + expression + " } }")
+    deep = directory.parent / "cli-deep-records"
+    command([COMPILER, "build", source, "-o", deep])
+    result = command([VM, "run", "--trusted", deep, "--heap-records", 64], json.dumps(message("Read")) + "\n")
+    value = json.loads(result.stdout)["reply"]
+    for _ in range(31):
+        assert list(value) == ["inner"], value
+        value = value["inner"]
+    assert value == {"value": 7}, value
+    print("CLI record replies verified: nested/empty records, signed leaves, UTF-8 escaping, 64 KiB boundaries, unchanged input rejection and broken output; not MVP acceptance")
+
+
 def verify_cli_reporting(directory, parent):
     for arguments, expected, close_output, close_errors in (
         (["--help"], 1, True, False), (["--help"], 1, True, True),
@@ -1459,6 +1518,7 @@ def main():
         result = example("named_record_replies", named_record_replies, named_record_reply_state)
         assert "Named record replies verified:" in result.stdout
         print(result.stdout.strip())
+        verify_cli_record_replies(named_record_replies)
         record_run = [VM, "run", "--trusted", record_replies, "--heap-records", 8]
         result = command(record_run, "".join(json.dumps(request) + "\n" for request in [message("Value", -(2**63)), message("Value", 2**63 - 1), message("Current")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": 2**63 - 1}, {"record_int": 2}]

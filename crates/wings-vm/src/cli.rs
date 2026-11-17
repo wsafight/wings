@@ -58,6 +58,14 @@ enum Reply {
 }
 
 impl Adapter {
+    pub fn write_record_reply(
+        &self,
+        writer: &mut impl Write,
+        value: &wings_vm::RecordReply,
+    ) -> Result<(), String> {
+        crate::cli_record::write_reply(writer, value)
+    }
+
     pub fn write_string_reply(
         &self,
         writer: &mut impl Write,
@@ -438,6 +446,7 @@ mod tests {
             + std::mem::size_of::<Adapter>()
             + std::mem::size_of::<[i64; MAX_ARGUMENTS]>()
             + std::mem::size_of::<Response>()
+            + crate::cli_record::CONTROL_BYTES
             + 64;
         assert!(bytes <= CONTROL_BYTES);
         assert_eq!(ADAPTER_BYTES, 264 << 10);

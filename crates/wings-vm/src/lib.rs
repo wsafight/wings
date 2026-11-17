@@ -490,7 +490,10 @@ fn check_status(status: u32) -> Result<(), String> {
         STATUS_STACK_EXHAUSTED => Err("managed execution stack exhausted".into()),
         STATUS_HEAP_EXHAUSTED => Err("managed record heap exhausted".into()),
         STATUS_INVALID_ROOT => Err("managed invalid record reference or shadow roots".into()),
-        wings_abi::STATUS_REPLY_REJECTED => Err("managed list reply exceeds 64 integers".into()),
+        wings_abi::STATUS_REPLY_REJECTED => Err(
+            "managed reply exceeds 64 nodes/integers or 65536 bytes, or its schema is invalid"
+                .into(),
+        ),
         wings_abi::STATUS_EMPTY_LIST => Err("managed empty IntList access".into()),
         wings_abi::STATUS_INVALID_BYTES => {
             Err("managed invalid byte buffer length, value or index".into())

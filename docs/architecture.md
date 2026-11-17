@@ -1,6 +1,8 @@
 # 架构设计
 
-[ADR-0116](adr/0116-bounded-named-record-replies.md) 允许具名记录作为 AOT 回复并把名义 schema 副本绑定到独立 `RecordReply` 租约；leaf payload 限于 64 节点、64 个列表元素和合计 65536 B。请求完成值用清单保存的名义类型核对并在接收方独立重建，manifest format v2，ABI v21、ABI 布局与 4352 B 执行预留不变；不开放记录消息原引用或 JSON 对象。
+[ADR-0117](adr/0117-streamed-cli-record-replies.md) 为 CLI 增加具名记录回复的 JSON 字段对象输出；仅遍历 `RecordReply` 的独立 schema/叶值，固定帧数组沿原 adapter 控制预留，不分配 JSON 树或完整输出副本，不改变受管 ABI、manifest、原业务载荷或 JSON 参数范围。
+
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 允许具名记录作为 AOT 回复并把名义 schema 副本绑定到独立 `RecordReply` 租约；leaf payload 限于 64 节点、64 个列表元素和合计 65536 B。请求完成值用清单保存的名义类型核对并在接收方独立重建，manifest format v2，ABI v21、ABI 布局与 4352 B 执行预留不变；不开放记录消息原引用或 JSON 对象参数。
 
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 将固定跨线程 ingress 的参数扩至既有类型化叶值复制。sender 只持固定 schema、ring、账户/通知/结果租约，不含代码/actor owner；同线程宿主和 ingress 共用类型及合计限额检查，目标沿既有受管导入。ABI/4352 B 不变，不开放跨堆原 handle 或通用 reactor。
 

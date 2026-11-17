@@ -6,6 +6,7 @@ use wings_vm::{ResourceAccount, Resources, ScalarModule, StackPool};
 mod cli;
 mod cli_args;
 mod cli_io;
+mod cli_record;
 mod cli_report;
 
 fn main() -> ExitCode {
@@ -93,6 +94,16 @@ fn run(
         let schema = handler.schema();
         let reply_type = schema.reply;
         let arguments = request.arguments.scalars(&schema.parameters)?;
+        if matches!(reply_type, Some(wings_abi::ValueType::RecordRef(_))) {
+            let reply = process.invoke_record(
+                &schema.name,
+                &arguments[..schema.parameters.len()],
+                max_steps,
+                adapter.cancellation(),
+            )?;
+            adapter.write_record_reply(writer, &reply)?;
+            continue;
+        }
         if reply_type == Some(wings_abi::ValueType::StringRef) {
             let reply = process.invoke_string(
                 &schema.name,

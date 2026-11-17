@@ -104,4 +104,13 @@ process NamedRecordReplies {
 
   on Read -> Int { count }
   on EmptyValue -> Empty { Empty() }
+  on Text -> Detail {
+    Detail("中文😀\n\"\\", false, empty_ints(), fill_bytes(0, 0), record_int(0), Empty(), ())
+  }
+  on EscapedBoundary -> Detail {
+    Detail(string_from_bytes(fill_bytes(65536, 0)), true, empty_ints(), fill_bytes(0, 0), record_int(0), Empty(), ())
+  }
+  on BinaryBoundary -> Detail {
+    Detail("", true, empty_ints(), fill_bytes(65536, 255), record_int(0), Empty(), ())
+  }
 }

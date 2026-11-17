@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0117](adr/0117-streamed-cli-record-replies.md) 将第 4 项具名记录回复接入可运行 CLI，以固定遍历控制流式输出字段对象，仍只接受原标量 JSON 输入。完整分配/装载账本、公平/过载/长时故障、原生双平台与 BEAM 同负载吞吐/整机内存门禁仍待完成；实际验证见[CLI 记录输出记录](validation-cli-record-replies-2026-11-18.md)。
+
 [ADR-0116](adr/0116-bounded-named-record-replies.md) 补齐第 4 项具名记录的有界回复复制及异步完成重建；本机真实 AOT 已覆盖 worker 和 Scheduler。完整分配/装载账本、公平/过载/长时故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未通过，MVP 未完成，见[验证记录](validation-named-record-replies-2026-11-18.md)。
 
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 推进第 3/4/5 项外部事件业务值：固定 ingress 支持类型化独立副本，保留标量入口拒绝、计费/GC/预算、有限准入与请求双端生命周期。仍无通用 reactor、完整分配/装载账本及长时/原生双平台同负载 BEAM 双门禁，MVP 未完成。

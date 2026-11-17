@@ -1,5 +1,7 @@
 # 运行时
 
+CLI 按 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 输出独立具名记录结果，固定 64 槽遍历帧包含在原 264 KiB adapter 预算中。输出只借用结果内容，完成写入与 flush 后释放结果；写/flush 失败退出，不回滚此前已提交 state。JSON 编码膨胀不增加业务载荷上限，不改变 process/tenant/VM 额度或 ABI。
+
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 的 `IngressSender::send_values`/`request_values` 接受 MessageValue 叶值并在发布前独立复制，String/Bytes 合计 64 KiB、列表合计 64 整数、参数及入口各最多 64，全部沿原三级额度。原 `send`/`request` 仍仅标量；目标原栈分块导入和精确根保活，失败不提交 state；满/关闭释放未发布副本，WakeFailed 仍已接收，timeout/cancel/Drop 不撤回消息。末 sender/result 只保留控制/账户租约，不保留 actor/代码；不是通用 reactor。
 
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 补纯标量进程身份约束：计费初始化的原 process 身份随实例/脱栈镜像保留，显式调用和 attach 拒绝其他账户、未绑定或工具池；失败不改 state/账目、不借栈、不触发 token 工厂、不消费镜像，原账户满额时也不能改借兄弟账户。最后实例/镜像释放后才允许账户元数据退账。同账户换池/线程及旧未绑定工具语义保留，不改变容量、预算或 ABI。

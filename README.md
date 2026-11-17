@@ -32,6 +32,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 [ADR-0115](docs/adr/0115-typed-cross-thread-ingress.md) 为固定跨线程入口补 `send_values`/`request_values`，独立复制 String/Bytes/IntList/RecordInt 等叶值，目标沿原计费/GC/分块导入；原标量 API、容量及超时不撤回语义不变。构建后用 `target/debug/examples/typed_ingress --trusted target/typed-ingress-aot` 验证，产物先由 `target/debug/wings-compile build examples/typed-ingress.wings -o target/typed-ingress-aot` 生成；这不是完整 reactor 或 MVP。
 
+[ADR-0117](docs/adr/0117-streamed-cli-record-replies.md) 将具名记录回复接入 JSON CLI：记录按字段输出对象，嵌套/空记录保留形状，叶值沿原回复格式。输出直接写入受控 writer，固定遍历控制纳入原 adapter 预算；JSON 参数仍限标量。验证见[记录输出验证](docs/validation-cli-record-replies-2026-11-18.md)，MVP 其余门禁仍未完成。
+
 [ADR-0116](docs/adr/0116-bounded-named-record-replies.md) 开放具名记录 `-> Reply`，以名义 schema 校验并独立复制有界叶值；语言请求完成事件按声明 schema 重建，ABI v21/执行预留与既有限额不变。单机功能验证不等于双平台 BEAM 性能与整机内存门禁。
 
 [ADR-0114](docs/adr/0114-scalar-process-account-binding.md) 修复纯标量实例可通过换执行池或迁移镜像改借其他账户的问题。计费初始化后始终绑定原 process，同账户换池/线程仍允许；拒绝不执行业务或消费镜像，ABI、原控制预留及限额不变，仍非完整 MVP。
@@ -215,6 +217,8 @@ Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LS
 此 CLI 路径验证原生执行与状态提交，不驱动宿主 mailbox 或监督。资源账户已接入堆、栈及有限宿主 worker，但未覆盖全部运行时分配。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
 
 CLI 每行接受一个仅含 `message` 和 `args` 的 JSON 对象，两个字段各出现一次、顺序不限；参数至多 64 个，只能是符合 handler 签名的 i64 整数、布尔或 null。行长至多 64 KiB（包含换行），允许末行无换行；重复/未知字段、嵌套参数和浮点数在执行前拒绝。单向消息输出 `{"accepted":true}`，请求输出 `{"reply":...}`。输入解析与控制按 [ADR-0086](docs/adr/0086-accounted-cli-json.md) 从原三级额度中预留，标准 I/O 全局存储仍不在完整账本保证内。
+
+具名记录回复按 [ADR-0117](docs/adr/0117-streamed-cli-record-replies.md) 输出字段对象，例如 `record Result { count: Int, text: String }` 的回复为 `{"reply":{"count":7,"text":{"string":"内容"}}}`。嵌套记录输出嵌套对象，空记录为 `{}`；RecordInt/IntList/Bytes/String 叶分别沿用 `record_int`/`int_list`/`bytes`/`string` 包装。通过 `--heap-records` 配置计费堆后可运行 `examples/named-record-replies.wings` 的 `Value`/`EmptyValue`；输出转义可能使一行超过 64 KiB，不改变业务载荷上限。
 
 LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
 
