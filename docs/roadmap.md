@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0112](adr/0112-bounded-tcp-startup-evidence.md) 补第 5/6 项 TCP 启动验证的有界失败证据；原限复验和一次动态加载采样不构成间歇失败根因修复或 MVP 验收通过，见[记录](validation-tcp-startup-2026-11-17.md)。
+
 [ADR-0111](adr/0111-bounded-string-content-equality.md) 为第 4 项业务值补 String 完整内容 `==`/`!=`，保留分块预算/取消及精确根；ABI v21、旧产物重编译。具名记录传输、完整账本、公平/故障、最新原生双平台和同负载 BEAM 双门禁仍未完成。
 
 [ADR-0110](adr/0110-reproducible-bounded-workspace-validation.md) 把临时全目标测试运行器纳入仓库及原生双平台 CI，按固定 OS 限制实际执行并保留指纹/失败日志；只补验收可复现性，不把配置好的 CI 当作已取得最新平台结果，MVP 门槛不变。

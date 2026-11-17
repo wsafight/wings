@@ -16,6 +16,8 @@ cargo test --release --workspace --doc --locked
 
 ## 增量验收契约
 
+[ADR-0112](adr/0112-bounded-tcp-startup-evidence.md) 保留 TCP 原 5 秒绝对启动窗口，完整握手最多 4096 字节；半行/静默/EOF/非法输入失败后保留退出码和有界管道前缀，终止独立进程组，不自动重试。运行 `python3 scripts/verify_scalar_aot_tests.py`；取证与复验不等于间歇超时根因已修复。
+
 [ADR-0111](adr/0111-bounded-string-content-equality.md) 验证空/Unicode/NUL、独立同内容对象、块边界和 64 KiB 首尾差异、不同长度与非规范化文本；IR 拒绝错类型/裸引用比较，两个末次使用源在全部 GC 检查点保活。预算/取消/陈旧和错标签保持输出及账目，真实 AOT 覆盖 CLI、fn、原栈恢复、一/双 worker 与失败清理，原限不变。
 
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 唤醒租约验收先复现 worker 销毁/通知者存活时的零账目，再检查三级零/少一/精确准入、OS 工厂失败回滚、账户句柄退出、跨线程末 owner 和既有 ingress/TCP 通知语义。保留原 4096 B、全部 CPU/墙钟/阶段限额，不将控制账本等同 kernel FD/RSS 或 BEAM 双门禁。

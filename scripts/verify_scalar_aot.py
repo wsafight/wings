@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import resource
 import select
+import signal
 import shutil
 import socket
 import struct
@@ -181,6 +182,46 @@ def verify_cli_stdio(directory):
     print("Owned CLI stdio verified: scalar/heap replies before EOF, broken output and read errors; not complete host accounting")
 
 
+def tcp_ready(child, timeout=5):
+    started = time.monotonic()
+    line = bytearray()
+    try:
+        while not line.endswith(b"\n"):
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0 or not select.select([child.stdout], [], [], max(0, remaining))[0]:
+                raise TimeoutError("readiness deadline exceeded")
+            block = os.read(child.stdout.fileno(), 1)
+            if not block:
+                raise ValueError("EOF before readiness")
+            line.extend(block)
+            if len(line) > 4096:
+                raise ValueError("readiness exceeds 4096 bytes")
+        ready = json.loads(line)
+        if not isinstance(ready, dict) or not isinstance(ready.get("listening"), str):
+            raise ValueError("invalid readiness schema")
+        return ready
+    except (OSError, ValueError) as error:
+        before_cleanup = child.poll()
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait(timeout=5)
+        captured = []
+        for stream in (child.stdout, child.stderr):
+            os.set_blocking(stream.fileno(), False)
+            try:
+                captured.append(os.read(stream.fileno(), 4097)[:4096])
+            except BlockingIOError:
+                captured.append(b"")
+        output = (bytes(line) + captured[0])[:4096]
+        raise AssertionError(
+            f"TCP startup failed: {error}; elapsed={time.monotonic() - started:.3f}s; "
+            f"exit_before_cleanup={before_cleanup}; exit={child.returncode}; "
+            f"stdout_prefix={output!r}; stderr_prefix={captured[1]!r}"
+        ) from error
+
+
 def verify_tcp_service(directory):
     executable = TARGET / PROFILE / "examples/tcp_counter"
 
@@ -204,12 +245,11 @@ def verify_tcp_service(directory):
     def scenario(connections, frames, exercise, expected):
         child = subprocess.Popen(
             [str(executable), "--trusted", str(directory), str(connections), str(frames)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            preexec_fn=limit_child, cwd=ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            start_new_session=True, preexec_fn=limit_child, cwd=ROOT,
         )
         try:
-            assert select.select([child.stdout], [], [], 5)[0], "TCP service did not start"
-            ready = json.loads(child.stdout.readline())
+            ready = tcp_ready(child)
             host, port = ready["listening"].split(":")
             assert host == "127.0.0.1"
 
