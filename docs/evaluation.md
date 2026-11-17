@@ -1,5 +1,7 @@
 # 评测与验收
 
+[2026-11-18 hot-queue 原生取证](validation-hotqueue-profile-2026-11-18.md) 保留同一冻结 release 在 10000/80000 次每秒下的 30 秒预热、60 秒采样与五秒原生栈采样。独立重放通过，但高负载采样队满 34911 次，预热有 243 次超时；这是单轮带 profiler 扰动的路径诊断，没有同轮 BEAM、CPU 硬配额或整机内存数据，不计为性能门禁通过。
+
 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 的 CLI 验证包含全部叶类型、嵌套/空根、32 层记录、signed i64、UTF-8/转义，以及 65536 B String/Bytes 编码膨胀后的完整输出。保留标量输入拒绝、正常 state 查询、超界/业务失败无成功输出、破管/flush 错误及原 adapter 控制大小检查；实际全量结果见[验证记录](validation-cli-record-replies-2026-11-18.md)，不替代原生双平台或 BEAM 双门禁。
 
 ## 可复现全量测试
