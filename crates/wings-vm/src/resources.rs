@@ -70,7 +70,8 @@ impl ResourceAccount {
     pub fn vm_accounted(limit: Resources) -> Result<Self, String> {
         let bootstrap = (std::mem::size_of::<AccountNode>()
             + std::mem::size_of::<Mutex<()>>()
-            + 4 * std::mem::size_of::<usize>()) as u64;
+            + 4 * std::mem::size_of::<usize>()
+            + crate::native_sync::MUTEX_BYTES) as u64;
         if limit.bytes < bootstrap {
             return Err("resource_exhausted at Vm account during bootstrap".into());
         }
@@ -171,7 +172,7 @@ impl ResourceAccount {
         bootstrap: u64,
     ) -> Self {
         let gate = parent.as_ref().map_or_else(
-            || Arc::new(Mutex::new(())),
+            || Arc::new(crate::native_sync::mutex(())),
             |parent| parent.account.node.gate.clone(),
         );
         Self {
@@ -402,7 +403,8 @@ mod tests {
             bootstrap.bytes,
             (std::mem::size_of::<AccountNode>()
                 + std::mem::size_of::<Mutex<()>>()
-                + 4 * std::mem::size_of::<usize>()) as u64
+                + 4 * std::mem::size_of::<usize>()
+                + crate::native_sync::MUTEX_BYTES) as u64
         );
         assert!(bootstrap.bytes > node_bytes());
         assert_eq!(bootstrap, bytes(bootstrap.bytes));

@@ -61,7 +61,7 @@ impl PreemptionToken {
         Ok(Self {
             flag: ControlFlag::default(),
             observer: Some(Arc::new(Observer {
-                state: Mutex::new(PreemptionObservation::default()),
+                state: crate::native_sync::mutex(PreemptionObservation::default()),
                 _charge: charge,
             })),
         })
@@ -156,7 +156,13 @@ mod tests {
 
     #[test]
     fn fixed_observer_charge_covers_control_and_arc_headers() {
-        assert!(std::mem::size_of::<Observer>() as u64 + ControlFlag::BYTES + 32 <= 4096);
+        assert!(
+            std::mem::size_of::<Observer>() as u64
+                + ControlFlag::BYTES
+                + crate::native_sync::shared_bytes(1, 0) as u64
+                + 16
+                <= 4096
+        );
     }
 
     #[test]

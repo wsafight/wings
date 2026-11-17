@@ -247,7 +247,7 @@ impl Scheduler {
             } else {
                 0
             }
-            + 256;
+            + 256usize.max(crate::native_sync::shared_bytes(1, 1));
         let charge = tenant.reserve(Resources {
             bytes: bytes as u64,
             ..Resources::default()
@@ -278,7 +278,7 @@ impl Scheduler {
         }
         let mut next_slot = 0;
         let shared = Arc::new(Shared {
-            state: Mutex::new(State {
+            state: crate::native_sync::mutex(State {
                 closed: false,
                 last_exit: None,
                 slots: storage(config.capacity, || {
@@ -300,7 +300,7 @@ impl Scheduler {
                 ready: storage(config.workers, ready::ReadyQueue::default)?,
                 free: Some(0),
             }),
-            changed: Condvar::new(),
+            changed: crate::native_sync::condvar(),
             tenant: tenant.clone(),
             replies: ReplyTable::new(tenant, config.requests)?,
             config,

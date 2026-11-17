@@ -21,6 +21,7 @@ mod ingress_requests;
 mod list_reply;
 mod message_values;
 mod module;
+mod native_sync;
 mod preemption;
 mod record_reply;
 mod resources;

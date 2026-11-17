@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0118](adr/0118-native-sync-storage-admission.md) 在 macOS 的根启动和共享控制公式中包含标准 Mutex/Condvar 的原生后备存储。内部构造在已有准入之后、共享发布之前完成惰性初始化，避免首次共享使用或并发初始化额外分配；保留标准库实现。Linux 内联 futex 不加后备字节，ABI v21、manifest v2 与原执行控制预留不变。
+
 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 为 CLI 增加具名记录回复的 JSON 字段对象输出；仅遍历 `RecordReply` 的独立 schema/叶值，固定帧数组沿原 adapter 控制预留，不分配 JSON 树或完整输出副本，不改变受管 ABI、manifest、原业务载荷或 JSON 参数范围。
 
 [ADR-0116](adr/0116-bounded-named-record-replies.md) 允许具名记录作为 AOT 回复并把名义 schema 副本绑定到独立 `RecordReply` 租约；leaf payload 限于 64 节点、64 个列表元素和合计 65536 B。请求完成值用清单保存的名义类型核对并在接收方独立重建，manifest format v2，ABI v21、ABI 布局与 4352 B 执行预留不变；不开放记录消息原引用或 JSON 对象参数。

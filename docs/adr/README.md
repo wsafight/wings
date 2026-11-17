@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0118](0118-native-sync-storage-admission.md) | 原生同步后备存储先准入与发布前初始化 | 已采纳（资源账本修正） |
 | [0117](0117-streamed-cli-record-replies.md) | CLI 具名记录按字段流式输出 JSON、固定遍历控制与原预算 | 已采纳（命令行业务值交付） |
 | [0116](0116-bounded-named-record-replies.md) | 具名记录回复的名义 schema 校验、有界叶复制与请求完成导入 | 已采纳（业务值切片） |
 | [0115](0115-typed-cross-thread-ingress.md) | 固定跨线程入口的类型化复制及原双端请求生命周期 | 已采纳（外部事件业务值切片） |

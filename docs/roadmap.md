@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0118](adr/0118-native-sync-storage-admission.md) 修复第 4 项根门闩与退出票据遗漏 macOS 原生同步后备存储的问题，准入后在共享发布前完成初始化。该缺口有修复前分配计数器失败证据；完整分配/装载账本、公平/过载/长时故障、原生双平台和 BEAM 双门禁仍待完成，MVP 未完成。
+
 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 将第 4 项具名记录回复接入可运行 CLI，以固定遍历控制流式输出字段对象，仍只接受原标量 JSON 输入。完整分配/装载账本、公平/过载/长时故障、原生双平台与 BEAM 同负载吞吐/整机内存门禁仍待完成；实际验证见[CLI 记录输出记录](validation-cli-record-replies-2026-11-18.md)。
 
 [ADR-0116](adr/0116-bounded-named-record-replies.md) 补齐第 4 项具名记录的有界回复复制及异步完成重建；本机真实 AOT 已覆盖 worker 和 Scheduler。完整分配/装载账本、公平/过载/长时故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未通过，MVP 未完成，见[验证记录](validation-named-record-replies-2026-11-18.md)。

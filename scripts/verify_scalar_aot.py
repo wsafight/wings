@@ -12,6 +12,8 @@ import sys
 import tempfile
 import time
 
+from verify_resource_receipt import validate as validate_resource_receipt
+
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILE = os.environ.get("WINGS_PROFILE", "debug")
@@ -1156,8 +1158,7 @@ def main():
         assert [(case["workers"], case["enabled"]) for case in locks["cases"]] == [(1, False), (1, True), (2, False), (2, True)]
         for case in locks["cases"]:
             assert case["replies"] == 16 and case["failed"] == 1 and case["committed"] == [8, 8]
-            assert case["resources_released"] is True
-            assert case["bootstrap_bytes"] == case["remaining_bytes"] == 168
+            validate_resource_receipt(case)
             assert len(case["statistics"]) == (case["workers"] if case["enabled"] else 0)
             for worker in case["statistics"]:
                 for phase in ("claim", "start", "snapshot", "finish"):
@@ -1221,6 +1222,7 @@ def main():
         command([os.environ.get("CC", "cc"), "-dynamiclib" if os.uname().sysname == "Darwin" else "-shared", "-fPIC", symbol_source, "-o", invalid_module_symbol / library_name])
         example("module_accounting", counter, invalid_module_manifest, invalid_module_library, invalid_module_symbol)
         example("resource_accounts")
+        print(example("sync_accounting").stdout, end="")
         example("record_heap")
         example("worker_wakeup")
         worker_source = parent / "worker.wings"

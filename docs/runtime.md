@@ -1,5 +1,7 @@
 # 运行时
 
+按 [ADR-0118](adr/0118-native-sync-storage-admission.md)，直接创建的 macOS Mutex/Condvar 后备存储先计费并在发布前初始化。根计入 mutex 后备成本，退出票据控制余量覆盖 Arc 头与 mutex；结果表、ingress、Scheduler、timer 和让出观测沿足够的既有预留。最后同步对象 owner 释放后销毁后备对象；完整 allocator/装载与系统成本仍另行验收，原资源限额不变。
+
 CLI 按 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 输出独立具名记录结果，固定 64 槽遍历帧包含在原 264 KiB adapter 预算中。输出只借用结果内容，完成写入与 flush 后释放结果；写/flush 失败退出，不回滚此前已提交 state。JSON 编码膨胀不增加业务载荷上限，不改变 process/tenant/VM 额度或 ABI。
 
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 的 `IngressSender::send_values`/`request_values` 接受 MessageValue 叶值并在发布前独立复制，String/Bytes 合计 64 KiB、列表合计 64 整数、参数及入口各最多 64，全部沿原三级额度。原 `send`/`request` 仍仅标量；目标原栈分块导入和精确根保活，失败不提交 state；满/关闭释放未发布副本，WakeFailed 仍已接收，timeout/cancel/Drop 不撤回消息。末 sender/result 只保留控制/账户租约，不保留 actor/代码；不是通用 reactor。

@@ -64,12 +64,13 @@ impl Queue {
 impl WorkerObservation {
     pub(super) fn new(tenant: &ResourceAccount, capacity: usize) -> Result<Self, String> {
         let charge = tenant.reserve(Resources {
-            bytes: (capacity * std::mem::size_of::<Option<SchedulerYieldSample>>() + 64) as u64,
+            bytes: (capacity * std::mem::size_of::<Option<SchedulerYieldSample>>()
+                + 64usize.max(crate::native_sync::MUTEX_BYTES)) as u64,
             ..Resources::default()
         })?;
         Ok(Self {
             token: PreemptionToken::new_observed(tenant)?,
-            queue: Mutex::new(Queue {
+            queue: crate::native_sync::mutex(Queue {
                 slots: storage(capacity, || None)?,
                 head: 0,
                 count: 0,

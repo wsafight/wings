@@ -258,7 +258,7 @@ impl IngressReceiver {
         }
         let bytes = std::mem::size_of::<Shared>()
             + capacity * std::mem::size_of::<Option<Envelope>>()
-            + 256;
+            + 256usize.max(crate::native_sync::shared_bytes(1, 0));
         let charge = account.reserve(Resources {
             bytes: bytes as u64,
             ..Resources::default()
@@ -277,7 +277,7 @@ impl IngressReceiver {
             *target = *ty;
         }
         let shared = Arc::new(Shared {
-            ring: Mutex::new(Ring {
+            ring: crate::native_sync::mutex(Ring {
                 slots: slots.into_boxed_slice(),
                 head: 0,
                 count: 0,

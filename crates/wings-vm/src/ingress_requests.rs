@@ -47,7 +47,7 @@ impl ReplyTable {
         let charge = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
                 + capacity * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
-                + 128) as u64,
+                + 128usize.max(crate::native_sync::shared_bytes(1, 1))) as u64,
             ..Resources::default()
         })?;
         let mut slots = Vec::new();
@@ -64,8 +64,8 @@ impl ReplyTable {
             .map_err(|_| "ingress result readiness allocation failed")?;
         ready.resize_with(capacity, || AtomicBool::new(false));
         Ok(Arc::new(Self {
-            slots: Mutex::new(slots.into_boxed_slice()),
-            changed: Condvar::new(),
+            slots: crate::native_sync::mutex(slots.into_boxed_slice()),
+            changed: crate::native_sync::condvar(),
             ready: ready.into_boxed_slice(),
             account: account.clone(),
             _charge: charge,

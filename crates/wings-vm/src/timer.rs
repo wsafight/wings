@@ -5,6 +5,10 @@ use std::time::Instant;
 use crate::{PreemptionToken, Reservation, ResourceAccount, Resources};
 
 const TIMER_STACK_BYTES: usize = 256 * 1024;
+const TIMER_CONTROL_BYTES: usize = 4096;
+const _: () = assert!(
+    std::mem::size_of::<Control>() + crate::native_sync::shared_bytes(1, 1) <= TIMER_CONTROL_BYTES
+);
 
 pub(crate) struct DeadlineTimer {
     thread: Option<JoinHandle<()>>,
@@ -34,15 +38,15 @@ impl DeadlineTimer {
             return Err("unsupported timer OS page size".into());
         }
         let charge = tenant.reserve(Resources {
-            bytes: (TIMER_STACK_BYTES + 2 * page_bytes + 4096) as u64,
+            bytes: (TIMER_STACK_BYTES + 2 * page_bytes + TIMER_CONTROL_BYTES) as u64,
             ..Resources::default()
         })?;
         let control = Arc::new(Control {
-            state: Mutex::new(State {
+            state: crate::native_sync::mutex(State {
                 deadline: None,
                 stopped: false,
             }),
-            changed: Condvar::new(),
+            changed: crate::native_sync::condvar(),
         });
         let shared = control.clone();
         let token = preemption.clone();

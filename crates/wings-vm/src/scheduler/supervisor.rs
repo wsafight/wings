@@ -48,12 +48,13 @@ pub(super) struct ExitPublisher {
 impl ExitPublisher {
     fn new(tenant: &ResourceAccount) -> Result<Self, String> {
         let charge = tenant.reserve(Resources {
-            bytes: (std::mem::size_of::<ExitTicket>() + 64) as u64,
+            bytes: (std::mem::size_of::<ExitTicket>()
+                + 64usize.max(crate::native_sync::shared_bytes(1, 0))) as u64,
             ..Resources::default()
         })?;
         Ok(Self {
             ticket: Arc::new(ExitTicket {
-                outcome: Mutex::new(ExitState {
+                outcome: crate::native_sync::mutex(ExitState {
                     published: false,
                     termination: SchedulerTermination::Stopped,
                 }),
@@ -349,6 +350,57 @@ mod tests {
     use super::*;
     use crate::RequestOutcome;
     use wings_abi::ValueType;
+
+    #[test]
+    fn exit_ticket_checks_native_storage_and_retains_charge_until_last_owner() {
+        let cost = (std::mem::size_of::<ExitTicket>()
+            + 64usize.max(crate::native_sync::shared_bytes(1, 0))) as u64;
+        for restricted in 0..2 {
+            for remaining in [cost - 1, cost] {
+                let limits = Resources {
+                    bytes: cost,
+                    ..Resources::default()
+                };
+                let restricted_limits = Resources {
+                    bytes: remaining,
+                    ..limits
+                };
+                let vm = ResourceAccount::vm(if restricted == 0 {
+                    restricted_limits
+                } else {
+                    limits
+                });
+                let tenant = vm
+                    .tenant(if restricted == 1 {
+                        restricted_limits
+                    } else {
+                        limits
+                    })
+                    .unwrap();
+                let publisher = ExitPublisher::new(&tenant);
+                if remaining < cost {
+                    assert!(publisher.is_err());
+                } else {
+                    let mut publisher = publisher.unwrap();
+                    assert_eq!(tenant.used(), limits);
+                    assert_eq!(vm.used(), limits);
+                    let retained = publisher.ticket.clone();
+                    publisher.set(SchedulerTermination::Closed);
+                    assert!(!retained.outcome.lock().unwrap().published);
+                    drop(publisher);
+                    assert_eq!(tenant.used(), limits);
+                    assert_eq!(vm.used(), limits);
+                    let state = retained.outcome.lock().unwrap();
+                    assert!(state.published);
+                    assert_eq!(state.termination, SchedulerTermination::Closed);
+                    drop(state);
+                    drop(retained);
+                }
+                assert_eq!(tenant.used(), Resources::default());
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
 
     #[test]
     fn termination_publication_follows_heap_mailbox_and_actor_charge_cleanup() {

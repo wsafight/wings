@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（VM 控制资源切片）
+- 后续：[ADR-0118](0118-native-sync-storage-admission.md) 部分替代根启动字节公式，补 macOS 门闩的原生后备存储并在发布前初始化；本记录保留当时选择和公式。
 - 后续：[ADR-0081](0081-accounted-default-cli.md) 补 CLI 默认标量模式的计费根、模块和显式池；适配层及其余资源边界仍待完成。
 - 后续：[ADR-0084](0084-accounted-root-module-admission.md) 要求计费根及后代接入的模块带有本 VM 计费租约。
 - 后续：[ADR-0087](0087-accounted-beam-workload-roots.md) 将六个 BEAM 对照驱动接入计费根，清理回到实际启动值而非零。
