@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0124](docs/adr/0124-bounded-scheduler-slice-observation.md) 增加默认关闭的实际恢复区间 FIFO：步骤片、正常完成和失败均按 worker/完整 Pid 记录，独立于原子让出请求。观测边界与回归见[记录](docs/validation-scheduler-slices-2026-11-18.md)，仍待长时公平性和 MVP 门禁。
+
 [ADR-0123](docs/adr/0123-status-only-resource-rejection.md) 让受管记录回复的配额拒绝直接使用准入失败级别，避免先生成又丢弃错误 String。共享原准入事务、额度和公开 API；修复前后实际分配及验证见[记录](docs/validation-quota-reply-2026-11-18.md)，完整账本与 MVP 门禁仍待完成。
 
 [ADR-0122](docs/adr/0122-bounded-handler-lookup-diagnostics.md) 修复宿主未知 handler 名称放大错误分配：沿清单/CLI 的同一名称规则预检，非法名固定诊断。真实满额回归及修复前 3 MiB 大分配证据见[验证记录](docs/validation-handler-lookup-2026-11-18.md)，不将固定有界错误当作完整资源账本。

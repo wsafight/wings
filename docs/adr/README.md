@@ -7,6 +7,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 ## 当前决策
 
 | 编号 | 决策 | 状态 |
+| [0124](0124-bounded-scheduler-slice-observation.md) | 默认关闭的计费恢复区间 FIFO、结果计数和丢样守恒 | 已采纳（公平性诊断前置） |
 |---|---|---|
 | [0123](0123-status-only-resource-rejection.md) | 单一准入事务返回失败级别、记录回复拒绝跳过丢弃文本 | 已采纳（资源拒绝路径修正） |
 | [0122](0122-bounded-handler-lookup-diagnostics.md) | 宿主 handler 名称沿清单规则预检、有界错误来源与零分配成功路径 | 已采纳（资源拒绝路径修正） |

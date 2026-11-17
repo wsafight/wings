@@ -1,0 +1,21 @@
+process SchedulerSlices {
+  state count: Int = 0
+
+  on Work(limit: Int) -> Int {
+    count = 0
+    while count < limit { count = count + 1 }
+    count
+  }
+
+  on Read -> Int { count }
+
+  on Hold {
+    count = 99
+    while true {}
+  }
+
+  on Fail -> Int {
+    count = 99
+    1 / 0
+  }
+}

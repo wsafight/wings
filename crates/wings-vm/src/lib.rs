@@ -58,8 +58,9 @@ pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
     SchedulerHandle, SchedulerLockMetrics, SchedulerLockStatistics, SchedulerPid,
-    SchedulerRestartStatus, SchedulerSnapshot, SchedulerSupervisor, SchedulerSupervisorEvent,
-    SchedulerTermination, SchedulerYieldSample, SchedulerYieldStatistics,
+    SchedulerRestartStatus, SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics,
+    SchedulerSnapshot, SchedulerSupervisor, SchedulerSupervisorEvent, SchedulerTermination,
+    SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use string_reply::StringReply;

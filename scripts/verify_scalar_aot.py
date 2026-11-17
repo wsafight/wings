@@ -1153,6 +1153,14 @@ def main():
         verify_cli_input(counter, parent)
         verify_cli_stdio(counter)
         locks = json.loads(example("scheduler_locks", counter).stdout)
+        slices = parent / "scheduler-slices"
+        command([COMPILER, "build", ROOT / "examples/scheduler-slices.wings", "-o", slices])
+        slice_result = json.loads(example("scheduler_slices", slices).stdout)
+        assert slice_result["status"] == "ok"
+        assert slice_result["metric"] == "resume_wall_intervals_not_cpu_or_fairness_acceptance"
+        assert [(case["workers"], case["capacity"]) for case in slice_result["cases"]] == [(workers, capacity) for workers in (1, 2) for capacity in (0, 1, 256)]
+        assert all(case["resources_released"] and case["remaining_bytes"] == case["bootstrap_bytes"] and case["committed"] == [64, 256] for case in slice_result["cases"])
+        print("Scheduler resume intervals verified: bounded step slices, one/two workers, hot/healthy progress, outcome counts, failure/cancel and cleanup; not fairness acceptance")
         assert locks["status"] == "ok"
         assert locks["metric"] == "partial_worker_lock_wall_time_not_cpu_or_performance_acceptance"
         assert [(case["workers"], case["enabled"]) for case in locks["cases"]] == [(1, False), (1, True), (2, False), (2, True)]

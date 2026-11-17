@@ -15,10 +15,12 @@ use crate::{
 mod locks;
 mod ready;
 mod run;
+mod slices;
 mod state;
 mod supervisor;
 mod yields;
 pub use locks::{SchedulerLockMetrics, SchedulerLockStatistics};
+pub use slices::{SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics};
 pub use supervisor::{
     SchedulerChildId, SchedulerRestartStatus, SchedulerSupervisor, SchedulerSupervisorEvent,
     SchedulerTermination,
@@ -42,6 +44,7 @@ pub struct SchedulerConfig {
     pub slice_steps: u64,
     pub quantum: Duration,
     pub yield_samples: usize,
+    pub slice_samples: usize,
     pub lock_statistics: bool,
 }
 
@@ -54,6 +57,7 @@ impl Default for SchedulerConfig {
             slice_steps: 64,
             quantum: Duration::from_millis(1),
             yield_samples: 0,
+            slice_samples: 0,
             lock_statistics: false,
         }
     }
@@ -124,6 +128,7 @@ struct Shared {
     config: SchedulerConfig,
     identity: u64,
     observations: Box<[yields::WorkerObservation]>,
+    slice_observations: Box<[slices::WorkerSliceObservation]>,
     lock_observations: Box<[locks::WorkerLockObservation]>,
     _charge: Reservation,
 }
@@ -230,8 +235,9 @@ impl Scheduler {
             || config.quantum.is_zero()
             || config.quantum > Duration::from_secs(1)
             || config.yield_samples > 65536
+            || config.slice_samples > 65536
         {
-            return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield samples per worker".into());
+            return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield/slice samples per worker".into());
         }
         let bytes = std::mem::size_of::<Shared>()
             + config.capacity * std::mem::size_of::<Slot>()
@@ -246,6 +252,11 @@ impl Scheduler {
                 config.workers * std::mem::size_of::<locks::WorkerLockObservation>()
             } else {
                 0
+            }
+            + if config.slice_samples == 0 {
+                0
+            } else {
+                config.workers * std::mem::size_of::<slices::WorkerSliceObservation>()
             }
             + 256usize.max(crate::native_sync::shared_bytes(1, 1));
         let charge = tenant.reserve(Resources {
@@ -277,6 +288,21 @@ impl Scheduler {
             }
         }
         let mut next_slot = 0;
+        let mut slice_observations = Vec::new();
+        if config.slice_samples != 0 {
+            slice_observations
+                .try_reserve_exact(config.workers)
+                .map_err(|_| "scheduler slice observer allocation failed")?;
+            if slice_observations.capacity() != config.workers {
+                return Err("allocator changed scheduler slice observer capacity".into());
+            }
+            for _ in 0..config.workers {
+                slice_observations.push(slices::WorkerSliceObservation::new(
+                    tenant,
+                    config.slice_samples,
+                )?);
+            }
+        }
         let shared = Arc::new(Shared {
             state: crate::native_sync::mutex(State {
                 closed: false,
@@ -306,6 +332,7 @@ impl Scheduler {
             config,
             identity,
             observations: observations.into_boxed_slice(),
+            slice_observations: slice_observations.into_boxed_slice(),
             lock_observations: storage(
                 if config.lock_statistics {
                     config.workers
@@ -384,6 +411,31 @@ impl Drop for Scheduler {
 }
 
 impl SchedulerHandle {
+    pub fn take_slice_sample(&self, worker: usize) -> Result<Option<SchedulerSliceSample>, String> {
+        if worker >= self.shared.config.workers {
+            return Err("scheduler worker index out of range".into());
+        }
+        Ok(self
+            .shared
+            .slice_observations
+            .get(worker)
+            .and_then(slices::WorkerSliceObservation::take))
+    }
+
+    pub fn slice_statistics(
+        &self,
+        worker: usize,
+    ) -> Result<Option<SchedulerSliceStatistics>, String> {
+        if worker >= self.shared.config.workers {
+            return Err("scheduler worker index out of range".into());
+        }
+        Ok(self
+            .shared
+            .slice_observations
+            .get(worker)
+            .map(slices::WorkerSliceObservation::statistics))
+    }
+
     pub fn lock_statistics(
         &self,
         worker: usize,

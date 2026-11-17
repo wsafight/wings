@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0124 为 Scheduler 增加默认关闭的 slice_samples，启用后按 worker 固定计费 FIFO 记录实际 resume 墙钟区间、完整 Pid/序号和三种结果。满则丢新样、计数饱和显式标记，末 handle 清理；与原子请求让出延迟分开，不修改 ABI v21、片预算或 quantum。短时一/双 worker 回归不替代长时公平性、CPU 硬配额、原生双平台或 BEAM/MVP 门禁。
+
 - ADR-0115 为固定跨线程 ingress 增加 MessageValue send_values/request_values，支持计费 String/Bytes/IntList/RecordInt 内容复制，不传原引用；原标量 API 继续拒绝引用整数。64 参数/64 整数/合计 64 KiB、原容量与时限不变；超时/取消/Drop 不撤回消息，目标原栈分块导入，满/关闭/失败清理保留原租约。ABI v21/4352 B 不变，仍非通用 reactor、完整账本或 MVP。
 
 - ADR-0114 为纯标量实例保留创建时的 process 账户身份，直接调用及 detach/attach 都不能改借兄弟账户、其他 tenant/VM 或工具池绕过原额度；同账户可换池/线程。拒绝前不借栈、不创建控制 token、不消费镜像；末实例/镜像保留账户节点租约。ABI v21、4352 B 控制预留及原容量/时限不变，完整账本与 MVP 门禁仍未完成。

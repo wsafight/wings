@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 新增实际恢复调用区间诊断，独立验证固定 FIFO、序号缺口、三种结果和停止后的计数守恒；真实 AOT 比较关闭/容量 1/256 与一/双 worker，见[记录](validation-scheduler-slices-2026-11-18.md)。这是观测正确性前置，未接入 v8 长测、不用零原子样本或本短测声明公平性门禁通过。
+
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 用真实 AOT 在 invocation 开始后填满 process/tenant/VM，计数到受管记录回复拒绝及最终宿主错误的分配；保留修复前两次失败和修复后一次，见[记录](validation-quota-reply-2026-11-18.md)。三层四维准入/溢出回归不等于完整账本、性能或 MVP 验收。
 
 [ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 的独立分配计数器在 process/tenant/VM 满额时核对直接模块和进程入口的未知名字错误，保留 3 MiB 来源放大失败与修复后 20 B 固定错误；UTF-8/控制字符/原状态和清理条件见[记录](validation-handler-lookup-2026-11-18.md)。这不是全部错误分配已计费或 MVP 通过。

@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 推进第 5/7 项的观测来源：补齐步骤片实际恢复调用区间，保留原子让出事件的独立含义和默认关闭路径。仍需冻结长测协议、每 actor 饥饿检查、过载分组、CPU 硬配额与原生双平台门禁，不因诊断与有界 AOT 通过而完成 MVP。
+
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 收敛第 4 项记录回复准入拒绝的错误存储，以共享状态路径避免丢弃 String；[实际验证](validation-quota-reply-2026-11-18.md) 不将一条路径减少分配当作完整账本或端到端性能完成。原生双平台及 BEAM 吞吐/整机内存仍独立验收，MVP 未完成。
 
 [ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 补第 4/6 项的宿主错误来源边界，修复满额账户下未知名字仍生成任意长错误的问题。真实回归见[记录](validation-handler-lookup-2026-11-18.md)，完整诊断/装载账本、原生双平台和同业务 BEAM 双目标仍待完成，MVP 未完成。

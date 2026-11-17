@@ -101,8 +101,19 @@ pub(super) fn worker(
                 .and_then(|deadline| timer.arm(deadline).ok())
             {
                 Some(()) => {
+                    let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
                     let result = active.task.resume(shared.config.slice_steps);
+                    let interval = started_at.map(|started_at| (started_at, Instant::now()));
                     timer.disarm();
+                    if let Some((started_at, returned_at)) = interval {
+                        shared.slice_observations[index].record(
+                            active.pid,
+                            index,
+                            started_at,
+                            returned_at,
+                            &result,
+                        );
+                    }
                     if let Some(observer) = shared.observations.get(index) {
                         observer.record(active.pid, index);
                     }
