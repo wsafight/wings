@@ -63,6 +63,195 @@ fn initializer_sync_and_resumable_calls_use_bounded_stacks() {
 }
 
 #[test]
+fn scalar_account_binding_rejects_other_process_and_tool_pools_before_admission() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let other = tenant.process_accounted(limits(1 << 20)).unwrap();
+    let foreign = pool.for_process(&other).unwrap();
+    let tools = StackPool::new(1, 0).unwrap();
+    let other_tenant = vm.tenant_accounted(limits(1 << 20)).unwrap();
+    let other_account = other_tenant.process_accounted(limits(1 << 20)).unwrap();
+    let other_pool = StackPool::new_accounted(&other_tenant, 1, 0)
+        .unwrap()
+        .for_process(&other_account)
+        .unwrap();
+    let [outside_vm, outside_tenant, outside_account] = accounts();
+    let outside_pool = StackPool::new_accounted(&outside_tenant, 1, 0)
+        .unwrap()
+        .for_process(&outside_account)
+        .unwrap();
+    let module = module();
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    let baseline = [vm.used(), tenant.used(), account.used(), other.used()];
+    let outside_baseline = outside_vm.used();
+    for invalid in [&foreign, &tools, &other_pool, &outside_pool] {
+        let before = invalid.stats();
+        assert!(
+            process
+                .start_in_pool(
+                    "Bump",
+                    &[99],
+                    128,
+                    &CancellationToken::default(),
+                    &PreemptionToken::default(),
+                    invalid
+                )
+                .is_err()
+        );
+        assert_eq!(
+            [vm.used(), tenant.used(), account.used(), other.used()],
+            baseline
+        );
+        assert_eq!(invalid.stats(), before);
+        assert!(!process.failed);
+        assert_eq!(process.state, 0);
+        assert_eq!(outside_vm.used(), outside_baseline);
+    }
+    let mut task = ScalarTask::new(process);
+    let mut payload = BytePayload::default();
+    assert!(
+        task.start_kind(
+            &module.handler("Bump").unwrap(),
+            &[99],
+            128,
+            || panic!("foreign pool called token factory"),
+            &foreign,
+            false,
+            0,
+            &ListPayload::default(),
+            &mut payload,
+        )
+        .is_err()
+    );
+    let mut process = task.into_process();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+}
+
+#[test]
+fn detached_scalar_account_binding_survives_failed_attach_and_keeps_original_state() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let other = tenant.process_accounted(limits(1 << 20)).unwrap();
+    let foreign = pool.for_process(&other).unwrap();
+    let tools = StackPool::new(1, 0).unwrap();
+    let module = module();
+    let mut process = module.instantiate_in_pool(&bound).unwrap();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let baseline = [vm.used(), tenant.used(), account.used(), other.used()];
+    assert!(image.attach(&foreign).is_err());
+    assert!(image.attach(&tools).is_err());
+    assert_eq!(
+        [vm.used(), tenant.used(), account.used(), other.used()],
+        baseline
+    );
+    let mut process = image.attach(&bound).unwrap();
+    assert_eq!(process.invoke("Bump", &[2]).unwrap(), Some(9));
+    assert!(image.attach(&bound).is_err());
+}
+
+#[test]
+fn scalar_account_binding_survives_cross_thread_attach_without_reinitialization() {
+    let [vm, tenant, account] = accounts();
+    let baseline = vm.used();
+    let mut process = {
+        let pool = StackPool::new_accounted(&tenant, 1, 0)
+            .unwrap()
+            .for_process(&account)
+            .unwrap();
+        module().instantiate_in_pool(&pool).unwrap()
+    };
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let owner = account.clone();
+    let destination = tenant.clone();
+    image = std::thread::spawn(move || {
+        let pool = StackPool::new_accounted(&destination, 1, 0)
+            .unwrap()
+            .for_process(&owner)
+            .unwrap();
+        let mut process = image.attach(&pool).unwrap();
+        assert_eq!(process.invoke("Bump", &[2]).unwrap(), Some(9));
+        process.detach()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(vm.used(), baseline);
+    drop((image, account, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn scalar_task_cannot_escape_full_original_account_through_another_pool() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let other = tenant.process_accounted(limits(1 << 20)).unwrap();
+    let foreign = pool.for_process(&other).unwrap();
+    let module = module();
+    let mut task = ScalarTask::new(module.instantiate_in_pool(&bound).unwrap());
+    let fill = account
+        .reserve(limits(account.limit().bytes - account.used().bytes))
+        .unwrap();
+    let baseline = [vm.used(), tenant.used(), account.used(), other.used()];
+    for invalid in [&foreign, &bound] {
+        assert!(
+            task.start(
+                &module.handler("Bump").unwrap(),
+                &[99],
+                128,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+                invalid
+            )
+            .is_err()
+        );
+        assert!(!task.is_active());
+        assert_eq!(
+            [vm.used(), tenant.used(), account.used(), other.used()],
+            baseline
+        );
+    }
+    drop(fill);
+    task.start(
+        &module.handler("Bump").unwrap(),
+        &[7],
+        128,
+        &CancellationToken::default(),
+        &PreemptionToken::default(),
+        &bound,
+    )
+    .unwrap();
+    assert_eq!(
+        task.resume(128).unwrap(),
+        ExecutionStatus::Complete(Some(7))
+    );
+}
+
+#[test]
+fn detached_scalar_keeps_account_metadata_until_final_image_release() {
+    let vm = ResourceAccount::vm(limits(8 << 20));
+    let tenant = vm.tenant_accounted(limits(4 << 20)).unwrap();
+    let account = tenant.process_accounted(limits(2 << 20)).unwrap();
+    let metadata = vm.used();
+    let process = {
+        let pool = StackPool::new_accounted(&tenant, 1, 0)
+            .unwrap()
+            .for_process(&account)
+            .unwrap();
+        module().instantiate_in_pool(&pool).unwrap()
+    };
+    let image = process.detach();
+    assert_eq!(vm.used(), metadata);
+    drop((account, tenant));
+    assert_eq!(vm.used(), metadata);
+    drop(image);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
 fn direct_accounted_execution_retains_control_capacity_while_its_stack_is_live() {
     let [vm, tenant, account] = accounts();
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();

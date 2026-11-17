@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0114](adr/0114-scalar-process-account-binding.md) 推进第 4 项资源身份闭环：纯标量初始化后不能经直接换池或 detach/attach 改用其他账户，拒绝先于准入与业务，同账户迁移仍保留。原控制预留/ABI/限额不变；完整分配/装载账本、具名记录回复、公平/过载/故障、最新原生双平台与同负载 BEAM 双门禁仍未完成，不能宣布 MVP 完成。
+
 [ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 推进第 3/4 项具名记录单向/请求参数：源码名义类型、有界字段展开、计费目标重建与精确根，原 ABI/额度不变。具名记录回复、完整资源账本、公平/过载/故障和最新原生双平台/BEAM 双门禁仍未完成。
 
 [ADR-0112](adr/0112-bounded-tcp-startup-evidence.md) 补第 5/6 项 TCP 启动验证的有界失败证据；原限复验和一次动态加载采样不构成间歇失败根因修复或 MVP 验收通过，见[记录](validation-tcp-startup-2026-11-17.md)。

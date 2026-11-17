@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0114](docs/adr/0114-scalar-process-account-binding.md) 修复纯标量实例可通过换执行池或迁移镜像改借其他账户的问题。计费初始化后始终绑定原 process，同账户换池/线程仍允许；拒绝不执行业务或消费镜像，ABI、原控制预留及限额不变，仍非完整 MVP。
+
 [ADR-0113](docs/adr/0113-bounded-named-record-message-expansion.md) 补具名记录单向/请求消息参数，按字段有界展开并在目标独立重建，保留计费复制、精确根及所有原限。ABI v21 不变；具名记录回复与完整 MVP 门禁仍待完成。
 
 [ADR-0111](docs/adr/0111-bounded-string-content-equality.md) 补 String 完整内容 `==`/`!=`，不按引用身份、不做规范化；分块检查预算/取消/让出。源码 ABI v21，旧产物须重编译，原布局/控制预留不变；具名记录回复和 MVP 其他门禁仍待完成。

@@ -435,6 +435,16 @@ impl Invocation {
     ) -> Result<Self, String> {
         process.module.validate_pool(pool)?;
         if process
+            .account
+            .as_ref()
+            .is_some_and(|account| !pool.is_for_process(account))
+        {
+            return Err(
+                "scalar process execution requires its original process-accounted stack pool"
+                    .into(),
+            );
+        }
+        if process
             .heap
             .as_ref()
             .is_some_and(|heap| !pool.is_for_process(&heap.account))

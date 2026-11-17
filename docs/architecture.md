@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0114](adr/0114-scalar-process-account-binding.md) 使所有从 process 计费池初始化的实例保存原账户身份，纯标量不再只检查模块 VM。调用在控制/栈准入和 token 创建前校验；可发送的脱栈镜像搬运账户租约而非栈池，attach 校验后才消费镜像。同账户跨线程重绑不重跑 initializer，ABI v21 与 4352 B 控制上界不变。
+
 [ADR-0111](adr/0111-bounded-string-content-equality.md) 的源码 ABI v21 增加 String 内容相等堆操作和专用 Bool IR，不让通用整数 Compare 接受引用；codegen 发布两个最后使用输入的精确根，callback 分块比较并可让出。context 88 B、EffectRequest 80 B/4352 B 控制预留不变，旧产物重编译。
 
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 将 OS 唤醒 FD 和等待票据合并为单个 Arc 端点；计费构造先准入再创建 kqueue/eventfd/epoll，worker 与 ingress 只共享端点。Linux poller 先关闭，最后 notifier 关闭端点后才归还原 4096 B，不改 ABI v20、执行预留或原时限，也不把逻辑控制容量等同 kernel/RSS。

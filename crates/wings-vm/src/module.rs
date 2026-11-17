@@ -198,6 +198,10 @@ impl ScalarModule {
         crate::commit_state(self.inner.manifest.state, &mut heap, output.state)?;
         Ok(ScalarProcess {
             module: self.clone(),
+            account: pool
+                .account()
+                .filter(|account| account.level() == ResourceLevel::Process)
+                .cloned(),
             state: output.state,
             failed: false,
             heap,

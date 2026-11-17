@@ -69,6 +69,7 @@ pub use worker::{
 
 pub struct ScalarProcess {
     module: ScalarModule,
+    account: Option<ResourceAccount>,
     state: i64,
     failed: bool,
     heap: Option<Box<aot_heap::AotHeap>>,

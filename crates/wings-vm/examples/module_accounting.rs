@@ -24,6 +24,8 @@ fn verify_execution_binding(directory: &Path) {
     let tools = StackPool::new(1, 0).unwrap();
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
     let bound = pool.for_process(&account).unwrap();
+    let other = tenant.process(limits(8 << 20)).unwrap();
+    let foreign = pool.for_process(&other).unwrap();
     let baseline = vm.used();
     assert!(module.instantiate().is_err());
     for invalid in [&tools, &pool] {
@@ -56,6 +58,14 @@ fn verify_execution_binding(directory: &Path) {
             assert_eq!(vm.used(), full);
             assert_eq!(invalid.stats(), slots);
         }
+        let slots = foreign.stats();
+        assert!(
+            process
+                .start_in_pool("Inc", &[99], 128, &cancellation, &preemption, &foreign)
+                .is_err()
+        );
+        assert_eq!(vm.used(), full);
+        assert_eq!(foreign.stats(), slots);
         drop(fill);
         assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
     }
@@ -73,14 +83,16 @@ fn verify_execution_binding(directory: &Path) {
     );
     assert!(!task.is_active());
     let mut image = task.into_process().detach();
-    for invalid in [&tools, &pool] {
+    for invalid in [&tools, &pool, &foreign] {
         assert!(image.attach(invalid).is_err());
         assert_eq!(vm.used(), baseline);
     }
     let mut process = image.attach(&bound).unwrap();
     assert!(image.attach(&bound).is_err());
     assert_eq!(process.invoke("Inc", &[2]).unwrap(), Some(9));
-    drop((process, image, module, bound, pool, tools, account, tenant));
+    drop((
+        process, image, module, bound, pool, tools, foreign, other, account, tenant,
+    ));
     assert_eq!(vm.used(), bootstrap);
 }
 

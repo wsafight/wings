@@ -1,4 +1,4 @@
-use crate::{ScalarModule, ScalarProcess, StackPool, aot_heap::AotHeap};
+use crate::{ResourceAccount, ScalarModule, ScalarProcess, StackPool, aot_heap::AotHeap};
 
 pub struct DetachedProcess {
     image: Option<ProcessImage>,
@@ -6,6 +6,7 @@ pub struct DetachedProcess {
 
 struct ProcessImage {
     module: ScalarModule,
+    account: Option<ResourceAccount>,
     state: i64,
     failed: bool,
     heap: Option<Box<AotHeap>>,
@@ -15,6 +16,7 @@ impl ScalarProcess {
     pub fn detach(self) -> DetachedProcess {
         let Self {
             module,
+            account,
             state,
             failed,
             heap,
@@ -24,6 +26,7 @@ impl ScalarProcess {
         DetachedProcess {
             image: Some(ProcessImage {
                 module,
+                account,
                 state,
                 failed,
                 heap,
@@ -48,6 +51,15 @@ impl DetachedProcess {
             .ok_or("process image has already been attached")?;
         image.module.validate_pool(pool)?;
         if image
+            .account
+            .as_ref()
+            .is_some_and(|account| !pool.is_for_process(account))
+        {
+            return Err(
+                "process image requires its original process-accounted stack pool binding".into(),
+            );
+        }
+        if image
             .heap
             .as_ref()
             .is_some_and(|heap| !pool.is_for_process(&heap.account))
@@ -59,6 +71,7 @@ impl DetachedProcess {
         let image = self.image.take().expect("validated process image");
         Ok(ScalarProcess {
             module: image.module,
+            account: image.account,
             state: image.state,
             failed: image.failed,
             heap: image.heap,
