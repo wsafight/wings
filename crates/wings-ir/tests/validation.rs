@@ -88,21 +88,18 @@ fn string_ir_preserves_typed_roots_and_rejects_forged_operands_and_boundaries() 
         invalid.handlers[0].function.instructions[index].operation = operation;
         assert!(invalid.validate().is_err());
     }
-    for boundary in 0..2 {
-        let mut invalid = program.clone();
-        if boundary == 0 {
-            invalid.handlers[0].parameters[0].1 = ValueType::StringRef;
-        } else {
-            invalid.handlers[0].reply = Some(ValueType::StringRef);
-            invalid.handlers[0].function.reply = 5;
-        }
-        assert!(
-            invalid
-                .validate()
-                .unwrap_err()
-                .contains("String messages and replies")
-        );
-    }
+    let mut messages = program.clone();
+    messages.handlers[0].parameters[0].1 = ValueType::StringRef;
+    messages.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.handlers[0].reply = Some(ValueType::StringRef);
+    invalid.handlers[0].function.reply = 5;
+    assert!(
+        invalid
+            .validate()
+            .unwrap_err()
+            .contains("String replies and completion")
+    );
 }
 
 #[test]

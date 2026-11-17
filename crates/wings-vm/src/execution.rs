@@ -796,7 +796,8 @@ unsafe extern "C" fn send_self(
     if output.is_null()
         || count > 64
         || (count != 0 && arguments.is_null())
-        || ((request.record_mask | request.list_mask | request.bytes_mask) != 0
+        || ((request.record_mask | request.list_mask | request.bytes_mask | request.string_mask)
+            != 0
             && !matches!(
                 request.operation,
                 wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
@@ -809,10 +810,11 @@ unsafe extern "C" fn send_self(
     if count != 0 {
         copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
     }
-    if request.record_mask & (request.list_mask | request.bytes_mask) != 0
-        || request.list_mask & request.bytes_mask != 0
-        || (count < 64
-            && (request.record_mask | request.list_mask | request.bytes_mask) >> count != 0)
+    let buffer_mask = request.bytes_mask | request.string_mask;
+    if request.bytes_mask & request.string_mask != 0
+        || request.record_mask & (request.list_mask | buffer_mask) != 0
+        || request.list_mask & buffer_mask != 0
+        || (count < 64 && (request.record_mask | request.list_mask | buffer_mask) >> count != 0)
     {
         return wings_abi::STATUS_INVALID_CONTROL;
     }
@@ -836,7 +838,12 @@ unsafe extern "C" fn send_self(
         Err(status) => return status,
     };
     let bytes = match unsafe {
-        crate::aot_heap::export_bytes(context, &mut copied[..count], request.bytes_mask)
+        crate::aot_heap::export_buffers(
+            context,
+            &mut copied[..count],
+            request.bytes_mask,
+            request.string_mask,
+        )
     } {
         Ok(bytes) => bytes,
         Err(status) => return status,
@@ -923,6 +930,7 @@ mod tests {
             record_mask: 2,
             list_mask: 0,
             bytes_mask: 0,
+            string_mask: 0,
         };
         let mut output = 777;
         assert_eq!(
@@ -962,6 +970,26 @@ mod tests {
         }
         request.bytes_mask = 0;
         request.record_mask = 0;
+        request.list_mask = 0;
+        context.remaining_steps = 8;
+        context.slice_remaining = 8;
+        request.string_mask = 2;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.string_mask = 1;
+        request.bytes_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
+        request.bytes_mask = 0;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_ROOT
+        );
+        request.string_mask = 0;
         context.remaining_steps = 8;
         context.slice_remaining = 8;
         request.list_mask = 1;

@@ -1,5 +1,7 @@
 # ADR-0103：计费 UTF-8 字符串值
 
+后续：[ADR-0104](0104-bounded-string-literals.md) 增加字面量；[ADR-0105](0105-accounted-string-messages.md) 扩展 String 消息参数，替代本文当时仅本地值的消息边界，回复限制保持。
+
 - 日期：2026-11-17
 - 状态：已采纳（本地/状态/函数切片）
 - 延续：[ADR-0057](0057-accounted-immutable-bytes.md) 的不可变计费缓冲、分块复制与精确根约束。

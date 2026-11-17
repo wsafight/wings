@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0105](adr/0105-accounted-string-messages.md) 继续第 3/4 项，开放 String 语言/宿主参数的独立计费复制、混合载荷与请求输入。String 回复、通用记录、完整账本、长时公平/过载/故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未完成，MVP 状态不变。
+
 [ADR-0104](adr/0104-bounded-string-literals.md) 继续第 4 项，为最小业务文字构造补有界 UTF-8 字面量及显式转义，源码 ABI v17；常量只读装载，执行时分块计费复制。String 消息/回复、通用记录、完整资源账本、公平/过载/故障、原生双平台与同负载 BEAM 双门禁仍待完成，不改变 MVP 门槛；本轮结果见[验证记录](validation-string-literals-2026-11-17.md)。
 
 [ADR-0103](adr/0103-accounted-utf8-string-values.md) 回到 MVP 第 4 项，补独立 UTF-8 String 的本地/状态/函数、分块转换/拼接/字符计数、精确 GC 和失败清理，源码 ABI v16。字符串字面量/消息/回复、通用记录、完整资源账本、长时公平/过载/并发故障、最新原生双平台及 BEAM 同负载吞吐/整机内存仍未完成。下一步优先补业务值交互与账本，不继续无归因优化；本切片不改变 MVP 验收门槛，验证见[记录](validation-string-values-2026-11-17.md)。

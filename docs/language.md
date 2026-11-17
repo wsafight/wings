@@ -2,7 +2,7 @@
 
 ## 有界字符串值
 
-[ADR-0103](adr/0103-accounted-utf8-string-values.md) 开放独立 `String` 本地、state、分支/循环合流及非递归 fn 值，内容保证 UTF-8，最大编码长度为 65536 字节。[ADR-0104](adr/0104-bounded-string-literals.md) 增加双引号字面量。执行须配置计费堆，当前源码 ABI v17；旧产物须重新编译。可运行示例见 [`examples/string-values.wings`](../examples/string-values.wings)。现有类型大小写与待审语法稿不变。
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 开放独立 `String` 本地、state、分支/循环合流及非递归 fn 值，内容保证 UTF-8，最大编码长度为 65536 字节。[ADR-0104](adr/0104-bounded-string-literals.md) 增加双引号字面量。执行须配置计费堆，当前源码 ABI v18；旧产物须重新编译。可运行示例见 [`examples/string-values.wings`](../examples/string-values.wings)。现有类型大小写与待审语法稿不变。
 
 | 内建 | 行为 |
 |---|---|
@@ -13,7 +13,7 @@
 
 字面量支持直接 UTF-8（如 `"中文😀"`）与 `\"`、`\\`、`\n`、`\r`、`\t`、`\0` 六种转义；不支持未知转义、原始控制字符或跨行文本。按解码后 UTF-8 字节检查 65536 上限，IR 另限制程序全部字面量数据合计不超过 1 MiB。每次执行由模块只读常量复制为进程独立计费 String，不把静态地址当受管引用，也不逐字节展开源码操作。
 
-不做隐式编码、规范化或按内容 `==`；字符串消息/回复、索引/切片和通用记录仍未实现。需要外部文字时目前先通过现有 Bytes 消息接收，再显式转换；这不是原生 String 消息支持。错误不提交候选 state，但不撤回已发生副作用，取消/让出/总预算与三级准入保持。
+不做隐式编码、规范化或按内容 `==`；String 回复、索引/切片和通用记录仍未实现。[ADR-0105](adr/0105-accounted-string-messages.md) 开放 String 消息参数（含 send_self/send/request 参数）及宿主 `MessageValue::String(&str)`。String/Bytes 全部参数合计最多 65536 编码字节，重复引用独立计数；目标创建独立计费 UTF-8 副本，不接受 Bytes/裸整数冒充 String。JSON/标量 ingress 仍不接受引用参数，返回 Bytes 的显式转换不算 String 回复。错误不提交候选 state，但不撤回已发生副作用，取消/让出/总预算与三级准入保持。
 
 ## 已有交互切片
 
@@ -217,7 +217,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽、非法字节参数或非法 UTF-8 字符串属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v17 不兼容已发布 `0.0.2` 及旧源码 v2–v16 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽、非法字节参数或非法 UTF-8 字符串属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v18 不兼容已发布 `0.0.2` 及旧源码 v2–v17 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 
@@ -230,7 +230,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
 - process 内最多 64 个 fn、64 个显式类型参数、32 层声明顺序调用；使用私有受管帧，无 state 访问/赋值或函数内 while，每路径最多 64 个聚合根，各帧独立检查剩余栈。
 - 不可变 IntList 的单节点构造/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
-- 不可变 Bytes 与 UTF-8 String 的独立类型、分块内建、精确根和 state/fn/条件/循环值；String 支持有界双引号字面量，消息/回复尚未开放。
+- 不可变 Bytes 与 UTF-8 String 的独立类型、分块内建、精确根和 state/fn/条件/循环值；String 支持有界双引号字面量和独立复制消息参数，回复尚未开放。
 - handler 中 `send_self` 静态检查单向目标、标量参数和遮蔽；worker 调用点准入入队，队满/额度拒绝受管失败，无 worker 不可调用。
 - 局部 Pid、`self_pid` / `spawn_self` 与同 worker 同模块 `send`；fn 可传递 Pid，但不得在函数内创建/发送，无 Pid state/消息/回复或比较。
 - 局部 RequestId、异步 Int 请求和三参数完成事件；完成事件不可由普通发送/CLI 伪造，取消只能终结当前发起方仍占 pending 的请求，无阻塞等待。

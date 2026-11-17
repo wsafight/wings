@@ -213,12 +213,16 @@ impl Program {
         }
         if self.handlers.iter().any(|handler| {
             handler.reply == Some(ValueType::StringRef)
-                || handler
+                || (handler
                     .parameters
                     .iter()
-                    .any(|(_, ty)| *ty == ValueType::StringRef)
+                    .any(|(_, ty)| *ty == ValueType::RequestId)
+                    && handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| *ty == ValueType::StringRef))
         }) {
-            return Err("String messages and replies are not supported".into());
+            return Err("String replies and completion values are not supported".into());
         }
         if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
@@ -515,6 +519,7 @@ impl Function {
                                         | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
+                                        | ValueType::StringRef
                                 )
                             })
                         })
@@ -540,6 +545,7 @@ impl Function {
                                         | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
+                                        | ValueType::StringRef
                                 )
                             })
                         })
@@ -567,6 +573,7 @@ impl Function {
                                         | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
+                                        | ValueType::StringRef
                                 )
                             })
                         })

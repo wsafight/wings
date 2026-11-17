@@ -719,11 +719,22 @@ impl ScalarWorker {
                 .iter()
                 .enumerate()
                 .fold(0u64, |mask, (index, (_, ty))| {
-                    mask | (u64::from(*ty == wings_abi::ValueType::BytesRef) << index)
+                    mask | (u64::from(matches!(
+                        ty,
+                        wings_abi::ValueType::BytesRef | wings_abi::ValueType::StringRef
+                    )) << index)
                 });
         if record_mask != expected_mask
             || !lists.valid(arguments, list_mask)
             || !bytes.valid(arguments, bytes_mask)
+            || bytes.string_mask
+                != schema
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .fold(0u64, |mask, (index, (_, ty))| {
+                        mask | (u64::from(*ty == wings_abi::ValueType::StringRef) << index)
+                    })
             || arguments.len() != schema.parameters.len()
             || arguments.len() > MAX_ARGUMENTS
             || arguments

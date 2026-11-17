@@ -6,6 +6,7 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = 65536;
 #[derive(Default)]
 pub(crate) struct BytePayload {
     pub mask: u64,
+    pub string_mask: u64,
     pub data: Vec<u8>,
     charge: Option<Reservation>,
     reply: Option<crate::BytesReply>,
@@ -29,6 +30,7 @@ impl BytePayload {
         }
         Ok(Self {
             mask,
+            string_mask: 0,
             data,
             charge: Some(charge),
             reply: None,
@@ -58,11 +60,15 @@ impl BytePayload {
     pub(crate) fn valid(&self, arguments: &[i64], expected_mask: u64) -> bool {
         if arguments.len() > 64
             || self.mask != expected_mask
+            || self.string_mask & !self.mask != 0
             || self.as_slice().len() > MAX_MESSAGE_BYTES
             || self.data.capacity() != self.data.len()
             || (arguments.len() < 64 && self.mask >> arguments.len() != 0)
             || (self.completion
-                && (self.mask != 4 || !self.data.is_empty() || self.charge.is_some()))
+                && (self.mask != 4
+                    || self.string_mask != 0
+                    || !self.data.is_empty()
+                    || self.charge.is_some()))
             || (!self.completion && self.reply.is_some())
             || (!self.completion
                 && self.charge.as_ref().map(|charge| charge.amount().bytes)

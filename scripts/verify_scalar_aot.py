@@ -364,7 +364,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 17
+    assert manifest["abi"] == 18
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -455,7 +455,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v17 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v18 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -612,7 +612,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     effect_status = 0
     reject_operation = None
     class EffectRequest(ctypes.Structure):
-        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64), ("list_mask", ctypes.c_uint64), ("bytes_mask", ctypes.c_uint64)]
+        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("record_mask", ctypes.c_uint64), ("list_mask", ctypes.c_uint64), ("bytes_mask", ctypes.c_uint64), ("string_mask", ctypes.c_uint64)]
 
     effect_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.POINTER(EffectRequest), ctypes.POINTER(ctypes.c_int64))
 
@@ -621,7 +621,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
         try:
             roots = collect(pointer.contents)
             current = request.contents
-            assert current.bytes_mask == 0
+            assert current.bytes_mask == 0 and current.string_mask == 0
             if record_messages:
                 assert current.operation in [0, 2, 3, 4]
                 values = list(current.arguments[:current.count])
@@ -676,7 +676,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 17 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 18 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -1434,6 +1434,7 @@ def main():
         command([COMPILER, "build", ROOT / "examples/string-values.wings", "-o", strings])
         result = example("string_values", strings)
         assert "Accounted UTF-8 strings:" in result.stdout
+        assert "Accounted String messages:" in result.stdout
         print(result.stdout.strip())
         string_run = [VM, "run", "--trusted", strings, "--heap-records", 16]
         result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("Unicode"), message("Copy"), message("Grow", 20), message("Read")]))

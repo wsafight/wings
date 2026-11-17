@@ -257,6 +257,22 @@ pub(crate) unsafe fn export_bytes(
     arguments: &mut [i64],
     mask: u64,
 ) -> Result<BytePayload, u32> {
+    unsafe { export_buffers(context, arguments, mask, 0) }
+}
+
+pub(crate) unsafe fn export_buffers(
+    context: &mut ScalarContext,
+    arguments: &mut [i64],
+    bytes_mask: u64,
+    string_mask: u64,
+) -> Result<BytePayload, u32> {
+    let mask = bytes_mask | string_mask;
+    if arguments.len() > 64
+        || bytes_mask & string_mask != 0
+        || (arguments.len() < 64 && mask >> arguments.len() != 0)
+    {
+        return Err(STATUS_INVALID_CONTROL);
+    }
     if mask == 0 {
         return Ok(BytePayload::default());
     }
@@ -270,10 +286,7 @@ pub(crate) unsafe fn export_bytes(
                 .heap
                 .import_reference(*argument as u64)
                 .map_err(|_| STATUS_INVALID_ROOT)?;
-            let bytes = heap
-                .heap
-                .bytes(reference)
-                .map_err(|_| STATUS_INVALID_ROOT)?;
+            let bytes = message_buffer(heap, reference, string_mask & (1u64 << index) != 0)?;
             length = length
                 .checked_add(bytes.len())
                 .filter(|total| *total <= MAX_MESSAGE_BYTES)
@@ -283,6 +296,7 @@ pub(crate) unsafe fn export_bytes(
     let account = unsafe { &*pointer }.account.clone();
     let mut payload =
         BytePayload::new(&account, mask, length).map_err(|_| STATUS_HEAP_EXHAUSTED)?;
+    payload.string_mask = string_mask;
     for (index, argument) in arguments.iter_mut().enumerate() {
         if mask & (1u64 << index) == 0 {
             continue;
@@ -291,18 +305,12 @@ pub(crate) unsafe fn export_bytes(
             .heap
             .import_reference(*argument as u64)
             .map_err(|_| STATUS_INVALID_ROOT)?;
-        let length = unsafe { &*pointer }
-            .heap
-            .bytes(reference)
-            .map_err(|_| STATUS_INVALID_ROOT)?
-            .len();
+        let is_string = string_mask & (1u64 << index) != 0;
+        let length = message_buffer(unsafe { &*pointer }, reference, is_string)?.len();
         let start = payload.data.len();
         for offset in (0..length).step_by(256) {
             crate::execution::runtime_checkpoint(context, true)?;
-            let bytes = unsafe { &*pointer }
-                .heap
-                .bytes(reference)
-                .map_err(|_| STATUS_INVALID_ROOT)?;
+            let bytes = message_buffer(unsafe { &*pointer }, reference, is_string)?;
             payload
                 .data
                 .extend_from_slice(&bytes[offset..(offset + 256).min(length)]);
@@ -310,6 +318,15 @@ pub(crate) unsafe fn export_bytes(
         *argument = ListPayload::encode(start, length);
     }
     Ok(payload)
+}
+
+fn message_buffer(heap: &AotHeap, reference: HeapRef, string: bool) -> Result<&[u8], u32> {
+    if string {
+        heap.heap.string_bytes(reference)
+    } else {
+        heap.heap.bytes(reference)
+    }
+    .map_err(|_| STATUS_INVALID_ROOT)
 }
 
 unsafe fn import_bytes(context: &mut ScalarContext, data: &[u8]) -> Result<u64, u32> {
@@ -375,8 +392,14 @@ pub(crate) unsafe fn import_arguments(
         crate::execution::runtime_checkpoint(context, true)?;
         if bytes.mask & bit != 0 {
             let (start, length) = ListPayload::segment(*argument);
-            let encoded =
-                unsafe { import_bytes(context, &bytes.as_slice()[start..start + length]) }?;
+            let data = &bytes.as_slice()[start..start + length];
+            let encoded = if bytes.string_mask & bit != 0 {
+                unsafe {
+                    string_literal(context, [data.as_ptr() as usize as i64, length as i64, 0])
+                }?
+            } else {
+                unsafe { import_bytes(context, data) }?
+            };
             unsafe { root_incoming(context, index, encoded) }?;
             *argument = encoded as i64;
             continue;
@@ -1417,6 +1440,228 @@ mod tests {
     unsafe extern "C" fn resume_one_step(pointer: *mut ScalarContext) -> u32 {
         unsafe { (*pointer).slice_remaining = 1 };
         STATUS_OK
+    }
+
+    #[test]
+    fn string_exports_retain_types_and_enforce_combined_limits_and_cleanup() {
+        let (vm, mut heap) = fixture(4);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.slow_path = Some(resume_one_step);
+        let text = "😀".repeat(16384);
+        let (status, source) = unsafe {
+            bytes(
+                &mut context,
+                wings_abi::HEAP_STRING_LITERAL,
+                [text.as_ptr() as usize as i64, text.len() as i64, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        heap.commit_typed(wings_abi::ValueType::StringRef, source as i64)
+            .unwrap();
+        let baseline = vm.used();
+        assert!(matches!(
+            unsafe { export_buffers(&mut context, &mut [source as i64], 1, 0) },
+            Err(STATUS_INVALID_ROOT)
+        ));
+        assert!(matches!(
+            unsafe { export_buffers(&mut context, &mut [source as i64], 1, 1) },
+            Err(STATUS_INVALID_CONTROL)
+        ));
+        assert!(matches!(
+            unsafe { export_buffers(&mut context, &mut [source as i64], 0, 2) },
+            Err(STATUS_INVALID_CONTROL)
+        ));
+        assert!(matches!(
+            unsafe { export_buffers(&mut context, &mut [source as i64; 2], 0, 3) },
+            Err(wings_abi::STATUS_SEND_REJECTED)
+        ));
+        for steps in [0, 1, 128, 256] {
+            context.remaining_steps = steps;
+            assert!(matches!(
+                unsafe { export_buffers(&mut context, &mut [source as i64], 0, 1) },
+                Err(wings_abi::STATUS_BUDGET_EXHAUSTED)
+            ));
+            assert_eq!(vm.used(), baseline);
+        }
+        context.remaining_steps = 4096;
+        flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            unsafe { export_buffers(&mut context, &mut [source as i64], 0, 1) },
+            Err(wings_abi::STATUS_CANCELLED)
+        ));
+        assert_eq!(vm.used(), baseline);
+        flag.store(0, std::sync::atomic::Ordering::SeqCst);
+        let mut arguments = [source as i64];
+        let payload = unsafe { export_buffers(&mut context, &mut arguments, 0, 1) }.unwrap();
+        assert_eq!(payload.string_mask, 1);
+        assert!(payload.valid(&arguments, 1));
+        assert_eq!(payload.data, text.as_bytes());
+        assert_eq!(vm.used().bytes, baseline.bytes + 65536);
+        drop(heap);
+        assert_eq!(vm.used().bytes, 65536);
+        drop(payload);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn mixed_string_imports_validate_utf8_and_preserve_incoming_gc_roots() {
+        let (vm, mut heap) = fixture(4);
+        for _ in 0..4 {
+            heap.heap
+                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .unwrap();
+        }
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        let text = "a".repeat(255) + "中😀\0";
+        let mut payload = BytePayload::new(&heap.account, 7, text.len() + 2).unwrap();
+        payload.string_mask = 5;
+        payload.data.extend_from_slice(text.as_bytes());
+        payload.data.extend_from_slice(&[255, 0]);
+        let mut arguments = [
+            ListPayload::encode(0, text.len()),
+            ListPayload::encode(text.len(), 2),
+            ListPayload::encode(text.len() + 2, 0),
+        ];
+        unsafe {
+            import_arguments(
+                &mut context,
+                &mut arguments,
+                0,
+                &ListPayload::default(),
+                &payload,
+            )
+        }
+        .unwrap();
+        for (index, expected) in [(0, text.as_bytes()), (2, &[][..])] {
+            let reference = heap.heap.import_reference(arguments[index] as u64).unwrap();
+            assert_eq!(heap.heap.string_bytes(reference).unwrap(), expected);
+            assert!(heap.heap.bytes(reference).is_err());
+        }
+        let reference = heap.heap.import_reference(arguments[1] as u64).unwrap();
+        assert_eq!(heap.heap.bytes(reference).unwrap(), &[255, 0]);
+        assert!(heap.heap.string_bytes(reference).is_err());
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.stats().allocated, 0);
+        let baseline = vm.used();
+        payload.string_mask = 7;
+        let mut invalid = [
+            ListPayload::encode(0, text.len()),
+            ListPayload::encode(text.len(), 2),
+            ListPayload::encode(text.len() + 2, 0),
+        ];
+        assert_eq!(
+            unsafe {
+                import_arguments(
+                    &mut context,
+                    &mut invalid,
+                    0,
+                    &ListPayload::default(),
+                    &payload,
+                )
+            },
+            Err(wings_abi::STATUS_INVALID_STRING)
+        );
+        heap.clear_incoming();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(vm.used(), baseline);
+        payload.string_mask = 8;
+        assert!(!payload.valid(&invalid, 7));
+        drop((payload, heap));
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn string_import_budget_cancel_and_three_level_admission_roll_back() {
+        let limits = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        for level in 0..3 {
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant(limits).unwrap();
+            let account = tenant.process(limits).unwrap();
+            let mut heap = AotHeap::new(&account, 4).unwrap();
+            let mut payload = BytePayload::new(&account, 1, 65536).unwrap();
+            payload.string_mask = 1;
+            payload.data.resize(65536, 97);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            context.slow_path = Some(resume_one_step);
+            let levels = [&vm, &tenant, &account];
+            let guard = levels[level]
+                .reserve(Resources {
+                    bytes: limits.bytes - levels[level].used().bytes - 4,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let baseline = levels.map(ResourceAccount::used);
+            let encoded = ListPayload::encode(0, 65536);
+            assert_eq!(
+                unsafe {
+                    import_arguments(
+                        &mut context,
+                        &mut [encoded],
+                        0,
+                        &ListPayload::default(),
+                        &payload,
+                    )
+                },
+                Err(STATUS_HEAP_EXHAUSTED)
+            );
+            assert_eq!(levels.map(ResourceAccount::used), baseline);
+            drop(guard);
+            let baseline = levels.map(ResourceAccount::used);
+            for steps in [0, 1, 64, 128, 256, 257] {
+                context.remaining_steps = steps;
+                assert_eq!(
+                    unsafe {
+                        import_arguments(
+                            &mut context,
+                            &mut [encoded],
+                            0,
+                            &ListPayload::default(),
+                            &payload,
+                        )
+                    },
+                    Err(wings_abi::STATUS_BUDGET_EXHAUSTED)
+                );
+                assert_eq!(levels.map(ResourceAccount::used), baseline);
+            }
+            context.remaining_steps = 4096;
+            flag.store(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                unsafe {
+                    import_arguments(
+                        &mut context,
+                        &mut [encoded],
+                        0,
+                        &ListPayload::default(),
+                        &payload,
+                    )
+                },
+                Err(wings_abi::STATUS_CANCELLED)
+            );
+            assert_eq!(levels.map(ResourceAccount::used), baseline);
+            flag.store(0, std::sync::atomic::Ordering::SeqCst);
+            unsafe {
+                import_arguments(
+                    &mut context,
+                    &mut [encoded],
+                    0,
+                    &ListPayload::default(),
+                    &payload,
+                )
+            }
+            .unwrap();
+            heap.clear_incoming();
+            unsafe { heap.collect(std::ptr::null()) }.unwrap();
+            assert_eq!(levels.map(ResourceAccount::used), baseline);
+            drop((payload, heap, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
     }
 
     #[test]

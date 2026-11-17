@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0105](adr/0105-accounted-string-messages.md) 将源码 ABI 升至 v18：EffectRequest 增加独立 string_mask、长度 80 B，context 88 B/控制预留 4352 B 不变。String/Bytes 参数共用合计 64 KiB buffer，目标完整 schema 检查类型后分块独立导入；String 回复和完成值仍拒绝，消息所有权与账目见决策。
+
 [ADR-0104](adr/0104-bounded-string-literals.md) 将源码 ABI 升至 v17，新增 HEAP_STRING_LITERAL，context/EffectRequest 布局不变。编译器将字面量编码放入原生只读数据段，传固定 scratch 的地址/长度，runtime 分块复制为独立计费 String；原 Invocation/模块租约使常量在活栈暂停期间持续有效。IR 独立检查单值 64 KiB 和合计 1 MiB，不生成大栈数组或逐字节 IR。
 
 [ADR-0103](adr/0103-accounted-utf8-string-values.md) 将未发布源码 ABI 升至 v16：新增 `StringRef`、四项字符串 heap operation 与 InvalidString 状态，context 88 字节/EffectRequest 72 字节布局不变，旧产物须重编译。String 使用独立叶节点标签与不可变计费 buffer，不与 Bytes 共用类型或裸 handle；根发布、跨帧/候选状态保活、GC 和 handler 返回后迁移沿用既有模型。清单/IR/语义检查三层拒绝字符串消息与回复；本轮仅开放本地、state、非递归 fn 和分块内建，不增加控制预算、资源额度或待审语法变更。
@@ -200,7 +202,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
-未发布源码 ABI v17 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。宿主原始整数参数只允许 Int/Bool/Unit；RecordInt 回复的 ABI 输出为当前堆引用，runtime 在候选提交前验证并复制唯一 i64 内容；语言消息与 ADR-0094 类型化宿主消息参数额外允许 RecordInt/有界 IntList/计费 Bytes 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef/BytesRef/StringRef，String 消息/回复仍拒绝；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆、无效根、非法字节参数和非法字符串均以状态码返回，不 trap 或 unwind。
+未发布源码 ABI v17 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。宿主原始整数参数只允许 Int/Bool/Unit；RecordInt 回复的 ABI 输出为当前堆引用，runtime 在候选提交前验证并复制唯一 i64 内容；语言消息与 ADR-0094 类型化宿主消息参数额外允许 RecordInt/有界 IntList/计费 Bytes/String 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef/BytesRef/StringRef，String 消息按 ADR-0105 复制，String 回复仍拒绝；Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆、无效根、非法字节参数和非法字符串均以状态码返回，不 trap 或 unwind。
 
 薄入口先检查剩余栈，业务帧内再于每条 IR 指令前与输出提交前固定插入检查：优先返回取消，再判断总预算耗尽，随后处理让出请求或时间片耗尽，最后同时扣减总预算与时间片。慢路径返回后重新检查，尚未执行的指令只执行一次、不重复扣费；无调用及 GC 的 N 条直线 IR 指令成功需 N+1 步。源码函数逐帧计算，受管 GC 另按 [ADR-0043](adr/0043-chunked-runtime-gc.md) 每块扣一步。每个入口默认总预算 1,000,000，handler 可指定。预算不是机器指令数或 CPU 时间，检查后的迟到取消不能撤回成功调用。已发布 `0.0.2` 使用 v1，历史源码 v2–v16 均与当前 v17 拒绝混用，须使用匹配的编译器和 VM。
 
@@ -224,7 +226,7 @@ v2 与 v5/v6 对照驱动使用一槽显式池，构造包含在原阶段 deadli
 
 [ADR-0058](adr/0058-byte-i64-big-endian-access.md) 为原 Bytes HeapCall 添加固定宽度 signed big-endian 读写；ABI v14 不改变 context 或 effect 布局。读取固定八字节，替换复制原对象并复用相同根、预算和三级计费边界，非法完整范围受管返回 InvalidBytes。
 
-当前 ABI v17 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，使用 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref/ListRef/BytesRef/StringRef，候选状态保活至出口，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 个 compiler 根，另加一个宿主持久状态根及最多 64 个已导入消息参数根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。状态提交契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
+当前 ABI v18 保留 [ADR-0024](adr/0024-scalar-stack-boundary.md) 的薄入口与静态帧准入，使用 [ADR-0025](adr/0025-aot-record-roots.md) 的 compiler shadow frame：在 safepoint 和堆回调前发布仍有后续用途的 Ref/ListRef/BytesRef/StringRef，候选状态保活至出口，所有返回路径恢复父帧。每函数最多 64 个同时活跃根；GC 汇总最多 64 帧/64 个 compiler 根，另加一个宿主持久状态根及最多 64 个已导入消息参数根，先完整验证，再收集。`instantiate_with_heap` 建立固定容量、三级计费堆；堆控制块按预留后 fallible 分配，实例只保留可选独占指针，执行时将所有权移入协程、返回再归还，未产生实例自引用。暂停保留链和根槽，Drop 正常取消解链；没有后台 GC 或宿主暂停期间收集接口。状态提交契约见 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 [ADR-0057](adr/0057-accounted-immutable-bytes.md) 的 Bytes 占一个堆槽及独立计费 buffer，GC 作为无出边叶节点。四个 HeapCall 操作从 compiler 固定三整数 scratch 读取参数，先复制参数再覆盖输出；构造/复制每块最多 256 字节并扣预算，未发布 builder 同样计费且取消清理。scratch 是可信指针，不构成 native 沙箱。Bytes 可作受管内部值、持久状态及 ADR-0076 的语言复制消息参数；计费回复和完成导入见 ADR-0098。
 

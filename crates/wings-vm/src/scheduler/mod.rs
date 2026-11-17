@@ -892,11 +892,16 @@ fn validate(
     let mut expected_record = 0;
     let mut expected_list = 0;
     let mut expected_bytes = 0;
+    let mut expected_strings = 0;
     for (index, (value, (_, ty))) in arguments.iter().zip(&schema.parameters).enumerate() {
         match ty {
             wings_abi::ValueType::Ref => expected_record |= 1 << index,
             wings_abi::ValueType::ListRef => expected_list |= 1 << index,
             wings_abi::ValueType::BytesRef => expected_bytes |= 1 << index,
+            wings_abi::ValueType::StringRef => {
+                expected_bytes |= 1 << index;
+                expected_strings |= 1 << index;
+            }
             wings_abi::ValueType::RequestId if system && *value > 0 => {}
             _ if ty.accepts(*value) => {}
             _ => return Err("scheduler scalar argument mismatch".into()),
@@ -905,6 +910,7 @@ fn validate(
     if record_mask != expected_record
         || !lists.valid(arguments, expected_list)
         || !bytes.valid(arguments, expected_bytes)
+        || bytes.string_mask != expected_strings
     {
         return Err("scheduler reference payload mismatch".into());
     }

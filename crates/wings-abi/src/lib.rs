@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 17;
+pub const SCALAR_ABI_VERSION: u32 = 18;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -131,6 +131,7 @@ pub struct EffectRequest {
     pub record_mask: u64,
     pub list_mask: u64,
     pub bytes_mask: u64,
+    pub string_mask: u64,
 }
 
 pub type EffectCall =

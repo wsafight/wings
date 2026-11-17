@@ -65,7 +65,7 @@ fn manifest() -> Manifest {
 }
 
 #[test]
-fn string_state_round_trips_but_all_string_message_boundaries_are_rejected() {
+fn string_state_and_parameters_round_trip_but_string_replies_are_rejected() {
     let mut valid = manifest();
     valid.state = ValueType::StringRef;
     valid.validate().unwrap();
@@ -74,10 +74,16 @@ fn string_state_round_trips_but_all_string_message_boundaries_are_rejected() {
         Directory::new().read_json(&value).unwrap().state,
         ValueType::StringRef
     );
-    for boundary in 0..3 {
+    let mut messages = valid.clone();
+    messages.handlers[0].parameters[0].1 = ValueType::StringRef;
+    let value: Value = serde_json::from_slice(&messages.encode().unwrap()).unwrap();
+    assert_eq!(
+        Directory::new().read_json(&value).unwrap().handlers[0].parameters[0].1,
+        ValueType::StringRef
+    );
+    for boundary in 1..3 {
         let mut invalid = valid.clone();
         match boundary {
-            0 => invalid.handlers[0].parameters[0].1 = ValueType::StringRef,
             1 => invalid.handlers[0].reply = Some(ValueType::StringRef),
             _ => {
                 invalid.handlers[0].reply = None;
@@ -88,7 +94,7 @@ fn string_state_round_trips_but_all_string_message_boundaries_are_rejected() {
                 ];
             }
         }
-        rejects(&invalid, "String messages and replies");
+        rejects(&invalid, "String replies and completion");
         assert!(invalid.encode().is_err());
     }
 }

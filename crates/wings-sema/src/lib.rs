@@ -282,7 +282,11 @@ pub fn analyze(text: &str) -> Analysis {
                         let ty = checker.declared_type(&parameter.ty);
                         if !matches!(
                             ty,
-                            Type::RequestId | Type::RecordInt | Type::IntList | Type::Bytes
+                            Type::RequestId
+                                | Type::RecordInt
+                                | Type::IntList
+                                | Type::Bytes
+                                | Type::String
                         ) {
                             checker.external_type(&ty, parameter.ty.span);
                         }

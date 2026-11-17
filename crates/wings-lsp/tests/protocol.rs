@@ -34,9 +34,15 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
         );
     }
     assert!(items.iter().any(|item| item["label"] == "String"));
-    let invalid = "process P { state n: Int = 0; on Set(value: String) { n = string_len(value) } }";
+    let messages =
+        "process P { state n: Int = 0; on Set(value: String) { n = string_len(value) } }";
+    assert_eq!(
+        open(&mut server, URI, 2, messages)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let invalid = "process P { state n: Int = 0; on Get -> String { \"\" } }";
     assert!(
-        open(&mut server, URI, 2, invalid)[0]["params"]["diagnostics"]
+        open(&mut server, URI, 3, invalid)[0]["params"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()

@@ -11,6 +11,7 @@ pub enum MessageValue<'value> {
     RecordInt(i64),
     IntList(&'value [i64]),
     Bytes(&'value [u8]),
+    String(&'value str),
 }
 
 pub(crate) struct HostMessage {
@@ -54,6 +55,16 @@ impl HostMessage {
                     byte_count += bytes.len();
                     byte_mask |= 1u64 << index;
                     ValueType::BytesRef
+                }
+                MessageValue::String(text) => {
+                    if text.len() > MAX_MESSAGE_BYTES - byte_count {
+                        return Err(
+                            "host message strings and bytes exceed 65536 total bytes".into()
+                        );
+                    }
+                    byte_count += text.len();
+                    byte_mask |= 1u64 << index;
+                    ValueType::StringRef
                 }
             };
             if actual != *expected {
@@ -102,6 +113,12 @@ impl HostMessage {
                     message.bytes.data.extend_from_slice(bytes);
                     ListPayload::encode(start, bytes.len())
                 }
+                MessageValue::String(text) => {
+                    let start = message.bytes.data.len();
+                    message.bytes.data.extend_from_slice(text.as_bytes());
+                    message.bytes.string_mask |= 1u64 << index;
+                    ListPayload::encode(start, text.len())
+                }
             };
         }
         Ok(message)
@@ -129,6 +146,61 @@ mod tests {
             bytes: 1 << 20,
             ..Resources::default()
         }
+    }
+
+    #[test]
+    fn string_messages_copy_utf8_and_share_the_byte_capacity_limit() {
+        let vm = ResourceAccount::vm(limits());
+        let target = handler(&[
+            ValueType::StringRef,
+            ValueType::BytesRef,
+            ValueType::StringRef,
+        ]);
+        let mut text = String::from("中😀\0");
+        let padding = vec![255; MAX_MESSAGE_BYTES - text.len()];
+        let payload = HostMessage::copy(
+            &target,
+            &[
+                MessageValue::String(&text),
+                MessageValue::Bytes(&padding),
+                MessageValue::String(""),
+            ],
+            &vm,
+        )
+        .unwrap();
+        text.clear();
+        assert_eq!(payload.bytes.string_mask, 5);
+        assert!(payload.bytes.valid(&payload.arguments[..3], 7));
+        assert_eq!(&payload.bytes.data[..8], "中😀\0".as_bytes());
+        assert_eq!(vm.used().bytes, MAX_MESSAGE_BYTES as u64);
+        drop(payload);
+        assert_eq!(vm.used(), Resources::default());
+        assert!(
+            HostMessage::copy(
+                &target,
+                &[
+                    MessageValue::String("中😀\0"),
+                    MessageValue::Bytes(&padding),
+                    MessageValue::String("a")
+                ],
+                &vm
+            )
+            .is_err()
+        );
+        let repeated = "😀".repeat(8193);
+        assert!(
+            HostMessage::copy(
+                &target,
+                &[
+                    MessageValue::String(&repeated),
+                    MessageValue::Bytes(&[]),
+                    MessageValue::String(&repeated)
+                ],
+                &vm
+            )
+            .is_err()
+        );
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]
@@ -193,6 +265,7 @@ mod tests {
             ValueType::Ref,
             ValueType::ListRef,
             ValueType::BytesRef,
+            ValueType::StringRef,
             ValueType::Pid,
             ValueType::RequestId,
         ] {
@@ -204,6 +277,7 @@ mod tests {
                 MessageValue::RecordInt(1),
                 MessageValue::IntList(&[]),
                 MessageValue::Bytes(&[]),
+                MessageValue::String(""),
             ] {
                 let actual = match value {
                     MessageValue::Int(_) => ValueType::Int,
@@ -212,6 +286,7 @@ mod tests {
                     MessageValue::RecordInt(_) => ValueType::Ref,
                     MessageValue::IntList(_) => ValueType::ListRef,
                     MessageValue::Bytes(_) => ValueType::BytesRef,
+                    MessageValue::String(_) => ValueType::StringRef,
                 };
                 let result =
                     HostMessage::copy(&handler, &[MessageValue::Bytes(&[1; 8]), value], &vm);

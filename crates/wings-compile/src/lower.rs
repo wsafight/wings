@@ -479,9 +479,17 @@ mod tests {
     }
 
     #[test]
+    fn string_messages_preserve_schema_types_and_cross_copy_roots() {
+        let program = lower("process P { state count: Int = 0; on Store(value: String, data: Bytes) { count = string_len(value) + bytes_len(data) } on Count(value: String, data: Bytes) -> Int { collect(); string_len(value) + bytes_len(data) } on Done(id: RequestId, status: Int, value: Int) { count = value } on Start { let child = spawn_self(); send(child, Store, \"中😀\", fill_bytes(0, 0)); send_self(Store, \"\", fill_bytes(0, 0)); let pending = request(child, Count, Done, 100, \"a\", fill_bytes(0, 0)); } }").unwrap();
+        assert_eq!(program.handlers[0].parameters[0].1, ValueType::StringRef);
+        assert_eq!(program.handlers[0].parameters[1].1, ValueType::BytesRef);
+        program.validate().unwrap();
+    }
+
+    #[test]
     fn strings_cannot_bypass_message_reply_or_bytes_type_boundaries() {
         for source in [
-            "process P { state count: Int = 0; on Set(value: String) { count = string_len(value) } }",
+            "process P { state count: Int = 0; on Set(value: String) { count = string_len(value) } on Wrong { send_self(Set, fill_bytes(0, 0)) } }",
             "process P { state count: Int = 0; on Read -> String { string_from_bytes(fill_bytes(0, 0)) } }",
             "process P { state data: String = fill_bytes(0, 0); }",
             "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Bool { data == data } }",

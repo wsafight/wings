@@ -16,6 +16,44 @@ process Text {
 
   on ByteLength -> Int { bytes_len(string_bytes(text)) }
 
+  on Store(value: String) { collect(); text = value; collect(); }
+
+  on Echo(value: String) -> Bytes { collect(); text = value; string_bytes(value) }
+
+  on Mixed(value: String, data: Bytes, record: RecordInt, values: IntList, empty: String) -> Int {
+    collect();
+    text = value;
+    string_len(value) * 1000000 + bytes_len(string_bytes(value)) * 1000 + bytes_len(data) +
+      read_int(record) + head_int(values) + string_len(empty)
+  }
+
+  on SendText(length: Int) -> Int {
+    let child = spawn_self();
+    let value = string_from_bytes(fill_bytes(length, 97));
+    send(child, Store, value);
+    collect();
+    string_len(value)
+  }
+
+  on SelfText(value: String) { send_self(Store, value); collect(); }
+
+  on AskText(value: String, timeout: Int) -> Int {
+    let child = spawn_self();
+    let pending = request(child, CountText, TextDone, timeout, value);
+    collect();
+    string_len(value)
+  }
+
+  on CountText(value: String) -> Int { collect(); text = value; string_len(value) }
+  on TextDone(id: RequestId, status: Int, value: Int) {
+    text = string_from_bytes(fill_bytes(if status == 0 { value } else { 0 }, 97));
+  }
+
+  on OverText { let value = string_from_bytes(fill_bytes(32769, 97)); send_self(PairText, value, value); }
+  on PairText(first: String, second: String) { text = concat_strings(first, second); }
+
+  on SendThenFail { let child = spawn_self(); send(child, Store, "published"); text = "candidate"; 1 / 0; }
+
   on Unicode -> Int {
     text = concat_strings("中", "😀");
     collect();
