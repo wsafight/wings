@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0125/0126 为原百万 checked 加法/100 突发心跳增加独立恢复区间诊断。v12 首轮约 51.65s 触及 800 万历史上限并保留失败；v13 不提高上限，分别披露 FIFO/历史丢样并继续原 30s/60s 业务。独立重放核对时钟/业务配对与可观察前缀，缺样不报完整分布；默认 AOT 不自动跑长测，原 v7/v8、ABI v21、资源和阶段限额不变，MVP 门禁仍待完成。
+
 - ADR-0124 为 Scheduler 增加默认关闭的 slice_samples，启用后按 worker 固定计费 FIFO 记录实际 resume 墙钟区间、完整 Pid/序号和三种结果。满则丢新样、计数饱和显式标记，末 handle 清理；与原子请求让出延迟分开，不修改 ABI v21、片预算或 quantum。短时一/双 worker 回归不替代长时公平性、CPU 硬配额、原生双平台或 BEAM/MVP 门禁。
 
 - ADR-0115 为固定跨线程 ingress 增加 MessageValue send_values/request_values，支持计费 String/Bytes/IntList/RecordInt 内容复制，不传原引用；原标量 API 继续拒绝引用整数。64 参数/64 整数/合计 64 KiB、原容量与时限不变；超时/取消/Drop 不撤回消息，目标原栈分块导入，满/关闭/失败清理保留原租约。ABI v21/4352 B 不变，仍非通用 reactor、完整账本或 MVP。

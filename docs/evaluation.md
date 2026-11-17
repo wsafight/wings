@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 的长测诊断保持原 30s/60s 业务与保护边界，核对实际恢复、请求接受/结果时钟和两类丢样；v12 首次满额失败及 v13 验证状态见[记录](validation-resume-fairness-2026-11-18.md)。只在没有缺样时认为恢复流完整，子集分位与原子让出、端到端心跳延迟分开，不因业务跑满宣布公平性或 MVP。
+
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 新增实际恢复调用区间诊断，独立验证固定 FIFO、序号缺口、三种结果和停止后的计数守恒；真实 AOT 比较关闭/容量 1/256 与一/双 worker，见[记录](validation-scheduler-slices-2026-11-18.md)。这是观测正确性前置，未接入 v8 长测、不用零原子样本或本短测声明公平性门禁通过。
 
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 用真实 AOT 在 invocation 开始后填满 process/tenant/VM，计数到受管记录回复拒绝及最终宿主错误的分配；保留修复前两次失败和修复后一次，见[记录](validation-quota-reply-2026-11-18.md)。三层四维准入/溢出回归不等于完整账本、性能或 MVP 验收。

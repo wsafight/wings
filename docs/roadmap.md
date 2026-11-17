@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 推进第 5/7 项的持续观测：保留原始满额失败，以固定预算区分完整业务与不完整诊断。原生双平台、CPU 硬配额、过载分组、完整公平性分布与 BEAM 吞吐/整机内存仍未完成，不能以新的观测模式代替验收。
+
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 推进第 5/7 项的观测来源：补齐步骤片实际恢复调用区间，保留原子让出事件的独立含义和默认关闭路径。仍需冻结长测协议、每 actor 饥饿检查、过载分组、CPU 硬配额与原生双平台门禁，不因诊断与有界 AOT 通过而完成 MVP。
 
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 收敛第 4 项记录回复准入拒绝的错误存储，以共享状态路径避免丢弃 String；[实际验证](validation-quota-reply-2026-11-18.md) 不将一条路径减少分配当作完整账本或端到端性能完成。原生双平台及 BEAM 吞吐/整机内存仍独立验收，MVP 未完成。

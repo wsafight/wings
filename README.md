@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0125](docs/adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](docs/adr/0126-bounded-resume-trace-retention.md) 将恢复区间接入独立长测：保留 v12 满额失败，v13 在原上限内显式计两类丢样并继续原业务；原 v7/v8 与 BEAM 入口保持。冻结运行和验证状态见[记录](docs/validation-resume-fairness-2026-11-18.md)，缺样分位不作完整公平性结论。
+
 [ADR-0124](docs/adr/0124-bounded-scheduler-slice-observation.md) 增加默认关闭的实际恢复区间 FIFO：步骤片、正常完成和失败均按 worker/完整 Pid 记录，独立于原子让出请求。观测边界与回归见[记录](docs/validation-scheduler-slices-2026-11-18.md)，仍待长时公平性和 MVP 门禁。
 
 [ADR-0123](docs/adr/0123-status-only-resource-rejection.md) 让受管记录回复的配额拒绝直接使用准入失败级别，避免先生成又丢弃错误 String。共享原准入事务、额度和公开 API；修复前后实际分配及验证见[记录](docs/validation-quota-reply-2026-11-18.md)，完整账本与 MVP 门禁仍待完成。

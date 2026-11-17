@@ -4,6 +4,8 @@
 
 ## 已执行的最小业务
 
+独立恢复区间诊断见 [ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 与[验证记录](validation-resume-fairness-2026-11-18.md)：v12/v13 是 Wings 调度内部的诊断版本，未改变本文原 v7/v8 业务或 BEAM 对照，不表示新增一个 BEAM 同步调度协议。默认入口仍不自动执行 90s 长测。
+
 [ADR-0087](adr/0087-accounted-beam-workload-roots.md) 让六个 Wings 驱动使用计费根，原 32/128/256 MiB 等限额不变；清理后完整账本回到实际启动基线。当前业务报告附 `bootstrap_bytes > 0` 和相等的 `remaining_bytes`，正确性入口与新 v6/v8 采集严格校验；驱动剩余外部测试内存仍不等于完整受管计费。历史冻结结果不回写，离线重放允许两字段都缺失，若出现任一字段则须完整验证。
 
 v2 Wings 批量创建可显式复用同 tenant 的一槽计费初始化池，见 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md)。池创建仍在原 3 秒 actor 阶段内；不改输入、规模、100 活动 actor、32 窗口、CPU/墙钟限制或失败业务。停止 actor 后释放池再检查启动基线，复用本身不是性能验收。

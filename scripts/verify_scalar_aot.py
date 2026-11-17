@@ -1140,6 +1140,7 @@ def verify_cli_input(counter, parent):
 
 
 def main():
+    print(command([sys.executable, ROOT / "scripts/verify_slice_fairness.py", "--self-test"]).stdout.strip())
     if not COMPILER.is_file() or not VM.is_file():
         raise SystemExit("Build wings-compile and wings-vm for the selected WINGS_PROFILE first")
     with tempfile.TemporaryDirectory(prefix="wings-aot-") as temporary:

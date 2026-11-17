@@ -7,6 +7,8 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 ## 当前决策
 
 | 编号 | 决策 | 状态 |
+| [0126](0126-bounded-resume-trace-retention.md) | 原恢复历史上限内显式丢样并完成业务，区分两类缺口 | 已采纳（有界诊断保留） |
+| [0125](0125-streamed-resume-fairness-diagnostics.md) | 独立恢复区间流、业务时钟配对与精确子集重放 | 已采纳；满额行为部分由 0126 替代 |
 | [0124](0124-bounded-scheduler-slice-observation.md) | 默认关闭的计费恢复区间 FIFO、结果计数和丢样守恒 | 已采纳（公平性诊断前置） |
 |---|---|---|
 | [0123](0123-status-only-resource-rejection.md) | 单一准入事务返回失败级别、记录回复拒绝跳过丢弃文本 | 已采纳（资源拒绝路径修正） |

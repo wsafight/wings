@@ -184,8 +184,8 @@ class Replay:
                 "fairness_gate_proven": False, "drained": True}
 
 
-def validate_trace(path, result):
-    for field, expected in {"version": 8, "status": "ok", "mode": "measure", "actors": 101,
+def validate_trace(path, result, *, version=8, replay_factory=Replay, max_trace=MAX_TRACE):
+    for field, expected in {"version": version, "status": "ok", "mode": "measure", "actors": 101,
                             "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": 255,
                             "deadline_ns": 100_000_000, "message_bytes": 32, "samples": [], "hot": [],
                             "states_verified": True}.items():
@@ -203,8 +203,8 @@ def validate_trace(path, result):
         require(environment["otp"] == "29" and type(environment["schedulers"]) is int
                 and environment["schedulers"] == 1 and result.get("yield_observation") is None, "BEAM environment")
         offset = 0
-    require(path.stat().st_size <= MAX_TRACE and path.stat().st_size % measure.EVENT.size == 0, "trace bytes")
-    replay = Replay(offset)
+    require(path.stat().st_size <= max_trace and path.stat().st_size % measure.EVENT.size == 0, "trace bytes")
+    replay = replay_factory(offset)
     digest = hashlib.sha256()
     events = 0
     with path.open("rb") as source:

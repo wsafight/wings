@@ -1,5 +1,7 @@
 # 运行时
 
+原恢复 FIFO 的 1024 槽显式启用、原子观察的独立意义不变；长测宿主保留原 800 万记录上限，v13 满后只累加历史丢样，仍消费 FIFO。两层容量、停止后的守恒和缺样范围见 [ADR-0126](adr/0126-bounded-resume-trace-retention.md)；这是测试宿主保留策略，不改变 Scheduler 运行合同。
+
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 的 `slice_samples` 默认 0；启用时每 worker 预先计费固定 FIFO，记录 timer arm 成功后、disarm 前的 `ScalarTask::resume` 两侧时间和 Suspended/Complete/Failed。满则丢弃新样本并计数，序号继续，末 handle 释放容量；宿主取样和统计不持有业务值。该墙钟区间不包含入队等待或返回后的 effect，也不等于独占 CPU 时间或原子抢占延迟，详细契约与守恒见 ADR。
 
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 的记录回复在三级准入拒绝后直接返回 HeapExhausted，不再构造随即丢弃的 String；外部 `reserve` 的错误文本与失败零变化保持。最终宿主错误仍由原执行接口构造，其他文本路径和完整错误账本另行验收。

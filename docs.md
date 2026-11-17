@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 恢复区间长测验证](docs/validation-resume-fairness-2026-11-18.md) 保留 v12 事件满额失败，记录 v13 的显式丢样、冻结业务和独立逐次时钟配对。
+
 [2026-11-18 Scheduler 恢复区间验证](docs/validation-scheduler-slices-2026-11-18.md) 区分步骤片实际返回与原子请求延迟，记录有界计费 FIFO、丢样守恒和一/双 worker AOT 检查。
 
 [2026-11-18 记录回复配额拒绝验证](docs/validation-quota-reply-2026-11-18.md) 保留原两次分配失败、三级受管拒绝和共享四维准入的回归，区分内部状态与最终宿主错误。
