@@ -40,6 +40,7 @@ fn main() {
                 slice_steps: 1,
                 quantum: Duration::from_millis(1),
                 yield_samples: 0,
+                lock_statistics: false,
             },
         )
         .unwrap();

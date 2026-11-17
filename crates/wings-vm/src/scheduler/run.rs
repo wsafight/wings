@@ -1,3 +1,4 @@
+use super::locks::LockPhase;
 use super::*;
 use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarTask};
@@ -65,7 +66,7 @@ pub(super) fn worker(
     loop {
         let mut progress = false;
         let claim = {
-            let mut state = shared.lock();
+            let mut state = shared.worker_lock(index, LockPhase::Claim);
             state.maintain(shared.identity);
             if state.closed {
                 None
@@ -116,7 +117,7 @@ pub(super) fn worker(
                             shared.effect(active.pid, effect, active.message.max_steps, &pool);
                         active.task.acknowledge_effect(status, value);
                     }
-                    let mut state = shared.lock();
+                    let mut state = shared.worker_lock(index, LockPhase::Snapshot);
                     if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
                         actor.execution = active.task.snapshot();
                     }
@@ -187,7 +188,7 @@ fn start(
     })();
     match result {
         Ok(task) => {
-            let mut state = shared.lock();
+            let mut state = shared.worker_lock(index, LockPhase::Start);
             let actor = state
                 .actor_mut(shared.identity, claim.pid)
                 .expect("claimed actor");
@@ -204,7 +205,7 @@ fn start(
             })
         }
         Err(_) => {
-            let mut state = shared.lock();
+            let mut state = shared.worker_lock(index, LockPhase::Start);
             let closed = state.closed;
             let actor = state
                 .actor_mut(shared.identity, claim.pid)
@@ -250,7 +251,7 @@ fn finish(
         (!process.module().manifest().state.is_reference()).then_some(process.state);
     let image = process.detach();
     let byte_state = image.byte_state_snapshot();
-    let mut state = shared.lock();
+    let mut state = shared.worker_lock(index, LockPhase::Finish);
     let closed = state.closed;
     let actor = state
         .actor_mut(shared.identity, pid)

@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0102](docs/adr/0102-opt-in-worker-lock-statistics.md) 增加默认关闭的 worker 四类锁区间统计，可用 `SchedulerConfig::lock_statistics` 启用并通过 handle 读取。仅记录固定计费的墙钟累计/最大值，不是 CPU、p99 或性能提升结论；构建与验证命令见[记录](docs/validation-lock-statistics-2026-11-17.md)。
+
 [ADR-0099](docs/adr/0099-unready-result-poll-fast-path.md) 为宿主未就绪结果轮询增加计费原子快路径，保留原期限和锁内终态。mixed-4k 原速率五对探索性前后比较中，p99 四对、p999 五对降低，无超时/拒绝；没有内存下降或稳定全场景加速结论，见[优化验证记录](docs/validation-optimization-2026-11-16.md)。
 
 [ADR-0098](docs/adr/0098-accounted-byte-replies.md) 补齐 0..=64 KiB Bytes 回复：原协程分块导出并保留出口根，独立结果存储与控制先计费，再提交候选状态。宿主使用 `invoke_bytes`、`CompleteBytes` 或 `ReplyBytes`；完成事件在发起方堆分块导入。示例见 [`examples/bytes-replies.wings`](examples/bytes-replies.wings)，验证证据及剩余 MVP 门禁见[验证记录](docs/validation-2026-11-16.md)。

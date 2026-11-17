@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 的 `SchedulerConfig::lock_statistics` 默认 false；开启后 `handle.lock_statistics(worker)` 返回 claim/start/snapshot/finish 的计数和获取前/锁内墙钟总和、最大值与饱和标记。活动读取不是一致快照，停机/join 后核对；最后 handle 释放存储。park、宿主/effect/资源/结果/timer 锁未覆盖，不推导 CPU、p99 或完整锁开销。
+
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的同锁存活计数/空表提前返回候选已回退，当前语言请求表维护与双端票据沿原路径；仍不把超时/取消或事件入队当作发布端结束。
 
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 记录已回退的 timer 通知合并实验；当前沿用每次 arm/disarm 原锁内更新并通知的正确性基线，stop 唤醒/join。候选未成为运行契约，量子、预算、原子检查和资源上限不变。

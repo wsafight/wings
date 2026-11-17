@@ -22,6 +22,7 @@ fn fixture(workers: usize, capacity: usize) -> (ResourceAccount, ResourceAccount
             slice_steps: 1,
             quantum: Duration::from_millis(1),
             yield_samples: 0,
+            lock_statistics: false,
         },
     )
     .unwrap();
@@ -324,6 +325,7 @@ fn scheduler_timer_yields_have_worker_and_pid_identity_without_losing_cleanup() 
             capacity: 2,
             requests: 2,
             yield_samples: 1,
+            lock_statistics: false,
             slice_steps: u64::MAX,
             quantum: Duration::from_millis(1),
         },

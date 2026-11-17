@@ -52,8 +52,9 @@ pub use preemption::{
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
-    SchedulerHandle, SchedulerPid, SchedulerRestartStatus, SchedulerSnapshot, SchedulerSupervisor,
-    SchedulerSupervisorEvent, SchedulerTermination, SchedulerYieldSample, SchedulerYieldStatistics,
+    SchedulerHandle, SchedulerLockMetrics, SchedulerLockStatistics, SchedulerPid,
+    SchedulerRestartStatus, SchedulerSnapshot, SchedulerSupervisor, SchedulerSupervisorEvent,
+    SchedulerTermination, SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};

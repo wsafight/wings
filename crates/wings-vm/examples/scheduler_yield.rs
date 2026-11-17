@@ -28,6 +28,7 @@ fn main() {
             slice_steps: u64::MAX,
             quantum: Duration::from_millis(1),
             yield_samples: 1,
+            lock_statistics: false,
         },
     )
     .unwrap();

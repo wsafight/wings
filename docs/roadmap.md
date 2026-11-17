@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 推进第 5/6/7 项的局部诊断：先补可关闭的 worker 锁区间统计，为后续优化定位路径；不继续无归因地重试已回退方案。它不补齐完整 CPU/调度观测、业务值/账本、原生双平台或同负载 BEAM 双门禁，MVP 仍未完成。
+
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的第 3/5/7 项空请求维护实验已因五对无稳定收益回退；当前源码恢复已提交基线，失败证据保留。M0/MVP、最新原生双平台及同负载 BEAM 双门禁仍未完成。
 
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的第 5/7 项计时通知实验已回退，hot-queue 五对结果及候选退化保留；当前 timer 不变。后续应继续区分发生器迟发、OS 调度和受管执行开销，不能因局部功能通过宣布 M0/MVP 或双平台 BEAM 双目标达标。

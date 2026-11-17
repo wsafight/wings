@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 增加显式启用的 worker 四类共享锁区间统计，固定存储先准入、释放原锁后原子发布；默认关闭，不改执行 ABI 或锁的获取顺序。统计覆盖与一致性边界见决策，不是完整 profiler 或 CPU 时间。
+
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的空语言请求表维护快路径在 hot-queue 五对中未建立稳定收益，已回退计数与提前返回；当前沿原 Scheduler 维护扫描、双端回收和宿主结果表，不改 ABI/预算/容量。
 
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的计时通知合并实验已因 hot-queue 五对无稳定收益回退。当前仍在原锁内 arm/disarm 并无条件通知，stop 唤醒/join；不采用候选的实际等待状态字段，不改 quantum、safepoint 或 ABI。

@@ -1050,6 +1050,22 @@ def main():
         verify_cli_arguments(counter, parent)
         verify_cli_input(counter, parent)
         verify_cli_stdio(counter)
+        locks = json.loads(example("scheduler_locks", counter).stdout)
+        assert locks["status"] == "ok"
+        assert locks["metric"] == "partial_worker_lock_wall_time_not_cpu_or_performance_acceptance"
+        assert [(case["workers"], case["enabled"]) for case in locks["cases"]] == [(1, False), (1, True), (2, False), (2, True)]
+        for case in locks["cases"]:
+            assert case["replies"] == 16 and case["failed"] == 1 and case["committed"] == [8, 8]
+            assert case["resources_released"] is True
+            assert case["bootstrap_bytes"] == case["remaining_bytes"] == 168
+            assert len(case["statistics"]) == (case["workers"] if case["enabled"] else 0)
+            for worker in case["statistics"]:
+                for phase in ("claim", "start", "snapshot", "finish"):
+                    values = worker[phase]
+                    assert values["saturated"] is False
+                    assert 0 <= values["max_wait_ns"] <= values["wait_ns"]
+                    assert 0 <= values["max_held_ns"] <= values["held_ns"]
+        print("Optional worker lock statistics verified: one/two worker real AOT, equal state/failure, stopped counts and cleanup; not CPU or performance acceptance")
         for count in (16, 64, 256):
             density = json.loads(example("scheduler_density", counter, count).stdout)
             assert density["actors"] == count and density["workers"] == 2

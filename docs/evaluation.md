@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 须验证默认关闭、固定存储 tenant/VM 准入/回滚、字段饱和、并发读取、原锁释放后发布和末 handle 清理。真实 AOT 一/双 worker 开关对照相同状态/失败，停机后核对四类次数；额外时钟/原子开销须独立评估，不把诊断演示当未扰动吞吐或 CPU 证据。
+
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 候选通过存活计数、双端回收及真实 AOT 回归，但 hot-queue 原 10000/s、30s/60s/五对中候选出现 86 次超时、更多队满，收益不稳定，已回退。完整拒绝/迟发/内存与回退验证见[记录](validation-empty-request-optimization-2026-11-16.md)，不把固定速率或局部测试当作吞吐上限/MVP。
 
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 候选通过实际 timed wait 的早/晚重置、取消旧期限、过期 arm 和关闭回归，但 hot-queue 10000/s 原 30s/60s/五对无稳定收益，故回退。两版均含 ADR-0099；保留全部拒绝/超时和回退后验证，不以功能通过、最好轮次或两个中位数之比宣布性能门禁通过。

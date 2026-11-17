@@ -12,11 +12,13 @@ use crate::{
     ScalarModule, StackPool,
 };
 
+mod locks;
 mod ready;
 mod run;
 mod state;
 mod supervisor;
 mod yields;
+pub use locks::{SchedulerLockMetrics, SchedulerLockStatistics};
 pub use supervisor::{
     SchedulerChildId, SchedulerRestartStatus, SchedulerSupervisor, SchedulerSupervisorEvent,
     SchedulerTermination,
@@ -40,6 +42,7 @@ pub struct SchedulerConfig {
     pub slice_steps: u64,
     pub quantum: Duration,
     pub yield_samples: usize,
+    pub lock_statistics: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -51,6 +54,7 @@ impl Default for SchedulerConfig {
             slice_steps: 64,
             quantum: Duration::from_millis(1),
             yield_samples: 0,
+            lock_statistics: false,
         }
     }
 }
@@ -120,6 +124,7 @@ struct Shared {
     config: SchedulerConfig,
     identity: u64,
     observations: Box<[yields::WorkerObservation]>,
+    lock_observations: Box<[locks::WorkerLockObservation]>,
     _charge: Reservation,
 }
 
@@ -237,6 +242,11 @@ impl Scheduler {
             } else {
                 config.workers * std::mem::size_of::<yields::WorkerObservation>()
             }
+            + if config.lock_statistics {
+                config.workers * std::mem::size_of::<locks::WorkerLockObservation>()
+            } else {
+                0
+            }
             + 256;
         let charge = tenant.reserve(Resources {
             bytes: bytes as u64,
@@ -296,6 +306,14 @@ impl Scheduler {
             config,
             identity,
             observations: observations.into_boxed_slice(),
+            lock_observations: storage(
+                if config.lock_statistics {
+                    config.workers
+                } else {
+                    0
+                },
+                locks::WorkerLockObservation::default,
+            )?,
             _charge: charge,
         });
         let mut scheduler = Self {
@@ -366,6 +384,20 @@ impl Drop for Scheduler {
 }
 
 impl SchedulerHandle {
+    pub fn lock_statistics(
+        &self,
+        worker: usize,
+    ) -> Result<Option<SchedulerLockStatistics>, String> {
+        if worker >= self.shared.config.workers {
+            return Err("scheduler worker index out of range".into());
+        }
+        Ok(self
+            .shared
+            .lock_observations
+            .get(worker)
+            .map(locks::WorkerLockObservation::snapshot))
+    }
+
     pub fn take_yield_sample(&self, worker: usize) -> Result<Option<SchedulerYieldSample>, String> {
         if worker >= self.shared.config.workers {
             return Err("scheduler worker index out of range".into());

@@ -6,6 +6,8 @@
 
 ## 实验约定
 
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 先接默认关闭的四类 worker 锁区间统计，分别记录获取前等待与锁内墙钟，不含 Condvar 睡眠。原子累计/最大值只作路径诊断，活动读取不一致、开启有扰动，仍需 CPU/时序归因和同负载消融后才能选择下一项优化。
+
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的空语言请求表维护实验功能通过，但原负载五对采样候选新增 86 次超时、队满 1350 次（原版 475），未建立稳定收益，已恢复原扫描。后续先做原限制的 CPU/锁等待归因，不从少两次扫描推导端到端提升；保持 timer、driver 与验收阈值。
 
 [ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的计时通知合并实验功能通过，但 hot-queue 五对无稳定收益，候选超时/队满增多，已恢复原无条件通知。完整失败证据保留，不从减少通知次数推导收益；重新尝试须先补 CPU/发生器迟发的归因证据。
