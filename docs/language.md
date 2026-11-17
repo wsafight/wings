@@ -13,11 +13,13 @@ process Profiles {
 }
 ```
 
-每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果，本轮拒绝具名记录消息/回复与 JSON 参数。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v20，旧产物须重编译。
+每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果，本轮拒绝具名记录消息/回复与 JSON 参数。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v21，旧产物须重编译。
 
 ## 有界字符串值
 
-[ADR-0103](adr/0103-accounted-utf8-string-values.md) 开放独立 `String` 本地、state、分支/循环合流及非递归 fn 值，内容保证 UTF-8，最大编码长度为 65536 字节。[ADR-0104](adr/0104-bounded-string-literals.md) 增加双引号字面量。执行须配置计费堆，当前源码 ABI v20；旧产物须重新编译。可运行示例见 [`examples/string-values.wings`](../examples/string-values.wings)。现有类型大小写与待审语法稿不变。
+[ADR-0111](adr/0111-bounded-string-content-equality.md) 开放 `String == String` 与 `String != String` 的完整内容比较，按 UTF-8 编码逐块比较，不按引用或前缀；空值/NUL 正常参与，不做 Unicode 规范化、大小写折叠或排序，String/Bytes 混用拒绝。每至多 256 字节扣预算/检查取消和让出，比较不分配业务存储。示例 [`examples/string-equality.wings`](../examples/string-equality.wings)，当前源码 ABI v21，旧产物重编译；索引/切片仍待实现。
+
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 开放独立 `String` 本地、state、分支/循环合流及非递归 fn 值，内容保证 UTF-8，最大编码长度为 65536 字节。[ADR-0104](adr/0104-bounded-string-literals.md) 增加双引号字面量。执行须配置计费堆，当前源码 ABI v21；旧产物须重新编译。可运行示例见 [`examples/string-values.wings`](../examples/string-values.wings)。现有类型大小写与待审语法稿不变。
 
 | 内建 | 行为 |
 |---|---|
@@ -28,7 +30,7 @@ process Profiles {
 
 字面量支持直接 UTF-8（如 `"中文😀"`）与 `\"`、`\\`、`\n`、`\r`、`\t`、`\0` 六种转义；不支持未知转义、原始控制字符或跨行文本。按解码后 UTF-8 字节检查 65536 上限，IR 另限制程序全部字面量数据合计不超过 1 MiB。每次执行由模块只读常量复制为进程独立计费 String，不把静态地址当受管引用，也不逐字节展开源码操作。
 
-不做隐式编码、规范化或按内容 `==`；字符串索引/切片仍未实现。[ADR-0105](adr/0105-accounted-string-messages.md) 开放 String 消息参数（含 send_self/send/request 参数）及宿主 `MessageValue::String(&str)`。String/Bytes 全部参数合计最多 65536 编码字节，重复引用独立计数；目标创建独立计费 UTF-8 副本，不接受 Bytes/裸整数冒充 String。[ADR-0106](adr/0106-accounted-string-replies.md) 开放 `-> String` 与完成入口第三参数 String，必须精确匹配目标回复类型；失败/超时/取消的完成值为空字符串，先检查 status。宿主使用 `StringReply::as_str()`，CLI 输出 `{"reply":{"string":"文字"}}`。JSON/标量 ingress 仍不接受引用参数，返回 Bytes 的显式转换不算 String 回复。错误不提交候选 state，但不撤回已发生副作用，取消/让出/总预算与三级准入保持。
+不做隐式编码或规范化；内容 `==`/`!=` 按 ADR-0111 分块执行；字符串索引/切片仍未实现。[ADR-0105](adr/0105-accounted-string-messages.md) 开放 String 消息参数（含 send_self/send/request 参数）及宿主 `MessageValue::String(&str)`。String/Bytes 全部参数合计最多 65536 编码字节，重复引用独立计数；目标创建独立计费 UTF-8 副本，不接受 Bytes/裸整数冒充 String。[ADR-0106](adr/0106-accounted-string-replies.md) 开放 `-> String` 与完成入口第三参数 String，必须精确匹配目标回复类型；失败/超时/取消的完成值为空字符串，先检查 status。宿主使用 `StringReply::as_str()`，CLI 输出 `{"reply":{"string":"文字"}}`。JSON/标量 ingress 仍不接受引用参数，返回 Bytes 的显式转换不算 String 回复。错误不提交候选 state，但不撤回已发生副作用，取消/让出/总预算与三级准入保持。
 
 ## 已有交互切片
 
@@ -232,7 +234,7 @@ let id = request(counter, Inc, Completed, 1000, 2)
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽、非法字节参数或非法 UTF-8 字符串属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v19 不兼容已发布 `0.0.2` 及旧源码 v2–v18 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽、非法字节参数或非法 UTF-8 字符串属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v21 不兼容已发布 `0.0.2` 及旧源码 v2–v20 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 

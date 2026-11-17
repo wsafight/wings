@@ -12,6 +12,25 @@ fn checked(text: &str) -> Analysis {
 }
 
 #[test]
+fn string_equality_is_typed_content_equality_without_ordering_or_coercion() {
+    checked(
+        "process P { state text: String = \"中😀\"; fn equal(left: String, right: String) -> Bool { left == right } on Same(value: String) -> Bool { equal(text, value) } on Different -> Bool { text != \"\" } }",
+    );
+    for expression in [
+        "text == 1",
+        "text != fill_bytes(0, 0)",
+        "text < text",
+        "text >= text",
+        "text + text",
+    ] {
+        let source = format!(
+            "process P {{ state text: String = \"\"; on Test -> Bool {{ {expression} }} }}"
+        );
+        assert!(!analyze(&source).diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
 fn byte_i64_builtins_require_explicit_byte_and_integer_operands() {
     checked(
         "process P { fn changed(value: Bytes, number: Int) -> Bytes { replace_i64_be(value, 1, number) } state data: Bytes = fill_bytes(16, 0); on Set(number: Int) -> Int { let next = changed(data, number); data = next; read_i64_be(data, 1) } }",

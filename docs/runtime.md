@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0111](adr/0111-bounded-string-content-equality.md) 的 String `==`/`!=` 比较完整编码内容，先检查引用/代次，再按至多 256 B 扣预算并检查取消/让出，不分配业务对象、不跨检查点持 slice；失败不写结果/提交候选。ABI v21 不改变原控制、容量或时限；不是常量时间比较、规范化或任意引用相等。
+
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 的 `WorkerParker::new_accounted(account)` 在 OS 调用前预留原 4096 B，端点内持 FD/票据，最后 waiter/notifier/sender 释放才归还。`enable_wait` 和 ingress 不再平行持独立等待票据，克隆不重收；worker 退出后存活通知者仍有真实计费租约。原 `new` 仅工具不计费，发布后 WakeFailed 仍不可重试；ABI/准入容量与等待语义不变。
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 的具名记录复用原最多 8 字段槽与精确 Ref 跟踪，每实例布局表在分配前向 process/tenant/VM 准入。即使字段形状一致，各 schema 也有独立名义布局；构造校验引用类型/代次，state 成功返回前校验名义布局，失败不替换已提交根。嵌套 String/Bytes/列表由原 GC 传递保活，构造/扫描/GC 保留预算和取消，不接受具名记录消息或裸引用回复；ABI v20，其他执行上限不变。

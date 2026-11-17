@@ -1,0 +1,55 @@
+process StringEquality {
+  state text: String = "";
+
+  fn copy(value: String) -> String {
+    let result = string_from_bytes(string_bytes(value));
+    collect();
+    result
+  }
+
+  fn same(first: String, second: String) -> Bool {
+    collect();
+    first == second
+  }
+
+  on Fill(length: Int) -> Int {
+    text = string_from_bytes(fill_bytes(length, 97));
+    string_len(text)
+  }
+
+  on Equal(length: Int) -> Bool {
+    same(text, string_from_bytes(fill_bytes(length, 97)))
+  }
+
+  on Different(length: Int) -> Bool {
+    text != string_from_bytes(fill_bytes(length, 97))
+  }
+
+  on Compare(first: String, second: String) -> Bool {
+    same(first, copy(second))
+  }
+
+  on Self -> Bool { text == text }
+
+  on Unicode -> Bool {
+    text = "中😀\0";
+    same(text, concat_strings("中", "😀\0"))
+  }
+
+  on NotNormalized -> Bool { "é" != "é" }
+
+  on LastByte -> Bool {
+    let first = string_from_bytes(fill_bytes(65536, 97));
+    let second = string_from_bytes(replace_byte(string_bytes(first), 65535, 98));
+    first != second
+  }
+
+  on FailedCandidate -> Bool {
+    text = "candidate";
+    same(text, copy(text));
+    1 / 0;
+    true
+  }
+
+  on Read -> Int { string_len(text) }
+}

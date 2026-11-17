@@ -42,6 +42,32 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
     Instruction { ty, operation }
 }
 
+#[test]
+fn string_equality_arguments_allocate_heap_callback_scratch_without_local_constructors() {
+    let directory = Directory::new();
+    let mut program = program();
+    program.handlers[0].parameters = vec![
+        ("first".into(), ValueType::StringRef),
+        ("second".into(), ValueType::StringRef),
+    ];
+    program.handlers[0].reply = Some(ValueType::Bool);
+    program.handlers[0].function = Function {
+        instructions: vec![
+            instruction(ValueType::Int, Operation::State),
+            instruction(ValueType::StringRef, Operation::Argument(0)),
+            instruction(ValueType::StringRef, Operation::Argument(1)),
+            instruction(ValueType::Bool, Operation::EqualStrings(1, 2)),
+        ],
+        state: 0,
+        reply: 3,
+    };
+    build(&program, &directory.artifact()).unwrap();
+    assert_eq!(
+        Manifest::read(&directory.artifact()).unwrap().handlers[0].reply,
+        Some(ValueType::Bool)
+    );
+}
+
 fn program() -> Program {
     Program {
         records: Vec::new(),

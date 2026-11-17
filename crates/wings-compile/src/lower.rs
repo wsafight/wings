@@ -452,6 +452,20 @@ impl Lowerer<'_> {
             } => {
                 let left = self.expression(left)?;
                 let right = self.expression(right)?;
+                if self.instructions[left].ty == ValueType::StringRef
+                    && matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
+                {
+                    let equal = self.push(ValueType::Bool, Operation::EqualStrings(left, right))?;
+                    return if matches!(operator, BinaryOperator::Equal) {
+                        Ok(equal)
+                    } else {
+                        let false_value = self.push(ValueType::Bool, Operation::Constant(0))?;
+                        self.push(
+                            ValueType::Bool,
+                            Operation::Compare(Comparison::Equal, equal, false_value),
+                        )
+                    };
+                }
                 let operation = match operator {
                     BinaryOperator::Add => Operation::Binary(Operator::Add, left, right),
                     BinaryOperator::Subtract => Operation::Binary(Operator::Subtract, left, right),
@@ -509,6 +523,32 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_equality_lowers_to_content_intrinsic_instead_of_reference_comparison() {
+        let program = lower("process P { state text: String = \"中\"; on Equal -> Bool { text == \"中\" } on Different -> Bool { text != \"中\" } }").unwrap();
+        for handler in &program.handlers {
+            assert!(
+                handler
+                    .function
+                    .instructions
+                    .iter()
+                    .any(|instruction| matches!(
+                        instruction.operation,
+                        Operation::EqualStrings(_, _)
+                    ))
+            );
+            assert!(handler.function.instructions.iter().all(|instruction| {
+                match instruction.operation {
+                    Operation::Compare(_, left, right) => {
+                        !handler.function.instructions[left].ty.is_reference()
+                            && !handler.function.instructions[right].ty.is_reference()
+                    }
+                    _ => true,
+                }
+            }));
+        }
+    }
 
     #[test]
     fn named_records_preserve_nominal_types_fields_and_cross_frame_roots() {
@@ -614,7 +654,7 @@ mod tests {
             "process P { state count: Int = 0; on Set(value: String) { count = string_len(value) } on Wrong { send_self(Set, fill_bytes(0, 0)) } }",
             "process P { state count: Int = 0; on Read -> String { fill_bytes(0, 0) } }",
             "process P { state data: String = fill_bytes(0, 0); }",
-            "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Bool { data == data } }",
+            "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Bool { data < data } }",
             "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { byte_at(data, 0) } }",
         ] {
             assert!(lower(source).is_err(), "{source}");

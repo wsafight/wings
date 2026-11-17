@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0111](0111-bounded-string-content-equality.md) | String 完整内容相等、分块预算检查与精确根 | 已采纳（业务值能力） |
 | [0110](0110-reproducible-bounded-workspace-validation.md) | 全目标测试受限执行、指纹清单与失败证据 | 已采纳（验证基础设施） |
 | [0109](0109-accounted-wakeup-endpoint-leases.md) | OS 唤醒端点与末 notifier 的同寿命计费 | 已采纳（外部事件资源生命周期修正） |
 | [0108](0108-bounded-named-record-values.md) | 有界具名不可变记录、名义布局与嵌套精确根 | 已采纳（本地/状态/函数业务值切片） |

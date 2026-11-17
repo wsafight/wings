@@ -897,6 +897,53 @@ unsafe fn string_literal(context: &mut ScalarContext, arguments: [i64; 3]) -> Re
     Err(STATUS_HEAP_EXHAUSTED)
 }
 
+unsafe fn equal_strings(context: &mut ScalarContext, arguments: [i64; 3]) -> Result<u64, u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let references = {
+        let heap = unsafe { &*pointer };
+        [arguments[0], arguments[1]].map(|encoded| {
+            heap.heap
+                .import_reference(encoded as u64)
+                .map_err(|_| STATUS_INVALID_ROOT)
+        })
+    };
+    let [left, right] = references;
+    let left = left?;
+    let right = right?;
+    crate::execution::runtime_checkpoint(context, true)?;
+    let lengths = {
+        let heap = unsafe { &*pointer };
+        [left, right].map(|reference| {
+            heap.heap
+                .string_bytes(reference)
+                .map(<[u8]>::len)
+                .map_err(|_| STATUS_INVALID_ROOT)
+        })
+    };
+    let [left_length, right_length] = lengths;
+    let length = left_length?;
+    if length != right_length? {
+        return Ok(0);
+    }
+    for start in (0..length).step_by(256) {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let heap = unsafe { &*pointer };
+        let first = heap
+            .heap
+            .string_bytes(left)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        let second = heap
+            .heap
+            .string_bytes(right)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        let end = (start + 256).min(length);
+        if first[start..end] != second[start..end] {
+            return Ok(0);
+        }
+    }
+    Ok(1)
+}
+
 pub(crate) unsafe extern "C" fn heap_call(
     context: *mut ScalarContext,
     operation: u32,
@@ -908,6 +955,16 @@ pub(crate) unsafe extern "C" fn heap_call(
         return STATUS_INVALID_CONTROL;
     }
     let pointer = context.heap_data.cast::<AotHeap>();
+    if operation == wings_abi::HEAP_EQUAL_STRINGS {
+        let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
+        return match unsafe { equal_strings(context, arguments) } {
+            Ok(value) => {
+                unsafe { *output = value };
+                STATUS_OK
+            }
+            Err(status) => status,
+        };
+    }
     if matches!(
         operation,
         wings_abi::HEAP_RECORD_NEW | wings_abi::HEAP_RECORD_FIELD
@@ -1753,6 +1810,134 @@ mod tests {
     unsafe extern "C" fn resume_one_step(pointer: *mut ScalarContext) -> u32 {
         unsafe { (*pointer).slice_remaining = 1 };
         STATUS_OK
+    }
+
+    #[test]
+    fn string_equality_compares_contents_without_allocating_and_survives_every_gc_checkpoint() {
+        let cases = [
+            (String::new(), String::new(), true),
+            ("中😀\0".into(), "中😀\0".into(), true),
+            ("é".into(), "e\u{301}".into(), false),
+            ("a".repeat(65536), "a".repeat(65536), true),
+            ("a".repeat(255), "a".repeat(255), true),
+            ("a".repeat(256), "a".repeat(256), true),
+            ("a".repeat(257), "a".repeat(257), true),
+            ("b".to_string() + &"a".repeat(256), "a".repeat(257), false),
+            ("a".repeat(65535) + "b", "a".repeat(65536), false),
+            ("a".repeat(256), "a".repeat(257), false),
+        ];
+        for (first, second, expected) in cases {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            context.slow_path = Some(resume_one_step);
+            let mut sources = [0; 2];
+            for (index, value) in [first, second].iter().enumerate() {
+                let (status, reference) = unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [value.as_ptr() as usize as i64, value.len() as i64, 0],
+                    )
+                };
+                assert_eq!(status, STATUS_OK);
+                sources[index] = reference;
+            }
+            assert_ne!(sources[0], sources[1]);
+            let frame = ShadowFrame {
+                previous: std::ptr::null(),
+                slots: sources.as_ptr(),
+                count: 2,
+            };
+            context.roots = &frame;
+            context.slow_path = Some(collect_on_resume);
+            let before = vm.used();
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_EQUAL_STRINGS,
+                        [sources[0] as i64, sources[1] as i64, 0],
+                    )
+                },
+                (STATUS_OK, u64::from(expected))
+            );
+            assert_eq!(vm.used(), before);
+            assert!(heap.stats().collections > 0);
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn string_equality_checks_budget_cancel_invalid_types_and_stale_roots_without_output_commit() {
+        let (vm, mut heap) = fixture(4);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.slow_path = Some(resume_one_step);
+        let value = "a".repeat(65536);
+        let (status, source) = unsafe {
+            bytes(
+                &mut context,
+                wings_abi::HEAP_STRING_LITERAL,
+                [value.as_ptr() as usize as i64, value.len() as i64, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        let before = vm.used();
+        for steps in [0, 1, 128, 256] {
+            context.remaining_steps = steps;
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_EQUAL_STRINGS,
+                        [source as i64, source as i64, 0],
+                    )
+                },
+                (wings_abi::STATUS_BUDGET_EXHAUSTED, 79)
+            );
+            assert_eq!(vm.used(), before);
+        }
+        context.remaining_steps = 4096;
+        flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            unsafe {
+                bytes(
+                    &mut context,
+                    wings_abi::HEAP_EQUAL_STRINGS,
+                    [source as i64, source as i64, 0],
+                )
+            },
+            (wings_abi::STATUS_CANCELLED, 79)
+        );
+        flag.store(0, std::sync::atomic::Ordering::SeqCst);
+        let (status, wrong_type) =
+            unsafe { bytes(&mut context, wings_abi::HEAP_FILL_BYTES, [0, 0, 0]) };
+        assert_eq!(status, STATUS_OK);
+        for operands in [
+            [wrong_type as i64, source as i64, 0],
+            [source as i64, wrong_type as i64, 0],
+            [0, source as i64, 0],
+        ] {
+            assert_eq!(
+                unsafe { bytes(&mut context, wings_abi::HEAP_EQUAL_STRINGS, operands) },
+                (STATUS_INVALID_ROOT, 79)
+            );
+        }
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(
+            unsafe {
+                bytes(
+                    &mut context,
+                    wings_abi::HEAP_EQUAL_STRINGS,
+                    [source as i64, source as i64, 0],
+                )
+            },
+            (STATUS_INVALID_ROOT, 79)
+        );
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
     }
 
     #[test]

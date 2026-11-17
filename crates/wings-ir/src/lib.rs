@@ -62,6 +62,7 @@ pub enum Operation {
     StringBytes(Register),
     StringLen(Register),
     ConcatStrings(Register, Register),
+    EqualStrings(Register, Register),
     SendSelf {
         handler: usize,
         arguments: Vec<Register>,
@@ -562,6 +563,11 @@ impl Function {
                         && types.get(left) == Some(&ValueType::StringRef)
                         && types.get(right) == Some(&ValueType::StringRef)
                 }
+                Operation::EqualStrings(left, right) => {
+                    instruction.ty == ValueType::Bool
+                        && types.get(left) == Some(&ValueType::StringRef)
+                        && types.get(right) == Some(&ValueType::StringRef)
+                }
                 Operation::ByteAt(value, index) | Operation::ReadI64Be(value, index) => {
                     instruction.ty == ValueType::Int
                         && types.get(value) == Some(&ValueType::BytesRef)
@@ -830,6 +836,7 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::Compare(_, left, right)
         | Operation::FillBytes(left, right)
         | Operation::ConcatStrings(left, right)
+        | Operation::EqualStrings(left, right)
         | Operation::ByteAt(left, right)
         | Operation::ReadI64Be(left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),

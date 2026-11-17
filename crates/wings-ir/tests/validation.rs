@@ -9,6 +9,35 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 }
 
 #[test]
+fn string_equality_validates_both_types_and_keeps_last_use_operands_rooted() {
+    let mut program = valid_program();
+    program.handlers[0].reply = Some(ValueType::Bool);
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::StringRef, Operation::StringLiteral("中".into())),
+        instruction(ValueType::StringRef, Operation::StringLiteral("中".into())),
+        instruction(ValueType::Bool, Operation::EqualStrings(1, 2)),
+    ];
+    function.state = 0;
+    function.reply = 3;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert_eq!(roots.at[3], vec![1, 2]);
+    for (ty, operation) in [
+        (ValueType::Int, Operation::EqualStrings(1, 2)),
+        (ValueType::Bool, Operation::EqualStrings(0, 2)),
+        (ValueType::Bool, Operation::EqualStrings(1, 0)),
+        (ValueType::Bool, Operation::EqualStrings(1, 3)),
+        (ValueType::Bool, Operation::Compare(Comparison::Equal, 1, 2)),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[3] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
 fn named_record_ir_rejects_forged_schema_field_types_and_external_signatures() {
     let mut program = valid_program();
     program.records = vec![

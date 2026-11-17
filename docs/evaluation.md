@@ -16,6 +16,8 @@ cargo test --release --workspace --doc --locked
 
 ## 增量验收契约
 
+[ADR-0111](adr/0111-bounded-string-content-equality.md) 验证空/Unicode/NUL、独立同内容对象、块边界和 64 KiB 首尾差异、不同长度与非规范化文本；IR 拒绝错类型/裸引用比较，两个末次使用源在全部 GC 检查点保活。预算/取消/陈旧和错标签保持输出及账目，真实 AOT 覆盖 CLI、fn、原栈恢复、一/双 worker 与失败清理，原限不变。
+
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 唤醒租约验收先复现 worker 销毁/通知者存活时的零账目，再检查三级零/少一/精确准入、OS 工厂失败回滚、账户句柄退出、跨线程末 owner 和既有 ingress/TCP 通知语义。保留原 4096 B、全部 CPU/墙钟/阶段限额，不将控制账本等同 kernel FD/RSS 或 BEAM 双门禁。
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 须覆盖空/8 字段/32 schema 边界、同形错名义类型、前向/递归/能力字段拒绝，以及 IR/清单伪造类型索引与外部记录签名拒绝。真实 AOT 验证嵌套 String/Bytes/列表/记录根、跨 fn/分支/循环与逐片 GC、额度/预算/取消清理、单/双 worker、重启及 CLI；失败候选必须保留旧 state/root。原限不变，本地通过不等于原生双平台或 BEAM 双门禁完成。

@@ -982,7 +982,6 @@ impl Checker {
                             | Type::Record(_)
                             | Type::IntList
                             | Type::Bytes
-                            | Type::String
                             | Type::Pid
                             | Type::RequestId
                     ) || matches!(
@@ -991,7 +990,6 @@ impl Checker {
                             | Type::Record(_)
                             | Type::IntList
                             | Type::Bytes
-                            | Type::String
                             | Type::Pid
                             | Type::RequestId
                     ) {

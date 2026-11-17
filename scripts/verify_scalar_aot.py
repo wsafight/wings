@@ -364,7 +364,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 20
+    assert manifest["abi"] == 21
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -455,7 +455,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v19 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v21 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -676,7 +676,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 20 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 21 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -1452,6 +1452,14 @@ def main():
         assert "Accounted String messages:" in result.stdout
         print(result.stdout.strip())
         string_run = [VM, "run", "--trusted", strings, "--heap-records", 16]
+        equality = parent / "string-equality"
+        command([COMPILER, "build", ROOT / "examples/string-equality.wings", "-o", equality])
+        result = example("string_equality", equality)
+        assert "String content equality verified:" in result.stdout
+        print(result.stdout.strip())
+        equality_run = [VM, "run", "--trusted", equality, "--heap-records", 16]
+        result = command(equality_run, "".join(json.dumps(request) + "\n" for request in [message("Self"), message("Fill", 257), message("Equal", 257), message("Different", 256), message("Unicode"), message("NotNormalized"), message("LastByte")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [True, 257, True, True, True, True, True]
         result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("Unicode"), message("Copy"), message("Grow", 20), message("Read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [207, 2, 20, 20]
         result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("Unicode"), message("Invalid")]), expected=1)

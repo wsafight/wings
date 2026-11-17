@@ -289,6 +289,7 @@ fn compile_body(
                 | Operation::StringBytes(_)
                 | Operation::StringLen(_)
                 | Operation::ConcatStrings(_, _)
+                | Operation::EqualStrings(_, _)
                 | Operation::StringLiteral(_)
         )
     });
@@ -782,7 +783,8 @@ fn compile_body(
             | Operation::StringFromBytes(_)
             | Operation::StringBytes(_)
             | Operation::StringLen(_)
-            | Operation::ConcatStrings(_, _) => {
+            | Operation::ConcatStrings(_, _)
+            | Operation::EqualStrings(_, _) => {
                 let output = heap_output.expect("heap operation scratch");
                 let (operation, arguments) = match instruction.operation {
                     Operation::StringFromBytes(value) => {
@@ -796,6 +798,10 @@ fn compile_body(
                     }
                     Operation::ConcatStrings(left, right) => (
                         wings_abi::HEAP_CONCAT_STRINGS,
+                        [Some(left), Some(right), None],
+                    ),
+                    Operation::EqualStrings(left, right) => (
+                        wings_abi::HEAP_EQUAL_STRINGS,
                         [Some(left), Some(right), None],
                     ),
                     Operation::FillBytes(length, value) => (

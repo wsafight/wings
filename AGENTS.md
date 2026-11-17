@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0111 开放 String 按完整 UTF-8 内容 `==`/`!=`，独立 Bool IR/heap opcode，每至多 256 B 检查预算/取消/让出，两个源精确根保活，不分配业务存储。不做规范化/排序/隐式转换，其他引用仍不比较。源码 ABI v21，context88B/EffectRequest80B/4352B控制预留及原额度/时限不变；具名记录传输、完整账本和原生双平台/BEAM/MVP 门禁仍未完成。
+
 - ADR-0110 将全目标测试有界运行器纳入仓库/双平台 CI，`scripts/verify_workspace.py` 先编译清单再实际执行，CPU 20s/墙钟 30s/core 0，指纹/原始输出/失败报告保存在全新目录且不重试；doctest/AOT 单独验证。不把 CI 配置或交叉检查当最新原生平台结果，MVP/BEAM 双门禁仍未完成。
 
 - ADR-0109 将 OS 唤醒票据内嵌共享端点，增加 WorkerParker::new_accounted，ScalarWorker/ingress 不再平行复制独立票据；最后 notifier 关闭 FD 后归还原 4096 B，Linux poller 先于端点释放。修复保留通知者但 worker 退账的确定性回归，ABI v20/4352 B 预留和原额度/时限不变；工具 new 不计费，仍不代表完整账本、原生双平台或 BEAM/MVP 门禁完成。

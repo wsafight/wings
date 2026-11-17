@@ -2,6 +2,8 @@
 
 后续：[ADR-0104](0104-bounded-string-literals.md) 增加字面量；[ADR-0105](0105-accounted-string-messages.md) 扩展 String 消息参数，替代本文当时仅本地值的消息边界，回复限制保持。
 
+后续：[ADR-0111](0111-bounded-string-content-equality.md) 开放分块内容 `==`/`!=`，替代本文暂不比较的限制；不增加排序或规范化。
+
 - 日期：2026-11-17
 - 状态：已采纳（本地/状态/函数切片）
 - 延续：[ADR-0057](0057-accounted-immutable-bytes.md) 的不可变计费缓冲、分块复制与精确根约束。
