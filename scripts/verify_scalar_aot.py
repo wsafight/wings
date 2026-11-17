@@ -1201,6 +1201,16 @@ def main():
             assert "unsigned 64-bit" in command(controlled + [invalid], expected=2).stderr
         command([sys.executable, Path(__file__), "--check-control", counter])
         example("execution_control", counter)
+        argument_source = parent / "invocation-arguments.wings"
+        argument_text = "process Arguments {\n state count: Int = 0\n on Read -> Int { count }\n"
+        for count in (1, 8, 9, 64):
+            names = [f"value{index}" for index in range(count)]
+            parameters = ", ".join(f"{name}: Int" for name in names)
+            argument_text += f" on Add{count}({parameters}) -> Int {{ count = count + {' + '.join(names)}\n count }}\n"
+        argument_source.write_text(argument_text + "}\n")
+        argument_artifact = parent / "invocation-arguments"
+        command([COMPILER, "build", argument_source, "-o", argument_artifact])
+        print(example("invocation_arguments", argument_artifact).stdout, end="")
         example("stack_pool", counter)
         example("accounted_stacks", counter)
         example("shared_module", counter)

@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 调用参数诊断与候选回退](docs/validation-invocation-arguments-2026-11-18.md) 区分实际分配次数、闭包传递失败与冻结端到端负载，保留原实现和有界参数副本回归。
+
 [2026-11-18 handler 迁移间隔消融](docs/validation-handler-migration-batch-2026-11-18.md) 保留两对反序完整事件、尾延迟/拒绝及未采用候选的理由。
 
 [2026-11-18 原生同步计费验证](docs/validation-native-sync-accounting-2026-11-18.md) 保留修复前根门闩漏计失败、准入与发布前初始化的回归及完整验证状态。
