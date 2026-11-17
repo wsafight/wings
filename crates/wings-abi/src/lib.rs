@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 19;
+pub const SCALAR_ABI_VERSION: u32 = 20;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -45,6 +45,8 @@ pub const HEAP_STRING_BYTES: u32 = 15;
 pub const HEAP_STRING_LEN: u32 = 16;
 pub const HEAP_CONCAT_STRINGS: u32 = 17;
 pub const HEAP_STRING_LITERAL: u32 = 18;
+pub const HEAP_RECORD_NEW: u32 = 19;
+pub const HEAP_RECORD_FIELD: u32 = 20;
 pub const MAX_SHADOW_ROOTS: usize = 64;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
@@ -57,6 +59,7 @@ pub enum ValueType {
     ListRef,
     BytesRef,
     StringRef,
+    RecordRef(u16),
     Pid,
     RequestId,
 }
@@ -71,6 +74,7 @@ impl ValueType {
             | Self::ListRef
             | Self::BytesRef
             | Self::StringRef
+            | Self::RecordRef(_)
             | Self::Pid
             | Self::RequestId => false,
         }
@@ -79,13 +83,46 @@ impl ValueType {
     pub fn is_reference(self) -> bool {
         matches!(
             self,
-            Self::Ref | Self::ListRef | Self::BytesRef | Self::StringRef
+            Self::Ref | Self::ListRef | Self::BytesRef | Self::StringRef | Self::RecordRef(_)
         )
     }
 
     pub fn is_capability(self) -> bool {
         matches!(self, Self::Pid | Self::RequestId)
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordSchema {
+    pub name: String,
+    pub fields: Vec<(String, ValueType)>,
+}
+
+pub fn validate_records(records: &[RecordSchema]) -> Result<(), String> {
+    if records.len() > 32 {
+        return Err("record schema count exceeds 32".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    for (index, record) in records.iter().enumerate() {
+        let valid_name = |name: &str| {
+            !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+        };
+        if !valid_name(&record.name) || !names.insert(&record.name) || record.fields.len() > 8 {
+            return Err("invalid or duplicate record schema name or field count".into());
+        }
+        let mut fields = std::collections::HashSet::new();
+        for (name, ty) in &record.fields {
+            if !valid_name(name)
+                || !fields.insert(name)
+                || ty.is_capability()
+                || matches!(ty, ValueType::RecordRef(target) if usize::from(*target) >= index)
+            {
+                return Err("invalid record field name, type or forward reference".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[repr(C)]

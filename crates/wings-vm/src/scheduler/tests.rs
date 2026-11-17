@@ -234,6 +234,7 @@ pub(super) fn module() -> ScalarModule {
     ScalarModule {
         inner: Arc::new(ModuleData {
             manifest: Manifest {
+                records: Vec::new(),
                 format: wings_artifact::FORMAT_VERSION,
                 abi: wings_abi::SCALAR_ABI_VERSION,
                 target: wings_abi::host_target().unwrap().into(),

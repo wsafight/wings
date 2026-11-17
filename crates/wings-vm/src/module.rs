@@ -215,7 +215,11 @@ impl ScalarModule {
         if !pool.is_for_process(account) {
             return Err("AOT heap requires a stack pool bound to the same process account".into());
         }
-        let heap = crate::aot_heap::AotHeap::new(account, capacity)?;
+        let heap = crate::aot_heap::AotHeap::new_with_records(
+            account,
+            capacity,
+            &self.inner.manifest.records,
+        )?;
         self.instantiate_owned(pool, Some(heap))
     }
 }
@@ -299,6 +303,7 @@ mod tests {
         let module = ScalarModule {
             inner: Arc::new(ModuleData {
                 manifest: Manifest {
+                    records: Vec::new(),
                     format: wings_artifact::FORMAT_VERSION,
                     abi: wings_abi::SCALAR_ABI_VERSION,
                     target: wings_abi::host_target().unwrap().into(),
@@ -399,6 +404,7 @@ mod tests {
                     abi: wings_abi::SCALAR_ABI_VERSION,
                     target: wings_abi::host_target().unwrap().into(),
                     process: "Bounded".into(),
+                    records: Vec::new(),
                     state: wings_abi::ValueType::Int,
                     handlers: vec![Handler {
                         name: "Get".into(),
@@ -509,6 +515,7 @@ mod tests {
                     abi: wings_abi::SCALAR_ABI_VERSION,
                     target: wings_abi::host_target().unwrap().into(),
                     process: "Lease".into(),
+                    records: Vec::new(),
                     state: wings_abi::ValueType::Int,
                     handlers: vec![],
                 },

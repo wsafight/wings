@@ -60,6 +60,8 @@ pub struct Manifest {
     pub process: String,
     pub state: ValueType,
     pub handlers: Vec<Handler>,
+    #[serde(default)]
+    pub records: Vec<wings_abi::RecordSchema>,
 }
 
 pub fn handler_symbol(index: usize) -> String {
@@ -76,6 +78,20 @@ pub fn library_name() -> &'static str {
 
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
+        wings_abi::validate_records(&self.records)?;
+        if matches!(self.state, ValueType::RecordRef(index) if usize::from(index) >= self.records.len())
+            || self.handlers.iter().any(|handler| {
+                matches!(handler.reply, Some(ValueType::RecordRef(_)))
+                    || handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
+            })
+        {
+            return Err(
+                "invalid named record state or unsupported external record signature".into(),
+            );
+        }
         if self.format != FORMAT_VERSION || self.abi != SCALAR_ABI_VERSION {
             return Err("unsupported artifact format or scalar ABI version".into());
         }

@@ -31,6 +31,14 @@ pub enum Comparison {
 pub enum Operation {
     Constant(i64),
     StringLiteral(String),
+    RecordNew {
+        schema: u16,
+        arguments: Vec<Register>,
+    },
+    RecordField {
+        value: Register,
+        field: usize,
+    },
     State,
     Argument(usize),
     Negate(Register),
@@ -138,6 +146,7 @@ impl Handler {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub name: String,
+    pub records: Vec<wings_abi::RecordSchema>,
     pub state: ValueType,
     pub initializer: Function,
     pub functions: Vec<Procedure>,
@@ -159,6 +168,75 @@ enum Region {
 
 impl Program {
     pub fn validate(&self) -> Result<(), String> {
+        wings_abi::validate_records(&self.records)?;
+        if self.functions.iter().any(|procedure| std::iter::once(procedure.result)
+            .chain(procedure.parameters.iter().map(|(_, ty)| *ty))
+            .any(|ty| matches!(ty, ValueType::RecordRef(index) if usize::from(index) >= self.records.len()))) {
+            return Err("invalid named record function signature".into());
+        }
+        let functions = self
+            .functions
+            .iter()
+            .map(|procedure| &procedure.function)
+            .chain(self.handlers.iter().map(|handler| &handler.function))
+            .chain(std::iter::once(&self.initializer));
+        for function in functions {
+            for instruction in &function.instructions {
+                if matches!(instruction.ty, ValueType::RecordRef(index) if usize::from(index) >= self.records.len())
+                {
+                    return Err("invalid named record type index".into());
+                }
+                match &instruction.operation {
+                    Operation::RecordNew { schema, arguments } => {
+                        let record = self
+                            .records
+                            .get(usize::from(*schema))
+                            .ok_or("invalid record schema index")?;
+                        if instruction.ty != ValueType::RecordRef(*schema)
+                            || record.fields.len() != arguments.len()
+                            || record
+                                .fields
+                                .iter()
+                                .zip(arguments)
+                                .any(|((_, ty), register)| {
+                                    function.instructions.get(*register).map(|value| value.ty)
+                                        != Some(*ty)
+                                })
+                        {
+                            return Err("record constructor field type mismatch".into());
+                        }
+                    }
+                    Operation::RecordField { value, field } => {
+                        let Some(ValueType::RecordRef(schema)) =
+                            function.instructions.get(*value).map(|value| value.ty)
+                        else {
+                            return Err("record field requires named record".into());
+                        };
+                        if self
+                            .records
+                            .get(usize::from(schema))
+                            .and_then(|record| record.fields.get(*field))
+                            .map(|(_, ty)| *ty)
+                            != Some(instruction.ty)
+                        {
+                            return Err("invalid record field index or result type".into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if matches!(self.state, ValueType::RecordRef(index) if usize::from(index) >= self.records.len())
+            || self.handlers.iter().any(|handler| {
+                matches!(handler.reply, Some(ValueType::RecordRef(_)))
+                    || handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
+            })
+        {
+            return Err("named records cannot cross message boundaries".into());
+        }
         if self.functions.len() > MAX_FUNCTIONS {
             return Err("too many managed functions".into());
         }
@@ -409,6 +487,7 @@ impl Function {
                 Operation::StringLiteral(ref value) => {
                     instruction.ty == ValueType::StringRef && value.len() <= 65536
                 }
+                Operation::RecordNew { .. } | Operation::RecordField { .. } => true,
                 Operation::State => !initializer && instruction.ty == state,
                 Operation::Argument(index) => parameters
                     .get(index)
@@ -759,6 +838,8 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         }
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
         Operation::Call { ref arguments, .. } => ([None, None], arguments),
+        Operation::RecordNew { ref arguments, .. } => ([None, None], arguments),
+        Operation::RecordField { value, .. } => ([Some(value), None], &[]),
         Operation::Send {
             target,
             ref arguments,

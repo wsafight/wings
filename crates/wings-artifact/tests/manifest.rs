@@ -16,6 +16,30 @@ use wings_artifact::{
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn named_record_manifest_checks_schema_identity_and_blocks_external_handles() {
+    let mut value = manifest();
+    value.records = vec![wings_abi::RecordSchema {
+        name: "A".into(),
+        fields: vec![("text".into(), ValueType::StringRef)],
+    }];
+    value.state = ValueType::RecordRef(0);
+    value.validate().unwrap();
+    let directory = Directory::new();
+    let encoded = serde_json::to_value(&value).unwrap();
+    assert_eq!(directory.read_json(&encoded).unwrap().records.len(), 1);
+    for state in [ValueType::RecordRef(1), ValueType::RecordRef(u16::MAX)] {
+        value.state = state;
+        assert!(value.validate().is_err());
+    }
+    value.state = ValueType::RecordRef(0);
+    value.handlers[0].reply = Some(ValueType::RecordRef(0));
+    assert!(value.validate().is_err());
+    value.handlers[0].reply = Some(ValueType::Int);
+    value.handlers[0].parameters[0].1 = ValueType::RecordRef(0);
+    assert!(value.validate().is_err());
+}
+
 struct Directory(PathBuf);
 
 impl Directory {
@@ -51,6 +75,7 @@ impl Drop for Directory {
 
 fn manifest() -> Manifest {
     Manifest {
+        records: Vec::new(),
         format: FORMAT_VERSION,
         abi: SCALAR_ABI_VERSION,
         target: host_target().unwrap().into(),

@@ -14,9 +14,17 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub struct Process {
     pub name: Name,
+    pub records: Vec<Record>,
     pub states: Vec<State>,
     pub handlers: Vec<Handler>,
     pub functions: Vec<Function>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct Record {
+    pub name: Name,
+    pub fields: Vec<Parameter>,
     pub span: Span,
 }
 
@@ -89,6 +97,10 @@ pub enum ExprKind {
     Boolean(bool),
     Unit,
     Name(Name),
+    Field {
+        value: Box<Expr>,
+        name: Name,
+    },
     Call {
         callee: Name,
         arguments: Vec<Expr>,

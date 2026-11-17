@@ -165,6 +165,53 @@ fn shape(expression: &Expr) -> String {
 }
 
 #[test]
+fn record_declarations_do_not_reserve_existing_value_names() {
+    let parsed = parse(
+        "process record { record Item { record: Int } state record: Item = Item(1); fn copy(record: Item) -> Item { record } on Read -> Int { let record = copy(record); record.record } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    assert_eq!(parsed.program.processes[0].records.len(), 1);
+    let parsed = parse(
+        "process P { state record: Int = 0; on Read(record: Int) -> Int { record } on Write { record = 1 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    assert_eq!(parsed.program.processes[0].handlers.len(), 2);
+}
+
+#[test]
+fn named_record_fields_parse_with_postfix_precedence_and_bounded_recovery() {
+    let parsed = wings_syntax::parse(
+        "process P { record A { number: Int, text: String, } state value: A = A(1, \"中\"); on Read -> Int { value.number + A(2, \"\").number } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    assert_eq!(parsed.program.processes[0].records[0].fields.len(), 2);
+    let ExprKind::Binary { left, right, .. } = &parsed.program.processes[0].handlers[0]
+        .body
+        .tail
+        .as_ref()
+        .unwrap()
+        .kind
+    else {
+        panic!("missing addition")
+    };
+    assert!(matches!(left.kind, ExprKind::Field { .. }));
+    assert!(matches!(right.kind, ExprKind::Field { .. }));
+    for source in [
+        "process P { record A { value Int } on Fine -> Int { 1 } }",
+        "process P { state n: Int = 0; on Bad -> Int { n. } on Fine -> Int { 1 } }",
+    ] {
+        let parsed = wings_syntax::parse(source);
+        assert!(!parsed.diagnostics.is_empty());
+        assert!(
+            parsed.program.processes[0]
+                .handlers
+                .iter()
+                .any(|handler| handler.name.text == "Fine")
+        );
+    }
+}
+
+#[test]
 fn while_blocks_have_bounded_nesting_and_preserve_following_handlers() {
     let parsed = parse(
         "process P { state n: Int = 0; on Work { while n < 3 { let next = n + 1; while n < next { n = n + 1 } } } on Get -> Int { n } }",

@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接及字面量和计费消息参数，以及原生 String 回复。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；通用记录、字符串索引/内容比较、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接及字面量和计费消息参数，以及原生 String 回复。具名不可变记录支持嵌套字段、本地/state/fn、分支/循环与精确 GC，暂不跨消息边界。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；具名记录消息/回复、字符串索引/内容比较、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
 
 ## 开发
+
+[ADR-0108](docs/adr/0108-bounded-named-record-values.md) 接入本地/state/fn 有界具名记录及名义类型检查，每 process 最多 32 种、每种最多 8 字段；引用字段由原精确 GC 跟踪，实例布局表先计费，失败不提交候选状态。源码 ABI v20，旧产物须重编译，控制预留不变；示例见 [`examples/named-records.wings`](examples/named-records.wings)。具名记录传输、完整账本与原生双平台/BEAM 双门禁仍待完成。
 
 [ADR-0107](docs/adr/0107-accounted-control-token-leases.md) 补取消/让出 token 的显式计费构造、常驻 worker/actor 接入与末 owner 清理。ABI v19 和原控制预留不变，Default 宿主工具入口不代表完整资源计费；MVP 仍未完成。
 

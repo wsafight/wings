@@ -16,6 +16,7 @@ fn main() {
     push(&mut initializer, ValueType::Int, Operation::Constant(0));
     push(&mut initializer, ValueType::Unit, Operation::Constant(0));
     let mut program = Program {
+        records: Vec::new(),
         name: "Records".into(),
         state: ValueType::Int,
         functions: Vec::new(),

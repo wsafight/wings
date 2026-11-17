@@ -38,6 +38,7 @@ pub fn build_with_frame_limit(
     }
     program.validate()?;
     let manifest = Manifest {
+        records: program.records.clone(),
         format: FORMAT_VERSION,
         abi: SCALAR_ABI_VERSION,
         target: host_target()?.into(),
@@ -269,6 +270,8 @@ fn compile_body(
         matches!(
             instruction.operation,
             Operation::RecordInt(_)
+                | Operation::RecordNew { .. }
+                | Operation::RecordField { .. }
                 | Operation::ReadInt(_)
                 | Operation::Collect
                 | Operation::EmptyInts
@@ -347,8 +350,19 @@ fn compile_body(
         None
     };
     let heap_output = uses_heap.then(|| {
-        let slot =
-            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            if function
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction.operation, Operation::RecordNew { .. }))
+            {
+                80
+            } else {
+                24
+            },
+            3,
+        ));
         builder.ins().stack_addr(pointer_type, slot, 0)
     });
     let effect_arguments = function
@@ -827,6 +841,66 @@ fn compile_body(
                     parameters[3],
                     heap_signature,
                     operation,
+                    argument,
+                    output,
+                    exit,
+                )
+            }
+            Operation::RecordNew {
+                schema,
+                ref arguments,
+            } => {
+                let output = heap_output.expect("record scratch");
+                let identifier = builder.ins().iconst(types::I64, i64::from(schema));
+                builder.ins().store(MemFlags::new(), identifier, output, 0);
+                for (index, register) in arguments.iter().enumerate() {
+                    builder.ins().store(
+                        MemFlags::new(),
+                        registers[*register],
+                        output,
+                        ((index + 1) * 8) as i32,
+                    );
+                }
+                let argument = if pointer_type == types::I64 {
+                    output
+                } else {
+                    builder.ins().uextend(types::I64, output)
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    wings_abi::HEAP_RECORD_NEW,
+                    argument,
+                    output,
+                    exit,
+                )
+            }
+            Operation::RecordField { value, field } => {
+                let output = heap_output.expect("record scratch");
+                let wings_abi::ValueType::RecordRef(schema) = function.instructions[value].ty
+                else {
+                    unreachable!("validated record")
+                };
+                let identifier = builder.ins().iconst(types::I64, i64::from(schema));
+                let index = builder.ins().iconst(types::I64, field as i64);
+                builder.ins().store(MemFlags::new(), identifier, output, 0);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), registers[value], output, 8);
+                builder.ins().store(MemFlags::new(), index, output, 16);
+                let argument = if pointer_type == types::I64 {
+                    output
+                } else {
+                    builder.ins().uextend(types::I64, output)
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    wings_abi::HEAP_RECORD_FIELD,
                     argument,
                     output,
                     exit,

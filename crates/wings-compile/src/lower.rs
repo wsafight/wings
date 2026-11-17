@@ -17,8 +17,25 @@ pub fn lower(text: &str) -> Result<Program, String> {
     let [process] = analysis.parsed.program.processes.as_slice() else {
         return Err("scalar AOT requires exactly one process per source file".into());
     };
+    let mut records = Vec::new();
+    for record in &process.records {
+        let fields = record
+            .fields
+            .iter()
+            .map(|field| {
+                Ok((
+                    field.name.text.clone(),
+                    named_type(&field.ty.text, &records)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        records.push(wings_abi::RecordSchema {
+            name: record.name.text.clone(),
+            fields,
+        });
+    }
     let state = &process.states[0];
-    let state_type = value_type(&state.ty.text)?;
+    let state_type = named_type(&state.ty.text, &records)?;
     let functions: HashMap<_, _> = process
         .functions
         .iter()
@@ -26,7 +43,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         .map(|(index, function)| {
             Ok((
                 function.name.text.as_str(),
-                (index, value_type(&function.result.text)?),
+                (index, named_type(&function.result.text, &records)?),
             ))
         })
         .collect::<Result<_, String>>()?;
@@ -34,13 +51,19 @@ pub fn lower(text: &str) -> Result<Program, String> {
     for function in &process.functions {
         let mut lowerer = Lowerer {
             functions: functions.clone(),
+            records: &records,
             ..Lowerer::default()
         };
         let state = lowerer.push(ValueType::Unit, Operation::Constant(0))?;
         let parameters = function
             .parameters
             .iter()
-            .map(|parameter| Ok((parameter.name.text.clone(), value_type(&parameter.ty.text)?)))
+            .map(|parameter| {
+                Ok((
+                    parameter.name.text.clone(),
+                    named_type(&parameter.ty.text, &records)?,
+                ))
+            })
             .collect::<Result<Vec<_>, String>>()?;
         for (index, (name, ty)) in parameters.iter().enumerate() {
             let register = lowerer.push(*ty, Operation::Argument(index))?;
@@ -54,7 +77,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         procedures.push(Procedure {
             name: function.name.text.clone(),
             parameters,
-            result: value_type(&function.result.text)?,
+            result: named_type(&function.result.text, &records)?,
             function: Function {
                 instructions: lowerer.instructions,
                 state,
@@ -70,6 +93,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         .collect();
     let mut initializer = Lowerer {
         functions: functions.clone(),
+        records: &records,
         handlers: handler_ids.clone(),
         ..Lowerer::default()
     };
@@ -84,6 +108,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
     for handler in &process.handlers {
         let mut lowerer = Lowerer {
             functions: functions.clone(),
+            records: &records,
             handlers: handler_ids.clone(),
             ..Lowerer::default()
         };
@@ -92,7 +117,12 @@ pub fn lower(text: &str) -> Result<Program, String> {
         let parameters = handler
             .parameters
             .iter()
-            .map(|parameter| Ok((parameter.name.text.clone(), value_type(&parameter.ty.text)?)))
+            .map(|parameter| {
+                Ok((
+                    parameter.name.text.clone(),
+                    named_type(&parameter.ty.text, &records)?,
+                ))
+            })
             .collect::<Result<Vec<_>, String>>()?;
         for (index, (name, ty)) in parameters.iter().enumerate() {
             let register = lowerer.push(*ty, Operation::Argument(index))?;
@@ -109,7 +139,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
             reply: handler
                 .reply_type
                 .as_ref()
-                .map(|ty| value_type(&ty.text))
+                .map(|ty| named_type(&ty.text, &records))
                 .transpose()?,
             function: Function {
                 instructions: lowerer.instructions,
@@ -119,6 +149,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         });
     }
     let program = Program {
+        records,
         name: process.name.text.clone(),
         state: state_type,
         initializer,
@@ -131,6 +162,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
 
 #[derive(Default)]
 struct Lowerer<'program> {
+    records: &'program [wings_abi::RecordSchema],
     bindings: HashMap<String, Register>,
     instructions: Vec<Instruction>,
     functions: HashMap<&'program str, (usize, ValueType)>,
@@ -213,7 +245,37 @@ impl Lowerer<'_> {
                 .get(&name.text)
                 .copied()
                 .ok_or_else(|| format!("unresolved scalar binding {}", name.text)),
+            ExprKind::Field { value, name } => {
+                let value = self.expression(value)?;
+                let ValueType::RecordRef(schema) = self.instructions[value].ty else {
+                    return Err("expected named record".into());
+                };
+                let (field, (_, ty)) = self.records[usize::from(schema)]
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (field, _))| field == &name.text)
+                    .ok_or("unknown record field")?;
+                self.push(*ty, Operation::RecordField { value, field })
+            }
             ExprKind::Call { callee, arguments } => {
+                if let Some(schema) = self
+                    .records
+                    .iter()
+                    .position(|record| record.name == callee.text)
+                {
+                    let arguments = arguments
+                        .iter()
+                        .map(|value| self.expression(value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    return self.push(
+                        ValueType::RecordRef(schema as u16),
+                        Operation::RecordNew {
+                            schema: schema as u16,
+                            arguments,
+                        },
+                    );
+                }
                 if callee.text == "request" {
                     let target = self.expression(&arguments[0])?;
                     let ExprKind::Name(message) = &arguments[1].kind else {
@@ -422,6 +484,13 @@ impl Lowerer<'_> {
     }
 }
 
+fn named_type(name: &str, records: &[wings_abi::RecordSchema]) -> Result<ValueType, String> {
+    if let Some(index) = records.iter().position(|record| record.name == name) {
+        return Ok(ValueType::RecordRef(index as u16));
+    }
+    value_type(name)
+}
+
 fn value_type(name: &str) -> Result<ValueType, String> {
     match name {
         "Int" => Ok(ValueType::Int),
@@ -440,6 +509,59 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_records_preserve_nominal_types_fields_and_cross_frame_roots() {
+        let source = "process P { record A { value: String } record B { left: A, right: Int } state data: B = B(A(\"中😀\"), 7); fn read(value: B) -> String { value.left.value } on Read -> Int { let saved = read(data); collect(); string_len(saved) + data.right } }";
+        let program = lower(source).unwrap();
+        assert_eq!(program.records.len(), 2);
+        assert_eq!(program.state, ValueType::RecordRef(1));
+        assert_eq!(
+            program.functions[0].parameters[0].1,
+            ValueType::RecordRef(1)
+        );
+        let instructions = &program.functions[0].function.instructions;
+        assert!(
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction.operation, Operation::RecordField { .. }))
+        );
+        for invalid in [
+            "process P { record A { value: Int } record B { value: Int } state n: A = B(1); }",
+            "process P { record A { value: A } state n: Int = 0; }",
+            "process P { record A { value: B } record B {} state n: Int = 0; }",
+            "process P { record A { value: Pid } state n: Int = 0; }",
+            "process P { record A { value: Int, value: Int } state n: Int = 0; }",
+            "process P { record A { value: Int } state n: A = A(true); }",
+            "process P { record A { value: Int } state n: A = A(); }",
+            "process P { record A { value: Int } state n: A = A(1); on Read -> Int { n.missing } }",
+            "process P { record A {} state n: Int = 0; on Read(value: A) -> Int { 1 } }",
+            "process P { record A {} state n: Int = 0; on Read -> A { A() } }",
+            "process P { record A {} state n: A = A(); on Read -> Bool { n == n } }",
+            "process P { record collect {} state n: Int = 0; }",
+        ] {
+            assert!(lower(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn named_record_source_limits_are_inclusive() {
+        let records = (0..32)
+            .map(|index| format!("record Shape{index} {{}} "))
+            .collect::<String>();
+        let source = format!("process P {{ {records} state n: Shape31 = Shape31(); }}");
+        assert_eq!(lower(&source).unwrap().records.len(), 32);
+        assert!(lower(&source.replace("state n:", "record Extra {} state n:")).is_err());
+        let fields = (0..8)
+            .map(|index| format!("field{index}: Int"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!(
+            "process P {{ record Wide {{ {fields} }} state n: Wide = Wide(0,1,2,3,4,5,6,7); on Read -> Int {{ n.field7 }} }}"
+        );
+        lower(&source).unwrap();
+        assert!(lower(&source.replace("field7: Int", "field7: Int, extra: Int")).is_err());
+    }
 
     #[test]
     fn string_literals_lower_without_per_byte_ir_and_keep_managed_roots() {

@@ -22,7 +22,16 @@ pub(crate) struct AotHeap {
     cons_list: RecordLayout,
     committed: Option<HeapRef>,
     incoming: [Option<HeapRef>; 64],
+    named: Box<[NamedLayout]>,
+    _named_charge: Reservation,
     _metadata: Reservation,
+}
+
+#[derive(Clone, Copy)]
+struct NamedLayout {
+    layout: RecordLayout,
+    types: [wings_abi::ValueType; 8],
+    count: usize,
 }
 
 impl AotHeap {
@@ -37,17 +46,66 @@ impl AotHeap {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Box<Self>, String> {
-        let mut heap = RecordHeap::new(account, capacity, 3)?;
+        Self::new_with_records(account, capacity, &[])
+    }
+
+    pub(crate) fn new_with_records(
+        account: &ResourceAccount,
+        capacity: usize,
+        records: &[wings_abi::RecordSchema],
+    ) -> Result<Box<Self>, String> {
+        if records.len() > 32 {
+            return Err("record schema count exceeds 32".into());
+        }
+        let mut heap = RecordHeap::new(account, capacity, 3 + records.len())?;
         let metadata = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
                 - std::mem::size_of::<RecordHeap>()
                 - std::mem::size_of::<ShadowRoots>()) as u64,
             ..Resources::default()
         })?;
+        let named_charge = account.reserve(Resources {
+            bytes: (records.len() * std::mem::size_of::<NamedLayout>()) as u64,
+            ..Resources::default()
+        })?;
         let layout = heap.register_layout(&[FieldType::Int])?;
         let empty_list = heap.register_layout(&[FieldType::Unit])?;
         let cons_list = heap.register_layout(&[FieldType::Int, FieldType::Ref])?;
+        let mut named = Vec::new();
+        named
+            .try_reserve_exact(records.len())
+            .map_err(|_| "named record layout allocation failed")?;
+        if named.capacity() != records.len() {
+            return Err("allocator changed named layout capacity".into());
+        }
+        for record in records {
+            let mut types = [wings_abi::ValueType::Unit; 8];
+            let mut fields = [FieldType::Unit; 8];
+            if record.fields.len() > 8 || record.fields.iter().any(|(_, ty)| ty.is_capability()
+                || matches!(ty, wings_abi::ValueType::RecordRef(index) if usize::from(*index) >= named.len())) {
+                return Err("invalid named record layout fields".into());
+            }
+            for (index, (_, ty)) in record.fields.iter().enumerate() {
+                types[index] = *ty;
+                fields[index] = if ty.is_reference() {
+                    FieldType::Ref
+                } else {
+                    match ty {
+                        wings_abi::ValueType::Int => FieldType::Int,
+                        wings_abi::ValueType::Bool => FieldType::Bool,
+                        _ => FieldType::Unit,
+                    }
+                };
+            }
+            let layout = heap.register_distinct_layout(&fields[..record.fields.len()])?;
+            named.push(NamedLayout {
+                layout,
+                types,
+                count: record.fields.len(),
+            });
+        }
         let roots = ShadowRoots::with_state_root(&heap)?;
         let pointer = unsafe { alloc(Layout::new::<Self>()) }.cast::<Self>();
         if pointer.is_null() {
@@ -63,6 +121,8 @@ impl AotHeap {
                 cons_list,
                 committed: None,
                 incoming: [None; 64],
+                named: named.into_boxed_slice(),
+                _named_charge: named_charge,
                 _metadata: metadata,
             })
         };
@@ -93,7 +153,13 @@ impl AotHeap {
         ty: wings_abi::ValueType,
         encoded: i64,
     ) -> Result<(), String> {
-        if ty == wings_abi::ValueType::StringRef {
+        if let wings_abi::ValueType::RecordRef(_) = ty {
+            let reference = self
+                .typed_reference(ty, encoded)
+                .map_err(|_| "invalid named record state")?;
+            self.committed = Some(reference);
+            Ok(())
+        } else if ty == wings_abi::ValueType::StringRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.string_bytes(reference)?;
             self.committed = Some(reference);
@@ -107,6 +173,37 @@ impl AotHeap {
             self.commit_list(encoded)
         } else {
             self.commit(encoded)
+        }
+    }
+
+    fn typed_reference(&self, ty: wings_abi::ValueType, encoded: i64) -> Result<HeapRef, u32> {
+        let reference = self
+            .heap
+            .import_reference(encoded as u64)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        let valid = match ty {
+            wings_abi::ValueType::Ref => self.heap.has_layout(reference, self.layout),
+            wings_abi::ValueType::ListRef => {
+                return self
+                    .list_reference(encoded as u64)
+                    .map_err(|_| STATUS_INVALID_ROOT);
+            }
+            wings_abi::ValueType::BytesRef => self.heap.bytes(reference).map(|_| true),
+            wings_abi::ValueType::StringRef => self.heap.string_bytes(reference).map(|_| true),
+            wings_abi::ValueType::RecordRef(index) => self.heap.has_layout(
+                reference,
+                self.named
+                    .get(usize::from(index))
+                    .ok_or(STATUS_INVALID_ROOT)?
+                    .layout,
+            ),
+            _ => return Err(STATUS_INVALID_ROOT),
+        }
+        .map_err(|_| STATUS_INVALID_ROOT)?;
+        if valid {
+            Ok(reference)
+        } else {
+            Err(STATUS_INVALID_ROOT)
         }
     }
 
@@ -811,6 +908,74 @@ pub(crate) unsafe extern "C" fn heap_call(
         return STATUS_INVALID_CONTROL;
     }
     let pointer = context.heap_data.cast::<AotHeap>();
+    if matches!(
+        operation,
+        wings_abi::HEAP_RECORD_NEW | wings_abi::HEAP_RECORD_FIELD
+    ) {
+        let arguments = argument as usize as *const u64;
+        let schema = unsafe { *arguments };
+        let Some(named) = usize::try_from(schema)
+            .ok()
+            .and_then(|index| unsafe { &*pointer }.named.get(index))
+            .copied()
+        else {
+            return STATUS_INVALID_ROOT;
+        };
+        let result = if operation == wings_abi::HEAP_RECORD_NEW {
+            let mut values = [RecordValue::Unit; 8];
+            for (index, value) in values[..named.count].iter_mut().enumerate() {
+                let encoded = unsafe { *arguments.add(index + 1) } as i64;
+                let ty = named.types[index];
+                *value = if ty.is_reference() {
+                    match unsafe { &*pointer }.typed_reference(ty, encoded) {
+                        Ok(reference) => RecordValue::Ref(reference),
+                        Err(status) => return status,
+                    }
+                } else if ty.accepts(encoded) {
+                    match ty {
+                        wings_abi::ValueType::Int => RecordValue::Int(encoded),
+                        wings_abi::ValueType::Bool => RecordValue::Bool(encoded != 0),
+                        _ => RecordValue::Unit,
+                    }
+                } else {
+                    return STATUS_INVALID_ROOT;
+                };
+            }
+            unsafe { allocate_managed(context, named.layout, &values[..named.count]) }
+        } else {
+            let reference = unsafe { *arguments.add(1) };
+            let field = unsafe { *arguments.add(2) };
+            let Ok(index) = usize::try_from(field) else {
+                return STATUS_INVALID_ROOT;
+            };
+            if index >= named.count {
+                return STATUS_INVALID_ROOT;
+            }
+            let heap = unsafe { &*pointer };
+            let Ok(reference) = heap.typed_reference(
+                wings_abi::ValueType::RecordRef(schema as u16),
+                reference as i64,
+            ) else {
+                return STATUS_INVALID_ROOT;
+            };
+            heap.heap
+                .get(reference, index)
+                .map(|value| match value {
+                    RecordValue::Int(value) => value as u64,
+                    RecordValue::Bool(value) => u64::from(value),
+                    RecordValue::Unit => 0,
+                    RecordValue::Ref(value) => value.encoded(),
+                })
+                .map_err(|_| STATUS_INVALID_ROOT)
+        };
+        return match result {
+            Ok(value) => {
+                unsafe { *output = value };
+                STATUS_OK
+            }
+            Err(status) => status,
+        };
+    }
     if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_STRING_LITERAL).contains(&operation) {
         let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
         let result = if operation == wings_abi::HEAP_STRING_LITERAL {
@@ -932,6 +1097,153 @@ pub(crate) unsafe extern "C" fn heap_call(
 mod tests {
     use super::*;
     use crate::Resources;
+
+    fn named_fixture(records: &[wings_abi::RecordSchema]) -> (ResourceAccount, Box<AotHeap>) {
+        let limits = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant(limits).unwrap();
+        let account = tenant.process(limits).unwrap();
+        let heap = AotHeap::new_with_records(&account, 16, records).unwrap();
+        (vm, heap)
+    }
+
+    #[test]
+    fn named_records_reject_same_shape_wrong_tags_and_stale_references() {
+        use wings_abi::{RecordSchema, ValueType};
+        let records = [
+            RecordSchema {
+                name: "First".into(),
+                fields: vec![("value".into(), ValueType::Int)],
+            },
+            RecordSchema {
+                name: "Second".into(),
+                fields: vec![("value".into(), ValueType::Int)],
+            },
+            RecordSchema {
+                name: "Holder".into(),
+                fields: vec![("value".into(), ValueType::RecordRef(0))],
+            },
+            RecordSchema {
+                name: "Flag".into(),
+                fields: vec![("value".into(), ValueType::Bool)],
+            },
+        ];
+        let (vm, mut heap) = named_fixture(&records);
+        let first = heap
+            .heap
+            .allocate(heap.named[0].layout, &[RecordValue::Int(7)])
+            .unwrap();
+        let second = heap
+            .heap
+            .allocate(heap.named[1].layout, &[RecordValue::Int(8)])
+            .unwrap();
+        let scalar = heap
+            .heap
+            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .unwrap();
+        heap.commit_typed(ValueType::RecordRef(0), first.encoded() as i64)
+            .unwrap();
+        for ty in [
+            ValueType::RecordRef(1),
+            ValueType::Ref,
+            ValueType::StringRef,
+            ValueType::RecordRef(32),
+        ] {
+            assert!(heap.commit_typed(ty, first.encoded() as i64).is_err());
+            assert_eq!(heap.committed, Some(first));
+        }
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        for arguments in [
+            [2, second.encoded() as i64, 0],
+            [2, scalar.encoded() as i64, 0],
+            [3, 2, 0],
+            [32, 0, 0],
+        ] {
+            let before = heap.stats();
+            assert_eq!(
+                unsafe { bytes(&mut context, wings_abi::HEAP_RECORD_NEW, arguments) },
+                (STATUS_INVALID_ROOT, 79)
+            );
+            assert_eq!(heap.stats(), before);
+        }
+        for arguments in [
+            [1, first.encoded() as i64, 0],
+            [0, second.encoded() as i64, 0],
+            [0, first.encoded() as i64, 1],
+        ] {
+            assert_eq!(
+                unsafe { bytes(&mut context, wings_abi::HEAP_RECORD_FIELD, arguments) },
+                (STATUS_INVALID_ROOT, 79)
+            );
+        }
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert!(
+            heap.typed_reference(ValueType::RecordRef(1), second.encoded() as i64)
+                .is_err()
+        );
+        assert_eq!(heap.committed, Some(first));
+        let (status, holder) = unsafe {
+            bytes(
+                &mut context,
+                wings_abi::HEAP_RECORD_NEW,
+                [2, first.encoded() as i64, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        heap.commit_typed(ValueType::RecordRef(2), holder as i64)
+            .unwrap();
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        assert_eq!(heap.heap.get(first, 0).unwrap(), RecordValue::Int(7));
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn named_layout_capacity_and_failed_initialization_preserve_accounting() {
+        use wings_abi::{RecordSchema, ValueType};
+        let records: Vec<_> = (0..32)
+            .map(|index| RecordSchema {
+                name: format!("Record{index}"),
+                fields: (0..8)
+                    .map(|field| (format!("field{field}"), ValueType::Int))
+                    .collect(),
+            })
+            .collect();
+        let limits = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant(limits).unwrap();
+        let account = tenant.process(limits).unwrap();
+        let baseline = vm.used();
+        let heap = AotHeap::new_with_records(&account, 1, &records).unwrap();
+        let charge = account.used().bytes;
+        assert_eq!(heap.named.len(), 32);
+        assert_ne!(heap.named[0].layout, heap.named[31].layout);
+        drop(heap);
+        assert_eq!(vm.used(), baseline);
+        let filler = account
+            .reserve(Resources {
+                bytes: limits.bytes - charge + 1,
+                ..Resources::default()
+            })
+            .unwrap();
+        let filled = vm.used();
+        assert!(AotHeap::new_with_records(&account, 1, &records).is_err());
+        assert_eq!(vm.used(), filled);
+        drop(filler);
+        let mut invalid = records.clone();
+        invalid[0].fields[0].1 = ValueType::RecordRef(0);
+        assert!(AotHeap::new_with_records(&account, 1, &invalid).is_err());
+        assert_eq!(vm.used(), baseline);
+        drop((account, tenant));
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     fn raw_bytes(heap: &mut AotHeap, data: &[u8]) -> u64 {
         let mut buffer = heap.heap.prepare_bytes(data.len()).unwrap();

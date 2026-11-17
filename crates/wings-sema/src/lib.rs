@@ -13,6 +13,7 @@ pub enum Type {
     IntList,
     Bytes,
     String,
+    Record(String),
     Pid,
     RequestId,
     Function {
@@ -36,6 +37,7 @@ impl std::fmt::Display for Type {
             Self::IntList => formatter.write_str("IntList"),
             Self::Bytes => formatter.write_str("Bytes"),
             Self::String => formatter.write_str("String"),
+            Self::Record(name) => formatter.write_str(name),
             Self::Pid => formatter.write_str("Pid"),
             Self::RequestId => formatter.write_str("RequestId"),
             Self::Function { parameters, result } => {
@@ -133,6 +135,7 @@ pub fn analyze(text: &str) -> Analysis {
         function_depth: 1,
         handlers: HashMap::new(),
         effects_allowed: false,
+        records: HashMap::new(),
     };
     let mut process_names = HashMap::new();
     for process in &parsed.program.processes {
@@ -153,6 +156,80 @@ pub fn analyze(text: &str) -> Analysis {
         checker.functions.clear();
         checker.handlers.clear();
         checker.effects_allowed = false;
+        checker.records.clear();
+        if process.records.len() > 32 {
+            checker.error("T019", "process record count exceeds 32", process.name.span);
+        }
+        for record in &process.records {
+            if checker.records.contains_key(&record.name.text)
+                || matches!(
+                    record.name.text.as_str(),
+                    "record_int"
+                        | "read_int"
+                        | "collect"
+                        | "empty_ints"
+                        | "prepend_int"
+                        | "head_int"
+                        | "tail_ints"
+                        | "is_empty_ints"
+                        | "fill_bytes"
+                        | "bytes_len"
+                        | "byte_at"
+                        | "replace_byte"
+                        | "read_i64_be"
+                        | "replace_i64_be"
+                        | "string_from_bytes"
+                        | "string_bytes"
+                        | "string_len"
+                        | "concat_strings"
+                        | "send_self"
+                        | "self_pid"
+                        | "spawn_self"
+                        | "send"
+                        | "request"
+                        | "cancel_request"
+                )
+                || matches!(
+                    record.name.text.as_str(),
+                    "Int"
+                        | "Bool"
+                        | "Unit"
+                        | "RecordInt"
+                        | "IntList"
+                        | "Bytes"
+                        | "String"
+                        | "Pid"
+                        | "RequestId"
+                )
+            {
+                checker.error(
+                    "T004",
+                    "duplicate or reserved record name",
+                    record.name.span,
+                );
+                continue;
+            }
+            if record.fields.len() > 8 {
+                checker.error("T019", "record field count exceeds eight", record.span);
+            }
+            let mut names = std::collections::HashSet::new();
+            let mut fields = Vec::new();
+            for field in &record.fields {
+                if !names.insert(&field.name.text) {
+                    checker.error("T004", "duplicate record field", field.name.span);
+                }
+                let ty = checker.declared_type(&field.ty);
+                if matches!(ty, Type::Pid | Type::RequestId) {
+                    checker.error(
+                        "T019",
+                        "process capabilities cannot be record fields",
+                        field.ty.span,
+                    );
+                }
+                fields.push((field.name.text.clone(), ty));
+            }
+            checker.records.insert(record.name.text.clone(), fields);
+        }
         for function in &process.functions {
             let parameters: Vec<_> = function
                 .parameters
@@ -188,6 +265,7 @@ pub fn analyze(text: &str) -> Analysis {
                     | "request"
                     | "cancel_request"
             ) || checker.functions.contains_key(&function.name.text)
+                || checker.records.contains_key(&function.name.text)
             {
                 checker.error(
                     "T004",
@@ -391,6 +469,7 @@ struct Checker {
     function_depth: usize,
     handlers: HashMap<String, usize>,
     effects_allowed: bool,
+    records: HashMap<String, Vec<(String, Type)>>,
 }
 
 impl Checker {
@@ -401,6 +480,7 @@ impl Checker {
                 | Type::IntList
                 | Type::Bytes
                 | Type::String
+                | Type::Record(_)
                 | Type::Pid
                 | Type::RequestId
         ) {
@@ -430,6 +510,7 @@ impl Checker {
             "Pid" => Type::Pid,
             "RequestId" => Type::RequestId,
             "" => Type::Unknown,
+            _ if self.records.contains_key(&name.text) => Type::Record(name.text.clone()),
             _ => {
                 self.error(
                     "T002",
@@ -551,6 +632,19 @@ impl Checker {
             ExprKind::Name(name) => self
                 .resolve(name, scope)
                 .map_or(Type::Unknown, |symbol| self.symbols[symbol].ty.clone()),
+            ExprKind::Field { value, name } => {
+                let ty = self.expression(value, scope);
+                if let Type::Record(record) = ty {
+                    if let Some((_, ty)) = self.records[&record]
+                        .iter()
+                        .find(|(field, _)| field == &name.text)
+                    {
+                        return ty.clone();
+                    }
+                }
+                self.error("T019", "unknown field or non-record value", name.span);
+                Type::Unknown
+            }
             ExprKind::Call { callee, arguments } => {
                 if callee.text == "request" {
                     if !self.effects_allowed {
@@ -767,6 +861,21 @@ impl Checker {
                     );
                     return Type::Unknown;
                 }
+                if let Some(fields) = self.records.get(&callee.text).cloned() {
+                    if fields.len() != types.len() {
+                        self.error(
+                            "T013",
+                            "record constructor argument count mismatch",
+                            expression.span,
+                        );
+                    }
+                    for ((actual, (_, expected)), argument) in
+                        types.iter().zip(&fields).zip(arguments)
+                    {
+                        self.require(actual, expected, argument.span);
+                    }
+                    return Type::Record(callee.text.clone());
+                }
                 if let Some(&(symbol, depth)) = self.functions.get(&callee.text) {
                     self.references.push(Reference {
                         span: callee.span,
@@ -870,6 +979,7 @@ impl Checker {
                     if matches!(
                         left_type,
                         Type::RecordInt
+                            | Type::Record(_)
                             | Type::IntList
                             | Type::Bytes
                             | Type::String
@@ -878,6 +988,7 @@ impl Checker {
                     ) || matches!(
                         right_type,
                         Type::RecordInt
+                            | Type::Record(_)
                             | Type::IntList
                             | Type::Bytes
                             | Type::String

@@ -7,6 +7,29 @@ const URI: &str = "file:///test.wings";
 const VALID: &str = "process P { state n: Int = 0; on Get -> Int { n } }";
 
 #[test]
+fn named_records_share_state_and_local_hover_and_type_errors() {
+    let mut server = server();
+    let text = "process P { record Profile { name: String, count: Int } state profile: Profile = Profile(\"中\", 7); on Read -> Int { let saved = profile; saved.count } }";
+    assert_eq!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = text.rfind("saved").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+        "saved: Profile"
+    );
+    let invalid = text.replace("saved.count", "saved.missing");
+    assert!(
+        open(&mut server, URI, 2, &invalid)[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["code"] == "T019")
+    );
+}
+
+#[test]
 fn string_values_share_hover_completion_and_external_type_diagnostics() {
     let mut server = server();
     let text = "process P { state text: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { string_len(text) } }";

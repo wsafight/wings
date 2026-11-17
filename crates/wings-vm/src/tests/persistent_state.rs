@@ -193,3 +193,133 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
     drop((bound, pool));
     assert_eq!(vm.used(), Resources::default());
 }
+
+unsafe extern "C" fn named_initializer(
+    _state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let arguments = [0u64, 7];
+    let mut reference = 0;
+    let status = unsafe {
+        ((*context).heap_call.unwrap())(
+            context,
+            wings_abi::HEAP_RECORD_NEW,
+            arguments.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state: reference as i64,
+                reply: 0,
+            }
+        };
+    }
+    status
+}
+
+unsafe extern "C" fn named_candidate(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let mode = unsafe { *arguments };
+    let values = [u64::from(mode == 0), 99];
+    let mut reference = 0;
+    let status = unsafe {
+        ((*context).heap_call.unwrap())(
+            context,
+            wings_abi::HEAP_RECORD_NEW,
+            values.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status != STATUS_OK {
+        return status;
+    }
+    unsafe {
+        *output = ScalarOutput {
+            state: reference as i64,
+            reply: i64::from(mode == 2) * 2,
+        }
+    };
+    if mode == 1 {
+        STATUS_DIVISION_BY_ZERO
+    } else {
+        STATUS_OK
+    }
+}
+
+#[test]
+fn named_state_rejects_nominal_mismatch_and_failed_candidates_without_losing_old_root() {
+    let [vm, tenant, account] = accounts();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let baseline = vm.used();
+    let mut module = record_module(named_candidate);
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.records = ["First", "Second"]
+        .map(|name| wings_abi::RecordSchema {
+            name: name.into(),
+            fields: vec![("value".into(), ValueType::Int)],
+        })
+        .into();
+    data.manifest.state = ValueType::RecordRef(0);
+    data.initializer = named_initializer;
+    data.manifest.validate().unwrap();
+    for (mode, expected) in [
+        (0, "invalid named record state"),
+        (1, "division by zero"),
+        (2, "invalid scalar state or reply"),
+    ] {
+        let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
+        let committed = process.state;
+        assert!(
+            process
+                .invoke("Bump", &[mode])
+                .unwrap_err()
+                .contains(expected)
+        );
+        assert_eq!(process.state, committed);
+        let heap = process.heap.as_mut().unwrap();
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = ScalarContext {
+            effect_call: None,
+            cancellation: &flag,
+            remaining_steps: 128,
+            yield_request: &flag,
+            slice_remaining: 128,
+            slow_path: None,
+            data: std::ptr::null_mut(),
+            stack_limit: 0,
+            roots: std::ptr::null(),
+            heap_call: Some(crate::aot_heap::heap_call),
+            heap_data: std::ptr::from_mut(&mut **heap).cast(),
+        };
+        let arguments = [0u64, committed as u64, 0];
+        let mut value = 0;
+        assert_eq!(
+            unsafe { crate::aot_heap::heap_call(&mut context, HEAP_COLLECT, 0, &mut value) },
+            STATUS_OK
+        );
+        assert_eq!(process.heap_stats().unwrap().allocated, 1);
+        assert_eq!(
+            unsafe {
+                crate::aot_heap::heap_call(
+                    &mut context,
+                    wings_abi::HEAP_RECORD_FIELD,
+                    arguments.as_ptr() as usize as u64,
+                    &mut value,
+                )
+            },
+            STATUS_OK
+        );
+        assert_eq!(value, 7);
+        drop(process);
+        assert_eq!(vm.used(), baseline);
+    }
+}

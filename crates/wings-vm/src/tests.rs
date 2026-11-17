@@ -460,6 +460,7 @@ pub(crate) fn module() -> ScalarModule {
         ),
     ];
     let manifest = Manifest {
+        records: Vec::new(),
         format: FORMAT_VERSION,
         abi: SCALAR_ABI_VERSION,
         target: wings_abi::host_target().unwrap().into(),

@@ -218,6 +218,16 @@ impl RecordHeap {
                 index: index as u16,
             });
         }
+        self.register_distinct_layout(fields)
+    }
+
+    pub(crate) fn register_distinct_layout(
+        &mut self,
+        fields: &[FieldType],
+    ) -> Result<RecordLayout, String> {
+        if fields.len() > MAX_FIELDS {
+            return Err("record layout exceeds eight fields".into());
+        }
         if self.layout_count == self.schemas.len() {
             return Err("record layout capacity exhausted".into());
         }

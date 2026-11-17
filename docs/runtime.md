@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0108](adr/0108-bounded-named-record-values.md) 的具名记录复用原最多 8 字段槽与精确 Ref 跟踪，每实例布局表在分配前向 process/tenant/VM 准入。即使字段形状一致，各 schema 也有独立名义布局；构造校验引用类型/代次，state 成功返回前校验名义布局，失败不替换已提交根。嵌套 String/Bytes/列表由原 GC 传递保活，构造/扫描/GC 保留预算和取消，不接受具名记录消息或裸引用回复；ABI v20，其他执行上限不变。
+
 [ADR-0107](adr/0107-accounted-control-token-leases.md) 为 CancellationToken/PreemptionToken 增加显式 `new_accounted`：原子共享存储分配前准入，clone 不重复计费，最后 token/调用 owner 归还。ScalarWorker 常驻让出标志与 Scheduler actor 取消标志分别绑定 tenant/process；公开 Default 仍属宿主/工具入口，调用、线程及 CLI 私有标志沿既有控制预留覆盖。不能把调用结束当作所有外部 token 已释放，不提高原控制预留或资源上限。
 
 [ADR-0106](adr/0106-accounted-string-replies.md) 的 StringReply 独立于 BytesReply，分块验证 UTF-8 后共享不可变结果存储与计费租约，不保留 actor/模块/堆/栈。出口根保活候选及结果，副本/控制拒绝不提交候选；完成事件 String 参数重新计费导入，非成功终态为空值，满队列/owner 退出/迟到 publisher 沿原双端生命周期。

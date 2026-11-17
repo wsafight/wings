@@ -364,7 +364,7 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 19
+    assert manifest["abi"] == 20
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
@@ -676,7 +676,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 19 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 20 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
         name = "Start"
     elif byte_buffers:
@@ -1235,6 +1235,12 @@ def main():
         records.mkdir()
         cargo_example("wings-compile", "build_aot_records", records)
         example("aot_records", records)
+        named_records = parent / "named-records"
+        command([COMPILER, "build", ROOT / "examples/named-records.wings", "-o", named_records])
+        example("named_records", named_records)
+        named_run = [VM, "run", "--trusted", named_records, "--heap-records", 16]
+        result = command(named_run, "".join(json.dumps(request) + "\n" for request in [message("Read"), message("Advance"), message("Text"), message("Select", False), message("Select", True), message("Read")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [33, 8, {"string": "初始😀!"}, 9, 8, 35]
         language_records = parent / "language-records"
         command([COMPILER, "build", ROOT / "examples/records.wings", "-o", language_records])
         heap_run = [VM, "run", "--trusted", language_records, "--heap-records", 2]

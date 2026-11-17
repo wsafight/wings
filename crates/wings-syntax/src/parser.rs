@@ -1,6 +1,6 @@
 use crate::ast::{
     BinaryOperator, Block, Expr, ExprKind, Function, Handler, Name, Parameter, Process, Program,
-    State, Statement,
+    Record, State, Statement,
 };
 use crate::{Token, TokenKind};
 use wings_source::{Diagnostic, MAX_DIAGNOSTICS, Span};
@@ -105,15 +105,22 @@ impl Parser<'_> {
     }
 
     fn boundary(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::On
-                | TokenKind::Fn
-                | TokenKind::State
-                | TokenKind::Process
-                | TokenKind::RightBrace
-                | TokenKind::Eof
-        )
+        self.record_declaration()
+            || matches!(
+                self.current().kind,
+                TokenKind::On
+                    | TokenKind::Fn
+                    | TokenKind::State
+                    | TokenKind::Process
+                    | TokenKind::RightBrace
+                    | TokenKind::Eof
+            )
+    }
+
+    fn record_declaration(&self) -> bool {
+        self.at(TokenKind::Identifier)
+            && &self.text[self.current().span.start..self.current().span.end] == "record"
+            && self.next_is(TokenKind::Identifier)
     }
 
     fn separator(&mut self) {
@@ -139,6 +146,7 @@ impl Parser<'_> {
         let name = self.name();
         self.expect(TokenKind::LeftBrace, "expected '{' after process name");
         let mut states = Vec::new();
+        let mut records = Vec::new();
         let mut handlers = Vec::new();
         let mut functions = Vec::new();
         while !matches!(
@@ -146,6 +154,7 @@ impl Parser<'_> {
             TokenKind::RightBrace | TokenKind::Process | TokenKind::Eof
         ) {
             match self.current().kind {
+                TokenKind::Identifier if self.record_declaration() => records.push(self.record()),
                 TokenKind::State => states.push(self.state()),
                 TokenKind::On => handlers.push(self.handler()),
                 TokenKind::Fn => {
@@ -167,9 +176,35 @@ impl Parser<'_> {
             .end;
         Process {
             name,
+            records,
             states,
             handlers,
             functions,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn record(&mut self) -> Record {
+        let start = self.bump().start;
+        let name = self.name();
+        self.expect(TokenKind::LeftBrace, "expected '{' after record name");
+        let mut fields = Vec::new();
+        while self.at(TokenKind::Identifier) {
+            let name = self.name();
+            self.expect(TokenKind::Colon, "expected ':' after field name");
+            let ty = self.name();
+            fields.push(Parameter { name, ty });
+            if !self.at(TokenKind::Comma) {
+                break;
+            }
+            self.bump();
+        }
+        let end = self
+            .expect(TokenKind::RightBrace, "expected '}' after record fields")
+            .end;
+        Record {
+            name,
+            fields,
             span: Span::new(start, end),
         }
     }
@@ -345,6 +380,20 @@ impl Parser<'_> {
         loop {
             if self.expression_nodes > 256 || (!multiline && self.line_break()) {
                 break;
+            }
+            if self.at(TokenKind::Dot) {
+                self.bump();
+                let name = self.name();
+                let span = Span::new(left.span.start, name.span.end);
+                left = Expr {
+                    kind: ExprKind::Field {
+                        value: Box::new(left),
+                        name,
+                    },
+                    span,
+                };
+                self.expression_nodes += 1;
+                continue;
             }
             let (operator, precedence) = match self.current().kind {
                 TokenKind::EqualEqual => (BinaryOperator::Equal, 1),

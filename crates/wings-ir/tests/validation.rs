@@ -9,6 +9,116 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 }
 
 #[test]
+fn named_record_ir_rejects_forged_schema_field_types_and_external_signatures() {
+    let mut program = valid_program();
+    program.records = vec![
+        wings_abi::RecordSchema {
+            name: "A".into(),
+            fields: vec![("text".into(), ValueType::StringRef)],
+        },
+        wings_abi::RecordSchema {
+            name: "B".into(),
+            fields: vec![("text".into(), ValueType::StringRef)],
+        },
+    ];
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("中😀".into()),
+        ),
+        instruction(
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![1],
+            },
+        ),
+        instruction(
+            ValueType::StringRef,
+            Operation::RecordField { value: 2, field: 0 },
+        ),
+        instruction(ValueType::Int, Operation::StringLen(3)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 4;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[2].contains(&1));
+    assert!(roots.at[3].contains(&2));
+    for (index, ty, operation) in [
+        (
+            2,
+            ValueType::RecordRef(1),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![1],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![0],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 99,
+                arguments: vec![1],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![99],
+            },
+        ),
+        (
+            3,
+            ValueType::Int,
+            Operation::RecordField { value: 2, field: 0 },
+        ),
+        (
+            3,
+            ValueType::StringRef,
+            Operation::RecordField { value: 1, field: 0 },
+        ),
+        (
+            3,
+            ValueType::StringRef,
+            Operation::RecordField { value: 2, field: 1 },
+        ),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].parameters[0].1 = ValueType::RecordRef(0);
+    assert!(invalid.validate().is_err());
+    let mut invalid = program.clone();
+    invalid.state = ValueType::RecordRef(u16::MAX);
+    assert!(invalid.validate().is_err());
+    let mut invalid = program;
+    invalid.handlers[0].reply = Some(ValueType::RecordRef(0));
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
 fn string_literals_validate_type_individual_and_aggregate_data_limits() {
     let mut program = valid_program();
     program.handlers[0].function.instructions = vec![
@@ -164,6 +274,7 @@ fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
 
 fn valid_program() -> Program {
     Program {
+        records: Vec::new(),
         name: "Counter".into(),
         state: ValueType::Int,
         functions: Vec::new(),

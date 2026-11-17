@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0108 接入本地/state/fn 具名不可变记录，每 process 最多 32 schema、每种最多 8 字段，可引用更早记录及既有业务值，拒绝递归/前向/能力字段和消息/回复具名记录。`record` 只在声明位置识别，不保留旧变量名；布局表计费、名义布局独立、精确根/GC/取消和失败旧提交保持。源码 ABI v20，原 context/EffectRequest/4352 B 预留不变；具名记录传输、完整账本、公平/故障、最新原生双平台及 BEAM 双门禁仍未完成。
+
 - ADR-0107 增加 CancellationToken/PreemptionToken 显式 `new_accounted`，共享原子存储先准入、最后 token/调用 owner 清理；ScalarWorker 常驻标志与 Scheduler actor 取消分别绑定 tenant/process，移除 actor 原 64 B 合并预付。默认工具/内部调用控制边界不变，保留4352 B/ABI19及原额度/时限；通用记录、完整账本、原生双平台和 BEAM 双门禁仍待完成。
 
 - ADR-0106 开放计费 String 回复、独立 StringReply/ReplyString/CompleteString 和匹配完成事件，非成功终态导入空字符串；出口根/分块复制与 UTF-8 校验、末结果租约清理保持。源码 ABI v19，EffectRequest 80 B/context 88 B/控制预留 4352 B 不变，旧产物须重编译；通用记录、完整账本及原生双平台/BEAM 双门禁仍未完成。

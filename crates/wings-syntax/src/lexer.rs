@@ -16,6 +16,7 @@ pub enum TokenKind {
     True,
     False,
     Colon,
+    Dot,
     Comma,
     Equal,
     EqualEqual,
@@ -129,6 +130,7 @@ pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
         } else {
             match character {
                 ':' => TokenKind::Colon,
+                '.' => TokenKind::Dot,
                 ',' => TokenKind::Comma,
                 '=' if text.as_bytes().get(offset) == Some(&b'=') => {
                     offset += 1;

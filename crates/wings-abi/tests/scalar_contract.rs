@@ -9,6 +9,48 @@ use wings_abi::{
 };
 
 #[test]
+fn named_record_schema_limits_and_nominal_indices_are_explicit() {
+    use wings_abi::{RecordSchema, validate_records};
+    let mut schemas = vec![
+        RecordSchema {
+            name: "A".into(),
+            fields: vec![("value".into(), ValueType::Int)],
+        },
+        RecordSchema {
+            name: "B".into(),
+            fields: vec![("nested".into(), ValueType::RecordRef(0))],
+        },
+    ];
+    validate_records(&schemas).unwrap();
+    assert!(ValueType::RecordRef(0).is_reference());
+    assert!(!ValueType::RecordRef(0).accepts(1));
+    for invalid in [
+        ValueType::RecordRef(1),
+        ValueType::RecordRef(u16::MAX),
+        ValueType::Pid,
+        ValueType::RequestId,
+    ] {
+        schemas[1].fields[0].1 = invalid;
+        assert!(validate_records(&schemas).is_err());
+    }
+    let schemas: Vec<_> = (0..32)
+        .map(|index| RecordSchema {
+            name: format!("Record{index}"),
+            fields: (0..8)
+                .map(|field| (format!("field{field}"), ValueType::Int))
+                .collect(),
+        })
+        .collect();
+    validate_records(&schemas).unwrap();
+    let mut excess = schemas.clone();
+    excess.push(schemas[0].clone());
+    assert!(validate_records(&excess).is_err());
+    let mut excess = schemas;
+    excess[0].fields.push(("extra".into(), ValueType::Int));
+    assert!(validate_records(&excess).is_err());
+}
+
+#[test]
 fn integers_accept_the_entire_signed_scalar_range() {
     for value in [i64::MIN, -1, 0, 1, i64::MAX] {
         assert!(ValueType::Int.accepts(value));
@@ -101,7 +143,7 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 19);
+    assert_eq!(SCALAR_ABI_VERSION, 20);
     assert_eq!(wings_abi::HEAP_STRING_LITERAL, 18);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);

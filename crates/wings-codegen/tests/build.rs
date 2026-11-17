@@ -44,6 +44,7 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 
 fn program() -> Program {
     Program {
+        records: Vec::new(),
         name: "Counter".into(),
         state: ValueType::Int,
         functions: Vec::new(),
