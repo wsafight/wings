@@ -106,6 +106,9 @@ pub fn lower(text: &str) -> Result<Program, String> {
     };
     let mut handlers = Vec::new();
     for handler in &process.handlers {
+        if handler.parameters.len() > 64 {
+            return Err("too many parameters: message exceeds 64 source parameters".into());
+        }
         let mut lowerer = Lowerer {
             functions: functions.clone(),
             records: &records,
@@ -114,7 +117,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
         };
         let mut candidate = lowerer.push(state_type, Operation::State)?;
         lowerer.bindings.insert(state.name.text.clone(), candidate);
-        let parameters = handler
+        let source_parameters = handler
             .parameters
             .iter()
             .map(|parameter| {
@@ -124,8 +127,14 @@ pub fn lower(text: &str) -> Result<Program, String> {
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        for (index, (name, ty)) in parameters.iter().enumerate() {
-            let register = lowerer.push(*ty, Operation::Argument(index))?;
+        let expanded = source_parameters
+            .iter()
+            .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)));
+        let mut parameters = Vec::new();
+        let mut nodes = 0;
+        for (name, ty) in &source_parameters {
+            let register =
+                lowerer.message_parameter(*ty, name, expanded, &mut parameters, &mut nodes)?;
             lowerer.bindings.insert(name.clone(), register);
         }
         candidate = lowerer.statements(&handler.body.statements, &state.name.text, candidate)?;
@@ -171,6 +180,70 @@ struct Lowerer<'program> {
 }
 
 impl Lowerer<'_> {
+    fn message_parameter(
+        &mut self,
+        ty: ValueType,
+        name: &str,
+        expanded: bool,
+        parameters: &mut Vec<(String, ValueType)>,
+        nodes: &mut usize,
+    ) -> Result<Register, String> {
+        *nodes += 1;
+        if *nodes > 64 {
+            return Err("message record expansion exceeds 64 total nodes".into());
+        }
+        if let ValueType::RecordRef(schema) = ty {
+            let fields = self.records[usize::from(schema)].fields.clone();
+            let mut arguments = Vec::new();
+            for (field, ty) in fields {
+                arguments.push(self.message_parameter(ty, &field, expanded, parameters, nodes)?);
+            }
+            self.push(ty, Operation::RecordNew { schema, arguments })
+        } else {
+            let index = parameters.len();
+            parameters.push((
+                if expanded {
+                    format!("field_{index}")
+                } else {
+                    name.into()
+                },
+                ty,
+            ));
+            self.push(ty, Operation::Argument(index))
+        }
+    }
+
+    fn message_arguments(&mut self, arguments: Vec<Register>) -> Result<Vec<Register>, String> {
+        let mut flattened = Vec::new();
+        let mut nodes = 0;
+        for value in arguments {
+            self.message_argument(value, &mut flattened, &mut nodes)?;
+        }
+        Ok(flattened)
+    }
+
+    fn message_argument(
+        &mut self,
+        value: Register,
+        flattened: &mut Vec<Register>,
+        nodes: &mut usize,
+    ) -> Result<(), String> {
+        *nodes += 1;
+        if *nodes > 64 {
+            return Err("message record expansion exceeds 64 total nodes".into());
+        }
+        if let ValueType::RecordRef(schema) = self.instructions[value].ty {
+            let fields = self.records[usize::from(schema)].fields.clone();
+            for (field, (_, ty)) in fields.into_iter().enumerate() {
+                let field = self.push(ty, Operation::RecordField { value, field })?;
+                self.message_argument(field, flattened, nodes)?;
+            }
+        } else {
+            flattened.push(value);
+        }
+        Ok(())
+    }
+
     fn statements(
         &mut self,
         statements: &[Statement],
@@ -291,6 +364,7 @@ impl Lowerer<'_> {
                         .iter()
                         .map(|argument| self.expression(argument))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let arguments = self.message_arguments(arguments)?;
                     return self.push(
                         ValueType::RequestId,
                         Operation::Request {
@@ -333,6 +407,7 @@ impl Lowerer<'_> {
                         .iter()
                         .map(|argument| self.expression(argument))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let arguments = self.message_arguments(arguments)?;
                     return self.push(
                         ValueType::Unit,
                         match target {
@@ -525,6 +600,93 @@ mod tests {
     use super::*;
 
     #[test]
+    fn named_message_parameters_expand_to_typed_leaves_and_rebuild_independent_records() {
+        let program = lower("process P { record Empty {} record A { text: String, values: IntList } record B { a: A, empty: Empty, saved: RecordInt, data: Bytes, flag: Bool, unit: Unit } state n: Int = 0; fn make() -> B { B(A(\"中\", empty_ints()), Empty(), record_int(7), fill_bytes(0, 0), true, ()) } on Store(value: B) { collect(); n = string_len(value.a.text) } on Start { send_self(Store, make()) } on Query(value: B) -> Int { value.saved; 1 } on Done(id: RequestId, status: Int, result: Int) {} on Ask { request(self_pid(), Query, Done, 1000, make()); } }").unwrap();
+        for index in [0, 2] {
+            assert_eq!(
+                program.handlers[index]
+                    .parameters
+                    .iter()
+                    .map(|(_, ty)| *ty)
+                    .collect::<Vec<_>>(),
+                vec![
+                    ValueType::StringRef,
+                    ValueType::ListRef,
+                    ValueType::Ref,
+                    ValueType::BytesRef,
+                    ValueType::Bool,
+                    ValueType::Unit
+                ]
+            );
+            assert_eq!(
+                program.handlers[index]
+                    .function
+                    .instructions
+                    .iter()
+                    .filter(|instruction| matches!(
+                        instruction.operation,
+                        Operation::RecordNew { .. }
+                    ))
+                    .count(),
+                3
+            );
+        }
+        let start = &program.handlers[1].function;
+        assert_eq!(
+            start
+                .instructions
+                .iter()
+                .filter(|instruction| matches!(instruction.operation, Operation::Call { .. }))
+                .count(),
+            1
+        );
+        assert!(start.instructions.iter().any(|instruction| matches!(&instruction.operation, Operation::SendSelf { arguments, .. } if arguments.len() == 6)));
+        let mut forged = program;
+        forged.handlers[0].parameters[0].1 = ValueType::RecordRef(0);
+        assert!(forged.validate().is_err());
+    }
+
+    #[test]
+    fn named_message_expansion_counts_empty_records_and_repeated_subtrees() {
+        for count in [63, 64, 65] {
+            let parameters = (0..count)
+                .map(|index| format!("value_{index}: Empty"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let arguments = vec!["Empty()"; count].join(",");
+            let source = format!(
+                "process P {{ record Empty {{}} state n: Int = 0; on Store({parameters}) {{ n = n + 1 }} on Start {{ send_self(Store, {arguments}) }} }}"
+            );
+            assert_eq!(lower(&source).is_ok(), count <= 64, "{count}");
+        }
+        for suffix in ["", ", extra: Int", ", extra: Empty", ", extra: A"] {
+            let parameters = (0..7)
+                .map(|index| format!("value_{index}: A"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let source = format!(
+                "process P {{ record Empty {{}} record A {{ a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int }} state n: Int = 0; on Store({parameters}{suffix}) {{}} }}"
+            );
+            assert_eq!(lower(&source).is_ok(), suffix != ", extra: A", "{suffix}");
+        }
+        let mut records = "record A0 {}".to_owned();
+        for index in 1..32 {
+            records.push_str(&format!(
+                " record A{index} {{ left: A{}, right: A{} }}",
+                index - 1,
+                index - 1
+            ));
+        }
+        assert!(
+            lower(&format!(
+                "process P {{ {records} state n: Int = 0; on Store(value: A31) {{}} }}"
+            ))
+            .unwrap_err()
+            .contains("64 total nodes")
+        );
+    }
+
+    #[test]
     fn string_equality_lowers_to_content_intrinsic_instead_of_reference_comparison() {
         let program = lower("process P { state text: String = \"中\"; on Equal -> Bool { text == \"中\" } on Different -> Bool { text != \"中\" } }").unwrap();
         for handler in &program.handlers {
@@ -575,7 +737,6 @@ mod tests {
             "process P { record A { value: Int } state n: A = A(true); }",
             "process P { record A { value: Int } state n: A = A(); }",
             "process P { record A { value: Int } state n: A = A(1); on Read -> Int { n.missing } }",
-            "process P { record A {} state n: Int = 0; on Read(value: A) -> Int { 1 } }",
             "process P { record A {} state n: Int = 0; on Read -> A { A() } }",
             "process P { record A {} state n: A = A(); on Read -> Bool { n == n } }",
             "process P { record collect {} state n: Int = 0; }",

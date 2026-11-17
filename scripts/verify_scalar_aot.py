@@ -1278,6 +1278,9 @@ def main():
         named_records = parent / "named-records"
         command([COMPILER, "build", ROOT / "examples/named-records.wings", "-o", named_records])
         example("named_records", named_records)
+        named_messages = parent / "named-record-messages"
+        command([COMPILER, "build", ROOT / "examples/named-record-messages.wings", "-o", named_messages])
+        print(example("named_record_messages", named_messages).stdout, end="")
         named_run = [VM, "run", "--trusted", named_records, "--heap-records", 16]
         result = command(named_run, "".join(json.dumps(request) + "\n" for request in [message("Read"), message("Advance"), message("Text"), message("Select", False), message("Select", True), message("Read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [33, 8, {"string": "初始😀!"}, 9, 8, 35]

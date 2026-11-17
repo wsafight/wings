@@ -365,6 +365,7 @@ pub fn analyze(text: &str) -> Analysis {
                                 | Type::IntList
                                 | Type::Bytes
                                 | Type::String
+                                | Type::Record(_)
                         ) {
                             checker.external_type(&ty, parameter.ty.span);
                         }

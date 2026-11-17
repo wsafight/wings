@@ -1,0 +1,56 @@
+process NamedMessages {
+  record Empty {}
+  record Label { text: String, enabled: Bool }
+  record Payload { label: Label, values: IntList, data: Bytes, saved: RecordInt, empty: Empty, unit: Unit }
+  record Lists { first: IntList, second: IntList }
+  state count: Int = 0;
+
+  fn make(length: Int) -> Payload {
+    Payload(Label(string_from_bytes(fill_bytes(length, 97)), true), prepend_int(3, empty_ints()), fill_bytes(1, 9), record_int(7), Empty(), ())
+  }
+
+  fn score(value: Payload) -> Int {
+    collect();
+    if value.label.enabled {
+      string_len(value.label.text) + head_int(value.values) + byte_at(value.data, 0) + read_int(value.saved)
+    } else { 0 }
+  }
+
+  on Store(value: Payload) { count = score(value) }
+  on Query(value: Payload) -> Int { count = score(value); count }
+  on Start(length: Int) -> Int {
+    let value = make(length);
+    collect();
+    send_self(Store, value);
+    count
+  }
+  on Cross(length: Int) -> Int {
+    let target = spawn_self();
+    let value = make(length);
+    send(target, Store, value);
+    request(target, Query, Done, 1000, value);
+    count
+  }
+  on Ask(length: Int) -> Int {
+    let value = make(length);
+    request(self_pid(), Query, Done, 1000, value);
+    count
+  }
+  on Done(id: RequestId, status: Int, value: Int) {
+    count = if status == 0 { value } else { -1000 - status }
+  }
+  on EmptyValue(value: Empty) { count = count + 1 }
+  on EmptyMessage -> Int { send_self(EmptyValue, Empty()); count }
+  on PublishedThenFail(length: Int) -> Int {
+    let target = spawn_self();
+    send(target, Store, make(length));
+    count = 999;
+    1 / 0
+  }
+  on TooManyBytes -> Int {
+    send_self(Store, make(65536));
+    count
+  }
+  on Pair(value: Lists) { count = head_int(value.first) + head_int(value.second) }
+  on Read -> Int { collect(); count }
+}

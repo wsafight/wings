@@ -12,6 +12,20 @@ fn checked(text: &str) -> Analysis {
 }
 
 #[test]
+fn named_message_parameters_preserve_nominal_types_and_block_record_replies() {
+    checked(
+        "process P { record A { text: String } state n: Int = 0; on Store(value: A) { n = string_len(value.text) } on Start { send_self(Store, A(\"中\")) } on Read(value: A) -> Int { string_len(value.text) } on Done(id: RequestId, status: Int, result: Int) {} on Ask { request(self_pid(), Read, Done, 1000, A(\"😀\")); } }",
+    );
+    for source in [
+        "process P { record A {} record B {} state n: Int = 0; on Store(value: A) {} on Start { send_self(Store, B()) } }",
+        "process P { record A {} state n: Int = 0; on Read -> A { A() } }",
+        "process P { record A {} state n: Int = 0; on Done(id: RequestId, status: Int, result: A) {} }",
+    ] {
+        assert!(!analyze(source).diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
 fn string_equality_is_typed_content_equality_without_ordering_or_coercion() {
     checked(
         "process P { state text: String = \"中😀\"; fn equal(left: String, right: String) -> Bool { left == right } on Same(value: String) -> Bool { equal(text, value) } on Different -> Bool { text != \"\" } }",

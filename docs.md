@@ -33,6 +33,7 @@
 | [2026-11-17 全量测试入口验证](docs/validation-workspace-runner-2026-11-17.md) | 所有 test target 实际受限执行、指纹清单、失败证据与 CI 覆盖 |
 | [2026-11-17 字符串比较验证](docs/validation-string-equality-2026-11-17.md) | 完整内容相等、分块预算/取消、精确根和原限全量回归 |
 | [2026-11-17 TCP 启动取证](docs/validation-tcp-startup-2026-11-17.md) | 完整握手绝对 deadline、失败日志、原限复验及动态加载采样边界 |
+| [2026-11-17 具名记录消息验证](docs/validation-named-record-messages-2026-11-17.md) | 有界叶值展开、目标重建、单/双 worker、失败/取消/停止及全量回归 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

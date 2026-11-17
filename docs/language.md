@@ -13,7 +13,9 @@ process Profiles {
 }
 ```
 
-每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果，本轮拒绝具名记录消息/回复与 JSON 参数。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v21，旧产物须重编译。
+每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v21，旧产物须重编译。
+
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 开放具名记录单向/请求消息参数，支持 `send_self`/`send`/`request`，同形异名仍拒绝。compiler 按字段顺序展开为原有叶值，目标在业务前创建独立记录；实参仅求值一次。源码至多 64 参数，全部参数展开树的记录节点及叶值按出现次数合计至多 64（含空记录），超界在 AOT 前拒绝。列表合计 64 整数、String/Bytes 合计 65536 字节及原堆容量不变。宿主按清单位置使用 `MessageValue` 传展开后的叶值，不提供原 record handle；JSON 对象入口与具名记录回复仍拒绝。示例 [`examples/named-record-messages.wings`](../examples/named-record-messages.wings)。
 
 ## 有界字符串值
 

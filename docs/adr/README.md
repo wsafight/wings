@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0113](0113-bounded-named-record-message-expansion.md) | 具名记录消息有界字段展开、目标重建与原复制账本 | 已采纳（消息参数切片） |
 | [0112](0112-bounded-tcp-startup-evidence.md) | TCP 完整握手绝对 deadline、失败前缀及进程组清理 | 已采纳（验证可靠性） |
 | [0111](0111-bounded-string-content-equality.md) | String 完整内容相等、分块预算检查与精确根 | 已采纳（业务值能力） |
 | [0110](0110-reproducible-bounded-workspace-validation.md) | 全目标测试受限执行、指纹清单与失败证据 | 已采纳（验证基础设施） |

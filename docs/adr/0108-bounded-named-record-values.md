@@ -3,6 +3,7 @@
 - 日期：2026-11-17
 - 状态：已采纳（本地/状态/函数业务值切片）
 - 延续：[ADR-0018](0018-bounded-record-heap.md)、[ADR-0042](0042-managed-function-frames.md) 与 [ADR-0103](0103-accounted-utf8-string-values.md)。
+- 后继：[ADR-0113](0113-bounded-named-record-message-expansion.md) 开放有界具名记录消息参数；本记录保留原本地切片的范围与理由。
 
 ## 决定
 
