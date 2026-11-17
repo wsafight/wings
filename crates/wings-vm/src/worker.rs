@@ -62,7 +62,6 @@ pub enum WorkerWait {
 
 struct IdleWait {
     parker: crate::WorkerParker,
-    charge: Arc<Reservation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,16 +255,8 @@ impl ScalarWorker {
         if self.idle_wait.is_some() {
             return Err("worker wait is already enabled".into());
         }
-        let charge = self.tenant.reserve(Resources {
-            bytes: 4096,
-            ..Resources::default()
-        })?;
-        let parker =
-            crate::WorkerParker::new().map_err(|error| format!("create worker wait: {error}"))?;
-        self.idle_wait = Some(IdleWait {
-            parker,
-            charge: Arc::new(charge),
-        });
+        let parker = crate::WorkerParker::new_accounted(&self.tenant)?;
+        self.idle_wait = Some(IdleWait { parker });
         Ok(())
     }
 
@@ -374,7 +365,6 @@ impl ScalarWorker {
             max_steps,
             std::mem::size_of::<Message>() as u64,
             wait.parker.notifier(),
-            wait.charge.clone(),
         )?;
         self.actor_mut(pid)?.ingress = Some(receiver);
         Ok(sender)
@@ -2149,6 +2139,25 @@ mod payload_tests {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn worker_notifier_retains_wait_charge_until_its_last_owner_exits() {
+        let limit = Resources {
+            bytes: 16 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm(limit);
+        let tenant = vm.tenant(limit).unwrap();
+        let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+        worker.enable_wait().unwrap();
+        let notifier = worker.idle_wait.as_ref().unwrap().parker.notifier();
+        let cloned = notifier.clone();
+        drop((worker, notifier));
+        assert_eq!(tenant.used().bytes, 4096);
+        cloned.notify().unwrap();
+        std::thread::spawn(move || drop(cloned)).join().unwrap();
+        assert_eq!(tenant.used(), Resources::default());
+    }
 
     #[test]
     fn pending_without_ready_work_fixture_uses_earliest_deadline_once() {

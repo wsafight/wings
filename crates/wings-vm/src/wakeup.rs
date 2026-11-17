@@ -5,6 +5,10 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::{Reservation, ResourceAccount, Resources};
+
+const WAIT_CONTROL_BYTES: u64 = 4096;
+
 #[cfg(test)]
 mod tests;
 
@@ -17,18 +21,42 @@ mod macos;
 compile_error!("worker wakeup is only supported on Linux and macOS");
 
 pub struct WorkerParker {
-    notifier: WorkerNotifier,
     #[cfg(target_os = "linux")]
     poller: OwnedFd,
+    notifier: WorkerNotifier,
     _single_waiter: PhantomData<Cell<()>>,
 }
 
 #[derive(Clone)]
 pub struct WorkerNotifier {
-    descriptor: Arc<OwnedFd>,
+    endpoint: Arc<WakeEndpoint>,
+}
+
+struct WakeEndpoint {
+    descriptor: OwnedFd,
+    _charge: Option<Reservation>,
 }
 
 impl WorkerParker {
+    pub fn new() -> io::Result<Self> {
+        Self::create(None)
+    }
+
+    pub fn new_accounted(account: &ResourceAccount) -> Result<Self, String> {
+        Self::new_accounted_with(account, Self::create)
+    }
+
+    fn new_accounted_with(
+        account: &ResourceAccount,
+        create: impl FnOnce(Option<Reservation>) -> io::Result<Self>,
+    ) -> Result<Self, String> {
+        let charge = account.reserve(Resources {
+            bytes: WAIT_CONTROL_BYTES,
+            ..Resources::default()
+        })?;
+        create(Some(charge)).map_err(|error| format!("create worker wait: {error}"))
+    }
+
     pub fn notifier(&self) -> WorkerNotifier {
         self.notifier.clone()
     }

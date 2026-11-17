@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0109](docs/adr/0109-accounted-wakeup-endpoint-leases.md) 修复唤醒通知者比 worker 存活更久时提前退账：`WorkerParker::new_accounted` 在 OS 创建前准入，最后端点 owner 关闭 FD 后归还原 4096 B，worker/ingress 不重复计费。ABI v20、执行预算和时限不变，仍非完整账本或 MVP。
+
 [ADR-0108](docs/adr/0108-bounded-named-record-values.md) 接入本地/state/fn 有界具名记录及名义类型检查，每 process 最多 32 种、每种最多 8 字段；引用字段由原精确 GC 跟踪，实例布局表先计费，失败不提交候选状态。源码 ABI v20，旧产物须重编译，控制预留不变；示例见 [`examples/named-records.wings`](examples/named-records.wings)。具名记录传输、完整账本与原生双平台/BEAM 双门禁仍待完成。
 
 [ADR-0107](docs/adr/0107-accounted-control-token-leases.md) 补取消/让出 token 的显式计费构造、常驻 worker/actor 接入与末 owner 清理。ABI v19 和原控制预留不变，Default 宿主工具入口不代表完整资源计费；MVP 仍未完成。

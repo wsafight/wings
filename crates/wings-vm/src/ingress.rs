@@ -33,7 +33,6 @@ struct Shared {
     account: ResourceAccount,
     notifier: WorkerNotifier,
     replies: Option<(ValueType, Arc<ReplyTable>)>,
-    _wait_charge: Arc<Reservation>,
     _charge: Reservation,
 }
 
@@ -157,7 +156,6 @@ impl IngressReceiver {
         max_steps: u64,
         message_bytes: u64,
         notifier: WorkerNotifier,
-        wait_charge: Arc<Reservation>,
     ) -> Result<(Self, IngressSender), String> {
         if !(1..=64).contains(&capacity) || max_steps == 0 {
             return Err("ingress requires 1..=64 slots and a nonzero execution budget".into());
@@ -217,7 +215,6 @@ impl IngressReceiver {
             account: account.clone(),
             notifier,
             replies,
-            _wait_charge: wait_charge,
             _charge: charge,
         });
         Ok((
@@ -288,7 +285,6 @@ mod tests {
             messages: 1,
             ..Resources::default()
         });
-        let wait_charge = Arc::new(account.reserve(Resources::default()).unwrap());
         let parker = crate::WorkerParker::new().unwrap();
         let sender = IngressSender {
             shared: Arc::new(Shared {
@@ -304,7 +300,6 @@ mod tests {
                 account: account.clone(),
                 notifier: parker.notifier(),
                 replies: None,
-                _wait_charge: wait_charge,
                 _charge: account.reserve(Resources::default()).unwrap(),
             }),
         };

@@ -4,12 +4,13 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{WorkerNotifier, WorkerParker, retry_interrupted, wait_with_timeout};
+use super::{WakeEndpoint, WorkerNotifier, WorkerParker, retry_interrupted, wait_with_timeout};
+use crate::Reservation;
 
 const USER_EVENT: libc::uintptr_t = 1;
 
 impl WorkerParker {
-    pub fn new() -> io::Result<Self> {
+    pub(super) fn create(charge: Option<Reservation>) -> io::Result<Self> {
         let descriptor = retry_interrupted(|| unsafe { libc::kqueue() })?;
         let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
         let flags =
@@ -24,7 +25,10 @@ impl WorkerParker {
         submit(&descriptor, &user_event(libc::EV_ADD | libc::EV_CLEAR, 0))?;
         Ok(Self {
             notifier: WorkerNotifier {
-                descriptor: Arc::new(descriptor),
+                endpoint: Arc::new(WakeEndpoint {
+                    descriptor,
+                    _charge: charge,
+                }),
             },
             _single_waiter: PhantomData,
         })
@@ -37,7 +41,7 @@ impl WorkerParker {
             let mut event = user_event(0, 0);
             let ready = unsafe {
                 libc::kevent(
-                    self.notifier.descriptor.as_raw_fd(),
+                    self.notifier.endpoint.descriptor.as_raw_fd(),
                     std::ptr::null(),
                     0,
                     &mut event,
@@ -71,7 +75,10 @@ impl WorkerParker {
 
 impl WorkerNotifier {
     pub fn notify(&self) -> io::Result<()> {
-        submit(&self.descriptor, &user_event(0, libc::NOTE_TRIGGER))
+        submit(
+            &self.endpoint.descriptor,
+            &user_event(0, libc::NOTE_TRIGGER),
+        )
     }
 }
 

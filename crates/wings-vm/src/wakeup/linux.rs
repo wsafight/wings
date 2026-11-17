@@ -4,10 +4,11 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{WorkerNotifier, WorkerParker, retry_interrupted, wait_with_timeout};
+use super::{WakeEndpoint, WorkerNotifier, WorkerParker, retry_interrupted, wait_with_timeout};
+use crate::Reservation;
 
 impl WorkerParker {
-    pub fn new() -> io::Result<Self> {
+    pub(super) fn create(charge: Option<Reservation>) -> io::Result<Self> {
         let descriptor = retry_interrupted(|| unsafe {
             libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)
         })?;
@@ -28,7 +29,10 @@ impl WorkerParker {
         })?;
         Ok(Self {
             notifier: WorkerNotifier {
-                descriptor: Arc::new(descriptor),
+                endpoint: Arc::new(WakeEndpoint {
+                    descriptor,
+                    _charge: charge,
+                }),
             },
             poller,
             _single_waiter: PhantomData,
@@ -60,7 +64,7 @@ impl WorkerParker {
             let mut counter = 0_u64;
             eventfd_io(|| unsafe {
                 libc::read(
-                    self.notifier.descriptor.as_raw_fd(),
+                    self.notifier.endpoint.descriptor.as_raw_fd(),
                     (&mut counter as *mut u64).cast(),
                     size_of::<u64>(),
                 )
@@ -75,7 +79,7 @@ impl WorkerNotifier {
         let counter = 1_u64;
         eventfd_io(|| unsafe {
             libc::write(
-                self.descriptor.as_raw_fd(),
+                self.endpoint.descriptor.as_raw_fd(),
                 (&counter as *const u64).cast(),
                 size_of::<u64>(),
             )

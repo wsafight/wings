@@ -1,7 +1,7 @@
 use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant};
 
-use wings_vm::{WorkerNotifier, WorkerParker};
+use wings_vm::{ResourceAccount, Resources, WorkerNotifier, WorkerParker};
 
 fn transferable<Value: Send>() {}
 
@@ -95,6 +95,36 @@ fn main() {
         drop(notifier);
         assert!(parker.wait(Duration::ZERO).expect("waiter owns endpoint"));
     }
+    let limits = Resources {
+        bytes: 1 << 20,
+        ..Resources::default()
+    };
+    let vm = ResourceAccount::vm_accounted(limits).unwrap();
+    let baseline = vm.used();
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    for _ in 0..16 {
+        let mut parker = WorkerParker::new_accounted(&tenant).unwrap();
+        let notifier = parker.notifier();
+        let charged = vm.used();
+        let producer = notifier.clone();
+        std::thread::spawn(move || producer.notify().unwrap())
+            .join()
+            .unwrap();
+        assert!(parker.wait(Duration::from_secs(2)).unwrap());
+        drop(parker);
+        assert_eq!(vm.used(), charged);
+        let cloned = notifier.clone();
+        drop(notifier);
+        std::thread::spawn(move || {
+            cloned.notify().unwrap();
+            drop(cloned);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(tenant.used(), Resources::default());
+    }
+    drop(tenant);
+    assert_eq!(vm.used(), baseline);
     println!(
         "Worker wakeup verified: timeouts, coalescing, early notification, races and endpoint lifetime"
     );

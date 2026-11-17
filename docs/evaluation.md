@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 唤醒租约验收先复现 worker 销毁/通知者存活时的零账目，再检查三级零/少一/精确准入、OS 工厂失败回滚、账户句柄退出、跨线程末 owner 和既有 ingress/TCP 通知语义。保留原 4096 B、全部 CPU/墙钟/阶段限额，不将控制账本等同 kernel FD/RSS 或 BEAM 双门禁。
+
 [ADR-0108](adr/0108-bounded-named-record-values.md) 须覆盖空/8 字段/32 schema 边界、同形错名义类型、前向/递归/能力字段拒绝，以及 IR/清单伪造类型索引与外部记录签名拒绝。真实 AOT 验证嵌套 String/Bytes/列表/记录根、跨 fn/分支/循环与逐片 GC、额度/预算/取消清理、单/双 worker、重启及 CLI；失败候选必须保留旧 state/root。原限不变，本地通过不等于原生双平台或 BEAM 双门禁完成。
 
 [ADR-0107](adr/0107-accounted-control-token-leases.md) 控制租约回归验证三级不足/精确边界、跨线程末释放、worker/actor 退出后的独立标志存活及真实 AOT 正常/让出/取消/挂起 Drop；不以逻辑账目等同 RSS，不改变原时限、quota、ABI 或双平台 BEAM 门禁。

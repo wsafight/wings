@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0109](0109-accounted-wakeup-endpoint-leases.md) | OS 唤醒端点与末 notifier 的同寿命计费 | 已采纳（外部事件资源生命周期修正） |
 | [0108](0108-bounded-named-record-values.md) | 有界具名不可变记录、名义布局与嵌套精确根 | 已采纳（本地/状态/函数业务值切片） |
 | [0107](0107-accounted-control-token-leases.md) | 共享取消/让出标志末 owner 计费与常驻 worker 控制 | 已采纳（资源账本切片） |
 | [0001](0001-vm-boundary-and-naming.md) | VM 的职责与命令入口 | 已采纳（设计） |

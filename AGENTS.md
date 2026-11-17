@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0109 将 OS 唤醒票据内嵌共享端点，增加 WorkerParker::new_accounted，ScalarWorker/ingress 不再平行复制独立票据；最后 notifier 关闭 FD 后归还原 4096 B，Linux poller 先于端点释放。修复保留通知者但 worker 退账的确定性回归，ABI v20/4352 B 预留和原额度/时限不变；工具 new 不计费，仍不代表完整账本、原生双平台或 BEAM/MVP 门禁完成。
+
 - ADR-0108 接入本地/state/fn 具名不可变记录，每 process 最多 32 schema、每种最多 8 字段，可引用更早记录及既有业务值，拒绝递归/前向/能力字段和消息/回复具名记录。`record` 只在声明位置识别，不保留旧变量名；布局表计费、名义布局独立、精确根/GC/取消和失败旧提交保持。源码 ABI v20，原 context/EffectRequest/4352 B 预留不变；具名记录传输、完整账本、公平/故障、最新原生双平台及 BEAM 双门禁仍未完成。
 
 - ADR-0107 增加 CancellationToken/PreemptionToken 显式 `new_accounted`，共享原子存储先准入、最后 token/调用 owner 清理；ScalarWorker 常驻标志与 Scheduler actor 取消分别绑定 tenant/process，移除 actor 原 64 B 合并预付。默认工具/内部调用控制边界不变，保留4352 B/ABI19及原额度/时限；通用记录、完整账本、原生双平台和 BEAM 双门禁仍待完成。
