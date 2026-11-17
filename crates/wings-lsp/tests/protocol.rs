@@ -7,6 +7,44 @@ const URI: &str = "file:///test.wings";
 const VALID: &str = "process P { state n: Int = 0; on Get -> Int { n } }";
 
 #[test]
+fn string_values_share_hover_completion_and_external_type_diagnostics() {
+    let mut server = server();
+    let text = "process P { state text: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { string_len(text) } }";
+    assert_eq!(
+        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = text.rfind("text").unwrap() as u32;
+    assert_eq!(
+        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
+        "text: String"
+    );
+    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    let items = completion["result"]["items"].as_array().unwrap();
+    for (name, detail) in [
+        ("string_from_bytes", "(Bytes) -> String"),
+        ("string_bytes", "(String) -> Bytes"),
+        ("string_len", "(String) -> Int"),
+        ("concat_strings", "(String, String) -> String"),
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == detail)
+        );
+    }
+    assert!(items.iter().any(|item| item["label"] == "String"));
+    let invalid = "process P { state n: Int = 0; on Set(value: String) { n = string_len(value) } }";
+    assert!(
+        open(&mut server, URI, 2, invalid)[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["code"] == "T011")
+    );
+}
+
+#[test]
 fn bytes_hover_and_builtins_share_frontend_types_without_execution() {
     let mut server = server();
     let text =

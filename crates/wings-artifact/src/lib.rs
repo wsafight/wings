@@ -88,6 +88,15 @@ impl Manifest {
             return Err("Pid/RequestId state is not supported".into());
         }
         if self.handlers.iter().any(|handler| {
+            handler.reply == Some(ValueType::StringRef)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::StringRef)
+        }) {
+            return Err("String messages and replies are not supported".into());
+        }
+        if self.handlers.iter().any(|handler| {
             handler.reply.is_some_and(ValueType::is_capability)
                 || handler.parameters.iter().any(|(_, ty)| {
                     *ty == ValueType::Pid

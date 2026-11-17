@@ -261,6 +261,10 @@ fn compile_body(
                 | Operation::ReplaceByte(_)
                 | Operation::ReadI64Be(_, _)
                 | Operation::ReplaceI64Be(_)
+                | Operation::StringFromBytes(_)
+                | Operation::StringBytes(_)
+                | Operation::StringLen(_)
+                | Operation::ConcatStrings(_, _)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -700,9 +704,26 @@ fn compile_body(
             | Operation::ByteAt(_, _)
             | Operation::ReplaceByte(_)
             | Operation::ReadI64Be(_, _)
-            | Operation::ReplaceI64Be(_) => {
+            | Operation::ReplaceI64Be(_)
+            | Operation::StringFromBytes(_)
+            | Operation::StringBytes(_)
+            | Operation::StringLen(_)
+            | Operation::ConcatStrings(_, _) => {
                 let output = heap_output.expect("heap operation scratch");
                 let (operation, arguments) = match instruction.operation {
+                    Operation::StringFromBytes(value) => {
+                        (wings_abi::HEAP_STRING_FROM_BYTES, [Some(value), None, None])
+                    }
+                    Operation::StringBytes(value) => {
+                        (wings_abi::HEAP_STRING_BYTES, [Some(value), None, None])
+                    }
+                    Operation::StringLen(value) => {
+                        (wings_abi::HEAP_STRING_LEN, [Some(value), None, None])
+                    }
+                    Operation::ConcatStrings(left, right) => (
+                        wings_abi::HEAP_CONCAT_STRINGS,
+                        [Some(left), Some(right), None],
+                    ),
                     Operation::FillBytes(length, value) => (
                         wings_abi::HEAP_FILL_BYTES,
                         [Some(length), Some(value), None],

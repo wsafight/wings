@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU32;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCALAR_ABI_VERSION: u32 = 15;
+pub const SCALAR_ABI_VERSION: u32 = 16;
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_OVERFLOW: u32 = 1;
 pub const STATUS_DIVISION_BY_ZERO: u32 = 2;
@@ -19,6 +19,7 @@ pub const STATUS_SPAWN_REJECTED: u32 = 11;
 pub const STATUS_REQUEST_REJECTED: u32 = 12;
 pub const STATUS_INVALID_BYTES: u32 = 13;
 pub const STATUS_REPLY_REJECTED: u32 = 14;
+pub const STATUS_INVALID_STRING: u32 = 15;
 pub const EFFECT_SEND_SELF: u32 = 0;
 pub const EFFECT_SELF_PID: u32 = 1;
 pub const EFFECT_SPAWN_SELF: u32 = 2;
@@ -39,6 +40,10 @@ pub const HEAP_BYTE_AT: u32 = 10;
 pub const HEAP_REPLACE_BYTE: u32 = 11;
 pub const HEAP_READ_I64_BE: u32 = 12;
 pub const HEAP_REPLACE_I64_BE: u32 = 13;
+pub const HEAP_STRING_FROM_BYTES: u32 = 14;
+pub const HEAP_STRING_BYTES: u32 = 15;
+pub const HEAP_STRING_LEN: u32 = 16;
+pub const HEAP_CONCAT_STRINGS: u32 = 17;
 pub const MAX_SHADOW_ROOTS: usize = 64;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
@@ -50,6 +55,7 @@ pub enum ValueType {
     Ref,
     ListRef,
     BytesRef,
+    StringRef,
     Pid,
     RequestId,
 }
@@ -60,12 +66,20 @@ impl ValueType {
             Self::Int => true,
             Self::Bool => matches!(value, 0 | 1),
             Self::Unit => value == 0,
-            Self::Ref | Self::ListRef | Self::BytesRef | Self::Pid | Self::RequestId => false,
+            Self::Ref
+            | Self::ListRef
+            | Self::BytesRef
+            | Self::StringRef
+            | Self::Pid
+            | Self::RequestId => false,
         }
     }
 
     pub fn is_reference(self) -> bool {
-        matches!(self, Self::Ref | Self::ListRef | Self::BytesRef)
+        matches!(
+            self,
+            Self::Ref | Self::ListRef | Self::BytesRef | Self::StringRef
+        )
     }
 
     pub fn is_capability(self) -> bool {

@@ -93,7 +93,12 @@ impl AotHeap {
         ty: wings_abi::ValueType,
         encoded: i64,
     ) -> Result<(), String> {
-        if ty == wings_abi::ValueType::BytesRef {
+        if ty == wings_abi::ValueType::StringRef {
+            let reference = self.heap.import_reference(encoded as u64)?;
+            self.heap.string_bytes(reference)?;
+            self.committed = Some(reference);
+            Ok(())
+        } else if ty == wings_abi::ValueType::BytesRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.bytes(reference)?;
             self.committed = Some(reference);
@@ -581,6 +586,138 @@ unsafe fn byte_call(
     Err(STATUS_HEAP_EXHAUSTED)
 }
 
+unsafe fn string_count(
+    context: &mut ScalarContext,
+    reference: HeapRef,
+    from_bytes: bool,
+) -> Result<u64, u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut offset = 0;
+    let mut count = 0;
+    loop {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let heap = unsafe { &*pointer };
+        let data = if from_bytes {
+            heap.heap.bytes(reference)
+        } else {
+            heap.heap.string_bytes(reference)
+        }
+        .map_err(|_| STATUS_INVALID_ROOT)?;
+        if offset == data.len() {
+            return Ok(count);
+        }
+        let end = (offset + 256).min(data.len());
+        let chunk = &data[offset..end];
+        let valid = match std::str::from_utf8(chunk) {
+            Ok(text) => text,
+            Err(error) if error.error_len().is_none() && end < data.len() => {
+                std::str::from_utf8(&chunk[..error.valid_up_to()])
+                    .map_err(|_| wings_abi::STATUS_INVALID_STRING)?
+            }
+            Err(_) => return Err(wings_abi::STATUS_INVALID_STRING),
+        };
+        count += valid.chars().count() as u64;
+        offset += valid.len();
+    }
+}
+
+unsafe fn string_call(
+    context: &mut ScalarContext,
+    operation: u32,
+    arguments: [i64; 3],
+) -> Result<u64, u32> {
+    use wings_abi::{
+        HEAP_CONCAT_STRINGS, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN, STATUS_INVALID_STRING,
+    };
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let from_bytes = operation == HEAP_STRING_FROM_BYTES;
+    let source = unsafe { &*pointer }
+        .heap
+        .import_reference(arguments[0] as u64)
+        .map_err(|_| STATUS_INVALID_ROOT)?;
+    let mut sources = [Some(source), None];
+    if operation == HEAP_STRING_LEN || from_bytes {
+        let count = unsafe { string_count(context, source, from_bytes) }?;
+        if operation == HEAP_STRING_LEN {
+            return Ok(count);
+        }
+    }
+    if operation == HEAP_CONCAT_STRINGS {
+        sources[1] = Some(
+            unsafe { &*pointer }
+                .heap
+                .import_reference(arguments[1] as u64)
+                .map_err(|_| STATUS_INVALID_ROOT)?,
+        );
+    }
+    let mut lengths = [0usize; 2];
+    for (index, reference) in sources.iter().enumerate() {
+        if let Some(reference) = reference {
+            let heap = unsafe { &*pointer };
+            lengths[index] = if from_bytes {
+                heap.heap.bytes(*reference)
+            } else {
+                heap.heap.string_bytes(*reference)
+            }
+            .map_err(|_| STATUS_INVALID_ROOT)?
+            .len();
+        }
+    }
+    let length = lengths[0]
+        .checked_add(lengths[1])
+        .filter(|length| *length <= crate::heap::MAX_BYTES)
+        .ok_or(STATUS_INVALID_STRING)?;
+    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            unsafe { collect_managed(context) }?;
+            unsafe { &*pointer }
+                .heap
+                .prepare_bytes(length)
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+        }
+    };
+    for (reference, length) in sources.into_iter().zip(lengths) {
+        if let Some(reference) = reference {
+            for start in (0..length).step_by(256) {
+                crate::execution::runtime_checkpoint(context, true)?;
+                let heap = unsafe { &*pointer };
+                let data = if from_bytes {
+                    heap.heap.bytes(reference)
+                } else {
+                    heap.heap.string_bytes(reference)
+                }
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+                buffer
+                    .data
+                    .extend_from_slice(&data[start..(start + 256).min(length)]);
+            }
+        }
+    }
+    let mut buffer = Some(buffer);
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { &mut *pointer };
+            let result = if operation == wings_abi::HEAP_STRING_BYTES {
+                heap.heap.allocate_bytes_chunk(&mut buffer, &mut cursor)
+            } else {
+                heap.heap.allocate_string_chunk(&mut buffer, &mut cursor)
+            };
+            match result {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
+}
+
 pub(crate) unsafe extern "C" fn heap_call(
     context: *mut ScalarContext,
     operation: u32,
@@ -592,6 +729,16 @@ pub(crate) unsafe extern "C" fn heap_call(
         return STATUS_INVALID_CONTROL;
     }
     let pointer = context.heap_data.cast::<AotHeap>();
+    if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_CONCAT_STRINGS).contains(&operation) {
+        let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
+        return match unsafe { string_call(context, operation, arguments) } {
+            Ok(value) => {
+                unsafe { *output = value };
+                STATUS_OK
+            }
+            Err(status) => status,
+        };
+    }
     if (wings_abi::HEAP_FILL_BYTES..=wings_abi::HEAP_REPLACE_I64_BE).contains(&operation) {
         let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
         return match unsafe { byte_call(context, operation, arguments) } {
@@ -698,6 +845,316 @@ pub(crate) unsafe extern "C" fn heap_call(
 mod tests {
     use super::*;
     use crate::Resources;
+
+    fn raw_bytes(heap: &mut AotHeap, data: &[u8]) -> u64 {
+        let mut buffer = heap.heap.prepare_bytes(data.len()).unwrap();
+        buffer.data.extend_from_slice(data);
+        heap.heap
+            .allocate_bytes_chunk(&mut Some(buffer), &mut 0)
+            .unwrap()
+            .unwrap()
+            .encoded()
+    }
+
+    #[test]
+    fn string_values_validate_utf8_boundaries_and_copy_independent_storage() {
+        use wings_abi::{HEAP_STRING_BYTES, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN};
+        for data in [
+            Vec::new(),
+            b"hello\0world".to_vec(),
+            "中文😀e\u{301}".as_bytes().to_vec(),
+            [vec![b'a'; 255], "😀中文".as_bytes().to_vec()].concat(),
+            "😀".repeat(16384).into_bytes(),
+        ] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            let original = raw_bytes(&mut heap, &data);
+            heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                .unwrap();
+            let baseline = vm.used();
+            let (status, string) = unsafe {
+                bytes(
+                    &mut context,
+                    HEAP_STRING_FROM_BYTES,
+                    [original as i64, 0, 0],
+                )
+            };
+            assert_eq!(status, STATUS_OK);
+            assert_eq!(vm.used().bytes, baseline.bytes + data.len() as u64);
+            let reference = heap.heap.import_reference(string).unwrap();
+            assert_eq!(heap.heap.string_bytes(reference).unwrap(), data);
+            assert!(heap.heap.bytes(reference).is_err());
+            assert!(heap.heap.get(reference, 0).is_err());
+            assert!(
+                heap.commit_typed(wings_abi::ValueType::BytesRef, string as i64)
+                    .is_err()
+            );
+            heap.commit_typed(wings_abi::ValueType::StringRef, string as i64)
+                .unwrap();
+            assert_eq!(
+                unsafe { bytes(&mut context, HEAP_STRING_LEN, [string as i64, 0, 0]) },
+                (
+                    STATUS_OK,
+                    std::str::from_utf8(&data).unwrap().chars().count() as u64
+                )
+            );
+            let (status, copy) =
+                unsafe { bytes(&mut context, HEAP_STRING_BYTES, [string as i64, 0, 0]) };
+            assert_eq!(status, STATUS_OK);
+            let copy = heap.heap.import_reference(copy).unwrap();
+            assert_eq!(heap.heap.bytes(copy).unwrap(), data);
+            assert!(heap.heap.string_bytes(copy).is_err());
+            assert!(
+                heap.commit_typed(wings_abi::ValueType::StringRef, copy.encoded() as i64)
+                    .is_err()
+            );
+            assert!(heap.stats().collections > 0);
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn string_values_reject_invalid_utf8_wrong_tags_and_stale_references() {
+        use wings_abi::{
+            HEAP_STRING_BYTES, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN, STATUS_INVALID_STRING,
+        };
+        for data in [
+            vec![0x80],
+            vec![0xc0, 0xaf],
+            vec![0xed, 0xa0, 0x80],
+            vec![0xf4, 0x90, 0x80, 0x80],
+            vec![0xe4, 0xb8],
+            [vec![b'a'; 255], vec![0xe4, 0xb8]].concat(),
+            [vec![b'a'; 256], vec![0xff]].concat(),
+        ] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            let original = raw_bytes(&mut heap, &data);
+            heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                .unwrap();
+            let baseline = vm.used();
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        HEAP_STRING_FROM_BYTES,
+                        [original as i64, 0, 0],
+                    )
+                },
+                (STATUS_INVALID_STRING, 79)
+            );
+            for operation in [HEAP_STRING_BYTES, HEAP_STRING_LEN] {
+                assert_eq!(
+                    unsafe { bytes(&mut context, operation, [original as i64, 0, 0]) },
+                    (STATUS_INVALID_ROOT, 79)
+                );
+            }
+            assert_eq!(vm.used(), baseline);
+            heap.committed = None;
+            unsafe { heap.collect(std::ptr::null()) }.unwrap();
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        HEAP_STRING_FROM_BYTES,
+                        [original as i64, 0, 0],
+                    )
+                },
+                (STATUS_INVALID_ROOT, 79)
+            );
+        }
+    }
+
+    #[test]
+    fn string_concatenation_keeps_both_roots_at_gc_checkpoints_and_enforces_limit() {
+        use wings_abi::{
+            HEAP_CONCAT_STRINGS, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN, STATUS_INVALID_STRING,
+        };
+        let (vm, mut heap) = fixture(8);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        let original = raw_bytes(&mut heap, &vec![b'a'; 32768]);
+        heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+            .unwrap();
+        let (status, string) = unsafe {
+            bytes(
+                &mut context,
+                HEAP_STRING_FROM_BYTES,
+                [original as i64, 0, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        heap.commit_typed(wings_abi::ValueType::StringRef, string as i64)
+            .unwrap();
+        let (status, doubled) = unsafe {
+            bytes(
+                &mut context,
+                HEAP_CONCAT_STRINGS,
+                [string as i64, string as i64, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        let roots = [string, doubled];
+        let frame = ShadowFrame {
+            previous: std::ptr::null(),
+            slots: roots.as_ptr(),
+            count: roots.len(),
+        };
+        context.roots = &frame;
+        assert_eq!(
+            unsafe { bytes(&mut context, HEAP_STRING_LEN, [doubled as i64, 0, 0]) },
+            (STATUS_OK, 65536)
+        );
+        let before = vm.used();
+        assert_eq!(
+            unsafe {
+                bytes(
+                    &mut context,
+                    HEAP_CONCAT_STRINGS,
+                    [doubled as i64, string as i64, 0],
+                )
+            },
+            (STATUS_INVALID_STRING, 79)
+        );
+        assert_eq!(vm.used(), before);
+        assert_eq!(
+            heap.heap
+                .string_bytes(heap.heap.import_reference(doubled).unwrap())
+                .unwrap(),
+            vec![b'a'; 65536]
+        );
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
+    fn string_copy_budget_and_cancellation_release_unpublished_reservations() {
+        use wings_abi::{
+            HEAP_CONCAT_STRINGS, HEAP_STRING_BYTES, HEAP_STRING_FROM_BYTES, HEAP_STRING_LEN,
+        };
+        for operation in [
+            HEAP_STRING_FROM_BYTES,
+            HEAP_STRING_BYTES,
+            HEAP_STRING_LEN,
+            HEAP_CONCAT_STRINGS,
+        ] {
+            let budgets: &[u64] = if operation == HEAP_STRING_FROM_BYTES {
+                &[0, 1, 2, 64, 128, 256, 258, 300, 512]
+            } else {
+                &[0, 1, 2, 64, 128, 256]
+            };
+            for &steps in budgets {
+                let (vm, mut heap) = fixture(4);
+                let flag = std::sync::atomic::AtomicU32::new(0);
+                let mut context = context(&mut heap, &flag);
+                context.slow_path = Some(resume_one_step);
+                let original = raw_bytes(&mut heap, &vec![b'a'; 65536]);
+                heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                    .unwrap();
+                let (status, string) = unsafe {
+                    bytes(
+                        &mut context,
+                        HEAP_STRING_FROM_BYTES,
+                        [original as i64, 0, 0],
+                    )
+                };
+                assert_eq!(status, STATUS_OK);
+                let roots = [original, string];
+                let frame = ShadowFrame {
+                    previous: std::ptr::null(),
+                    slots: roots.as_ptr(),
+                    count: roots.len(),
+                };
+                context.roots = &frame;
+                let source = if operation == HEAP_STRING_FROM_BYTES {
+                    original
+                } else {
+                    string
+                };
+                let other = if operation == HEAP_CONCAT_STRINGS {
+                    let empty = raw_bytes(&mut heap, &[]);
+                    let (status, empty) = unsafe {
+                        bytes(&mut context, HEAP_STRING_FROM_BYTES, [empty as i64, 0, 0])
+                    };
+                    assert_eq!(status, STATUS_OK);
+                    heap.commit_typed(wings_abi::ValueType::StringRef, empty as i64)
+                        .unwrap();
+                    empty
+                } else {
+                    0
+                };
+                let before = vm.used();
+                context.remaining_steps = steps;
+                assert_eq!(
+                    unsafe { bytes(&mut context, operation, [source as i64, other as i64, 0]) },
+                    (wings_abi::STATUS_BUDGET_EXHAUSTED, 79)
+                );
+                assert_eq!(vm.used(), before);
+                context.remaining_steps = 4096;
+                flag.store(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(
+                    unsafe { bytes(&mut context, operation, [source as i64, other as i64, 0]) },
+                    (wings_abi::STATUS_CANCELLED, 79)
+                );
+                assert_eq!(vm.used(), before);
+                drop(heap);
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+
+    #[test]
+    fn string_copy_admission_rejects_at_each_resource_level_without_leaking() {
+        let limits = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        for level in 0..3 {
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant(limits).unwrap();
+            let account = tenant.process(limits).unwrap();
+            let mut heap = AotHeap::new(&account, 4).unwrap();
+            let original = raw_bytes(&mut heap, b"hello");
+            heap.commit_typed(wings_abi::ValueType::BytesRef, original as i64)
+                .unwrap();
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            context.slow_path = Some(resume_one_step);
+            let levels = [&vm, &tenant, &account];
+            let guard = levels[level]
+                .reserve(Resources {
+                    bytes: limits.bytes - levels[level].used().bytes - 4,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let before = levels.map(ResourceAccount::used);
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_FROM_BYTES,
+                        [original as i64, 0, 0],
+                    )
+                },
+                (STATUS_HEAP_EXHAUSTED, 79)
+            );
+            assert_eq!(levels.map(ResourceAccount::used), before);
+            drop(guard);
+            let (status, _) = unsafe {
+                bytes(
+                    &mut context,
+                    wings_abi::HEAP_STRING_FROM_BYTES,
+                    [original as i64, 0, 0],
+                )
+            };
+            assert_eq!(status, STATUS_OK);
+            drop((heap, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
 
     fn fixture(capacity: usize) -> (ResourceAccount, Box<AotHeap>) {
         let limits = Resources {

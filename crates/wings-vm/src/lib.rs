@@ -394,6 +394,9 @@ fn check_status(status: u32) -> Result<(), String> {
         wings_abi::STATUS_INVALID_BYTES => {
             Err("managed invalid byte buffer length, value or index".into())
         }
+        wings_abi::STATUS_INVALID_STRING => {
+            Err("managed invalid UTF-8 string or string length".into())
+        }
         wings_abi::STATUS_SEND_REJECTED => {
             Err("managed send rejected by identity, mailbox or quota".into())
         }

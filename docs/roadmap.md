@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 回到 MVP 第 4 项，补独立 UTF-8 String 的本地/状态/函数、分块转换/拼接/字符计数、精确 GC 和失败清理，源码 ABI v16。字符串字面量/消息/回复、通用记录、完整资源账本、长时公平/过载/并发故障、最新原生双平台及 BEAM 同负载吞吐/整机内存仍未完成。下一步优先补业务值交互与账本，不继续无归因优化；本切片不改变 MVP 验收门槛，验证见[记录](validation-string-values-2026-11-17.md)。
+
 [ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 推进第 5/6/7 项的局部诊断：先补可关闭的 worker 锁区间统计，为后续优化定位路径；不继续无归因地重试已回退方案。它不补齐完整 CPU/调度观测、业务值/账本、原生双平台或同负载 BEAM 双门禁，MVP 仍未完成。
 
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的第 3/5/7 项空请求维护实验已因五对无稳定收益回退；当前源码恢复已提交基线，失败证据保留。M0/MVP、最新原生双平台及同负载 BEAM 双门禁仍未完成。

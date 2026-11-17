@@ -27,6 +27,7 @@ mod record_replies;
 mod request_events;
 mod scheduler;
 mod stack_boundary;
+mod string_values;
 mod supervision;
 mod worker_wait;
 

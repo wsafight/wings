@@ -48,6 +48,10 @@ pub enum Operation {
     ReplaceByte([Register; 3]),
     ReadI64Be(Register, Register),
     ReplaceI64Be([Register; 3]),
+    StringFromBytes(Register),
+    StringBytes(Register),
+    StringLen(Register),
+    ConcatStrings(Register, Register),
     SendSelf {
         handler: usize,
         arguments: Vec<Register>,
@@ -192,6 +196,15 @@ impl Program {
                 return Err("function call chain exceeds 32".into());
             }
             paths.push(path);
+        }
+        if self.handlers.iter().any(|handler| {
+            handler.reply == Some(ValueType::StringRef)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::StringRef)
+        }) {
+            return Err("String messages and replies are not supported".into());
         }
         if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
@@ -442,6 +455,23 @@ impl Function {
                 Operation::BytesLen(value) => {
                     instruction.ty == ValueType::Int
                         && types.get(value) == Some(&ValueType::BytesRef)
+                }
+                Operation::StringFromBytes(value) => {
+                    instruction.ty == ValueType::StringRef
+                        && types.get(value) == Some(&ValueType::BytesRef)
+                }
+                Operation::StringBytes(value) => {
+                    instruction.ty == ValueType::BytesRef
+                        && types.get(value) == Some(&ValueType::StringRef)
+                }
+                Operation::StringLen(value) => {
+                    instruction.ty == ValueType::Int
+                        && types.get(value) == Some(&ValueType::StringRef)
+                }
+                Operation::ConcatStrings(left, right) => {
+                    instruction.ty == ValueType::StringRef
+                        && types.get(left) == Some(&ValueType::StringRef)
+                        && types.get(right) == Some(&ValueType::StringRef)
                 }
                 Operation::ByteAt(value, index) | Operation::ReadI64Be(value, index) => {
                     instruction.ty == ValueType::Int
@@ -697,13 +727,17 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         Operation::HeadInt(value)
         | Operation::TailInts(value)
         | Operation::IsEmptyInts(value)
-        | Operation::BytesLen(value) => ([Some(value), None], &[]),
+        | Operation::BytesLen(value)
+        | Operation::StringFromBytes(value)
+        | Operation::StringBytes(value)
+        | Operation::StringLen(value) => ([Some(value), None], &[]),
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
             ([Some(value), None], &[])
         }
         Operation::Binary(_, left, right)
         | Operation::Compare(_, left, right)
         | Operation::FillBytes(left, right)
+        | Operation::ConcatStrings(left, right)
         | Operation::ByteAt(left, right)
         | Operation::ReadI64Be(left, right)
         | Operation::PrependInt(left, right) => ([Some(left), Some(right)], &[]),

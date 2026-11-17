@@ -9,6 +9,7 @@ const MAX_LAYOUTS: usize = 128;
 const MAX_ROOTS: usize = 64;
 const WORK_CHUNK: usize = 16;
 const BYTES_LAYOUT: u16 = u16::MAX;
+const STRING_LAYOUT: u16 = u16::MAX - 1;
 pub(crate) const MAX_BYTES: usize = 65536;
 static NEXT_HEAP: AtomicU64 = AtomicU64::new(1);
 
@@ -293,7 +294,7 @@ impl RecordHeap {
 
     pub fn get(&self, reference: HeapRef, field: usize) -> Result<RecordValue, String> {
         let slot = self.validate(reference)?;
-        if slot.layout == BYTES_LAYOUT {
+        if matches!(slot.layout, BYTES_LAYOUT | STRING_LAYOUT) {
             return Err("byte buffer is not a record".into());
         }
         let schema = &self.schemas[usize::from(slot.layout)];
@@ -389,7 +390,7 @@ impl RecordHeap {
                     }
                     collection.pending -= 1;
                     let slot = self.slots[self.worklist[collection.pending]];
-                    if slot.layout == BYTES_LAYOUT {
+                    if matches!(slot.layout, BYTES_LAYOUT | STRING_LAYOUT) {
                         continue;
                     }
                     let schema = self.schemas[usize::from(slot.layout)];
@@ -513,6 +514,28 @@ impl RecordHeap {
             slot: index as u32,
             generation: slot.generation,
         }))
+    }
+
+    pub(crate) fn string_bytes(&self, reference: HeapRef) -> Result<&[u8], String> {
+        if self.validate(reference)?.layout != STRING_LAYOUT {
+            return Err("expected a UTF-8 string".into());
+        }
+        Ok(&self.buffers[reference.slot as usize]
+            .as_ref()
+            .expect("occupied string buffer")
+            .data)
+    }
+
+    pub(crate) fn allocate_string_chunk(
+        &mut self,
+        buffer: &mut Option<ByteBuffer>,
+        cursor: &mut usize,
+    ) -> Result<Option<HeapRef>, String> {
+        let reference = self.allocate_bytes_chunk(buffer, cursor)?;
+        if let Some(reference) = reference {
+            self.slots[reference.slot as usize].layout = STRING_LAYOUT;
+        }
+        Ok(reference)
     }
 
     fn schema(&self, layout: RecordLayout) -> Result<&Schema, String> {

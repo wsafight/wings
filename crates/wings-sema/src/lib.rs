@@ -12,6 +12,7 @@ pub enum Type {
     RecordInt,
     IntList,
     Bytes,
+    String,
     Pid,
     RequestId,
     Function {
@@ -34,6 +35,7 @@ impl std::fmt::Display for Type {
             Self::RecordInt => formatter.write_str("RecordInt"),
             Self::IntList => formatter.write_str("IntList"),
             Self::Bytes => formatter.write_str("Bytes"),
+            Self::String => formatter.write_str("String"),
             Self::Pid => formatter.write_str("Pid"),
             Self::RequestId => formatter.write_str("RequestId"),
             Self::Function { parameters, result } => {
@@ -387,7 +389,12 @@ impl Checker {
     fn external_type(&mut self, ty: &Type, span: Span) {
         if matches!(
             ty,
-            Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
+            Type::RecordInt
+                | Type::IntList
+                | Type::Bytes
+                | Type::String
+                | Type::Pid
+                | Type::RequestId
         ) {
             self.error(
                 "T011",
@@ -411,6 +418,7 @@ impl Checker {
             "RecordInt" => Type::RecordInt,
             "IntList" => Type::IntList,
             "Bytes" => Type::Bytes,
+            "String" => Type::String,
             "Pid" => Type::Pid,
             "RequestId" => Type::RequestId,
             "" => Type::Unknown,
@@ -418,7 +426,7 @@ impl Checker {
                 self.error(
                     "T002",
                     format!(
-                        "unknown type '{}'; supported types are Int, Bool, Unit, RecordInt, IntList, Bytes, Pid and RequestId",
+                        "unknown type '{}'; supported types are Int, Bool, Unit, RecordInt, IntList, Bytes, String, Pid and RequestId",
                         name.text
                     ),
                     name.span,
@@ -779,6 +787,10 @@ impl Checker {
                     return *result;
                 }
                 let (expected, result) = match callee.text.as_str() {
+                    "string_from_bytes" => (vec![Type::Bytes], Type::String),
+                    "string_bytes" => (vec![Type::String], Type::Bytes),
+                    "string_len" => (vec![Type::String], Type::Int),
+                    "concat_strings" => (vec![Type::String, Type::String], Type::String),
                     "record_int" => (vec![Type::Int], Type::RecordInt),
                     "read_int" => (vec![Type::RecordInt], Type::Int),
                     "collect" => (vec![], Type::Unit),
@@ -847,10 +859,20 @@ impl Checker {
                     self.require(&right_type, &left_type, right.span);
                     if matches!(
                         left_type,
-                        Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
+                        Type::RecordInt
+                            | Type::IntList
+                            | Type::Bytes
+                            | Type::String
+                            | Type::Pid
+                            | Type::RequestId
                     ) || matches!(
                         right_type,
-                        Type::RecordInt | Type::IntList | Type::Bytes | Type::Pid | Type::RequestId
+                        Type::RecordInt
+                            | Type::IntList
+                            | Type::Bytes
+                            | Type::String
+                            | Type::Pid
+                            | Type::RequestId
                     ) {
                         self.error(
                             "T015",

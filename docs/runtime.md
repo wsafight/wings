@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 为 UTF-8 String 增加独立精确 GC 叶标签，最大编码长度仍为 64 KiB。Bytes↔String 转换和拼接均先按目标字节数三级准入，再每至多 256 字节检查并复制；UTF-8 校验/字符计数只处理有界块，跨块字符最多回看三字节。预算/取消/非法编码/长度/额度失败丢弃未发布缓冲和票据，原提交状态不变；String state 在成功返回时核对独立类型。String 消息/回复和字面量尚不开放，不将 buffer 逻辑预算当作 RSS 或完整资源账本。
+
 [ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 的 `SchedulerConfig::lock_statistics` 默认 false；开启后 `handle.lock_statistics(worker)` 返回 claim/start/snapshot/finish 的计数和获取前/锁内墙钟总和、最大值与饱和标记。活动读取不是一致快照，停机/join 后核对；最后 handle 释放存储。park、宿主/effect/资源/结果/timer 锁未覆盖，不推导 CPU、p99 或完整锁开销。
 
 [ADR-0101](adr/0101-empty-language-request-maintenance.md) 的同锁存活计数/空表提前返回候选已回退，当前语言请求表维护与双端票据沿原路径；仍不把超时/取消或事件入队当作发布端结束。

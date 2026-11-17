@@ -1,0 +1,399 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "base_commit": "8a25764df3a1f4fee5443d3e45f1b9c0c1a5c878",
+  "branch": "feat/mvp",
+  "working_tree": "uncommitted String value slice; user proposals excluded",
+  "platform": {
+    "system": "macOS 26.6.2",
+    "kernel": "Darwin 25.6.0",
+    "architecture": "aarch64",
+    "cpu": "Apple M3 Pro",
+    "memory_bytes": 38654705664,
+    "rust": "1.99.1",
+    "msrv": "1.85.0"
+  },
+  "limits": {
+    "child_cpu_seconds": 20,
+    "child_wall_seconds": 30,
+    "child_core_bytes": 0,
+    "fixture_phase_seconds": 3,
+    "tcp_start_seconds": 5,
+    "cpu_hard_quota_available": false
+  },
+  "scope": {
+    "abi": 16,
+    "string_bytes_max": 65536,
+    "utf8_check_chunk_bytes_max": 256,
+    "independent_buffer_copy": true,
+    "messages_and_replies": false,
+    "literals": false
+  },
+  "tests": [
+    {
+      "profile": "debug",
+      "unique_current_harnesses": 90,
+      "passed_tests": 606,
+      "failures": []
+    },
+    {
+      "profile": "release",
+      "unique_current_harnesses": 90,
+      "passed_tests": 606,
+      "failures": []
+    }
+  ],
+  "latest_vm_harness": {
+    "debug_passed": 281,
+    "release_passed": 281
+  },
+  "focused_aot": {
+    "debug_repetitions_passed": 5,
+    "release_repetitions_passed": 5,
+    "scheduler_workers_per_repetition": [
+      1,
+      2
+    ],
+    "cli_success_and_failed_prior_output_retained": true,
+    "old_abi_15_rejected": true
+  },
+  "checks_passed": [
+    "workspace check",
+    "all-targets clippy -D warnings",
+    "fmt",
+    "MSRV all-targets check",
+    "dependency isolation and no-unwind",
+    "workspace doctest check (0 actual tests)",
+    "Markdown relative links and fences"
+  ],
+  "failed_validation": [
+    {
+      "run": "initial debug tests",
+      "failure": "old ABI version assertion 15 expected; fixed to 16"
+    },
+    {
+      "run": "first updated full debug tests",
+      "failure": "multi_worker harness wall timeout 30 seconds; all serial harnesses later passed under original limits"
+    },
+    {
+      "run": "parallel full debug AOT",
+      "failure": "module_accounting wall timeout 30 seconds"
+    },
+    {
+      "run": "parallel full release AOT",
+      "failure": "module_accounting wall timeout 30 seconds"
+    },
+    {
+      "run": "serial full debug AOT",
+      "failure": "byte_messages wall timeout 30 seconds"
+    },
+    {
+      "run": "serial full release AOT",
+      "failure": "TCP service not observed started within original 5 seconds"
+    }
+  ],
+  "complete_aot_passed": false,
+  "mvp_complete": false,
+  "native_linux_x86_64_verified": false,
+  "beam_throughput_and_memory_gates_passed": false,
+  "source_and_document_hashes": {
+    "AGENTS.md": {
+      "sha256": "dd6e6a60592e8e4780904d213244075616cc45f8cb654eb8b3f625cf78ded264",
+      "bytes": 22250
+    },
+    "README.md": {
+      "sha256": "8c948ffce8b294fcf3f9dd53edbb07ebbb27f50330d1f489cf176a4d346a42c4",
+      "bytes": 38305
+    },
+    "crates/wings-abi/src/lib.rs": {
+      "sha256": "1e99c8a130b2718a0b300086f4eaf5c56892fd7de8ebf0b3207a1c19f7806c79",
+      "bytes": 4316
+    },
+    "crates/wings-abi/tests/scalar_contract.rs": {
+      "sha256": "cc54bff90e76b61fbe973e4b6917e9fd502107a9e8475084e8dc4efb4c8dcd0b",
+      "bytes": 6620
+    },
+    "crates/wings-artifact/src/lib.rs": {
+      "sha256": "c76f03f1bdf42c823b01503cf475ed05103302a646ab616f3fd6f5fc6c3e245a",
+      "bytes": 5133
+    },
+    "crates/wings-artifact/tests/manifest.rs": {
+      "sha256": "a34b5c44b7f24df8eedb155160595d4ec743895a1ec679d44837810fcb56bb57",
+      "bytes": 21607
+    },
+    "crates/wings-codegen/src/lib.rs": {
+      "sha256": "0d01167ee2fb3fc1904fb3d2b7041f8fed81fdeda058ed4b93122fe1bea18bac",
+      "bytes": 42754
+    },
+    "crates/wings-compile/src/lower.rs": {
+      "sha256": "8212fce6558db55d4155c82d968088bed965315e33dfe7de758400b66db15990",
+      "bytes": 37448
+    },
+    "crates/wings-ir/src/lib.rs": {
+      "sha256": "798a3e956b4b18961eaf92cca53902510691d3c062ebfe3bcfeee153d7ffe854",
+      "bytes": 30334
+    },
+    "crates/wings-ir/tests/validation.rs": {
+      "sha256": "357a676bb288f6de4e613f3ff6881b257b0f72aa96c30251aa6dbfede699bbae",
+      "bytes": 53346
+    },
+    "crates/wings-lsp/src/lib.rs": {
+      "sha256": "b874d5fc01caabcace2c02096997d3cda486859424711318e2de0e79cf69031c",
+      "bytes": 11163
+    },
+    "crates/wings-lsp/tests/protocol.rs": {
+      "sha256": "c9c9835c58ac5c4ec8ad696121fe8c5ccecb5dcad12689fdfc70af9024629cfc",
+      "bytes": 35709
+    },
+    "crates/wings-sema/src/lib.rs": {
+      "sha256": "a4f6ca9b17ae88c2c3dbca47a43ef805ebabe077f52b73cf632b57a818c5a238",
+      "bytes": 35933
+    },
+    "crates/wings-vm/examples/string_values.rs": {
+      "sha256": "ef2397c40ebbbf4c0ff2c919f842ccb591ebd12247273d98386c38f34c961ba0",
+      "bytes": 6321
+    },
+    "crates/wings-vm/src/aot_heap.rs": {
+      "sha256": "062faa6a803d63d88da304e8a13d8cd39d1d53a7859f5f854a08d6572094c71a",
+      "bytes": 77317
+    },
+    "crates/wings-vm/src/execution.rs": {
+      "sha256": "4dba60c2288cca8abe3ea984ab5a09eeedf03ad726af3ede1eb6ec79f6beb668",
+      "bytes": 36207
+    },
+    "crates/wings-vm/src/heap.rs": {
+      "sha256": "b8195650a2937bd4fdcd8b8d711e38650a78fa74e0f668f9e4704c07b19b74e8",
+      "bytes": 31126
+    },
+    "crates/wings-vm/src/lib.rs": {
+      "sha256": "0a31a053f21a3d7078704870e1725cd3e5a12b7400f53f047f078b98615c1d56",
+      "bytes": 14906
+    },
+    "crates/wings-vm/src/tests.rs": {
+      "sha256": "f78055e5224552ef836ac28fd139dfed33784d081231bff0e354e725ec6214bc",
+      "bytes": 55686
+    },
+    "crates/wings-vm/src/tests/string_values.rs": {
+      "sha256": "d667f2661983a8767f5285481f60eb20919bb9933d8bab8c9602a0c54367b1d1",
+      "bytes": 2811
+    },
+    "docs.md": {
+      "sha256": "7d4131ee21ce7bc114faf57db512e2ebe8be187f233dbf8122d4952d509ee738",
+      "bytes": 3138
+    },
+    "docs/adr/0103-accounted-utf8-string-values.md": {
+      "sha256": "c9e5c248a78f7e9f5ee293b07d414bc3d1bf2dd3f91a3ada0eaf80103c0f40c0",
+      "bytes": 2532
+    },
+    "docs/adr/README.md": {
+      "sha256": "80cb8aa558314dfa682c3f04360e9728251d0983f6a7943124ad04ae97f80e7b",
+      "bytes": 17181
+    },
+    "docs/architecture.md": {
+      "sha256": "d838d08071ef48e9fac8d7f1b08e8883a77d53722d368350e29787017ac431e7",
+      "bytes": 47507
+    },
+    "docs/evaluation.md": {
+      "sha256": "fff1e1310fb63118d44c921bedb67b419df3db0246fe8c64dccf1b2bf108e8b5",
+      "bytes": 73165
+    },
+    "docs/language.md": {
+      "sha256": "d03602ec8f73898d032fd77a434e633cfddacf605474c3d8ba2bf3ba2b427d13",
+      "bytes": 28219
+    },
+    "docs/roadmap.md": {
+      "sha256": "8757af7ec382656b6df0c375a7004fb6f0794f951d49fef95574eb57d5b15247",
+      "bytes": 39201
+    },
+    "docs/runtime.md": {
+      "sha256": "af1a213496e34bb5812dc548dfccd21f74f23ed698bb5ed31a6b3f12ef7655c9",
+      "bytes": 65288
+    },
+    "docs/validation-string-values-2026-11-17.md": {
+      "sha256": "f63cd69e43286904caf5772589a35bbbbf9f94b495c5254cb98df9497129204b",
+      "bytes": 6884
+    },
+    "examples/string-values.wings": {
+      "sha256": "d2ce98ef74cb18c35ba5afee2663aee51eccfbeb8a991ffb96e61d4554347875",
+      "bytes": 1661
+    },
+    "scripts/verify_scalar_aot.py": {
+      "sha256": "92526d22176cc808a4824fdbab3d4f408ec3a7c6cbac56b0d6299c34e7db3bc5",
+      "bytes": 95400
+    }
+  },
+  "log_hashes": {
+    "/tmp/wings-string-aot-debug-serial.log": {
+      "sha256": "fca7cf3ed8debe04d6794d103e4a4de1740065900568339e56a1875613671771",
+      "bytes": 2687
+    },
+    "/tmp/wings-string-aot-debug.log": {
+      "sha256": "e5aaf6c9ac13a4abdd416a63b1f2472a4088edc2224e8f1a0a8099009c2ab977",
+      "bytes": 2967
+    },
+    "/tmp/wings-string-aot-focused-final.log": {
+      "sha256": "f0bb51b8b81bca80664cfbf95e7a8f24e237d8c596449e354c427027f9907b0f",
+      "bytes": 1456
+    },
+    "/tmp/wings-string-aot-focused.log": {
+      "sha256": "69edf79b3d007fdef764cdd1c090e62d1e3516ef18baf90443f24d089d689567",
+      "bytes": 610
+    },
+    "/tmp/wings-string-aot-release-serial.log": {
+      "sha256": "4aaf47806ed2abc6fcd2bc522cb694fb8dbffdf9c4d50e69b53e767e13a43644",
+      "bytes": 1863
+    },
+    "/tmp/wings-string-aot-release.log": {
+      "sha256": "edfbd559f317cc832bd16954ee82f944ea6f6dcbaf08c64a90de287c3b4215e8",
+      "bytes": 2969
+    },
+    "/tmp/wings-string-build-all-retry.log": {
+      "sha256": "d29f7119ec740cfb56b9d18065d0264c2dbc7698b7147b05c3a5b9f02957c204",
+      "bytes": 436
+    },
+    "/tmp/wings-string-build-all.log": {
+      "sha256": "c760b8fdc1fdd322a8f0539cc579e81160c3068561d2a53624fc7a6bd6bd8749",
+      "bytes": 1454
+    },
+    "/tmp/wings-string-build-second.log": {
+      "sha256": "bb78e4257bd3b7255eaa5ae8e75bf693af6398a644ae11908e7d64712185d68b",
+      "bytes": 535
+    },
+    "/tmp/wings-string-build.log": {
+      "sha256": "f0f9a8d9a1e10e9604e034301d4f6ed9a22c6bc19d2efcaac7aa60c544a95a78",
+      "bytes": 345
+    },
+    "/tmp/wings-string-check-complete.log": {
+      "sha256": "5f41a3de0ce0783893073ebd5fe557a76a091938a15fbd46c7922e8b4ea10496",
+      "bytes": 246
+    },
+    "/tmp/wings-string-check-final.log": {
+      "sha256": "02db5a66fa0c60ca8618bd08aac556eac4f3ec863e8630a0d353dba6a0f6e126",
+      "bytes": 72
+    },
+    "/tmp/wings-string-check-initial.log": {
+      "sha256": "972c483ed3590472e8edc8ebfc78f51564bd0b34545a87bfa1a6d7c3889ce3a6",
+      "bytes": 800
+    },
+    "/tmp/wings-string-check.log": {
+      "sha256": "52ce852f049a3c66f7d8c73bb86a7822c434672a2411735822e0c55327c869d8",
+      "bytes": 534
+    },
+    "/tmp/wings-string-clippy-complete.log": {
+      "sha256": "069dc5eafe6cbdd0acda1df2cd8dee5608965997386ae78316d85efdca6736b6",
+      "bytes": 158
+    },
+    "/tmp/wings-string-clippy-final.log": {
+      "sha256": "23790e110596afac233da8b04d747647f9870323a91d9547fe9663e1a9af684b",
+      "bytes": 430
+    },
+    "/tmp/wings-string-clippy-lsp-final.log": {
+      "sha256": "bf9f0d4c17f4c3c3a286512f6ce26807821d760c6d2f0b13a9bda6d71d1c81e8",
+      "bytes": 160
+    },
+    "/tmp/wings-string-clippy.log": {
+      "sha256": "1232f0edb439d0ded05ffb0379ee627334cd993c06e51a8e55cb665c64d22600",
+      "bytes": 855
+    },
+    "/tmp/wings-string-debug-build-final.log": {
+      "sha256": "0e4d9c6610e148c6aa8ac4db2e82d7e49ef88f2d5dad5970061742c36bbe1868",
+      "bytes": 431
+    },
+    "/tmp/wings-string-debug-build.log": {
+      "sha256": "621e9cb3c55ac523277451925491a3d053450e3310a812d03f8006e9130edeb3",
+      "bytes": 856
+    },
+    "/tmp/wings-string-dependencies.log": {
+      "sha256": "236cd84dd4ab87d2274e83a7d6cef2f4b3e4054212446420baff3bf86941667e",
+      "bytes": 104
+    },
+    "/tmp/wings-string-doctests.log": {
+      "sha256": "d78870d873b12fee30988bd6e5e4d7d02d12d4f83a2031d92af4b31fa34ceed0",
+      "bytes": 1451
+    },
+    "/tmp/wings-string-fmt-complete.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/tmp/wings-string-fmt-final.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/tmp/wings-string-fmt-lsp-final.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/tmp/wings-string-fmt.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/tmp/wings-string-lsp-debug-build.log": {
+      "sha256": "a58bb54405e04f9eae6146c10b019b746ff3f3a2889c12500554eb8f59330109",
+      "bytes": 161
+    },
+    "/tmp/wings-string-lsp-release-build.log": {
+      "sha256": "2da731c8d2cb3774533d11844aebff7423e6db580b2b8296af7b877781cf7333",
+      "bytes": 217
+    },
+    "/tmp/wings-string-lsp-tests.log": {
+      "sha256": "800762e1b20de6ecb0728cf1cdd97c1b11f38d315c69c498e57d2821fc5ddbb4",
+      "bytes": 6806
+    },
+    "/tmp/wings-string-msrv-complete.log": {
+      "sha256": "c3375c6af3bd9ad11a02324209377b05820d8633766f05b323b181ce37edc335",
+      "bytes": 158
+    },
+    "/tmp/wings-string-msrv-final.log": {
+      "sha256": "16537af0952961f56ce6f0a1c73d7947ada6e3412237ebf30ad61b15dd887c86",
+      "bytes": 430
+    },
+    "/tmp/wings-string-msrv-lsp-final.log": {
+      "sha256": "0948bd7f3bd158f064f4bed44e6961d75bcde5bfe5543ee87800bd76edbff493",
+      "bytes": 160
+    },
+    "/tmp/wings-string-msrv.log": {
+      "sha256": "ed3979eece61f8c5b8995422f906c5748a88c64102fd6ba0b9418f5252a2f34c",
+      "bytes": 801
+    },
+    "/tmp/wings-string-release-build.log": {
+      "sha256": "3316a64c79170bf61b43f3739d2f48204e075c9b7db8363667ff1b983047990d",
+      "bytes": 791
+    },
+    "/tmp/wings-string-release-test-build-final.log": {
+      "sha256": "0104f216015ccec705760e18c35769a7c0465dabdeacb7f8cec6d7324ce68103",
+      "bytes": 236
+    },
+    "/tmp/wings-string-release-test-build.log": {
+      "sha256": "e5df16b0b94f2d68e7ad8d7a438281185e756d22b392f38538c05cc4811ca759",
+      "bytes": 790
+    },
+    "/tmp/wings-string-tests-debug.log": {
+      "sha256": "ba78b48ea72cfcbff8568bd62dd700fd6df3d72db65a9930e5beb2500e716677",
+      "bytes": 6114
+    },
+    "/tmp/wings-string-tests-final.log": {
+      "sha256": "413d5b6f26cb5d2e5725406ccd79d80729b7693014a0f2614dfd5b601ea2ed25",
+      "bytes": 13377
+    },
+    "/tmp/wings-string-tests-serial.log": {
+      "sha256": "f2480cc826251123e66bc0a2a89ca461ea77a19627d7e319894b23ed182e379f",
+      "bytes": 155054
+    },
+    "/tmp/wings-string-vm-debug-latest-build.log": {
+      "sha256": "34c8d9ee50437d629f846c2e0e42860b98cf18e3b34939f5b324d5303c660839",
+      "bytes": 159
+    },
+    "/tmp/wings-string-vm-latest-tests.log": {
+      "sha256": "bfd0fd683acee66e79bb6ad2b518b9bed1c09b7a96541336d9a34f4ac297f928",
+      "bytes": 56100
+    },
+    "/tmp/wings-string-vm-release-latest-build.log": {
+      "sha256": "9e89c5b5066c3f38f46f004287c4c9b129815e632ccf02a67539689b13845261",
+      "bytes": 148
+    },
+    "/tmp/wings-string-test-summary.json": {
+      "sha256": "d484c0ae4e6fc38c45fb577547552bd144008bccd55b9b5dd60999f3fae7a86f",
+      "bytes": 230
+    }
+  }
+}

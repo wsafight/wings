@@ -1,0 +1,65 @@
+process Text {
+  state text: String = string_from_bytes(fill_bytes(0, 0));
+
+  fn copy(value: String) -> String {
+    let result = string_from_bytes(string_bytes(value));
+    collect();
+    result
+  }
+
+  on Fill(length: Int) -> Int {
+    text = string_from_bytes(fill_bytes(length, 97));
+    string_len(text)
+  }
+
+  on Read -> Int { string_len(text) }
+
+  on ByteLength -> Int { bytes_len(string_bytes(text)) }
+
+  on Unicode -> Int {
+    let chinese = replace_byte(replace_byte(replace_byte(fill_bytes(3, 0), 0, 228), 1, 184), 2, 173);
+    let emoji = replace_byte(replace_byte(replace_byte(replace_byte(fill_bytes(4, 0), 0, 240), 1, 159), 2, 152), 3, 128);
+    text = concat_strings(string_from_bytes(chinese), string_from_bytes(emoji));
+    collect();
+    string_len(text) * 100 + bytes_len(string_bytes(copy(text)))
+  }
+
+  on Copy -> Int {
+    let next = copy(text);
+    collect();
+    text = next;
+    string_len(text)
+  }
+
+  on Choose(flag: Bool) -> Int {
+    text = if flag { copy(text) } else { string_from_bytes(fill_bytes(0, 0)) };
+    string_len(text)
+  }
+
+  on Grow(limit: Int) -> Int {
+    text = string_from_bytes(fill_bytes(0, 0));
+    while string_len(text) < limit {
+      text = concat_strings(text, string_from_bytes(fill_bytes(1, 97)));
+      collect();
+    }
+    string_len(text)
+  }
+
+  on Double -> Int {
+    text = concat_strings(text, text);
+    string_len(text)
+  }
+
+  on Invalid -> Int {
+    text = string_from_bytes(fill_bytes(4, 97));
+    text = string_from_bytes(fill_bytes(1, 255));
+    string_len(text)
+  }
+
+  on Clear -> Unit {
+    text = string_from_bytes(fill_bytes(0, 0));
+    collect();
+  }
+
+  on Sweep -> Unit { collect(); }
+}

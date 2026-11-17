@@ -303,13 +303,25 @@ impl Lowerer<'_> {
                         self.push(ValueType::Int, Operation::ReadInt(value))
                     }
                     "collect" => self.push(ValueType::Unit, Operation::Collect),
-                    "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" | "read_i64_be"
+                    "string_from_bytes" | "string_bytes" | "string_len" | "concat_strings"
+                    | "fill_bytes" | "bytes_len" | "byte_at" | "replace_byte" | "read_i64_be"
                     | "replace_i64_be" => {
                         let values = arguments
                             .iter()
                             .map(|argument| self.expression(argument))
                             .collect::<Result<Vec<_>, _>>()?;
                         let (ty, operation) = match callee.text.as_str() {
+                            "string_from_bytes" => {
+                                (ValueType::StringRef, Operation::StringFromBytes(values[0]))
+                            }
+                            "string_bytes" => {
+                                (ValueType::BytesRef, Operation::StringBytes(values[0]))
+                            }
+                            "string_len" => (ValueType::Int, Operation::StringLen(values[0])),
+                            "concat_strings" => (
+                                ValueType::StringRef,
+                                Operation::ConcatStrings(values[0], values[1]),
+                            ),
                             "fill_bytes" => (
                                 ValueType::BytesRef,
                                 Operation::FillBytes(values[0], values[1]),
@@ -414,6 +426,7 @@ fn value_type(name: &str) -> Result<ValueType, String> {
         "RecordInt" => Ok(ValueType::Ref),
         "IntList" => Ok(ValueType::ListRef),
         "Bytes" => Ok(ValueType::BytesRef),
+        "String" => Ok(ValueType::StringRef),
         "Pid" => Ok(ValueType::Pid),
         "RequestId" => Ok(ValueType::RequestId),
         _ => Err(format!("unsupported scalar type {name}")),
@@ -423,6 +436,34 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strings_have_distinct_types_and_cross_frame_gc_roots() {
+        let program = lower("process P { fn copy(value: String) -> String { concat_strings(value, value) } state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { let next = copy(data); collect(); string_len(next) + bytes_len(string_bytes(data)) } }").unwrap();
+        assert_eq!(program.state, ValueType::StringRef);
+        assert_eq!(program.functions[0].result, ValueType::StringRef);
+        let function = &program.handlers[0].function;
+        let collection = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::Collect))
+            .unwrap();
+        assert_eq!(function.root_plan().at[collection].len(), 2);
+        program.validate().unwrap();
+    }
+
+    #[test]
+    fn strings_cannot_bypass_message_reply_or_bytes_type_boundaries() {
+        for source in [
+            "process P { state count: Int = 0; on Set(value: String) { count = string_len(value) } }",
+            "process P { state count: Int = 0; on Read -> String { string_from_bytes(fill_bytes(0, 0)) } }",
+            "process P { state data: String = fill_bytes(0, 0); }",
+            "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Bool { data == data } }",
+            "process P { state data: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { byte_at(data, 0) } }",
+        ] {
+            assert!(lower(source).is_err(), "{source}");
+        }
+    }
 
     #[test]
     fn byte_values_lower_as_references_with_last_use_roots() {

@@ -9,6 +9,56 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 }
 
 #[test]
+fn string_ir_preserves_typed_roots_and_rejects_forged_operands_and_boundaries() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(4)),
+        instruction(ValueType::Int, Operation::Constant(97)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::StringRef, Operation::StringFromBytes(3)),
+        instruction(ValueType::StringRef, Operation::ConcatStrings(4, 4)),
+        instruction(ValueType::BytesRef, Operation::StringBytes(5)),
+        instruction(ValueType::Int, Operation::StringLen(5)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 7;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&4));
+    assert!(roots.at[6].contains(&5));
+    assert!(roots.at[7].contains(&5));
+    for (index, operation) in [
+        (4, Operation::StringFromBytes(0)),
+        (4, Operation::StringFromBytes(4)),
+        (5, Operation::ConcatStrings(3, 4)),
+        (5, Operation::ConcatStrings(4, 3)),
+        (6, Operation::StringBytes(3)),
+        (7, Operation::StringLen(3)),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index].operation = operation;
+        assert!(invalid.validate().is_err());
+    }
+    for boundary in 0..2 {
+        let mut invalid = program.clone();
+        if boundary == 0 {
+            invalid.handlers[0].parameters[0].1 = ValueType::StringRef;
+        } else {
+            invalid.handlers[0].reply = Some(ValueType::StringRef);
+            invalid.handlers[0].function.reply = 5;
+        }
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .contains("String messages and replies")
+        );
+    }
+}
+
+#[test]
 fn byte_i64_operations_validate_types_and_preserve_last_use_source_roots() {
     let mut program = valid_program();
     program.handlers[0].function.instructions = vec![

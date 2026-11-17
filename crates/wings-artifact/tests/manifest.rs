@@ -65,6 +65,35 @@ fn manifest() -> Manifest {
 }
 
 #[test]
+fn string_state_round_trips_but_all_string_message_boundaries_are_rejected() {
+    let mut valid = manifest();
+    valid.state = ValueType::StringRef;
+    valid.validate().unwrap();
+    let value: Value = serde_json::from_slice(&valid.encode().unwrap()).unwrap();
+    assert_eq!(
+        Directory::new().read_json(&value).unwrap().state,
+        ValueType::StringRef
+    );
+    for boundary in 0..3 {
+        let mut invalid = valid.clone();
+        match boundary {
+            0 => invalid.handlers[0].parameters[0].1 = ValueType::StringRef,
+            1 => invalid.handlers[0].reply = Some(ValueType::StringRef),
+            _ => {
+                invalid.handlers[0].reply = None;
+                invalid.handlers[0].parameters = vec![
+                    ("id".into(), ValueType::RequestId),
+                    ("status".into(), ValueType::Int),
+                    ("value".into(), ValueType::StringRef),
+                ];
+            }
+        }
+        rejects(&invalid, "String messages and replies");
+        assert!(invalid.encode().is_err());
+    }
+}
+
+#[test]
 fn bytes_state_and_message_schema_round_trip_but_reply_handles_are_rejected() {
     let mut manifest = manifest();
     manifest.state = ValueType::BytesRef;

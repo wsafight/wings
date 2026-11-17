@@ -16,6 +16,15 @@ fn integers_accept_the_entire_signed_scalar_range() {
 }
 
 #[test]
+fn string_references_are_gc_roots_but_never_raw_scalar_values() {
+    assert!(ValueType::StringRef.is_reference());
+    assert!(!ValueType::StringRef.is_capability());
+    for value in [i64::MIN, -1, 0, 1, i64::MAX] {
+        assert!(!ValueType::StringRef.accepts(value));
+    }
+}
+
+#[test]
 fn booleans_accept_only_zero_and_one() {
     for value in [i64::MIN, -1, 0, 1, 2, i64::MAX] {
         assert_eq!(ValueType::Bool.accepts(value), matches!(value, 0 | 1));
@@ -91,7 +100,7 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 15);
+    assert_eq!(SCALAR_ABI_VERSION, 16);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);
@@ -106,6 +115,17 @@ fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(wings_abi::STATUS_SPAWN_REJECTED, 11);
     assert_eq!(wings_abi::STATUS_REQUEST_REJECTED, 12);
     assert_eq!(wings_abi::STATUS_INVALID_BYTES, 13);
+    assert_eq!(wings_abi::STATUS_REPLY_REJECTED, 14);
+    assert_eq!(wings_abi::STATUS_INVALID_STRING, 15);
+    assert_eq!(
+        [
+            wings_abi::HEAP_STRING_FROM_BYTES,
+            wings_abi::HEAP_STRING_BYTES,
+            wings_abi::HEAP_STRING_LEN,
+            wings_abi::HEAP_CONCAT_STRINGS,
+        ],
+        [14, 15, 16, 17]
+    );
     assert_eq!(DEFAULT_MAX_STEPS, 1_000_000);
 }
 

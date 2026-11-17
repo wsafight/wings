@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值，不是字符串。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；字符串/通用记录、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-16。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接，尚无字面量或字符串消息/回复。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；通用记录、完整字符串交互、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
 
 ## 开发
+
+[ADR-0103](docs/adr/0103-accounted-utf8-string-values.md) 补 MVP 业务值缺口：独立计费 String、分块 UTF-8 校验/复制、精确 GC 及失败清理。源码 ABI 为 v16，旧产物须重编译；可运行示例见 [`examples/string-values.wings`](examples/string-values.wings)，构建/验证与剩余门禁见[验证记录](docs/validation-string-values-2026-11-17.md)。本轮优先补功能，不宣称完整 MVP 或 BEAM 性能/内存达标。
 
 [ADR-0102](docs/adr/0102-opt-in-worker-lock-statistics.md) 增加默认关闭的 worker 四类锁区间统计，可用 `SchedulerConfig::lock_statistics` 启用并通过 handle 读取。仅记录固定计费的墙钟累计/最大值，不是 CPU、p99 或性能提升结论；构建与验证命令见[记录](docs/validation-lock-statistics-2026-11-17.md)。
 
