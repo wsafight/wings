@@ -5,6 +5,7 @@ pub const MAX_HANDLERS: usize = 128;
 pub const MAX_PARAMETERS: usize = 64;
 pub const MAX_FUNCTIONS: usize = 64;
 pub const MAX_TOTAL_OPERATIONS: usize = 65536;
+pub const MAX_LITERAL_BYTES: usize = 1 << 20;
 
 pub type Register = usize;
 
@@ -29,6 +30,7 @@ pub enum Comparison {
 #[derive(Clone, Debug)]
 pub enum Operation {
     Constant(i64),
+    StringLiteral(String),
     State,
     Argument(usize),
     Negate(Register),
@@ -172,6 +174,18 @@ impl Program {
         if total > MAX_TOTAL_OPERATIONS {
             return Err("program exceeds 65536 total IR operations".into());
         }
+        self.functions
+            .iter()
+            .map(|function| &function.function)
+            .chain(self.handlers.iter().map(|handler| &handler.function))
+            .chain(std::iter::once(&self.initializer))
+            .flat_map(|function| &function.instructions)
+            .try_fold(0usize, |total, instruction| match &instruction.operation {
+                Operation::StringLiteral(value) => total.checked_add(value.len()),
+                _ => Some(total),
+            })
+            .filter(|total| *total <= MAX_LITERAL_BYTES)
+            .ok_or("program exceeds 1 MiB total string literal bytes")?;
         let mut paths = Vec::new();
         for (index, procedure) in self.functions.iter().enumerate() {
             if procedure.parameters.len() > MAX_PARAMETERS {
@@ -399,6 +413,9 @@ impl Function {
             }
             let valid = match instruction.operation {
                 Operation::Constant(value) => instruction.ty.accepts(value),
+                Operation::StringLiteral(ref value) => {
+                    instruction.ty == ValueType::StringRef && value.len() <= 65536
+                }
                 Operation::State => !initializer && instruction.ty == state,
                 Operation::Argument(index) => parameters
                     .get(index)

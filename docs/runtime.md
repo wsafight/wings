@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0104](adr/0104-bounded-string-literals.md) 的字符串字面量通过可信模块只读数据进入 runtime，先核对长度/三级预留，再每至多 256 字节检查并验证/复制 UTF-8。暂停保持代码租约与未发布缓冲，取消/预算/额度失败正常释放，空值也分配独立 String 槽。静态地址不进入消息或状态；本轮不驻留共享、不改执行控制预留，不把模块逻辑预算等同装载器实际 RSS。
+
 [ADR-0103](adr/0103-accounted-utf8-string-values.md) 为 UTF-8 String 增加独立精确 GC 叶标签，最大编码长度仍为 64 KiB。Bytes↔String 转换和拼接均先按目标字节数三级准入，再每至多 256 字节检查并复制；UTF-8 校验/字符计数只处理有界块，跨块字符最多回看三字节。预算/取消/非法编码/长度/额度失败丢弃未发布缓冲和票据，原提交状态不变；String state 在成功返回时核对独立类型。String 消息/回复和字面量尚不开放，不将 buffer 逻辑预算当作 RSS 或完整资源账本。
 
 [ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 的 `SchedulerConfig::lock_statistics` 默认 false；开启后 `handle.lock_statistics(worker)` 返回 claim/start/snapshot/finish 的计数和获取前/锁内墙钟总和、最大值与饱和标记。活动读取不是一致快照，停机/join 后核对；最后 handle 释放存储。park、宿主/effect/资源/结果/timer 锁未覆盖，不推导 CPU、p99 或完整锁开销。

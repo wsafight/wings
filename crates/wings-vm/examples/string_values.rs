@@ -26,6 +26,8 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     assert!(module.instantiate_in_pool(&pool).is_err());
     let mut process = module.instantiate_with_heap(&pool, &account, 16).unwrap();
     assert_eq!(process.invoke("Unicode", &[]).unwrap(), Some(207));
+    assert_eq!(process.invoke("Literal", &[]).unwrap(), Some(813));
+    assert_eq!(process.invoke("Unicode", &[]).unwrap(), Some(207));
     assert_eq!(process.invoke("Copy", &[]).unwrap(), Some(2));
     assert_eq!(process.invoke("Choose", &[1]).unwrap(), Some(2));
     assert_eq!(process.invoke("Choose", &[0]).unwrap(), Some(0));
@@ -116,6 +118,7 @@ fn scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     for failure in ["Invalid", "Double"] {
         let pid = handle.spawn_with_heap(module, limits(), 2, 16).unwrap();
         for (name, arguments, expected) in [
+            ("Literal", vec![], 813),
             ("Unicode", vec![], 207),
             ("Copy", vec![], 2),
             ("Fill", vec![65536], 65536),

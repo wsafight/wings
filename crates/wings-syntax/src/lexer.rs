@@ -4,6 +4,7 @@ use wings_source::{Diagnostic, MAX_DIAGNOSTICS, Span};
 pub enum TokenKind {
     Identifier,
     Integer,
+    String,
     Process,
     State,
     On,
@@ -67,6 +68,31 @@ pub fn lex(text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
                 offset += next.len_utf8();
             }
             TokenKind::Whitespace
+        } else if character == '"' {
+            let mut escaped = false;
+            let mut closed = false;
+            while let Some(next) = text[offset..].chars().next() {
+                if matches!(next, '\n' | '\r') {
+                    break;
+                }
+                offset += next.len_utf8();
+                if escaped {
+                    escaped = false;
+                } else if next == '\\' {
+                    escaped = true;
+                } else if next == '"' {
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed && diagnostics.len() < MAX_DIAGNOSTICS {
+                diagnostics.push(Diagnostic::error(
+                    "S005",
+                    "unterminated string literal",
+                    Span::new(start, offset),
+                ));
+            }
+            TokenKind::String
         } else if character == '#' {
             while let Some(next) = text[offset..].chars().next() {
                 if next == '\n' {

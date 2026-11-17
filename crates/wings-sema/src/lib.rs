@@ -537,6 +537,7 @@ impl Checker {
     fn expression(&mut self, expression: &Expr, scope: &HashMap<String, usize>) -> Type {
         match &expression.kind {
             ExprKind::Integer(_) => Type::Int,
+            ExprKind::String(_) => Type::String,
             ExprKind::Boolean(_) => Type::Bool,
             ExprKind::Unit => Type::Unit,
             ExprKind::Name(name) => self

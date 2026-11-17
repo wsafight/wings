@@ -9,6 +9,53 @@ fn instruction(ty: ValueType, operation: Operation) -> Instruction {
 }
 
 #[test]
+fn string_literals_validate_type_individual_and_aggregate_data_limits() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("a".repeat(65536)),
+        ),
+        instruction(ValueType::Int, Operation::StringLen(1)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 2;
+    program.validate().unwrap();
+    for (ty, value) in [(ValueType::Int, "a"), (ValueType::BytesRef, "a")] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[1] =
+            instruction(ty, Operation::StringLiteral(value.into()));
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[1].operation =
+        Operation::StringLiteral("a".repeat(65537));
+    assert!(invalid.validate().is_err());
+    let mut total = program.clone();
+    total.handlers[0]
+        .function
+        .instructions
+        .extend((0..15).map(|_| {
+            instruction(
+                ValueType::StringRef,
+                Operation::StringLiteral("a".repeat(65536)),
+            )
+        }));
+    total.validate().unwrap();
+    total.handlers[0].function.instructions.push(instruction(
+        ValueType::StringRef,
+        Operation::StringLiteral("a".into()),
+    ));
+    assert!(
+        total
+            .validate()
+            .unwrap_err()
+            .contains("1 MiB total string literal")
+    );
+}
+
+#[test]
 fn string_ir_preserves_typed_roots_and_rejects_forged_operands_and_boundaries() {
     let mut program = valid_program();
     program.handlers[0].function.instructions = vec![

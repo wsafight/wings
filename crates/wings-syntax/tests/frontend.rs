@@ -15,6 +15,83 @@ fn expression(text: &str) -> Expr {
 }
 
 #[test]
+fn string_literals_decode_utf8_escapes_and_preserve_lossless_tokens() {
+    for (source, expected) in [
+        (r#""""#, ""),
+        (r#""中文😀""#, "中文😀"),
+        (r#""\"\\\n\r\t\0#{}""#, "\"\\\n\r\t\0#{}"),
+    ] {
+        let ExprKind::String(value) = expression(source).kind else {
+            panic!("missing string")
+        };
+        assert_eq!(value, expected);
+        let (tokens, diagnostics) = lex(source);
+        assert!(diagnostics.is_empty());
+        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].span, Span::new(0, source.len()));
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| &source[token.span.start..token.span.end])
+                .collect::<String>(),
+            source
+        );
+    }
+}
+
+#[test]
+fn string_literal_errors_are_bounded_and_recover_at_following_handlers() {
+    for literal in [
+        r#""\q""#,
+        r#""\u1234""#,
+        "\"unterminated",
+        "\"raw\tcontrol\"",
+        "\"dangling\\",
+    ] {
+        let source =
+            format!("process P {{ state text: String = {literal}\non Final -> Int {{ 7 }} }}");
+        let parsed = parse(&source);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "S005"),
+            "{literal}"
+        );
+        assert!(
+            parsed.program.processes[0]
+                .handlers
+                .iter()
+                .any(|handler| handler.name.text == "Final"),
+            "{literal}"
+        );
+        assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
+    }
+}
+
+#[test]
+fn string_literal_limit_counts_decoded_utf8_bytes_not_source_characters() {
+    for (body, valid) in [
+        ("a".repeat(65536), true),
+        ("a".repeat(65537), false),
+        ("😀".repeat(16384), true),
+        ("😀".repeat(16385), false),
+        (r"\0".repeat(65536), true),
+    ] {
+        let source = format!("process P {{ state text: String = \"{body}\"; }}");
+        let parsed = parse(&source);
+        assert_eq!(parsed.diagnostics.is_empty(), valid);
+        if valid {
+            let ExprKind::String(value) = &parsed.program.processes[0].states[0].default.kind
+            else {
+                panic!("missing literal")
+            };
+            assert_eq!(value.len(), 65536);
+        }
+    }
+}
+
+#[test]
 fn functions_parse_signatures_and_recover_before_following_handlers() {
     let parsed = parse(
         "process P { state n: Int = twice(1); fn twice(value: Int) -> Int { value + value } on Get -> Int { twice(n) } }",

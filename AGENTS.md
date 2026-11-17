@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0104 补双引号 UTF-8 字面量及六种显式转义，单值解码至多 64 KiB、IR 合计至多 1 MiB；常量存只读模块段，每次执行先三级准入再分块复制为独立 String，保留 GC/取消/预算与模块租约。源码 ABI 为 v17，context/EffectRequest 布局不变，旧产物须重编译；String 消息/回复、通用记录与完整账本及双平台 BEAM 门禁仍未完成，不改待审大小写提案。
+
 - ADR-0103 接入独立计费 UTF-8 String 的本地/state/有界 fn 值、Bytes 显式复制转换、Unicode scalar value 计数和拼接，编码上限仍为 64 KiB，分块检查/精确根与非移动 GC 保持。源码 ABI 升至 v16，context/EffectRequest 布局不变，旧产物须重编译；尚无字符串字面量、消息/回复或通用记录，不改变类型大小写提案。MVP 仍缺业务值交互、完整资源账本、长时公平/故障、最新原生双平台及 BEAM 吞吐/整机内存双门禁。
 
 - ADR-0102 增加默认关闭的 worker 锁区间统计：固定计费每 worker claim/start/snapshot/finish 的次数、获取前墙钟/锁内墙钟总和与最大值，饱和标记，不保存逐条业务对象。未启用不额外读时钟/更新统计；不覆盖 park、宿主/effect/账本/结果/timer 锁，不将墙钟当 CPU 或 p99。功能验证另记，ABI/原预算/时限和 MVP/BEAM 门禁不变。

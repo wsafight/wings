@@ -8,7 +8,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
     HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
@@ -224,6 +224,27 @@ fn compile_body(
         .iter()
         .map(|identifier| module.declare_func_in_func(*identifier, &mut context.func))
         .collect();
+    let mut literals = Vec::with_capacity(function.instructions.len());
+    for instruction in &function.instructions {
+        let literal = if let Operation::StringLiteral(ref value) = instruction.operation {
+            let identifier = module
+                .declare_anonymous_data(false, false)
+                .map_err(|error| error.to_string())?;
+            let mut data = DataDescription::new();
+            data.define(if value.is_empty() {
+                vec![0].into_boxed_slice()
+            } else {
+                value.as_bytes().into()
+            });
+            module
+                .define_data(identifier, &data)
+                .map_err(|error| error.to_string())?;
+            Some(module.declare_data_in_func(identifier, &mut context.func))
+        } else {
+            None
+        };
+        literals.push(literal);
+    }
     let mut builder_context = FunctionBuilderContext::new();
     let mut slow_signature = module.make_signature();
     slow_signature.params.push(AbiParam::new(pointer_type));
@@ -265,6 +286,7 @@ fn compile_body(
                 | Operation::StringBytes(_)
                 | Operation::StringLen(_)
                 | Operation::ConcatStrings(_, _)
+                | Operation::StringLiteral(_)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -647,6 +669,27 @@ fn compile_body(
             }
             Operation::EndIf(_) => merged.expect("validated branch merge"),
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
+            Operation::StringLiteral(ref value) => {
+                let output = heap_output.expect("literal heap scratch");
+                let address = builder
+                    .ins()
+                    .global_value(pointer_type, literals[index].expect("literal data"));
+                builder.ins().store(MemFlags::new(), address, output, 0);
+                let length = builder.ins().iconst(types::I64, value.len() as i64);
+                builder.ins().store(MemFlags::new(), length, output, 8);
+                let unused = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), unused, output, 16);
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    wings_abi::HEAP_STRING_LITERAL,
+                    output,
+                    output,
+                    exit,
+                )
+            }
             Operation::State => parameters[0],
             Operation::Argument(index) => builder.ins().load(
                 types::I64,

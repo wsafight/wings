@@ -200,6 +200,10 @@ impl Lowerer<'_> {
     fn expression_inner(&mut self, expression: &Expr) -> Result<Register, String> {
         match &expression.kind {
             ExprKind::Integer(value) => self.push(ValueType::Int, Operation::Constant(*value)),
+            ExprKind::String(value) => self.push(
+                ValueType::StringRef,
+                Operation::StringLiteral(value.clone()),
+            ),
             ExprKind::Boolean(value) => {
                 self.push(ValueType::Bool, Operation::Constant(i64::from(*value)))
             }
@@ -436,6 +440,28 @@ fn value_type(name: &str) -> Result<ValueType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_literals_lower_without_per_byte_ir_and_keep_managed_roots() {
+        let source = format!(
+            "process P {{ state text: String = \"{}\"; fn copy(value: String) -> String {{ concat_strings(value, \"😀\") }} on Read -> Int {{ let saved = copy(text); collect(); string_len(saved) }} }}",
+            "a".repeat(65536)
+        );
+        let program = lower(&source).unwrap();
+        assert!(program.initializer.instructions.len() < 4);
+        assert!(
+            matches!(&program.initializer.instructions[0].operation, Operation::StringLiteral(value) if value.len()==65536)
+        );
+        assert_eq!(program.initializer.instructions[0].ty, ValueType::StringRef);
+        let function = &program.handlers[0].function;
+        let collect = function
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.operation, Operation::Collect))
+            .unwrap();
+        assert!(!function.root_plan().at[collect].is_empty());
+        program.validate().unwrap();
+    }
 
     #[test]
     fn strings_have_distinct_types_and_cross_frame_gc_roots() {

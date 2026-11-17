@@ -441,6 +441,19 @@ impl Parser<'_> {
                 self.bump();
                 self.integer(&self.text[span.start..span.end], span)
             }
+            TokenKind::String => {
+                self.bump();
+                match crate::string::decode(&self.text[span.start..span.end]) {
+                    Ok(value) => ExprKind::String(value),
+                    Err(message) => {
+                        if self.diagnostics.len() < MAX_DIAGNOSTICS {
+                            self.diagnostics
+                                .push(Diagnostic::error("S005", message, span));
+                        }
+                        ExprKind::Error
+                    }
+                }
+            }
             TokenKind::Minus => {
                 self.bump();
                 if self.at(TokenKind::Integer) {

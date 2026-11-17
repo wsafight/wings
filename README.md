@@ -26,9 +26,11 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接，尚无字面量或字符串消息/回复。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；通用记录、完整字符串交互、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接及字面量，尚无字符串消息/回复。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；通用记录、完整字符串交互、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
 
 ## 开发
+
+[ADR-0104](docs/adr/0104-bounded-string-literals.md) 补齐有界 UTF-8 字符串字面量，支持直接中文/emoji 与六种显式转义；编译到只读数据段，执行时分块复制为独立计费 String。当前源码 ABI v17，旧产物须重编译；仍无 String 消息/回复或通用记录。验证与未通过项见[记录](docs/validation-string-literals-2026-11-17.md)，不因本地功能通过宣布 MVP 达标。
 
 [ADR-0103](docs/adr/0103-accounted-utf8-string-values.md) 补 MVP 业务值缺口：独立计费 String、分块 UTF-8 校验/复制、精确 GC 及失败清理。源码 ABI 为 v16，旧产物须重编译；可运行示例见 [`examples/string-values.wings`](examples/string-values.wings)，构建/验证与剩余门禁见[验证记录](docs/validation-string-values-2026-11-17.md)。本轮优先补功能，不宣称完整 MVP 或 BEAM 性能/内存达标。
 

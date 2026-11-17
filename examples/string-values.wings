@@ -1,5 +1,5 @@
 process Text {
-  state text: String = string_from_bytes(fill_bytes(0, 0));
+  state text: String = "";
 
   fn copy(value: String) -> String {
     let result = string_from_bytes(string_bytes(value));
@@ -17,9 +17,7 @@ process Text {
   on ByteLength -> Int { bytes_len(string_bytes(text)) }
 
   on Unicode -> Int {
-    let chinese = replace_byte(replace_byte(replace_byte(fill_bytes(3, 0), 0, 228), 1, 184), 2, 173);
-    let emoji = replace_byte(replace_byte(replace_byte(replace_byte(fill_bytes(4, 0), 0, 240), 1, 159), 2, 152), 3, 128);
-    text = concat_strings(string_from_bytes(chinese), string_from_bytes(emoji));
+    text = concat_strings("中", "😀");
     collect();
     string_len(text) * 100 + bytes_len(string_bytes(copy(text)))
   }
@@ -62,4 +60,13 @@ process Text {
   }
 
   on Sweep -> Unit { collect(); }
+
+  fn suffix(value: String) -> String { concat_strings(value, "\0\n\r\t\\\"") }
+
+  on Literal -> Int {
+    text = suffix("中😀");
+    collect();
+    let data = string_bytes(text);
+    string_len(text) * 100 + bytes_len(data)
+  }
 }

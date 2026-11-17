@@ -24,6 +24,7 @@
 | [2026-11-16 空请求维护优化验证](docs/validation-empty-request-optimization-2026-11-16.md) | 空语言请求表快路径、双端存活计数与配对实验 |
 | [2026-11-17 锁区间统计验证](docs/validation-lock-statistics-2026-11-17.md) | 默认关闭的 worker 锁区间诊断、计费与真实 AOT 开关对照 |
 | [2026-11-17 字符串值验证](docs/validation-string-values-2026-11-17.md) | 独立 UTF-8 String、本地/状态/函数、分块检查与 MVP 剩余门禁 |
+| [2026-11-17 字符串字面量验证](docs/validation-string-literals-2026-11-17.md) | 双引号/转义、有界只读常量、分块计费副本与全量回归 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

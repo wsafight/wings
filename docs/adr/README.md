@@ -111,6 +111,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 | [0101](0101-empty-language-request-maintenance.md) | 锁内存活计数与空语言请求表维护快路径 | 实验后回退（无稳定收益，保留失败证据） |
 | [0102](0102-opt-in-worker-lock-statistics.md) | 默认关闭、固定计费的 worker 四类锁区间墙钟统计 | 已采纳（有界诊断切片） |
 | [0103](0103-accounted-utf8-string-values.md) | 独立计费 UTF-8 String、本地/状态/函数和分块内建 | 已采纳（业务值切片） |
+| [0104](0104-bounded-string-literals.md) | 有界 UTF-8 字面量、只读模块常量与分块计费副本 | 已采纳（字符串构造切片） |
 
 ## 维护方式
 

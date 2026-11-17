@@ -718,6 +718,64 @@ unsafe fn string_call(
     Err(STATUS_HEAP_EXHAUSTED)
 }
 
+unsafe fn string_literal(context: &mut ScalarContext, arguments: [i64; 3]) -> Result<u64, u32> {
+    let length = usize::try_from(arguments[1])
+        .ok()
+        .filter(|length| *length <= crate::heap::MAX_BYTES)
+        .ok_or(wings_abi::STATUS_INVALID_STRING)?;
+    if arguments[0] == 0 {
+        return Err(wings_abi::STATUS_INVALID_STRING);
+    }
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
+        Ok(buffer) => buffer,
+        Err(_) => {
+            unsafe { collect_managed(context) }?;
+            unsafe { &*pointer }
+                .heap
+                .prepare_bytes(length)
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+        }
+    };
+    let mut offset = 0;
+    while offset < length {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let data =
+            unsafe { std::slice::from_raw_parts(arguments[0] as usize as *const u8, length) };
+        let end = (offset + 256).min(length);
+        let chunk = &data[offset..end];
+        let valid = match std::str::from_utf8(chunk) {
+            Ok(text) => text,
+            Err(error) if error.error_len().is_none() && end < length => {
+                std::str::from_utf8(&chunk[..error.valid_up_to()])
+                    .map_err(|_| wings_abi::STATUS_INVALID_STRING)?
+            }
+            Err(_) => return Err(wings_abi::STATUS_INVALID_STRING),
+        };
+        buffer.data.extend_from_slice(valid.as_bytes());
+        offset += valid.len();
+    }
+    let mut buffer = Some(buffer);
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            match unsafe { &mut *pointer }
+                .heap
+                .allocate_string_chunk(&mut buffer, &mut cursor)
+            {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
+}
+
 pub(crate) unsafe extern "C" fn heap_call(
     context: *mut ScalarContext,
     operation: u32,
@@ -729,9 +787,14 @@ pub(crate) unsafe extern "C" fn heap_call(
         return STATUS_INVALID_CONTROL;
     }
     let pointer = context.heap_data.cast::<AotHeap>();
-    if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_CONCAT_STRINGS).contains(&operation) {
+    if (wings_abi::HEAP_STRING_FROM_BYTES..=wings_abi::HEAP_STRING_LITERAL).contains(&operation) {
         let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
-        return match unsafe { string_call(context, operation, arguments) } {
+        let result = if operation == wings_abi::HEAP_STRING_LITERAL {
+            unsafe { string_literal(context, arguments) }
+        } else {
+            unsafe { string_call(context, operation, arguments) }
+        };
+        return match result {
             Ok(value) => {
                 unsafe { *output = value };
                 STATUS_OK
@@ -854,6 +917,164 @@ mod tests {
             .unwrap()
             .unwrap()
             .encoded()
+    }
+
+    #[test]
+    fn string_literals_copy_static_data_in_chunks_with_gc_and_distinct_tags() {
+        for value in [
+            Vec::new(),
+            b"literal\0\n".to_vec(),
+            [vec![b'a'; 255], "😀中文".as_bytes().to_vec()].concat(),
+            "😀".repeat(16384).into_bytes(),
+        ] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            let before = vm.used();
+            let arguments = [value.as_ptr() as usize as i64, value.len() as i64, 0];
+            let (status, reference) =
+                unsafe { bytes(&mut context, wings_abi::HEAP_STRING_LITERAL, arguments) };
+            assert_eq!(status, STATUS_OK);
+            assert_eq!(vm.used().bytes, before.bytes + value.len() as u64);
+            let reference = heap.heap.import_reference(reference).unwrap();
+            assert_eq!(heap.heap.string_bytes(reference).unwrap(), value);
+            assert!(heap.heap.bytes(reference).is_err());
+            heap.commit_typed(wings_abi::ValueType::StringRef, reference.encoded() as i64)
+                .unwrap();
+            unsafe { heap.collect(std::ptr::null()) }.unwrap();
+            assert_eq!(heap.heap.string_bytes(reference).unwrap(), value);
+            heap.committed = None;
+            unsafe { heap.collect(std::ptr::null()) }.unwrap();
+            assert!(heap.heap.import_reference(reference.encoded()).is_err());
+            assert_eq!(vm.used(), before);
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn string_literal_invalid_input_budget_and_cancel_leave_output_and_charges_unchanged() {
+        for value in [
+            vec![0xff],
+            vec![0xc0, 0xaf],
+            vec![0xed, 0xa0, 0x80],
+            [vec![b'a'; 255], vec![0xf0, 0x9f]].concat(),
+        ] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            let before = vm.used();
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [value.as_ptr() as usize as i64, value.len() as i64, 0],
+                    )
+                },
+                (wings_abi::STATUS_INVALID_STRING, 79)
+            );
+            assert_eq!(vm.used(), before);
+        }
+        let value = vec![b'a'; 65536];
+        let (vm, mut heap) = fixture(4);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.slow_path = Some(resume_one_step);
+        let before = vm.used();
+        for length in [-1, 65537, i64::MAX] {
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [value.as_ptr() as usize as i64, length, 0],
+                    )
+                },
+                (wings_abi::STATUS_INVALID_STRING, 79)
+            );
+        }
+        assert_eq!(
+            unsafe { bytes(&mut context, wings_abi::HEAP_STRING_LITERAL, [0, 0, 0]) },
+            (wings_abi::STATUS_INVALID_STRING, 79)
+        );
+        for steps in [0, 1, 64, 128, 255, 256] {
+            context.remaining_steps = steps;
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [value.as_ptr() as usize as i64, 65536, 0],
+                    )
+                },
+                (wings_abi::STATUS_BUDGET_EXHAUSTED, 79)
+            );
+            assert_eq!(vm.used(), before);
+        }
+        context.remaining_steps = 4096;
+        flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            unsafe {
+                bytes(
+                    &mut context,
+                    wings_abi::HEAP_STRING_LITERAL,
+                    [value.as_ptr() as usize as i64, 65536, 0],
+                )
+            },
+            (wings_abi::STATUS_CANCELLED, 79)
+        );
+        assert_eq!(vm.used(), before);
+    }
+
+    #[test]
+    fn string_literal_storage_admission_rolls_back_at_all_three_levels() {
+        let limits = Resources {
+            bytes: 1 << 20,
+            ..Resources::default()
+        };
+        for level in 0..3 {
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant(limits).unwrap();
+            let account = tenant.process(limits).unwrap();
+            let mut heap = AotHeap::new(&account, 4).unwrap();
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            context.slow_path = Some(resume_one_step);
+            let levels = [&vm, &tenant, &account];
+            let charge = levels[level]
+                .reserve(Resources {
+                    bytes: limits.bytes - levels[level].used().bytes - 4,
+                    ..Resources::default()
+                })
+                .unwrap();
+            let before = levels.map(ResourceAccount::used);
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [b"hello".as_ptr() as usize as i64, 5, 0],
+                    )
+                },
+                (STATUS_HEAP_EXHAUSTED, 79)
+            );
+            assert_eq!(levels.map(ResourceAccount::used), before);
+            drop(charge);
+            assert_eq!(
+                unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_LITERAL,
+                        [b"hello".as_ptr() as usize as i64, 5, 0],
+                    )
+                }
+                .0,
+                STATUS_OK
+            );
+            drop((heap, account, tenant));
+            assert_eq!(vm.used(), Resources::default());
+        }
     }
 
     #[test]

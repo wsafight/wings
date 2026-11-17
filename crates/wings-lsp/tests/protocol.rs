@@ -45,6 +45,38 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
 }
 
 #[test]
+fn string_literal_diagnostics_and_inferred_hover_share_the_parser() {
+    let mut server = server();
+    let source = r#"process P { state text: String = "中文😀"; on Read -> Int { let saved = "\"\n\0"; string_len(saved) } }"#;
+    assert_eq!(
+        open(&mut server, URI, 1, source)[0]["params"]["diagnostics"],
+        json!([])
+    );
+    let offset = source.rfind("saved").unwrap() as u32;
+    let position = wings_source::SourceFile::new(wings_source::SourceId(0), source)
+        .position(offset as usize)
+        .unwrap();
+    assert_eq!(
+        query(
+            &mut server,
+            "textDocument/hover",
+            URI,
+            position.line,
+            position.character
+        )["result"]["contents"]["value"],
+        "saved: String"
+    );
+    let invalid = source.replace("中文😀", r"\q");
+    assert!(
+        open(&mut server, URI, 2, &invalid)[0]["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["code"] == "S005")
+    );
+}
+
+#[test]
 fn bytes_hover_and_builtins_share_frontend_types_without_execution() {
     let mut server = server();
     let text =
