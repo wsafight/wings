@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 use wings_abi::{
     DEFAULT_MAX_STEPS, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
@@ -11,6 +11,7 @@ use wings_artifact::Manifest;
 
 mod aot_heap;
 mod bytes_reply;
+mod control_flag;
 mod detached;
 mod execution;
 mod heap;
@@ -76,10 +77,16 @@ pub struct ScalarProcess {
 
 #[derive(Clone, Default)]
 pub struct CancellationToken {
-    flag: Arc<AtomicU32>,
+    flag: control_flag::ControlFlag,
 }
 
 impl CancellationToken {
+    pub fn new_accounted(account: &ResourceAccount) -> Result<Self, String> {
+        Ok(Self {
+            flag: control_flag::ControlFlag::new_accounted(account)?,
+        })
+    }
+
     pub fn cancel(&self) {
         self.flag.store(1, Ordering::SeqCst);
     }

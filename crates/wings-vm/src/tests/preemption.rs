@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn accounted_control_tokens_remain_reserved_while_execution_owns_clones() {
+    let [vm, tenant, account] = accounts();
+    let baseline = vm.used();
+    let cancellation = CancellationToken::new_accounted(&account).unwrap();
+    let preemption = PreemptionToken::new_accounted(&account).unwrap();
+    let charged = vm.used();
+    assert!(charged.bytes > baseline.bytes);
+    let mut process = module().instantiate().unwrap();
+    let mut execution = process
+        .start_controlled("Bump", &[7], 4, &cancellation, &preemption)
+        .unwrap();
+    assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
+    cancellation.cancel();
+    drop((cancellation, preemption, account, tenant));
+    assert_eq!(vm.used(), charged);
+    assert!(execution.resume(100).unwrap_err().contains("cancelled"));
+    drop(execution);
+    drop(process);
+    assert_eq!(vm.used(), baseline);
+}
+
+#[test]
 fn default_preemption_has_no_observer() {
     let token = PreemptionToken::default();
     token.request();

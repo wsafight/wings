@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0107](adr/0107-accounted-control-token-leases.md) 为 CancellationToken/PreemptionToken 增加显式 `new_accounted`：原子共享存储分配前准入，clone 不重复计费，最后 token/调用 owner 归还。ScalarWorker 常驻让出标志与 Scheduler actor 取消标志分别绑定 tenant/process；公开 Default 仍属宿主/工具入口，调用、线程及 CLI 私有标志沿既有控制预留覆盖。不能把调用结束当作所有外部 token 已释放，不提高原控制预留或资源上限。
+
 [ADR-0106](adr/0106-accounted-string-replies.md) 的 StringReply 独立于 BytesReply，分块验证 UTF-8 后共享不可变结果存储与计费租约，不保留 actor/模块/堆/栈。出口根保活候选及结果，副本/控制拒绝不提交候选；完成事件 String 参数重新计费导入，非成功终态为空值，满队列/owner 退出/迟到 publisher 沿原双端生命周期。
 
 [ADR-0105](adr/0105-accounted-string-messages.md) 增加 String 语言/宿主消息参数：源暂存先准入，发布净转移到目标，目标导入另行预留并至多 256 B 校验/复制。String/Bytes 共用单条合计 64 KiB；独立类型掩码和入口根保持精确 GC。请求超时/取消不撤回已发布消息，该参数切片的回复限制由 ADR-0106 扩展。

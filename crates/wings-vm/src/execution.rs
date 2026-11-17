@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -540,9 +539,9 @@ fn new_coroutine(
             preemption: &preemption,
         };
         let mut context = ScalarContext {
-            cancellation: Arc::as_ptr(&cancellation.flag),
+            cancellation: &*cancellation.flag,
             remaining_steps: max_steps,
-            yield_request: Arc::as_ptr(&preemption.flag),
+            yield_request: &*preemption.flag,
             slice_remaining,
             slow_path: Some(suspend_scalar),
             data: std::ptr::from_mut(&mut control).cast(),
@@ -926,6 +925,7 @@ mod tests {
             + std::mem::size_of::<ListPayload>()
             + std::mem::size_of::<BytePayload>()
             + 64 * std::mem::size_of::<i64>()
+            + 2 * crate::control_flag::ControlFlag::UNACCOUNTED_BYTES
             + 256;
         assert!(
             maximum as u64 <= INVOCATION_OVERHEAD,

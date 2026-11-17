@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0107](adr/0107-accounted-control-token-leases.md) 控制租约回归验证三级不足/精确边界、跨线程末释放、worker/actor 退出后的独立标志存活及真实 AOT 正常/让出/取消/挂起 Drop；不以逻辑账目等同 RSS，不改变原时限、quota、ABI 或双平台 BEAM 门禁。
+
 [ADR-0106](adr/0106-accounted-string-replies.md) 须覆盖 String/Bytes 独立类型与 callback 精确匹配、最大/Unicode/NUL 内容、出口预算/取消/GC 根、三级存储/控制拒绝、结果跨 actor 退出存活、满完成队列和末 owner 清理。真实 AOT 验证 direct/单 worker/一双 worker、ingress/监督、72 组完成情形与 CLI，原限不放宽；结果见[记录](validation-string-replies-2026-11-17.md)。
 
 [ADR-0105](adr/0105-accounted-string-messages.md) 须验证 String/Bytes 共用合计上限、独立类型/内容、混合记录/列表入口根、UTF-8 分块、三级拒绝回滚及预算/取消清理；真实 AOT 覆盖单/双 worker、发布后失败、超时和停止。执行限额保持 CPU 20s/墙钟 30s/core 0/阶段 3s，结果见[验证记录](validation-string-messages-2026-11-17.md)，不替代完整 MVP 或 BEAM 双门禁。

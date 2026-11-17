@@ -6,6 +6,49 @@ use wings_abi::{ScalarContext, ScalarOutput, ValueType};
 use wings_artifact::{Handler, Manifest};
 
 #[test]
+fn actor_cancellation_charge_survives_stop_until_last_control_owner_exits() {
+    for workers in [1, 2] {
+        let limits = Resources {
+            bytes: 32 << 20,
+            processes: 2,
+            messages: 2,
+            requests: 2,
+        };
+        let vm = ResourceAccount::vm(limits);
+        let tenant = vm.tenant(limits).unwrap();
+        let scheduler = Scheduler::new(
+            &tenant,
+            SchedulerConfig {
+                workers,
+                capacity: 1,
+                requests: 1,
+                ..SchedulerConfig::default()
+            },
+        )
+        .unwrap();
+        let handle = scheduler.handle();
+        let module = module();
+        let pid = handle.spawn(&module, limits, 1).unwrap();
+        let (account, token) = {
+            let state = handle.shared.lock();
+            let actor = state.actor(handle.shared.identity, pid).unwrap();
+            (actor.account.clone(), actor.cancellation.clone())
+        };
+        handle.stop(pid).unwrap();
+        assert_eq!(
+            account.used().bytes,
+            crate::control_flag::ControlFlag::BYTES
+        );
+        assert_eq!(account.used().processes, 0);
+        token.cancel();
+        drop(token);
+        assert_eq!(account.used(), Resources::default());
+        drop((account, handle, scheduler, tenant, module));
+        assert_eq!(vm.used(), Resources::default());
+    }
+}
+
+#[test]
 fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirement() {
     for reply_type in [
         ValueType::ListRef,

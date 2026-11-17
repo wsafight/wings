@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0107](docs/adr/0107-accounted-control-token-leases.md) 补取消/让出 token 的显式计费构造、常驻 worker/actor 接入与末 owner 清理。ABI v19 和原控制预留不变，Default 宿主工具入口不代表完整资源计费；MVP 仍未完成。
+
 [ADR-0106](docs/adr/0106-accounted-string-replies.md) 补齐 String 内容回复、类型匹配完成事件及宿主 `StringReply`，出口副本/结果控制和目标导入均计费，CLI 支持结构化文字回复。源码 ABI v19、布局和控制预留不变；具体命令与失败见[验证记录](docs/validation-string-replies-2026-11-17.md)。通用记录、完整账本与原生双平台/BEAM 双门禁仍待完成。
 
 [ADR-0105](docs/adr/0105-accounted-string-messages.md) 接入 String 语言/宿主消息参数，独立类型复制与 Bytes 共用单条 64 KiB 上限；源码 ABI v18、EffectRequest 80 B，旧产物须重编译。该切片当时 String 回复未开放，完整账本、原生双平台及 BEAM 双门禁仍待验收；本轮命令与结果见[验证记录](docs/validation-string-messages-2026-11-17.md)。

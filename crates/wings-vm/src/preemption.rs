@@ -1,12 +1,13 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::control_flag::ControlFlag;
 use crate::{Reservation, ResourceAccount, Resources};
 
 #[derive(Clone, Default)]
 pub struct PreemptionToken {
-    pub(crate) flag: Arc<AtomicU32>,
+    pub(crate) flag: ControlFlag,
     observer: Option<Arc<Observer>>,
 }
 
@@ -45,13 +46,20 @@ struct Observer {
 }
 
 impl PreemptionToken {
+    pub fn new_accounted(account: &ResourceAccount) -> Result<Self, String> {
+        Ok(Self {
+            flag: ControlFlag::new_accounted(account)?,
+            observer: None,
+        })
+    }
+
     pub fn new_observed(account: &ResourceAccount) -> Result<Self, String> {
         let charge = account.reserve(Resources {
             bytes: 4096,
             ..Resources::default()
         })?;
         Ok(Self {
-            flag: Arc::new(AtomicU32::new(0)),
+            flag: ControlFlag::default(),
             observer: Some(Arc::new(Observer {
                 state: Mutex::new(PreemptionObservation::default()),
                 _charge: charge,
@@ -148,7 +156,7 @@ mod tests {
 
     #[test]
     fn fixed_observer_charge_covers_control_and_arc_headers() {
-        assert!(std::mem::size_of::<Observer>() + std::mem::size_of::<AtomicU32>() + 64 <= 4096);
+        assert!(std::mem::size_of::<Observer>() as u64 + ControlFlag::BYTES + 32 <= 4096);
     }
 
     #[test]

@@ -232,7 +232,7 @@ impl ScalarWorker {
         Ok(Self {
             idle_wait: None,
             timer: None,
-            preemption: PreemptionToken::default(),
+            preemption: PreemptionToken::new_accounted(tenant)?,
             identity,
             slots,
             requests,
@@ -1486,6 +1486,19 @@ fn storage<Value>(
 #[cfg(test)]
 mod payload_tests {
     use super::*;
+
+    #[test]
+    fn worker_control_flag_remains_charged_until_its_last_owner_exits() {
+        let vm = ResourceAccount::vm(limits());
+        let tenant = vm.tenant(limits()).unwrap();
+        let worker = ScalarWorker::new(&tenant, 1).unwrap();
+        let token = worker.preemption.clone();
+        drop(worker);
+        assert!(tenant.used().bytes > 0);
+        token.request();
+        drop(token);
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     #[test]
     fn reference_completion_waits_for_mailbox_capacity_and_releases_results_when_owner_exits() {

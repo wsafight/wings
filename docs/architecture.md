@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0107](adr/0107-accounted-control-token-leases.md) 将可共享取消/让出原子的独立生命周期绑定资源票据，新增显式计费构造及常驻控制接入；Default 工具路径和既有调用控制边界保留。ABI v19、强制检查、4352 B 执行预留及原资源上限不变，仍非完整 allocator/装载账本或 MVP 验收。
+
 [ADR-0106](adr/0106-accounted-string-replies.md) 开放 String 回复/匹配完成入口，源码 ABI v19，布局与 4352 B 控制预留不变。出口引用与候选 state 同时保活，分块导出并验证 UTF-8 后构造独立结果类型，结果只保留计费存储租约，目标完成参数另行复制为受管 String；不能用 BytesReply 冒充文字。
 
 [ADR-0105](adr/0105-accounted-string-messages.md) 将源码 ABI 升至 v18：EffectRequest 增加独立 string_mask、长度 80 B，context 88 B/控制预留 4352 B 不变。String/Bytes 参数共用合计 64 KiB buffer，目标完整 schema 检查类型后分块独立导入；当时 String 回复和完成值仍拒绝，后由 ADR-0106 扩展；消息所有权与账目见决策。

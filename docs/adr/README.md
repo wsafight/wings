@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0107](0107-accounted-control-token-leases.md) | 共享取消/让出标志末 owner 计费与常驻 worker 控制 | 已采纳（资源账本切片） |
 | [0001](0001-vm-boundary-and-naming.md) | VM 的职责与命令入口 | 已采纳（设计） |
 | [0002](0002-language-and-aot.md) | 单前端、Cranelift AOT 与独立编译工具 | 已采纳；消息语法部分由 0007 替代 |
 | [0003](0003-process-and-resource-model.md) | 返回式 handler、独立业务状态与多级资源准入 | 已采纳（设计） |

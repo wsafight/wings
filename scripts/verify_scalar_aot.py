@@ -1046,6 +1046,7 @@ def main():
         verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
+        print(example("control_tokens", counter).stdout, end="")
         verify_cli_reporting(counter, parent)
         verify_cli_arguments(counter, parent)
         verify_cli_input(counter, parent)

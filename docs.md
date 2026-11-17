@@ -27,6 +27,7 @@
 | [2026-11-17 字符串字面量验证](docs/validation-string-literals-2026-11-17.md) | 双引号/转义、有界只读常量、分块计费副本与全量回归 |
 | [2026-11-17 字符串消息验证](docs/validation-string-messages-2026-11-17.md) | 计费 String 参数、混合载荷、类型边界和单/双 worker 回归 |
 | [2026-11-17 字符串回复验证](docs/validation-string-replies-2026-11-17.md) | 独立 StringReply、分块出口/完成导入、结果生命周期及全量回归 |
+| [2026-11-17 控制 token 验证](docs/validation-control-tokens-2026-11-17.md) | 可共享取消/让出标志计费、末 owner 生命周期和常驻控制回归 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

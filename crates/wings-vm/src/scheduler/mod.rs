@@ -477,7 +477,6 @@ impl SchedulerHandle {
             let charge = account.reserve(Resources {
                 processes: 1,
                 bytes: (std::mem::size_of::<Actor>()
-                    + 64
                     + mailbox * std::mem::size_of::<Option<Envelope>>())
                     as u64,
                 ..Resources::default()
@@ -500,6 +499,7 @@ impl SchedulerHandle {
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
             let byte_state = image.byte_state_snapshot();
+            let cancellation = CancellationToken::new_accounted(&account)?;
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
@@ -512,7 +512,7 @@ impl SchedulerHandle {
                 committed_state,
                 byte_state,
                 stopping: false,
-                cancellation: CancellationToken::default(),
+                cancellation,
                 capability: next_identity(&NEXT_CAPABILITY)? as i64,
                 heap_records,
                 mailbox: Mailbox {

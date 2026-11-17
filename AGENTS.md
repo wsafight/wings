@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0107 增加 CancellationToken/PreemptionToken 显式 `new_accounted`，共享原子存储先准入、最后 token/调用 owner 清理；ScalarWorker 常驻标志与 Scheduler actor 取消分别绑定 tenant/process，移除 actor 原 64 B 合并预付。默认工具/内部调用控制边界不变，保留4352 B/ABI19及原额度/时限；通用记录、完整账本、原生双平台和 BEAM 双门禁仍待完成。
+
 - ADR-0106 开放计费 String 回复、独立 StringReply/ReplyString/CompleteString 和匹配完成事件，非成功终态导入空字符串；出口根/分块复制与 UTF-8 校验、末结果租约清理保持。源码 ABI v19，EffectRequest 80 B/context 88 B/控制预留 4352 B 不变，旧产物须重编译；通用记录、完整账本及原生双平台/BEAM 双门禁仍未完成。
 
 - ADR-0105 开放 String 语言/宿主消息参数，与 Bytes 共用单条合计 64 KiB、独立掩码与计费副本；源码 ABI v18、EffectRequest 80 B/context 88 B，控制预留仍 4352 B，旧产物须重编译。目标分块校验 UTF-8 并保留入口根，String 回复、通用记录、完整账本及原生双平台/BEAM 双门禁仍未完成。
