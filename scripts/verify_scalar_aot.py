@@ -1453,6 +1453,7 @@ def main():
         recovery = parent / "concurrent-recovery"
         command([COMPILER, "build", ROOT / "examples/concurrent-recovery.wings", "-o", recovery])
         example("concurrent_recovery", recovery)
+        command([sys.executable, ROOT / "scripts/verify_recovery_soak.py", "--artifact", recovery])
         command([sys.executable, ROOT / "scripts/verify_admission_counter.py", "--artifact", mailbox_boundary])
         result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]

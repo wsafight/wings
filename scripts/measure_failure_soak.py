@@ -153,7 +153,7 @@ def limits(soak):
     return apply
 
 
-def trial(command, payload, trace, directory, workload, runtime, *, soak):
+def trial(command, payload, trace, directory, workload, runtime, *, soak, replayer=None):
     directory.mkdir(exist_ok=False)
     manifest = {"status": "running", "command": [str(item) for item in command], "runtime": runtime, "soak": soak}
     report = directory / "run.json"
@@ -207,7 +207,8 @@ def trial(command, payload, trace, directory, workload, runtime, *, soak):
             child.wait(timeout=max(0.001, wall - (time.monotonic() - started)))
         require(child.returncode == 0 and (directory / "stderr.txt").stat().st_size == 0, f"failure soak child exit {child.returncode}")
         require(not buffer, "failure soak partial control line")
-        manifest.update({"status": "ok", "summary": replay(trace, workload, events, runtime, soak=soak), "events": events})
+        verify = replay if replayer is None else replayer
+        manifest.update({"status": "ok", "summary": verify(trace, workload, events, runtime, soak=soak), "events": events})
     except BaseException as error:
         manifest.update({"status": "invalid_experiment", "error": str(error), "events": events})
         raise

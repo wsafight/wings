@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 持续取消与恢复验证](docs/validation-recovery-reuse-2026-11-18.md) 记录同一 Scheduler 中的保留请求、取消/stop 终态、一次全新重启和强度超限，区分普通三轮与显式长测。
+
 [2026-11-18 持续失败生命周期验证](docs/validation-failure-soak-2026-11-18.md) 区分三轮普通回归与独立 30s/60s 长测，记录同一 Scheduler 的槽复用、合法失败前缀和计费清理。
 
 [2026-11-18 调用参数诊断与候选回退](docs/validation-invocation-arguments-2026-11-18.md) 区分实际分配次数、闭包传递失败与冻结端到端负载，保留原实现和有界参数副本回归。

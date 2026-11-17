@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 为第 3/6 项补持续 Scheduler 中的超时/取消、stop 竞争和监督重启强度验证，一/双 worker 同容量复用。实际结果见[记录](validation-recovery-reuse-2026-11-18.md)；等价 BEAM 恢复、长时过载/服务 I/O、完整账本/内存和原生双平台仍独立验收，MVP 未完成。
+
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 为第 6 项补持续环境中的双发送者失败前缀、槽复用和资源清理；显式 900 轮长测与普通三轮回归分开。它没有补齐长时超时/取消、自动重启强度与过载竞争，最新原生双平台及 BEAM 双目标仍须独立验收；[实际验证](validation-failure-soak-2026-11-18.md) 不改 MVP 未完成的状态。
 
 [ADR-0118](adr/0118-native-sync-storage-admission.md) 修复第 4 项根门闩与退出票据遗漏 macOS 原生同步后备存储的问题，准入后在共享发布前完成初始化。该缺口有修复前分配计数器失败证据；完整分配/装载账本、公平/过载/长时故障、原生双平台和 BEAM 双门禁仍待完成，MVP 未完成。

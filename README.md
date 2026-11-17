@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0121](docs/adr/0121-persistent-cancellation-recovery.md) 将超时/取消、stop 竞争和一次监督重启接入持续 Scheduler 验证，一/双 worker 的普通三轮与显式 30s/60s 长测分开。构建与实际结果见[恢复验证记录](docs/validation-recovery-reuse-2026-11-18.md)，尚非完整故障或 MVP 门禁。
+
 [ADR-0120](docs/adr/0120-persistent-concurrent-failure-soak.md) 增加独立持续失败生命周期入口：同一 VM/Scheduler 内逐轮复用槽，两个发送者竞争失败、健康目标推进，检查完整请求前缀、旧身份拒绝和计费缓存。默认完整 AOT 只验证三轮；显式 `measure_failure_soak.py` 才跑 30s 预热/60s 采样，实际结果见[验证记录](docs/validation-failure-soak-2026-11-18.md)。未覆盖长时取消/自动恢复或完整 MVP 门禁。
 
 [ADR-0118](docs/adr/0118-native-sync-storage-admission.md) 修复 macOS 标准同步对象首次使用才分配原生存储的计费缺口：根启动增加实际 mutex 后备字节，共享同步对象在准入后、发布前初始化；监督退出票据也覆盖该存储。本机根基线为 232 B，历史冻结回执不回写，原额度不变；验证见[同步计费记录](docs/validation-native-sync-accounting-2026-11-18.md)。完整 MVP 门禁仍待完成。

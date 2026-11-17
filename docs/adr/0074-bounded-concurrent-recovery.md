@@ -18,6 +18,8 @@
 
 ## 验证与重审
 
+后续 [ADR-0121](0121-persistent-cancellation-recovery.md) 复用原单轮业务验证持续 Scheduler 内的槽、取消和重启生命周期；普通三轮和显式长测分开，不改变本记录原容量/时限或恢复语义。
+
 真实 AOT 必须通过 debug/release 完整入口与 Linux 隔离运行；workspace/check/clippy/fmt/MSRV 与依赖隔离保持。首次 fixture 误向活栈 actor 请求 idle Bytes snapshot，修正测试断言为必须拒绝，不能为测试放宽运行时查询边界。保留失败证据，不把短时回归称为完整并发故障、长时公平性、完整资源账本或原生双平台门禁。
 
 只跑回复表单测无法覆盖活栈、GC、状态、mailbox 与监督集成；只跑顺序停止又无法覆盖取消/stop 竞争，故保留两层回归。若引入语言级监督、消息撤回、引用回复或新的超时语义，另立 ADR 并更新独立模型，不改本次既有契约来适配实现。

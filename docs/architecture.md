@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 在原 AOT 恢复 fixture 中保留 Scheduler/supervisor 并逐轮复用固定槽，观测超时/取消、stop 竞争、全新重启和强度上限；默认短回归与显式长测分离。没有增加执行协议、ABI、容量或重试语义，账目推导缓存不替代完整内存普查。
+
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 的 v10 诊断在同一 VM/模块/Scheduler/supervisor 内重复失败生命周期，共用 v9 业务核心及 oracle，按完整 Pid/child 代次拒绝旧入口。每轮清理后仅允许原两 worker 各最多两个栈缓存，退出整个环境再核对根基线；不改变执行 ABI、调度、计费或监督契约。
 
 [ADR-0118](adr/0118-native-sync-storage-admission.md) 在 macOS 的根启动和共享控制公式中包含标准 Mutex/Condvar 的原生后备存储。内部构造在已有准入之后、共享发布之前完成惰性初始化，避免首次共享使用或并发初始化额外分配；保留标准库实现。Linux 内联 futex 不加后备字节，ABI v21、manifest v2 与原执行控制预留不变。

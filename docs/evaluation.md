@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 增加同一 Scheduler 中的超时/取消、stop 竞争和监督恢复复用。原一/双 worker、三秒阶段/队列容量不变，新增独立逐条请求和失败重启记录；普通三轮与显式 900 轮分开，实际检查及缺失门禁见[记录](validation-recovery-reuse-2026-11-18.md)。没有等价 BEAM 恢复协议，不视为完整故障或 MVP 验收。
+
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 增加持续 VM 中的双发送者失败生命周期。三轮普通回归与固定 30s/60s、900 轮的显式长测分开，逐条重放前缀、终态、旧身份和计费缓存；原 v9 窗口/限额保持。实际条件、失败与缺失门禁见[记录](validation-failure-soak-2026-11-18.md)，不据此宣布完整 timeout/cancel/恢复、BEAM 吞吐/内存或 MVP 通过。
 
 [调用参数诊断与候选回退](validation-invocation-arguments-2026-11-18.md) 区分分配计数器的确定性变化与真实 hot-queue 的迟发/超时/拒绝。保留全数组传递失败、小参数消除分配但端到端未建立收益的冻结候选；正式实现沿原 Vec，新增 0/1/8/9/64 参数及 65 拒绝的原受限 AOT 主程序回归，不以减少分配推导 MVP 通过。
@@ -110,7 +112,7 @@ cargo test --release --workspace --doc --locked
 
 [ADR-0075](adr/0075-platform-memory-observation.md) 在 v6 原采样点分列 Linux RSS/PSS/private/shared/SwapPss、macOS resident/physical footprint 和主机压缩/swap。冻结 C helper/source/编译命令，记录 PID/start_id、前后 census、时间窗与 helper 成本；拓扑变化/读取错误时完整性为 false、平台总数为 null，不删除缺失值或相加不同口径。仍缺每进程压缩/swap、整体共享/内核成本和观察器偏差验收，不据字段存在宣布整机内存门禁通过。
 
-[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 的 `concurrent_recovery` 已接完整 AOT 入口，固定两个 sender、两 actor、4 KiB Bytes、mailbox 16/结果 17、一/双 worker 和原 3 秒阶段。核对已超时/取消消息仍占队列/请求额度、队满无净预留、健康 actor 推进、stop/取消合法终态、Fail 结果取消不撤回执行、旧状态/新 heap 与强度限制、最终零；独立表测试覆盖取消/发布/丢弃竞争。它不替代完整故障注入或 BEAM 测量。
+[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 的 `concurrent_recovery` 已接完整 AOT 入口，固定两个 sender、两 actor、4 KiB Bytes、mailbox 16/结果 17、一/双 worker 和原 3 秒阶段。核对已超时/取消消息仍占队列/请求额度、队满无净预留、健康 actor 推进、stop/取消合法终态、Fail 结果取消不撤回执行、旧状态/新 heap 与强度限制；[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 后最终清理回到实际计费根启动基线。独立表测试覆盖取消/发布/丢弃竞争，不替代完整故障注入或 BEAM 测量。
 
 [ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 的显式初始化池仅消除批量启动重复 mapping。须核对独立 state、错误 tenant/未计费/满池拒绝、process/tenant/VM 准入与失败回滚、监督重启不持有池及最终零；完整 v2/AOT 保持原规模和 3 秒阶段、CPU/墙钟限制。保留旧失败及前后版本证据，不用仿真 wall time 宣称 BEAM 性能或内存领先。
 

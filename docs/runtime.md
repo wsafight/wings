@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 复用原取消/超时不撤回语义验证持续监督：publisher 完成前结果即使已消费仍保留准入，stop 不重启；已取消 Fail 必须实际执行并触发一次全新实例和后续强度超限。每轮显式新 child 各有独立重启历史，槽复用不能使前代 Pid/child ID 复活；运行时协议不变。
+
 [ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 的持续诊断保留同一 Scheduler/supervisor，通过新建 child 后拒绝上一代 Pid 的查询/send/request，以及本轮终止后的旧 child 拒绝验证槽复用。注入失败不提交候选，健康目标完整推进；每轮三维活动资源归零，保留的 guarded stack 缓存仍计费，最终关闭才回到根启动基线。这是显式新建，不是自动重启。
 
 按 [ADR-0118](adr/0118-native-sync-storage-admission.md)，直接创建的 macOS Mutex/Condvar 后备存储先计费并在发布前初始化。根计入 mutex 后备成本，退出票据控制余量覆盖 Arc 头与 mutex；结果表、ingress、Scheduler、timer 和让出观测沿足够的既有预留。最后同步对象 owner 释放后销毁后备对象；完整 allocator/装载与系统成本仍另行验收，原资源限额不变。
