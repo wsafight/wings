@@ -1,5 +1,7 @@
 # 评测与验收
 
+[2026-11-18 迁移间隔消融](validation-handler-migration-batch-2026-11-18.md) 在隔离 release 副本上以同一 hot-queue 负载比较每次与每八次 handler 返回迁移，保留两对反序、原 30s/60s 和完整重放。候选没有稳定收益，未进入正式实现；四轮的拒绝、预热超时和缺失门禁均公开，不视为五对性能验收。
+
 [ADR-0118](adr/0118-native-sync-storage-admission.md) 用独立单线程分配计数器保留根门闩的漏计失败，再核对原生同步后备大小、创建后的完整启动存储、首次使用零分配、精确满额根的零资源准入及最终释放。监督退出票据另测 tenant/VM 精确边界和末 owner；[实际记录](validation-native-sync-accounting-2026-11-18.md) 区分逻辑请求字节与 RSS，不改历史冻结回执或将本机验证当作原生双平台。
 
 [2026-11-18 hot-queue 原生取证](validation-hotqueue-profile-2026-11-18.md) 保留同一冻结 release 在 10000/80000 次每秒下的 30 秒预热、60 秒采样与五秒原生栈采样。独立重放通过，但高负载采样队满 34911 次，预热有 243 次超时；这是单轮带 profiler 扰动的路径诊断，没有同轮 BEAM、CPU 硬配额或整机内存数据，不计为性能门禁通过。
