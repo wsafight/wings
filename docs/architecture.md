@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0123](adr/0123-status-only-resource-rejection.md) 将资源准入事务的内部失败表示为 ResourceLevel，公开接口继续包装原文本；记录回复直接映射为受管状态码。门闩、逐级检查、回滚与票据共享原实现，不改变 ABI/执行预留或增加第二套准入算法。
+
 [ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 将产物既有名称校验公开供 VM 查询与 CLI 解码复用，避免宿主未知名在错误构造时按外部长度分配。合法名称集合和原清单/ABI 不变；查询前固定来源上限不代替完整错误存储计费。
 
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 在原 AOT 恢复 fixture 中保留 Scheduler/supervisor 并逐轮复用固定槽，观测超时/取消、stop 竞争、全新重启和强度上限；默认短回归与显式长测分离。没有增加执行协议、ABI、容量或重试语义，账目推导缓存不替代完整内存普查。

@@ -1,0 +1,12 @@
+process QuotaReply {
+  record Empty {}
+
+  state count: Int = 7
+
+  on Value -> Empty {
+    count = 99
+    Empty()
+  }
+
+  on Read -> Int { count }
+}

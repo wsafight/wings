@@ -140,6 +140,11 @@ impl ResourceAccount {
     }
 
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
+        self.reserve_status(amount)
+            .map_err(|level| format!("resource_exhausted at {level:?} account"))
+    }
+
+    pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
         let guard = self
             .node
             .gate
@@ -149,7 +154,7 @@ impl ResourceAccount {
             if !node.admits(amount) {
                 let level = node.level();
                 drop(guard);
-                return Err(format!("resource_exhausted at {level:?} account"));
+                return Err(level);
             }
         }
         for node in self.path().into_iter().flatten() {
@@ -339,6 +344,88 @@ impl Drop for Reservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_admission_and_public_diagnostic_share_all_levels_and_dimensions() {
+        let limits = |scale| Resources {
+            bytes: scale << 20,
+            processes: scale,
+            messages: scale,
+            requests: scale,
+        };
+        for restricted in 0..3 {
+            for dimension in 0..4 {
+                let vm = ResourceAccount::vm_accounted(limits(4)).unwrap();
+                let tenant = vm.tenant_accounted(limits(3)).unwrap();
+                let account = tenant.process_accounted(limits(2)).unwrap();
+                let levels = [&account, &tenant, &vm];
+                let baseline = levels.map(ResourceAccount::used);
+                let target = levels[restricted];
+                let available = target.limit().subtract(target.used());
+                let mut fill = Resources::default();
+                let mut unit = Resources::default();
+                match dimension {
+                    0 => {
+                        fill.bytes = available.bytes;
+                        unit.bytes = 1;
+                    }
+                    1 => {
+                        fill.processes = available.processes;
+                        unit.processes = 1;
+                    }
+                    2 => {
+                        fill.messages = available.messages;
+                        unit.messages = 1;
+                    }
+                    3 => {
+                        fill.requests = available.requests;
+                        unit.requests = 1;
+                    }
+                    _ => unreachable!(),
+                }
+                let held = target.reserve_status(fill).unwrap();
+                let before = levels.map(ResourceAccount::used);
+                assert_eq!(account.reserve_status(unit).err(), Some(target.level()));
+                assert_eq!(
+                    account.reserve(unit).err().unwrap(),
+                    format!("resource_exhausted at {:?} account", target.level())
+                );
+                assert_eq!(levels.map(ResourceAccount::used), before);
+                drop(held);
+                assert_eq!(levels.map(ResourceAccount::used), baseline);
+                let ticket = account.reserve_status(unit).unwrap();
+                assert_eq!(ticket.amount(), unit);
+                assert_eq!(
+                    levels.map(ResourceAccount::used),
+                    baseline.map(|used| used.checked_add(unit).unwrap())
+                );
+                drop(ticket);
+                assert_eq!(levels.map(ResourceAccount::used), baseline);
+            }
+        }
+        let vm = ResourceAccount::vm(Resources {
+            bytes: u64::MAX,
+            ..Resources::default()
+        });
+        let ticket = vm
+            .reserve_status(Resources {
+                bytes: u64::MAX,
+                ..Resources::default()
+            })
+            .unwrap();
+        let before = vm.used();
+        assert_eq!(
+            vm.reserve_status(Resources {
+                bytes: 1,
+                ..Resources::default()
+            })
+            .err(),
+            Some(ResourceLevel::Vm)
+        );
+        assert_eq!(vm.used(), before);
+        drop(ticket);
+        assert_eq!(vm.used(), Resources::default());
+    }
 
     #[test]
     fn poisoned_gate_recovers_without_losing_admission_or_ticket_cleanup() {

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0123](adr/0123-status-only-resource-rejection.md) 用真实 AOT 在 invocation 开始后填满 process/tenant/VM，计数到受管记录回复拒绝及最终宿主错误的分配；保留修复前两次失败和修复后一次，见[记录](validation-quota-reply-2026-11-18.md)。三层四维准入/溢出回归不等于完整账本、性能或 MVP 验收。
+
 [ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 的独立分配计数器在 process/tenant/VM 满额时核对直接模块和进程入口的未知名字错误，保留 3 MiB 来源放大失败与修复后 20 B 固定错误；UTF-8/控制字符/原状态和清理条件见[记录](validation-handler-lookup-2026-11-18.md)。这不是全部错误分配已计费或 MVP 通过。
 
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 增加同一 Scheduler 中的超时/取消、stop 竞争和监督恢复复用。原一/双 worker、三秒阶段/队列容量不变，新增独立逐条请求和失败重启记录；普通三轮与显式 900 轮分开，实际检查及缺失门禁见[记录](validation-recovery-reuse-2026-11-18.md)。没有等价 BEAM 恢复协议，不视为完整故障或 MVP 验收。

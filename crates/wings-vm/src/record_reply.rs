@@ -80,7 +80,7 @@ impl RecordReply {
             .and_then(|size| size.checked_add(schema_bytes))
             .ok_or(STATUS_REPLY_REJECTED)?;
         let charge = account
-            .reserve(Resources {
+            .reserve_status(Resources {
                 bytes: bytes as u64,
                 ..Resources::default()
             })

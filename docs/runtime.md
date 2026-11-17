@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0123](adr/0123-status-only-resource-rejection.md) 的记录回复在三级准入拒绝后直接返回 HeapExhausted，不再构造随即丢弃的 String；外部 `reserve` 的错误文本与失败零变化保持。最终宿主错误仍由原执行接口构造，其他文本路径和完整错误账本另行验收。
+
 [ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 在宿主 handler 名称查询前复用清单的非空/256 UTF-8 字节/无控制字符规则；不合格固定报错，合法未知名保留有界的原诊断。先拒绝再扫描，不执行 handler 或改变账户；错误仍由宿主持有，完整错误生命周期计费另行验收。
 
 [ADR-0121](adr/0121-persistent-cancellation-recovery.md) 复用原取消/超时不撤回语义验证持续监督：publisher 完成前结果即使已消费仍保留准入，stop 不重启；已取消 Fail 必须实际执行并触发一次全新实例和后续强度超限。每轮显式新 child 各有独立重启历史，槽复用不能使前代 Pid/child ID 复活；运行时协议不变。

@@ -1528,6 +1528,9 @@ def main():
         assert "24 bounded language scenarios" in result.stdout
         print(result.stdout.strip())
         named_record_replies = parent / "named-record-replies"
+        quota_reply = parent / "quota-reply"
+        command([COMPILER, "build", ROOT / "examples/quota-reply.wings", "-o", quota_reply])
+        print(example("quota_reply", quota_reply).stdout.strip())
         named_record_reply_state = parent / "named-record-reply-state"
         command([COMPILER, "build", ROOT / "examples/named-record-replies.wings", "-o", named_record_replies])
         command([COMPILER, "build", ROOT / "examples/named-record-reply-state.wings", "-o", named_record_reply_state])
