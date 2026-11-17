@@ -1,5 +1,21 @@
 # 评测与验收
 
+## 可复现全量测试
+
+按 [ADR-0110](adr/0110-reproducible-bounded-workspace-validation.md) 使用仓库内入口，输出目录必须不存在：
+
+```sh
+python3 scripts/verify_workspace_tests.py
+python3 scripts/verify_workspace.py --output target/workspace-validation/debug-new
+python3 scripts/verify_workspace.py --profile release --output target/workspace-validation/release-new
+cargo test --workspace --doc --locked
+cargo test --release --workspace --doc --locked
+```
+
+入口先编译所有 test target，再按指纹清单逐个实际执行。每 harness CPU 20s/墙钟 30s/core 0，输出、失败和退出码保留在新目录，失败不重试、不覆盖；不要同时重建同 profile。all-targets 不包含 doctest，零测试 harness 不计为业务用例。原生双平台 CI 使用相同入口并保存日志，既有真实 AOT 仍独立运行；本机通过和 Linux 交叉编译都不等于最新原生双平台或性能门禁通过。
+
+## 增量验收契约
+
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 唤醒租约验收先复现 worker 销毁/通知者存活时的零账目，再检查三级零/少一/精确准入、OS 工厂失败回滚、账户句柄退出、跨线程末 owner 和既有 ingress/TCP 通知语义。保留原 4096 B、全部 CPU/墙钟/阶段限额，不将控制账本等同 kernel FD/RSS 或 BEAM 双门禁。
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 须覆盖空/8 字段/32 schema 边界、同形错名义类型、前向/递归/能力字段拒绝，以及 IR/清单伪造类型索引与外部记录签名拒绝。真实 AOT 验证嵌套 String/Bytes/列表/记录根、跨 fn/分支/循环与逐片 GC、额度/预算/取消清理、单/双 worker、重启及 CLI；失败候选必须保留旧 state/root。原限不变，本地通过不等于原生双平台或 BEAM 双门禁完成。

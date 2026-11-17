@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0110 将全目标测试有界运行器纳入仓库/双平台 CI，`scripts/verify_workspace.py` 先编译清单再实际执行，CPU 20s/墙钟 30s/core 0，指纹/原始输出/失败报告保存在全新目录且不重试；doctest/AOT 单独验证。不把 CI 配置或交叉检查当最新原生平台结果，MVP/BEAM 双门禁仍未完成。
+
 - ADR-0109 将 OS 唤醒票据内嵌共享端点，增加 WorkerParker::new_accounted，ScalarWorker/ingress 不再平行复制独立票据；最后 notifier 关闭 FD 后归还原 4096 B，Linux poller 先于端点释放。修复保留通知者但 worker 退账的确定性回归，ABI v20/4352 B 预留和原额度/时限不变；工具 new 不计费，仍不代表完整账本、原生双平台或 BEAM/MVP 门禁完成。
 
 - ADR-0108 接入本地/state/fn 具名不可变记录，每 process 最多 32 schema、每种最多 8 字段，可引用更早记录及既有业务值，拒绝递归/前向/能力字段和消息/回复具名记录。`record` 只在声明位置识别，不保留旧变量名；布局表计费、名义布局独立、精确根/GC/取消和失败旧提交保持。源码 ABI v20，原 context/EffectRequest/4352 B 预留不变；具名记录传输、完整账本、公平/故障、最新原生双平台及 BEAM 双门禁仍未完成。

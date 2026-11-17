@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0110](adr/0110-reproducible-bounded-workspace-validation.md) 把临时全目标测试运行器纳入仓库及原生双平台 CI，按固定 OS 限制实际执行并保留指纹/失败日志；只补验收可复现性，不把配置好的 CI 当作已取得最新平台结果，MVP 门槛不变。
+
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 推进第 4/5 项，修复独立通知者与等待票据寿命分离导致的提前退账；显式计费 OS 端点与末通知者共同保留原额度。完整账本、公平/故障、最新原生双平台及同负载 BEAM 双门禁仍未完成，MVP 状态不变。
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 推进第 4 项：具名不可变记录接入本地/state/fn、嵌套精确根和计费布局表，源码 ABI v20。具名记录传输、完整资源账本、公平/过载/并发故障、最新原生双平台和同机同负载 BEAM 吞吐/整机内存双门禁仍未完成，不能宣布 MVP 完成。
