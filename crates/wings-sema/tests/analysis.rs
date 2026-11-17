@@ -12,14 +12,17 @@ fn checked(text: &str) -> Analysis {
 }
 
 #[test]
-fn named_message_parameters_preserve_nominal_types_and_block_record_replies() {
+fn named_messages_and_replies_preserve_nominal_completion_types() {
     checked(
         "process P { record A { text: String } state n: Int = 0; on Store(value: A) { n = string_len(value.text) } on Start { send_self(Store, A(\"中\")) } on Read(value: A) -> Int { string_len(value.text) } on Done(id: RequestId, status: Int, result: Int) {} on Ask { request(self_pid(), Read, Done, 1000, A(\"😀\")); } }",
     );
+    checked(
+        "process P { record A {} state n: Int = 0; on Read -> A { A() } on Done(id: RequestId, status: Int, result: A) {} on Ask { request(self_pid(), Read, Done, 1000); } }",
+    );
     for source in [
         "process P { record A {} record B {} state n: Int = 0; on Store(value: A) {} on Start { send_self(Store, B()) } }",
-        "process P { record A {} state n: Int = 0; on Read -> A { A() } }",
-        "process P { record A {} state n: Int = 0; on Done(id: RequestId, status: Int, result: A) {} }",
+        "process P { record A {} record B {} state n: Int = 0; on Read -> A { B() } }",
+        "process P { record A {} record B {} state n: Int = 0; on Read -> A { A() } on Done(id: RequestId, status: Int, result: B) {} on Ask { request(self_pid(), Read, Done, 1000); } }",
     ] {
         assert!(!analyze(source).diagnostics.is_empty(), "{source}");
     }

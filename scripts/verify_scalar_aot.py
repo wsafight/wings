@@ -1452,6 +1452,13 @@ def main():
         result = example("record_replies", record_replies, record_reply_state)
         assert "24 bounded language scenarios" in result.stdout
         print(result.stdout.strip())
+        named_record_replies = parent / "named-record-replies"
+        named_record_reply_state = parent / "named-record-reply-state"
+        command([COMPILER, "build", ROOT / "examples/named-record-replies.wings", "-o", named_record_replies])
+        command([COMPILER, "build", ROOT / "examples/named-record-reply-state.wings", "-o", named_record_reply_state])
+        result = example("named_record_replies", named_record_replies, named_record_reply_state)
+        assert "Named record replies verified:" in result.stdout
+        print(result.stdout.strip())
         record_run = [VM, "run", "--trusted", record_replies, "--heap-records", 8]
         result = command(record_run, "".join(json.dumps(request) + "\n" for request in [message("Value", -(2**63)), message("Value", 2**63 - 1), message("Current")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": 2**63 - 1}, {"record_int": 2}]

@@ -123,6 +123,7 @@ fn main() {
             name: name.into(),
             parameters: Vec::new(),
             reply: Some(ValueType::Int),
+            completion: None,
             function: Function {
                 instructions,
                 state: reply,

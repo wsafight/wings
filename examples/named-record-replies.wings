@@ -1,0 +1,107 @@
+process NamedRecordReplies {
+  record Empty {}
+  record Detail {
+    label: String,
+    accepted: Bool,
+    values: IntList,
+    bytes: Bytes,
+    saved: RecordInt,
+    empty: Empty,
+    unit: Unit
+  }
+  record Result { key: Int, detail: Detail }
+
+  state count: Int = 0
+
+  fn make(value: Int) -> Result {
+    Result(
+      value,
+      Detail(
+        string_from_bytes(fill_bytes(3, 97)),
+        true,
+        prepend_int(value, empty_ints()),
+        fill_bytes(2, 255),
+        record_int(value + 1),
+        Empty(),
+        ()
+      )
+    )
+  }
+
+  fn empty_score(result: Result) -> Int {
+    let accepted = if result.detail.accepted { 1 } else { 0 }
+    let listed = if is_empty_ints(result.detail.values) { 0 } else { 1 }
+    result.key + string_len(result.detail.label) + accepted + listed + bytes_len(result.detail.bytes) + read_int(result.detail.saved)
+  }
+
+  on Value(value: Int) -> Result {
+    let result = make(value)
+    count = count + 1
+    collect()
+    result
+  }
+
+  on Boundary -> Result {
+    count = 42
+    Result(
+      7,
+      Detail(
+        string_from_bytes(fill_bytes(65535, 97)),
+        true,
+        empty_ints(),
+        fill_bytes(1, 255),
+        record_int(8),
+        Empty(),
+        ()
+      )
+    )
+  }
+
+  on TooLarge -> Result {
+    count = 99
+    Result(
+      7,
+      Detail(
+        string_from_bytes(fill_bytes(65536, 97)),
+        true,
+        empty_ints(),
+        fill_bytes(1, 255),
+        record_int(8),
+        Empty(),
+        ()
+      )
+    )
+  }
+
+  on Fail -> Result {
+    count = 99
+    let failed = 1 / 0
+    make(failed)
+  }
+
+  on Start(value: Int, timeout: Int, cancel: Bool, fail: Bool) -> Int {
+    let target = if cancel { self_pid() } else { spawn_self() }
+    let pending = if fail {
+      request(target, Fail, Done, timeout)
+    } else {
+      request(target, Value, Done, timeout, value)
+    }
+    if cancel { cancel_request(pending) } else { () }
+    count = 10
+    count
+  }
+
+  on Done(id: RequestId, status: Int, result: Result) {
+    collect()
+    count = if status == 0 {
+      result.key + string_len(result.detail.label) + head_int(result.detail.values)
+        + byte_at(result.detail.bytes, 0) + read_int(result.detail.saved)
+        + if result.detail.accepted { 1 } else { 0 }
+    } else {
+      if empty_score(result) == 0 { -status } else { -100 - status }
+    }
+  }
+
+  on Read -> Int { count }
+  on EmptyValue -> Empty { Empty() }
+}

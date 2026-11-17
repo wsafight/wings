@@ -249,6 +249,7 @@ pub(super) fn module() -> ScalarModule {
                             ("value".into(), ValueType::Int),
                         ],
                         reply: None,
+                        completion: None,
                     },
                     Handler {
                         name: "Store".into(),
@@ -257,16 +258,19 @@ pub(super) fn module() -> ScalarModule {
                             ("list".into(), ValueType::ListRef),
                         ],
                         reply: None,
+                        completion: None,
                     },
                     Handler {
                         name: "Drop".into(),
                         parameters: vec![],
                         reply: None,
+                        completion: None,
                     },
                     Handler {
                         name: "Read".into(),
                         parameters: vec![],
                         reply: Some(ValueType::Int),
+                        completion: None,
                     },
                 ],
             },

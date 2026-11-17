@@ -130,9 +130,25 @@ pub fn lower(text: &str) -> Result<Program, String> {
         let expanded = source_parameters
             .iter()
             .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)));
+        let completion = if handler.reply_type.is_none() && source_parameters.len() == 3 {
+            match source_parameters[2].1 {
+                ValueType::RecordRef(index)
+                    if source_parameters[0].1 == ValueType::RequestId
+                        && source_parameters[1].1 == ValueType::Int =>
+                {
+                    Some(ValueType::RecordRef(index))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let mut parameters = Vec::new();
         let mut nodes = 0;
-        for (name, ty) in &source_parameters {
+        for (index, (name, ty)) in source_parameters.iter().enumerate() {
+            if completion.is_some() && index == 2 {
+                nodes = 0;
+            }
             let register =
                 lowerer.message_parameter(*ty, name, expanded, &mut parameters, &mut nodes)?;
             lowerer.bindings.insert(name.clone(), register);
@@ -150,6 +166,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
                 .as_ref()
                 .map(|ty| named_type(&ty.text, &records))
                 .transpose()?,
+            completion,
             function: Function {
                 instructions: lowerer.instructions,
                 state: candidate,
@@ -737,12 +754,37 @@ mod tests {
             "process P { record A { value: Int } state n: A = A(true); }",
             "process P { record A { value: Int } state n: A = A(); }",
             "process P { record A { value: Int } state n: A = A(1); on Read -> Int { n.missing } }",
-            "process P { record A {} state n: Int = 0; on Read -> A { A() } }",
             "process P { record A {} state n: A = A(); on Read -> Bool { n == n } }",
             "process P { record collect {} state n: Int = 0; }",
         ] {
             assert!(lower(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn named_record_replies_and_completion_schemas_are_nominally_matched() {
+        let source = "process P { record Empty {} record Result { value: Int, empty: Empty } state count: Int = 0; on Fetch -> Result { Result(count, Empty()) } on Done(id: RequestId, status: Int, value: Result) { count = value.value + status } on Start { request(self_pid(), Fetch, Done, 1000); } }";
+        let program = lower(source).unwrap();
+        assert_eq!(program.handlers[0].reply, Some(ValueType::RecordRef(1)));
+        assert_eq!(
+            program.handlers[1].completion,
+            Some(ValueType::RecordRef(1))
+        );
+        assert_eq!(program.handlers[1].parameters.len(), 3);
+        program.validate().unwrap();
+
+        for invalid in [
+            ValueType::Int,
+            ValueType::RecordRef(0),
+            ValueType::RecordRef(99),
+        ] {
+            let mut forged = program.clone();
+            forged.handlers[1].completion = Some(invalid);
+            assert!(forged.validate().is_err());
+        }
+
+        let mismatched = source.replace("value: Result", "value: Empty");
+        assert!(lower(&mismatched).is_err());
     }
 
     #[test]

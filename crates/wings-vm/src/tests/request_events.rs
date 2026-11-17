@@ -146,6 +146,7 @@ pub(super) fn fixture() -> ScalarModule {
             ("value".into(), ValueType::Int),
         ],
         reply: None,
+        completion: None,
     });
     let mut entries = data.entries.to_vec();
     entries.push(done);

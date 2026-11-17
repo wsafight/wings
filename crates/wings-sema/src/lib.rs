@@ -389,6 +389,7 @@ pub fn analyze(text: &str) -> Analysis {
                                     | Type::IntList
                                     | Type::Bytes
                                     | Type::String
+                                    | Type::Record(_)
                             )
                         ]
                     ))
@@ -403,7 +404,7 @@ pub fn analyze(text: &str) -> Analysis {
                 let ty = checker.declared_type(name);
                 if !matches!(
                     ty,
-                    Type::RecordInt | Type::IntList | Type::Bytes | Type::String
+                    Type::RecordInt | Type::IntList | Type::Bytes | Type::String | Type::Record(_)
                 ) {
                     checker.external_type(&ty, name.span);
                 }
@@ -691,6 +692,7 @@ impl Checker {
                                     | Type::IntList
                                     | Type::Bytes
                                     | Type::String
+                                    | Type::Record(_)
                             )
                         ) {
                             self.error(
@@ -710,7 +712,7 @@ impl Checker {
                     }
                     if !matches!(callback, Some(Type::Message { ref parameters, reply: None }) if parameters.len() == 3
                         && parameters[0].1 == Type::RequestId && parameters[1].1 == Type::Int
-                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit | Type::RecordInt | Type::IntList | Type::Bytes | Type::String)
+                        && matches!(parameters[2].1, Type::Int | Type::Bool | Type::Unit | Type::RecordInt | Type::IntList | Type::Bytes | Type::String | Type::Record(_))
                         && Some(&parameters[2].1) == reply_type.as_ref())
                     {
                         self.error(

@@ -319,6 +319,7 @@ fn valid_program() -> Program {
             name: "Add".into(),
             parameters: vec![("delta".into(), ValueType::Int)],
             reply: Some(ValueType::Int),
+            completion: None,
             function: Function {
                 instructions: vec![
                     instruction(ValueType::Int, Operation::State),
@@ -515,6 +516,7 @@ fn self_send_validates_target_kind_arguments_and_initializer_boundary() {
         name: "Notify".into(),
         parameters: vec![("value".into(), ValueType::Int)],
         reply: None,
+        completion: None,
         function: Function {
             instructions: vec![
                 instruction(ValueType::Int, Operation::State),
@@ -633,6 +635,7 @@ fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
             ("value".into(), ValueType::Int),
         ],
         reply: None,
+        completion: None,
         function: Function {
             instructions: vec![
                 instruction(ValueType::Int, Operation::State),

@@ -26,6 +26,7 @@ type InvocationResult = (
     Checkpoint,
     Option<IntListReply>,
     Option<BufferReply>,
+    Option<crate::RecordReply>,
 );
 type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
 
@@ -151,10 +152,11 @@ pub(crate) fn initialize(
         0,
         ListPayload::default(),
         &mut BytePayload::default(),
+        None,
         [wings_abi::ValueType::Unit; 2],
     )?;
     match coroutine.resume(ResumeCommand::Run(u64::MAX)) {
-        CoroutineResult::Return((status, output, heap, _, _, _)) => Ok((status, output, heap)),
+        CoroutineResult::Return((status, output, heap, _, _, _, _)) => Ok((status, output, heap)),
         CoroutineResult::Yield(_) => {
             if !matches!(
                 coroutine.resume(ResumeCommand::Cancel),
@@ -174,6 +176,7 @@ pub enum ExecutionStatus {
     CompleteList(IntListReply),
     CompleteBytes(BytesReply),
     CompleteString(crate::StringReply),
+    CompleteRecord(crate::RecordReply),
 }
 
 enum ResumeCommand {
@@ -474,6 +477,7 @@ impl Invocation {
             record_mask,
             *lists,
             bytes,
+            Some(process.module.clone()),
             [
                 process.module.manifest().state,
                 process.module.manifest().handlers[handler]
@@ -521,6 +525,7 @@ fn new_coroutine(
     record_mask: u64,
     lists: ListPayload,
     bytes: &mut BytePayload,
+    module: Option<ScalarModule>,
     output_types: [wings_abi::ValueType; 2],
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
@@ -542,7 +547,7 @@ fn new_coroutine(
                 effect: None,
                 yield_requested: None,
             };
-            return (STATUS_CANCELLED, output, heap, checkpoint, None, None);
+            return (STATUS_CANCELLED, output, heap, checkpoint, None, None, None);
         };
         let mut control = InvocationControl {
             yielder,
@@ -586,6 +591,7 @@ fn new_coroutine(
         };
         let mut list = None;
         let mut bytes = None;
+        let mut record = None;
         if status == STATUS_OK && output_types[1] == wings_abi::ValueType::ListRef {
             let roots = [output.reply as u64, output.state as u64];
             let frame = wings_abi::ShadowFrame {
@@ -613,6 +619,33 @@ fn new_coroutine(
                 Err(error) => status = error,
             }
             context.roots = std::ptr::null();
+        }
+        if status == STATUS_OK {
+            if let wings_abi::ValueType::RecordRef(schema) = output_types[1] {
+                let roots = [output.reply as u64, output.state as u64];
+                let frame = wings_abi::ShadowFrame {
+                    previous: std::ptr::null(),
+                    slots: roots.as_ptr(),
+                    count: 1 + usize::from(output_types[0].is_reference()),
+                };
+                context.roots = &frame;
+                let exported = module
+                    .as_ref()
+                    .ok_or(wings_abi::STATUS_INVALID_ROOT)
+                    .and_then(|module| unsafe {
+                        crate::aot_heap::export_record_reply(
+                            &mut context,
+                            output.reply,
+                            schema,
+                            &module.manifest().records,
+                        )
+                    });
+                match exported {
+                    Ok(value) => record = Some(value),
+                    Err(error) => status = error,
+                }
+                context.roots = std::ptr::null();
+            }
         }
         if status == STATUS_OK
             && matches!(
@@ -674,7 +707,7 @@ fn new_coroutine(
         if let Some(heap) = &mut heap {
             heap.clear_incoming();
         }
-        (status, output, heap, checkpoint, list, bytes)
+        (status, output, heap, checkpoint, list, bytes, record)
     });
     Ok(coroutine)
 }
@@ -734,7 +767,7 @@ fn resume_invocation(
             active.effect = checkpoint.effect;
             Ok(ExecutionStatus::Suspended)
         }
-        CoroutineResult::Return((status, output, heap, checkpoint, list, bytes)) => {
+        CoroutineResult::Return((status, output, heap, checkpoint, list, bytes, record)) => {
             let handler = active.handler;
             let mut snapshot = active.snapshot;
             snapshot.remaining_steps = checkpoint.remaining_steps;
@@ -742,7 +775,7 @@ fn resume_invocation(
             active.coroutine.take();
             invocation.take();
             process.heap = heap;
-            let result = process.finish_invocation(handler, status, output, list, bytes);
+            let result = process.finish_invocation(handler, status, output, list, bytes, record);
             snapshot.phase = if result.is_ok() {
                 ExecutionPhase::Complete
             } else {

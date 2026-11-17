@@ -144,6 +144,12 @@ pub(super) fn worker(
                     active,
                     Ok(Some(RequestOutcome::ReplyString(reply))),
                 ),
+                Ok(ExecutionStatus::CompleteRecord(reply)) => finish(
+                    &shared,
+                    index,
+                    active,
+                    Ok(Some(RequestOutcome::ReplyRecord(reply))),
+                ),
                 Err(error) => finish(&shared, index, active, Err(error)),
             }
         }
@@ -316,6 +322,7 @@ fn finish(
             RequestOutcome::ReplyList(value) => publisher.complete_list(value),
             RequestOutcome::ReplyBytes(value) => publisher.complete_bytes(value),
             RequestOutcome::ReplyString(value) => publisher.complete_string(value),
+            RequestOutcome::ReplyRecord(value) => publisher.complete_record(value),
             _ => drop(publisher),
         },
         Reply::Language(key) => state.finish(key, outcome),

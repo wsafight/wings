@@ -59,6 +59,9 @@ fn main() {
                 ExecutionStatus::CompleteString(value) => {
                     panic!("unexpected string reply: {value:?}")
                 }
+                ExecutionStatus::CompleteRecord(value) => {
+                    panic!("unexpected record reply: {value:?}")
+                }
                 ExecutionStatus::Complete(reply) => {
                     expected = if first == 1 && second == 1 {
                         19

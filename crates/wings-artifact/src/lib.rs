@@ -9,7 +9,7 @@ use wings_abi::{SCALAR_ABI_VERSION, ValueType, host_target};
 mod preflight;
 
 const MAX_NAME_BYTES: usize = 256;
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
 pub const INITIALIZER_SYMBOL: &str = "wings_scalar_init";
@@ -20,6 +20,8 @@ pub struct Handler {
     pub name: String,
     pub parameters: Vec<(String, ValueType)>,
     pub reply: Option<ValueType>,
+    #[serde(default)]
+    pub completion: Option<ValueType>,
 }
 
 impl Handler {
@@ -28,26 +30,27 @@ impl Handler {
     }
 
     pub fn completion_reply(&self) -> Option<ValueType> {
-        match (self.reply, self.parameters.as_slice()) {
-            (
-                None,
-                [
-                    (_, ValueType::RequestId),
-                    (_, ValueType::Int),
-                    (
-                        _,
-                        ty @ (ValueType::Int
-                        | ValueType::Bool
-                        | ValueType::Unit
-                        | ValueType::Ref
-                        | ValueType::ListRef
-                        | ValueType::BytesRef
-                        | ValueType::StringRef),
-                    ),
-                ],
-            ) => Some(*ty),
-            _ => None,
-        }
+        self.completion
+            .or(match (self.reply, self.parameters.as_slice()) {
+                (
+                    None,
+                    [
+                        (_, ValueType::RequestId),
+                        (_, ValueType::Int),
+                        (
+                            _,
+                            ty @ (ValueType::Int
+                            | ValueType::Bool
+                            | ValueType::Unit
+                            | ValueType::Ref
+                            | ValueType::ListRef
+                            | ValueType::BytesRef
+                            | ValueType::StringRef),
+                        ),
+                    ],
+                ) => Some(*ty),
+                _ => None,
+            })
     }
 }
 
@@ -81,15 +84,16 @@ impl Manifest {
         wings_abi::validate_records(&self.records)?;
         if matches!(self.state, ValueType::RecordRef(index) if usize::from(index) >= self.records.len())
             || self.handlers.iter().any(|handler| {
-                matches!(handler.reply, Some(ValueType::RecordRef(_)))
-                    || handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
+                handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
+                    || matches!(handler.reply, Some(ValueType::RecordRef(index)) if usize::from(index) >= self.records.len())
+                    || matches!(handler.completion, Some(ValueType::RecordRef(index)) if usize::from(index) >= self.records.len())
             })
         {
             return Err(
-                "invalid named record state or unsupported external record signature".into(),
+                "invalid named record state or external record signature".into(),
             );
         }
         if self.format != FORMAT_VERSION || self.abi != SCALAR_ABI_VERSION {
@@ -126,6 +130,29 @@ impl Manifest {
                 if !valid_name(name) || !parameters.insert(name) {
                     return Err("invalid or duplicate parameter name".into());
                 }
+            }
+            if let Some(ValueType::RecordRef(schema)) = handler.completion {
+                if handler.reply.is_some()
+                    || handler.parameters.len() < 2
+                    || handler.parameters[0].1 != ValueType::RequestId
+                    || handler.parameters[1].1 != ValueType::Int
+                {
+                    return Err("invalid named record completion signature".into());
+                }
+                let expansion = wings_abi::expand_record_schema(&self.records, schema)?;
+                if handler.parameters.len() != expansion.count + 2
+                    || handler.parameters[2..]
+                        .iter()
+                        .zip(&expansion.fields[..expansion.count])
+                        .any(|((_, actual), expected)| actual != expected)
+                {
+                    return Err("named record completion fields do not match its schema".into());
+                }
+            } else if handler.completion.is_some() {
+                return Err("explicit completion metadata is reserved for named records".into());
+            }
+            if let Some(ValueType::RecordRef(schema)) = handler.reply {
+                wings_abi::expand_record_schema(&self.records, schema)?;
             }
         }
         Ok(())

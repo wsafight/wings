@@ -83,6 +83,7 @@ fn main() {
             ExecutionStatus::CompleteList(value) => panic!("unexpected list reply: {value:?}"),
             ExecutionStatus::CompleteBytes(value) => panic!("unexpected byte reply: {value:?}"),
             ExecutionStatus::CompleteString(value) => panic!("unexpected string reply: {value:?}"),
+            ExecutionStatus::CompleteRecord(value) => panic!("unexpected record reply: {value:?}"),
             ExecutionStatus::Complete(reply) => {
                 assert!(remote);
                 assert_eq!(reply, Some(1_000_000));

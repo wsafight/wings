@@ -1,10 +1,12 @@
 # 风险与里程碑
 
-[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 推进第 3/4/5 项外部事件业务值：固定 ingress 支持类型化独立副本，保留标量入口拒绝、计费/GC/预算、有限准入与请求双端生命周期。仍无通用 reactor、具名记录回复、完整分配/装载账本及长时/原生双平台同负载 BEAM 双门禁，MVP 未完成。
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 补齐第 4 项具名记录的有界回复复制及异步完成重建；本机真实 AOT 已覆盖 worker 和 Scheduler。完整分配/装载账本、公平/过载/长时故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未通过，MVP 未完成，见[验证记录](validation-named-record-replies-2026-11-18.md)。
 
-[ADR-0114](adr/0114-scalar-process-account-binding.md) 推进第 4 项资源身份闭环：纯标量初始化后不能经直接换池或 detach/attach 改用其他账户，拒绝先于准入与业务，同账户迁移仍保留。原控制预留/ABI/限额不变；完整分配/装载账本、具名记录回复、公平/过载/故障、最新原生双平台与同负载 BEAM 双门禁仍未完成，不能宣布 MVP 完成。
+[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 推进第 3/4/5 项外部事件业务值：固定 ingress 支持类型化独立副本，保留标量入口拒绝、计费/GC/预算、有限准入与请求双端生命周期。仍无通用 reactor、完整分配/装载账本及长时/原生双平台同负载 BEAM 双门禁，MVP 未完成。
 
-[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 推进第 3/4 项具名记录单向/请求参数：源码名义类型、有界字段展开、计费目标重建与精确根，原 ABI/额度不变。具名记录回复、完整资源账本、公平/过载/故障和最新原生双平台/BEAM 双门禁仍未完成。
+[ADR-0114](adr/0114-scalar-process-account-binding.md) 推进第 4 项资源身份闭环：纯标量初始化后不能经直接换池或 detach/attach 改用其他账户，拒绝先于准入与业务，同账户迁移仍保留。原控制预留/ABI/限额不变；完整分配/装载账本、公平/过载/故障、最新原生双平台与同负载 BEAM 双门禁仍未完成，不能宣布 MVP 完成。
+
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 推进第 3/4 项具名记录单向/请求参数：源码名义类型、有界字段展开、计费目标重建与精确根，原 ABI/额度不变。完整资源账本、公平/过载/故障和最新原生双平台/BEAM 双门禁仍未完成。
 
 [ADR-0112](adr/0112-bounded-tcp-startup-evidence.md) 补第 5/6 项 TCP 启动验证的有界失败证据；原限复验和一次动态加载采样不构成间歇失败根因修复或 MVP 验收通过，见[记录](validation-tcp-startup-2026-11-17.md)。
 
@@ -240,7 +242,7 @@ BEAM 对照已固化 [v1–v9 协议与代表负载](beam-workloads.md)：ADR-00
 
 [ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
 
-MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有实现并通过历史双平台 debug/release CI；第 4 项已推进至计费字符串交互和具名记录本地/持久状态及消息参数，仍未覆盖具名记录回复与全部分配。
+MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有实现并通过历史双平台 debug/release CI；第 4 项已推进至计费字符串与具名记录交互，具名记录回复已有本机 AOT 功能验证，但完整分配/装载账本仍待闭环。
 
 | 顺序 | 技术切片 | 最小验收 |
 |---|---|---|

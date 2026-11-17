@@ -26,17 +26,19 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes 值、分支、state while、有界非递归 fn 调用帧与精确 GC。Bytes 是 0..=64 KiB 的计费不可变字节值；独立 String 支持同上限的 UTF-8 本地/状态/函数值、显式复制转换、字符计数与拼接及字面量和计费消息参数，以及原生 String 回复。具名不可变记录支持嵌套字段、本地/state/fn、分支/循环与精确 GC，也可有界展开复制为消息参数。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。RecordInt、有界 IntList 和计费 Bytes 可复制为语言消息，并可按内容复制回复；具名记录回复、字符串索引/切片、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整 M0 与同业务 BEAM 性能/内存目标尚未验证。更新日期：2026-11-17。
+处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes/String 和具名不可变记录，覆盖分支、state while、有界非递归 fn 调用帧与精确 GC。String/Bytes 是 0..=64 KiB 的计费值；具名记录支持嵌套字段、本地/state/fn、消息参数和 ADR-0116 的有界独立回复，回复完成事件按名义 schema 重建。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。字符串索引/切片、递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整资源账本、M0 与同业务 BEAM 性能/内存门禁尚未验证。更新日期：2026-11-18。
 
 ## 开发
 
 [ADR-0115](docs/adr/0115-typed-cross-thread-ingress.md) 为固定跨线程入口补 `send_values`/`request_values`，独立复制 String/Bytes/IntList/RecordInt 等叶值，目标沿原计费/GC/分块导入；原标量 API、容量及超时不撤回语义不变。构建后用 `target/debug/examples/typed_ingress --trusted target/typed-ingress-aot` 验证，产物先由 `target/debug/wings-compile build examples/typed-ingress.wings -o target/typed-ingress-aot` 生成；这不是完整 reactor 或 MVP。
 
+[ADR-0116](docs/adr/0116-bounded-named-record-replies.md) 开放具名记录 `-> Reply`，以名义 schema 校验并独立复制有界叶值；语言请求完成事件按声明 schema 重建，ABI v21/执行预留与既有限额不变。单机功能验证不等于双平台 BEAM 性能与整机内存门禁。
+
 [ADR-0114](docs/adr/0114-scalar-process-account-binding.md) 修复纯标量实例可通过换执行池或迁移镜像改借其他账户的问题。计费初始化后始终绑定原 process，同账户换池/线程仍允许；拒绝不执行业务或消费镜像，ABI、原控制预留及限额不变，仍非完整 MVP。
 
-[ADR-0113](docs/adr/0113-bounded-named-record-message-expansion.md) 补具名记录单向/请求消息参数，按字段有界展开并在目标独立重建，保留计费复制、精确根及所有原限。ABI v21 不变；具名记录回复与完整 MVP 门禁仍待完成。
+[ADR-0113](docs/adr/0113-bounded-named-record-message-expansion.md) 补具名记录单向/请求消息参数，按字段有界展开并在目标独立重建，保留计费复制、精确根及所有原限。ABI v21 不变；回复已由 ADR-0116 补充，完整 MVP 门禁仍待完成。
 
-[ADR-0111](docs/adr/0111-bounded-string-content-equality.md) 补 String 完整内容 `==`/`!=`，不按引用身份、不做规范化；分块检查预算/取消/让出。源码 ABI v21，旧产物须重编译，原布局/控制预留不变；具名记录回复和 MVP 其他门禁仍待完成。
+[ADR-0111](docs/adr/0111-bounded-string-content-equality.md) 补 String 完整内容 `==`/`!=`，不按引用身份、不做规范化；分块检查预算/取消/让出。源码 ABI v21，旧产物须重编译，原布局/控制预留不变；MVP 其他门禁仍待完成。
 
 全目标测试使用 `python3 scripts/verify_workspace.py --output target/workspace-validation/debug-new`；release 加 `--profile release`，目录必须全新。每个 harness 受原 CPU/墙钟限制，保留指纹和失败日志，不把只编译计作通过。doctest 和真实 AOT 另跑，见[评测文档](docs/evaluation.md#可复现全量测试)。
 

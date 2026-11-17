@@ -34,9 +34,42 @@ fn named_record_manifest_checks_schema_identity_and_blocks_external_handles() {
     }
     value.state = ValueType::RecordRef(0);
     value.handlers[0].reply = Some(ValueType::RecordRef(0));
+    value.validate().unwrap();
+    value.handlers[0].reply = Some(ValueType::RecordRef(1));
     assert!(value.validate().is_err());
     value.handlers[0].reply = Some(ValueType::Int);
     value.handlers[0].parameters[0].1 = ValueType::RecordRef(0);
+    assert!(value.validate().is_err());
+}
+
+#[test]
+fn named_record_reply_and_flattened_completion_metadata_round_trip() {
+    let mut value = manifest();
+    value.records = vec![wings_abi::RecordSchema {
+        name: "Result".into(),
+        fields: vec![("value".into(), ValueType::Int)],
+    }];
+    value.handlers[0].reply = Some(ValueType::RecordRef(0));
+    value.handlers.push(Handler {
+        name: "Done".into(),
+        parameters: vec![
+            ("id".into(), ValueType::RequestId),
+            ("status".into(), ValueType::Int),
+            ("value".into(), ValueType::Int),
+        ],
+        reply: None,
+        completion: Some(ValueType::RecordRef(0)),
+    });
+    value.validate().unwrap();
+    let encoded: Value = serde_json::from_slice(&value.encode().unwrap()).unwrap();
+    let decoded = Directory::new().read_json(&encoded).unwrap();
+    assert_eq!(decoded.handlers[0].reply, Some(ValueType::RecordRef(0)));
+    assert_eq!(
+        decoded.handlers[1].completion_reply(),
+        Some(ValueType::RecordRef(0))
+    );
+
+    value.handlers[1].parameters[2].1 = ValueType::Bool;
     assert!(value.validate().is_err());
 }
 
@@ -85,6 +118,7 @@ fn manifest() -> Manifest {
             name: "Add".into(),
             parameters: vec![("amount".into(), ValueType::Int)],
             reply: Some(ValueType::Int),
+            completion: None,
         }],
     }
 }
@@ -179,6 +213,7 @@ fn round_trip_preserves_all_value_types_and_one_way_vs_unit_reply() {
             name: "Notify".into(),
             parameters: vec![],
             reply: None,
+            completion: None,
         },
         Handler {
             name: "Ack".into(),
@@ -187,6 +222,7 @@ fn round_trip_preserves_all_value_types_and_one_way_vs_unit_reply() {
                 ("unit".into(), ValueType::Unit),
             ],
             reply: Some(ValueType::Unit),
+            completion: None,
         },
     ];
     let directory = Directory::new();
@@ -342,6 +378,7 @@ fn accepts_empty_handler_list_and_exact_handler_limit() {
             name: format!("H{index}"),
             parameters: vec![],
             reply: None,
+            completion: None,
         })
         .collect();
     manifest.validate().unwrap();
@@ -349,6 +386,7 @@ fn accepts_empty_handler_list_and_exact_handler_limit() {
         name: "extra".into(),
         parameters: vec![],
         reply: None,
+        completion: None,
     });
     rejects(&manifest, "handler count");
 }
@@ -514,6 +552,7 @@ fn encoding_rejects_structurally_valid_but_oversized_metadata() {
                 .map(|parameter| (format!("p{parameter}"), ValueType::Int))
                 .collect(),
             reply: None,
+            completion: None,
         })
         .collect();
     manifest.validate().unwrap();
@@ -544,7 +583,7 @@ fn rejects_duplicate_json_fields_in_manifest_and_handler() {
     let manifest = manifest();
     let bytes = String::from_utf8(manifest.encode().unwrap()).unwrap();
     for (old, new) in [
-        ("\"format\": 1", "\"format\": 1, \"format\": 1"),
+        ("\"format\": 2", "\"format\": 2, \"format\": 2"),
         (
             "\"name\": \"Add\"",
             "\"name\": \"Add\", \"name\": \"Other\"",

@@ -88,6 +88,7 @@ impl ReplyTable {
                     | ValueType::ListRef
                     | ValueType::BytesRef
                     | ValueType::StringRef
+                    | ValueType::RecordRef(_)
             )
         {
             return Err(
@@ -318,6 +319,14 @@ impl ReplyPublisher {
     pub(crate) fn complete(self, value: i64) {
         self.table
             .finish(self.slot, self.generation, RequestOutcome::Reply(value));
+    }
+
+    pub(crate) fn complete_record(self, value: crate::RecordReply) {
+        self.table.finish(
+            self.slot,
+            self.generation,
+            RequestOutcome::ReplyRecord(value),
+        );
     }
 }
 

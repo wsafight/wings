@@ -49,6 +49,7 @@ pub const HEAP_RECORD_NEW: u32 = 19;
 pub const HEAP_RECORD_FIELD: u32 = 20;
 pub const HEAP_EQUAL_STRINGS: u32 = 21;
 pub const MAX_SHADOW_ROOTS: usize = 64;
+pub const MAX_RECORD_REPLY_NODES: usize = 64;
 pub const DEFAULT_MAX_STEPS: u64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +99,106 @@ impl ValueType {
 pub struct RecordSchema {
     pub name: String,
     pub fields: Vec<(String, ValueType)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RecordExpansion {
+    pub fields: [ValueType; MAX_RECORD_REPLY_NODES],
+    pub count: usize,
+    pub nodes: usize,
+}
+
+pub fn expand_record_schema(
+    records: &[RecordSchema],
+    root: u16,
+) -> Result<RecordExpansion, String> {
+    fn visit(
+        records: &[RecordSchema],
+        schema: u16,
+        expansion: &mut RecordExpansion,
+    ) -> Result<(), String> {
+        expansion.nodes += 1;
+        if expansion.nodes > MAX_RECORD_REPLY_NODES {
+            return Err("record reply expansion exceeds 64 total nodes".into());
+        }
+        let record = records
+            .get(usize::from(schema))
+            .ok_or("record reply references an unknown schema")?;
+        for (_, ty) in &record.fields {
+            if let ValueType::RecordRef(nested) = ty {
+                visit(records, *nested, expansion)?;
+            } else {
+                expansion.nodes += 1;
+                if expansion.nodes > MAX_RECORD_REPLY_NODES
+                    || expansion.count == MAX_RECORD_REPLY_NODES
+                {
+                    return Err("record reply expansion exceeds 64 total nodes".into());
+                }
+                if ty.is_capability() {
+                    return Err("record reply cannot contain process capabilities".into());
+                }
+                expansion.fields[expansion.count] = *ty;
+                expansion.count += 1;
+            }
+        }
+        Ok(())
+    }
+
+    let mut expansion = RecordExpansion {
+        fields: [ValueType::Unit; MAX_RECORD_REPLY_NODES],
+        count: 0,
+        nodes: 0,
+    };
+    visit(records, root, &mut expansion)?;
+    Ok(expansion)
+}
+
+pub fn equivalent_types(
+    left_records: &[RecordSchema],
+    left: ValueType,
+    right_records: &[RecordSchema],
+    right: ValueType,
+) -> bool {
+    fn equal(
+        left_records: &[RecordSchema],
+        left: ValueType,
+        right_records: &[RecordSchema],
+        right: ValueType,
+        remaining: &mut usize,
+    ) -> bool {
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        match (left, right) {
+            (ValueType::RecordRef(left), ValueType::RecordRef(right)) => {
+                let (Some(left), Some(right)) = (
+                    left_records.get(usize::from(left)),
+                    right_records.get(usize::from(right)),
+                ) else {
+                    return false;
+                };
+                left.name == right.name
+                    && left.fields.len() == right.fields.len()
+                    && left.fields.iter().zip(&right.fields).all(
+                        |((left_name, left_type), (right_name, right_type))| {
+                            left_name == right_name
+                                && equal(
+                                    left_records,
+                                    *left_type,
+                                    right_records,
+                                    *right_type,
+                                    remaining,
+                                )
+                        },
+                    )
+            }
+            (left, right) => left == right,
+        }
+    }
+
+    let mut remaining = MAX_RECORD_REPLY_NODES;
+    equal(left_records, left, right_records, right, &mut remaining)
 }
 
 pub fn validate_records(records: &[RecordSchema]) -> Result<(), String> {

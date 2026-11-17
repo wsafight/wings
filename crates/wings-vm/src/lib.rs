@@ -22,6 +22,7 @@ mod list_reply;
 mod message_values;
 mod module;
 mod preemption;
+mod record_reply;
 mod resources;
 mod scheduler;
 mod stack_pool;
@@ -51,6 +52,7 @@ pub use module::{HandlerId, ScalarModule};
 pub use preemption::{
     PreemptionCounters, PreemptionObservation, PreemptionToken, YieldObservation,
 };
+pub use record_reply::{RecordReply, RecordReplyValues};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
@@ -165,6 +167,12 @@ impl ScalarProcess {
         if self.module.manifest().handlers[index].reply == Some(ValueType::StringRef) {
             return Err("string reply requires invoke_string or explicit execution".into());
         }
+        if matches!(
+            self.module.manifest().handlers[index].reply,
+            Some(ValueType::RecordRef(_))
+        ) {
+            return Err("named record reply requires invoke_record or explicit execution".into());
+        }
         let mut execution = self.start_index(index, arguments, max_steps, || {
             (
                 cancellation.cloned().unwrap_or_default(),
@@ -178,6 +186,7 @@ impl ScalarProcess {
                 ExecutionStatus::CompleteList(_) => unreachable!("validated scalar reply"),
                 ExecutionStatus::CompleteBytes(_) => unreachable!("validated scalar reply"),
                 ExecutionStatus::CompleteString(_) => unreachable!("validated scalar reply"),
+                ExecutionStatus::CompleteRecord(_) => unreachable!("validated scalar reply"),
             }
         }
     }
@@ -203,6 +212,7 @@ impl ScalarProcess {
                 ExecutionStatus::Complete(_) => unreachable!("validated list reply"),
                 ExecutionStatus::CompleteBytes(_) => unreachable!("validated list reply"),
                 ExecutionStatus::CompleteString(_) => unreachable!("validated list reply"),
+                ExecutionStatus::CompleteRecord(_) => unreachable!("validated list reply"),
             }
         }
     }
@@ -249,6 +259,32 @@ impl ScalarProcess {
                 ExecutionStatus::CompleteString(reply) => return Ok(reply),
                 ExecutionStatus::Suspended => {}
                 _ => unreachable!("validated string reply"),
+            }
+        }
+    }
+
+    pub fn invoke_record(
+        &mut self,
+        name: &str,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<RecordReply, String> {
+        let index = self.validate_invocation(name, arguments)?;
+        if !matches!(
+            self.module.manifest().handlers[index].reply,
+            Some(ValueType::RecordRef(_))
+        ) {
+            return Err("invoke_record requires a named record reply".into());
+        }
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (cancellation.clone(), PreemptionToken::default())
+        })?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::CompleteRecord(reply) => return Ok(reply),
+                ExecutionStatus::Suspended => {}
+                _ => unreachable!("validated named record reply"),
             }
         }
     }
@@ -356,6 +392,7 @@ impl ScalarProcess {
         output: ScalarOutput,
         list: Option<IntListReply>,
         bytes: Option<string_reply::BufferReply>,
+        record: Option<RecordReply>,
     ) -> Result<ExecutionStatus, String> {
         if let Err(error) = check_status(status) {
             self.failed = true;
@@ -375,6 +412,7 @@ impl ScalarProcess {
                 }
             }
         } else if (handler.reply == Some(ValueType::ListRef) && list.is_some())
+            || (matches!(handler.reply, Some(ValueType::RecordRef(_))) && record.is_some())
             || matches!(
                 (handler.reply, &bytes),
                 (
@@ -411,6 +449,9 @@ impl ScalarProcess {
                 string_reply::BufferReply::Bytes(value) => ExecutionStatus::CompleteBytes(value),
                 string_reply::BufferReply::String(value) => ExecutionStatus::CompleteString(value),
             });
+        }
+        if let Some(record) = record {
+            return Ok(ExecutionStatus::CompleteRecord(record));
         }
         match list {
             Some(list) if handler.reply == Some(ValueType::ListRef) => {

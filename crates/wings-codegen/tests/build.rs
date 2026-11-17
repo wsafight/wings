@@ -86,6 +86,7 @@ fn program() -> Program {
             name: "Add".into(),
             parameters: vec![("delta".into(), ValueType::Int)],
             reply: Some(ValueType::Int),
+            completion: None,
             function: Function {
                 instructions: vec![
                     instruction(ValueType::Int, Operation::State),

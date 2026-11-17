@@ -112,6 +112,7 @@ pub struct Handler {
     pub name: String,
     pub parameters: Vec<(String, ValueType)>,
     pub reply: Option<ValueType>,
+    pub completion: Option<ValueType>,
     pub function: Function,
 }
 
@@ -121,26 +122,27 @@ impl Handler {
     }
 
     pub fn completion_reply(&self) -> Option<ValueType> {
-        match (self.reply, self.parameters.as_slice()) {
-            (
-                None,
-                [
-                    (_, ValueType::RequestId),
-                    (_, ValueType::Int),
-                    (
-                        _,
-                        ty @ (ValueType::Int
-                        | ValueType::Bool
-                        | ValueType::Unit
-                        | ValueType::Ref
-                        | ValueType::ListRef
-                        | ValueType::BytesRef
-                        | ValueType::StringRef),
-                    ),
-                ],
-            ) => Some(*ty),
-            _ => None,
-        }
+        self.completion
+            .or(match (self.reply, self.parameters.as_slice()) {
+                (
+                    None,
+                    [
+                        (_, ValueType::RequestId),
+                        (_, ValueType::Int),
+                        (
+                            _,
+                            ty @ (ValueType::Int
+                            | ValueType::Bool
+                            | ValueType::Unit
+                            | ValueType::Ref
+                            | ValueType::ListRef
+                            | ValueType::BytesRef
+                            | ValueType::StringRef),
+                        ),
+                    ],
+                ) => Some(*ty),
+                _ => None,
+            })
     }
 }
 
@@ -229,14 +231,13 @@ impl Program {
         }
         if matches!(self.state, ValueType::RecordRef(index) if usize::from(index) >= self.records.len())
             || self.handlers.iter().any(|handler| {
-                matches!(handler.reply, Some(ValueType::RecordRef(_)))
-                    || handler
-                        .parameters
-                        .iter()
-                        .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
+                handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)))
             })
         {
-            return Err("named records cannot cross message boundaries".into());
+            return Err("named records cannot be message parameters".into());
         }
         if self.functions.len() > MAX_FUNCTIONS {
             return Err("too many managed functions".into());
@@ -325,6 +326,25 @@ impl Program {
             if handler.parameters.len() > MAX_PARAMETERS {
                 return Err("too many parameters for the scalar prototype".into());
             }
+            if let Some(ValueType::RecordRef(schema)) = handler.completion {
+                let expansion = wings_abi::expand_record_schema(&self.records, schema)?;
+                if handler.reply.is_some()
+                    || handler.parameters.len() != expansion.count + 2
+                    || handler.parameters[0].1 != ValueType::RequestId
+                    || handler.parameters[1].1 != ValueType::Int
+                    || handler.parameters[2..]
+                        .iter()
+                        .zip(&expansion.fields[..expansion.count])
+                        .any(|((_, actual), expected)| actual != expected)
+                {
+                    return Err("invalid named record completion signature".into());
+                }
+            } else if handler.completion.is_some() {
+                return Err("explicit completion metadata is reserved for named records".into());
+            }
+            if let Some(ValueType::RecordRef(schema)) = handler.reply {
+                wings_abi::expand_record_schema(&self.records, schema)?;
+            }
             handler.function.validate(
                 self.state,
                 &handler.parameters,
@@ -358,8 +378,11 @@ impl Program {
                                 | ValueType::ListRef
                                 | ValueType::BytesRef
                                 | ValueType::StringRef
+                                | ValueType::RecordRef(_)
                         )
                     ) || callback.completion_reply() != target.reply
+                        || matches!(target.reply, Some(ValueType::RecordRef(index))
+                            if wings_abi::expand_record_schema(&self.records, index).is_err())
                         || target.parameters.len() != arguments.len()
                         || arguments
                             .iter()
@@ -369,7 +392,7 @@ impl Program {
                             })
                     {
                         return Err(
-                            "request requires scalar, RecordInt, IntList, Bytes or String reply, matching completion event and matching parameters"
+                            "request requires a supported reply, matching completion event and matching parameters"
                                 .into(),
                         );
                     }

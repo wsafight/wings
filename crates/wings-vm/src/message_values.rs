@@ -10,6 +10,7 @@ pub(crate) struct BytePayload {
     pub data: Vec<u8>,
     charge: Option<Reservation>,
     reply: Option<crate::BytesReply>,
+    record_reply: Option<crate::RecordReply>,
     completion: bool,
 }
 
@@ -34,6 +35,7 @@ impl BytePayload {
             data,
             charge: Some(charge),
             reply: None,
+            record_reply: None,
             completion: false,
         })
     }
@@ -42,6 +44,29 @@ impl BytePayload {
         Self {
             mask: 4,
             reply,
+            completion: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn empty_completion(mask: u64, string_mask: u64) -> Self {
+        Self {
+            mask,
+            string_mask,
+            completion: true,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn record_completion(
+        reply: crate::RecordReply,
+        mask: u64,
+        string_mask: u64,
+    ) -> Self {
+        Self {
+            mask,
+            string_mask,
+            record_reply: Some(reply),
             completion: true,
             ..Self::default()
         }
@@ -56,7 +81,9 @@ impl BytePayload {
     pub(crate) fn as_slice(&self) -> &[u8] {
         self.reply
             .as_ref()
-            .map_or(&self.data, crate::BytesReply::as_slice)
+            .map(crate::BytesReply::as_slice)
+            .or_else(|| self.record_reply.as_ref().map(crate::RecordReply::bytes))
+            .unwrap_or(&self.data)
     }
 
     pub(crate) fn take_charge(&mut self) -> Option<Reservation> {
@@ -71,11 +98,18 @@ impl BytePayload {
             || self.data.capacity() != self.data.len()
             || (arguments.len() < 64 && self.mask >> arguments.len() != 0)
             || (self.completion
-                && (self.mask != 4
-                    || !matches!(self.string_mask, 0 | 4)
-                    || !self.data.is_empty()
-                    || self.charge.is_some()))
+                && (!self.data.is_empty()
+                    || self.charge.is_some()
+                    || (self.reply.is_some()
+                        && (self.record_reply.is_some()
+                            || self.mask != 4
+                            || !matches!(self.string_mask, 0 | 4)))
+                    || self.record_reply.as_ref().is_some_and(|reply| {
+                        self.mask != reply.bytes_mask() << 2
+                            || self.string_mask != reply.string_mask() << 2
+                    })))
             || (!self.completion && self.reply.is_some())
+            || (!self.completion && self.record_reply.is_some())
             || (!self.completion
                 && self.charge.as_ref().map(|charge| charge.amount().bytes)
                     != (self.mask != 0).then_some(self.data.len() as u64))

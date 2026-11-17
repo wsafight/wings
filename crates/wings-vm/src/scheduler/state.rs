@@ -153,36 +153,67 @@ impl State {
                 .as_mut()
                 .expect("ready completion");
             let completion = pending.completion.take().expect("completion route");
+            let outcome = pending.outcome.clone().expect("terminal completion");
             let mut lists = ListPayload::default();
             let mut bytes = BytePayload::default();
-            let (status, value) = match pending.outcome.clone().expect("terminal completion") {
-                RequestOutcome::Reply(value) => (0, value),
-                RequestOutcome::ReplyList(value) => {
-                    lists.count = value.as_slice().len();
-                    lists.values[..lists.count].copy_from_slice(value.as_slice());
-                    (0, ListPayload::encode(0, lists.count))
-                }
-                RequestOutcome::ReplyBytes(value) => {
-                    let length = value.as_slice().len();
-                    bytes = BytePayload::completion(Some(value));
-                    (0, ListPayload::encode(0, length))
-                }
-                RequestOutcome::ReplyString(value) => {
-                    let length = value.as_str().len();
-                    bytes = BytePayload::string_completion(Some(value));
-                    (0, ListPayload::encode(0, length))
-                }
-                RequestOutcome::TimedOut => (1, 0),
-                RequestOutcome::Cancelled => (2, 0),
-                RequestOutcome::Failed => (3, 0),
-            };
             let mut arguments = [0; 64];
-            arguments[..3].copy_from_slice(&[pending.capability, status, value]);
-            let owner = pending.owner;
-            retire_request(&mut self.requests[index]);
-            let record_mask = u64::from(
+            let mut count = 3;
+            let mut record_mask = u64::from(
                 completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
             ) << 2;
+            if let Some(wings_abi::ValueType::RecordRef(schema)) =
+                completion.handler.schema().completion_reply()
+            {
+                let (reply, status) = match &outcome {
+                    RequestOutcome::ReplyRecord(reply) => (Some(reply), 0),
+                    RequestOutcome::TimedOut => (None, 1),
+                    RequestOutcome::Cancelled => (None, 2),
+                    _ => (None, 3),
+                };
+                let records = &completion.handler.module.manifest().records;
+                let response = crate::RecordReply::completion(
+                    reply,
+                    schema,
+                    records,
+                    pending.capability,
+                    status,
+                )
+                .or_else(|_| {
+                    crate::RecordReply::completion(None, schema, records, pending.capability, 3)
+                })
+                .expect("validated named record completion");
+                arguments = response.arguments;
+                count = response.count;
+                record_mask = response.record_mask;
+                lists = response.lists;
+                bytes = response.bytes;
+            } else {
+                let (status, value) = match outcome {
+                    RequestOutcome::Reply(value) => (0, value),
+                    RequestOutcome::ReplyList(value) => {
+                        lists.count = value.as_slice().len();
+                        lists.values[..lists.count].copy_from_slice(value.as_slice());
+                        (0, ListPayload::encode(0, lists.count))
+                    }
+                    RequestOutcome::ReplyBytes(value) => {
+                        let length = value.as_slice().len();
+                        bytes = BytePayload::completion(Some(value));
+                        (0, ListPayload::encode(0, length))
+                    }
+                    RequestOutcome::ReplyString(value) => {
+                        let length = value.as_str().len();
+                        bytes = BytePayload::string_completion(Some(value));
+                        (0, ListPayload::encode(0, length))
+                    }
+                    RequestOutcome::ReplyRecord(_) => (3, 0),
+                    RequestOutcome::TimedOut => (1, 0),
+                    RequestOutcome::Cancelled => (2, 0),
+                    RequestOutcome::Failed => (3, 0),
+                };
+                arguments[..3].copy_from_slice(&[pending.capability, status, value]);
+            }
+            let owner = pending.owner;
+            retire_request(&mut self.requests[index]);
             if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
             {
                 lists.mask = 4;
@@ -202,7 +233,7 @@ impl State {
             let message = Envelope {
                 handler: completion.handler,
                 arguments,
-                count: 3,
+                count,
                 max_steps: completion.max_steps,
                 record_mask,
                 lists,
@@ -363,6 +394,7 @@ impl Shared {
                                 | wings_abi::ValueType::ListRef
                                 | wings_abi::ValueType::BytesRef
                                 | wings_abi::ValueType::StringRef
+                                | wings_abi::ValueType::RecordRef(_)
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 允许具名记录作为 AOT 回复并把名义 schema 副本绑定到独立 `RecordReply` 租约；leaf payload 限于 64 节点、64 个列表元素和合计 65536 B。请求完成值用清单保存的名义类型核对并在接收方独立重建，manifest format v2，ABI v21、ABI 布局与 4352 B 执行预留不变；不开放记录消息原引用或 JSON 对象。
+
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 将固定跨线程 ingress 的参数扩至既有类型化叶值复制。sender 只持固定 schema、ring、账户/通知/结果租约，不含代码/actor owner；同线程宿主和 ingress 共用类型及合计限额检查，目标沿既有受管导入。ABI/4352 B 不变，不开放跨堆原 handle 或通用 reactor。
 
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 使所有从 process 计费池初始化的实例保存原账户身份，纯标量不再只检查模块 VM。调用在控制/栈准入和 token 创建前校验；可发送的脱栈镜像搬运账户租约而非栈池，attach 校验后才消费镜像。同账户跨线程重绑不重跑 initializer，ABI v21 与 4352 B 控制上界不变。
@@ -8,7 +10,7 @@
 
 [ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 将 OS 唤醒 FD 和等待票据合并为单个 Arc 端点；计费构造先准入再创建 kqueue/eventfd/epoll，worker 与 ingress 只共享端点。Linux poller 先关闭，最后 notifier 关闭端点后才归还原 4096 B，不改 ABI v20、执行预留或原时限，也不把逻辑控制容量等同 kernel/RSS。
 
-[ADR-0108](adr/0108-bounded-named-record-values.md) 增加名义 `RecordRef(index)`、产物 schema 和构造/字段读取 IR，源码 ABI v20，旧产物须重编译。IR 与清单独立验证有界无环类型图，实例按 schema 创建计费的独立布局；业务对象复用原槽和精确引用扫描，context/EffectRequest 布局与 4352 B 控制预留不变。[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 允许源码记录消息参数有界展开为既有叶值，目标薄入口按 schema 重建；不传原 handle、不共享业务堆。IR/清单外部签名仍只接受叶类型，记录回复未开放，当前 ABI v21。
+[ADR-0108](adr/0108-bounded-named-record-values.md) 增加名义 `RecordRef(index)`、产物 schema 和构造/字段读取 IR，源码 ABI v20，旧产物须重编译。IR 与清单独立验证有界无环类型图，实例按 schema 创建计费的独立布局；业务对象复用原槽和精确引用扫描，context/EffectRequest 布局与 4352 B 控制预留不变。[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 允许源码记录消息参数有界展开为既有叶值，目标薄入口按 schema 重建；不传原 handle、不共享业务堆。IR/清单外部参数仍只接受叶类型，记录回复和名义完成类型由 ADR-0116 扩展，当前 ABI v21。
 
 [ADR-0107](adr/0107-accounted-control-token-leases.md) 将可共享取消/让出原子的独立生命周期绑定资源票据，新增显式计费构造及常驻控制接入；Default 工具路径和既有调用控制边界保留。ABI v19、强制检查、4352 B 执行预留及原资源上限不变，仍非完整 allocator/装载账本或 MVP 验收。
 

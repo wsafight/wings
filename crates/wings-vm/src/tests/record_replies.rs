@@ -83,16 +83,19 @@ fn record_module() -> ScalarModule {
                 ("list".into(), ValueType::Bool),
             ],
             reply: Some(ValueType::Int),
+            completion: None,
         },
         Handler {
             name: "Take".into(),
             parameters: vec![("value".into(), ValueType::Int)],
             reply: Some(ValueType::Ref),
+            completion: None,
         },
         Handler {
             name: "Collect".into(),
             parameters: vec![],
             reply: None,
+            completion: None,
         },
     ];
     data.entries = vec![raw_record as ScalarEntry, take_record, collect_records].into_boxed_slice();

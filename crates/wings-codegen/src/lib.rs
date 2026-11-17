@@ -51,6 +51,7 @@ pub fn build_with_frame_limit(
                 name: handler.name.clone(),
                 parameters: handler.parameters.clone(),
                 reply: handler.reply,
+                completion: handler.completion,
             })
             .collect(),
     }

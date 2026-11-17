@@ -16,6 +16,8 @@ cargo test --release --workspace --doc --locked
 
 ## 增量验收契约
 
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 覆盖有界 schema 展开、深层/空记录、全部叶类型、64 KiB 含界及超限拒绝、失败时不提交候选状态和结果独立租约；真实 AOT 验证直接回复、单 worker 与 1/2-worker Scheduler completion、success/timeout/cancel/failure、非成功空值及资源回收。本机 macOS AArch64 的 debug/release 各通过 97 个 harness、675 项测试及完整真实 AOT；MSRV 与 Linux 交叉检查结果见[验证记录](validation-named-record-replies-2026-11-18.md)。原生 Linux、双平台 BEAM 吞吐/整机内存门禁仍未完成，不能据此宣布 MVP 完成。
+
 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 验证混合类型跨线程副本、64 KiB/64 整数含界与超界、三级拒绝零变化、满/关闭/旧 sender 和 WakeFailed 已接收；请求 timeout/cancel/Drop 仍占旧 publisher。`examples/typed-ingress.wings` 与 `typed_ingress` 真实 AOT 覆盖逐片导入/GC、目标导入失败/停止/旧提交及清理，纳入完整 AOT 脚本，原限不变。
 
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 先复现纯标量直接调用和 detach 后换账户的旧缺陷；验证兄弟/其他 tenant/跨 VM/工具池拒绝、拒绝前不执行 token 工厂、满额不能借其他账户、正确池重试与同账户跨线程保留提交值，以及末镜像释放账户元数据。真实 AOT 覆盖计费模块及原全量回归，不放宽 4352 B 控制、CPU/墙钟或业务时限；结果见[记录](validation-scalar-account-binding-2026-11-17.md)。

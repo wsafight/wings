@@ -4,7 +4,7 @@
 
 [ADR-0114](adr/0114-scalar-process-account-binding.md) 补纯标量进程身份约束：计费初始化的原 process 身份随实例/脱栈镜像保留，显式调用和 attach 拒绝其他账户、未绑定或工具池；失败不改 state/账目、不借栈、不触发 token 工厂、不消费镜像，原账户满额时也不能改借兄弟账户。最后实例/镜像释放后才允许账户元数据退账。同账户换池/线程及旧未绑定工具语义保留，不改变容量、预算或 ABI。
 
-[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 的具名记录消息复用既有计费叶值复制：源码参数有界展开，源暂存/发布净转移/目标导入沿原路径；目标业务前重建独立记录并由精确根保活。重建失败不进入 handler、不提交候选 state，不撤回此前副作用。空记录也计入 64 节点展开界，原堆槽、列表/字节合计和 4352 B 控制预留不变；不提供原引用跨进程或具名记录回复。
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 的具名记录消息复用既有计费叶值复制：源码参数有界展开，源暂存/发布净转移/目标导入沿原路径；目标业务前重建独立记录并由精确根保活。重建失败不进入 handler、不提交候选 state，不撤回此前副作用。空记录也计入 64 节点展开界，原堆槽、列表/字节合计和 4352 B 控制预留不变；不提供原引用跨进程，独立回复由 ADR-0116 补充。
 
 [ADR-0111](adr/0111-bounded-string-content-equality.md) 的 String `==`/`!=` 比较完整编码内容，先检查引用/代次，再按至多 256 B 扣预算并检查取消/让出，不分配业务对象、不跨检查点持 slice；失败不写结果/提交候选。ABI v21 不改变原控制、容量或时限；不是常量时间比较、规范化或任意引用相等。
 
@@ -151,6 +151,8 @@ RecordInt 语言消息按 [ADR-0049](adr/0049-record-message-copies.md) 用固�
 
 宿主可用 `open_request_ingress` 配置固定回复入口，支持标量及已开放的内容回复；`IngressSender::request` 或 ADR-0115 的 `request_values` 返回唯一结果 handle 与已接收通知状态。结果 `try_take` 或外部线程 `wait` 只终结一次；超时/取消/丢弃不撤回消息，结果槽在调用者结束且消息完成后才回收。请求预算、代次、失败/关闭与双端租约见 [ADR-0047](adr/0047-cross-thread-ingress-requests.md)；不等于语言同步 call 或完整 I/O。
 
+具名记录回复按 [ADR-0116](adr/0116-bounded-named-record-replies.md) 在 handler 正常出口复制叶值和 schema，结果不保留原 actor、模块或堆。language request 的 completion 信封用同名且递归字段一致的 schema 校验，再由目标按预算在自己的计费堆重建；非成功状态携带同形默认空值。宿主可通过 `RequestOutcome::ReplyRecord` 读取 `RecordReply` 的 schema 与叶值；结果副本可在 worker、actor 和原代码租约释放后存活。
+
 宿主 `ScalarWorker::open_ingress(pid, handler, capacity, max_steps)` 需先 `enable_wait`，每 actor 仅一个 1..=64 槽的固定单向入口；可跨线程的 sender 不持 actor/代码租约。`send` 仅标量，ADR-0115 的 `send_values` 另复制业务内容。成功与 `IngressWake::WakeFailed` 都表示已接收、不能重试，宿主须继续 tick/有限 wait 或终止。每 tick 至多搬运一条至有空位的 mailbox，保留消息票据；stop/失败/Drop 关闭并清理，旧 sender 不指向复用进程槽。共享 ring/通知预算到最后 handle 才归还，详见 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md)；不承诺跨发送者全序或 exactly-once。
 
 代码租约与模块 VM 级准入按 [ADR-0044](adr/0044-native-module-leases.md) 实现：clone/HandlerId/实例共享一次预留，跨 VM 计费执行拒绝；最后一个活栈先正常取消返回，再交还 Library 和预算。旧可信非计费工具入口保留，不将该兼容路径称为完整三级准入。
@@ -253,7 +255,7 @@ M1 先测字段布局和最小状态成本，再用不同 state 大小、mailbox
 
 `RootFrame` 按作用域维护显式根，嵌套帧只操作自己的槽；帧 Drop 清除本帧根，不回收业务对象。收集只使用传入的这一张 `ShadowRoots`，调用者必须先汇总全部活跃根；其他根表和宿主保存的未发布 handle 不自动保活。`collect` 先验证根，错误时不改变堆；随后按布局标记引用并回收不可达槽，活对象不移动，回收后旧代次失效。完整工作上限受固定槽数、字段数和根数限定，不承诺停顿目标。
 
-[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt、有界 IntList 和 Bytes 按值复制消息，对应回复分别沿 ADR-0096/0097/0098 复制，仍无后台收集。
+[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时记录路径，后由 [ADR-0027](adr/0027-persistent-record-state.md) 扩展持久状态：compiler 按最后使用位置发布 Ref（包含成功出口的候选状态），堆回调在收集前遍历 C 布局 shadow frame 链并验证全部 handle。至多 64 帧、64 个 compiler 根，另有一个宿主已提交状态根和最多 64 个入口参数根；验证失败不回收。单 Int 字段分配失败时先回收一次再重试，仍无空间则受管失败；显式 Collect 立即回收。固定容量堆及 129 槽汇总根表在构造前计费，GC 中不增长。实例通过 `instantiate_with_heap` opt-in，调用时独占堆所有权移入协程，正常返回归还，取消/Drop 随执行结束清理；支持 RecordInt、IntList、Bytes、String 与具名记录的计费消息/回复复制，分别遵循 ADR-0096–0098、0105–0106、0113 和 0116，仍无后台收集。
 
 [ADR-0026](adr/0026-language-temporary-records.md) 将临时记录接入源码。带堆实例保存 process 绑定池，同步调用不能借用默认未计费栈；显式 start/task 的其他账户或未计费池在执行前拒绝，不终止已有实例。[ADR-0080](adr/0080-central-execution-admission.md) 将保存显式池的行为扩至标量初始化，计费调用/初始化都由核心预留控制容量。worker `spawn_with_heap` 在初始化前准入堆，失败回滚半创建 actor，默认 spawn 仍无堆；宿主原始整数消息/request 只接受标量，类型化宿主消息按 ADR-0094、语言消息按 ADR-0049/0051/0076 复制，退出/stop 先取消活栈再释放堆和账目。CLI `--heap-records` 使用 1..=1024 槽、单槽计费栈池以及固定 16 MiB 的 VM/tenant/process 字节上限；未覆盖 allocator 内部开销、完整模块与所有运行时分配，不宣称完整内存隔离。
 

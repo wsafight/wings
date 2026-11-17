@@ -51,6 +51,7 @@ fn fixture() -> (
         name: "Get".into(),
         parameters: vec![("length".into(), ValueType::Int)],
         reply: Some(ValueType::StringRef),
+        completion: None,
     }];
     data.entries = vec![return_string as ScalarEntry].into_boxed_slice();
     data.manifest.validate().unwrap();

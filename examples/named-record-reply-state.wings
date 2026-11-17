@@ -1,0 +1,15 @@
+process NamedRecordReplyState {
+  record Reply { text: String, saved: RecordInt }
+  state data: Reply = Reply("saved", record_int(7))
+
+  on Current -> Reply { collect(); data }
+  on Read -> Int { string_len(data.text) + read_int(data.saved) }
+  on Start -> Int {
+    let target = spawn_self()
+    request(target, Current, Done, 1000)
+    9
+  }
+  on Done(id: RequestId, status: Int, value: Reply) {
+    data = value
+  }
+}

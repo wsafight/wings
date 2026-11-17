@@ -323,6 +323,7 @@ fn bool_reply_keeps_its_schema_and_completed_reply_wins_over_late_cancel() {
         name: "Flag".into(),
         parameters: vec![],
         reply: Some(ValueType::Bool),
+        completion: None,
     });
     let mut entries = data.entries.to_vec();
     entries.push(unit as ScalarEntry);

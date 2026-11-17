@@ -19,6 +19,7 @@ mod diagnostics;
 mod ingress;
 mod ingress_requests;
 mod list_replies;
+mod named_record_replies;
 mod persistent_state;
 mod preemption;
 mod primitives;
@@ -472,6 +473,7 @@ pub(crate) fn module() -> ScalarModule {
                 name: (*name).into(),
                 parameters: parameters.clone(),
                 reply: *reply,
+                completion: None,
             })
             .collect(),
     };

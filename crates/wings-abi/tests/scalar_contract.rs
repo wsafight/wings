@@ -51,6 +51,100 @@ fn named_record_schema_limits_and_nominal_indices_are_explicit() {
 }
 
 #[test]
+fn named_record_reply_expansion_is_bounded_and_preserves_flat_leaf_types() {
+    use wings_abi::{RecordSchema, expand_record_schema};
+    let records = vec![
+        RecordSchema {
+            name: "Leaf".into(),
+            fields: vec![
+                ("value".into(), ValueType::Int),
+                ("label".into(), ValueType::StringRef),
+            ],
+        },
+        RecordSchema {
+            name: "Reply".into(),
+            fields: vec![
+                ("head".into(), ValueType::Bool),
+                ("nested".into(), ValueType::RecordRef(0)),
+                ("tail".into(), ValueType::ListRef),
+            ],
+        },
+    ];
+    let expanded = expand_record_schema(&records, 1).unwrap();
+    assert_eq!(expanded.nodes, 6);
+    assert_eq!(expanded.count, 4);
+    assert_eq!(
+        &expanded.fields[..expanded.count],
+        &[
+            ValueType::Bool,
+            ValueType::Int,
+            ValueType::StringRef,
+            ValueType::ListRef,
+        ]
+    );
+
+    let mut bounded = Vec::new();
+    for index in 0..32 {
+        bounded.push(RecordSchema {
+            name: format!("R{index}"),
+            fields: (0..8)
+                .map(|field| (format!("f{field}"), ValueType::Int))
+                .collect(),
+        });
+    }
+    assert_eq!(expand_record_schema(&bounded, 0).unwrap().nodes, 9);
+    bounded.push(RecordSchema {
+        name: "Wide".into(),
+        fields: (0..8)
+            .map(|field| (format!("r{field}"), ValueType::RecordRef(0)))
+            .collect(),
+    });
+    assert!(
+        expand_record_schema(&bounded, 32)
+            .unwrap_err()
+            .contains("64 total nodes")
+    );
+}
+
+#[test]
+fn named_reply_type_compatibility_is_nominal_and_bounds_repeated_subtrees() {
+    use wings_abi::{RecordSchema, equivalent_types};
+    let mut records = vec![RecordSchema {
+        name: "Leaf".into(),
+        fields: vec![("value".into(), ValueType::Int)],
+    }];
+    assert!(equivalent_types(
+        &records,
+        ValueType::RecordRef(0),
+        &records,
+        ValueType::RecordRef(0)
+    ));
+    let mut foreign = records.clone();
+    foreign[0].name = "Other".into();
+    assert!(!equivalent_types(
+        &records,
+        ValueType::RecordRef(0),
+        &foreign,
+        ValueType::RecordRef(0)
+    ));
+    for index in 1..32 {
+        records.push(RecordSchema {
+            name: format!("R{index}"),
+            fields: vec![
+                ("left".into(), ValueType::RecordRef(index - 1)),
+                ("right".into(), ValueType::RecordRef(index - 1)),
+            ],
+        });
+    }
+    assert!(!equivalent_types(
+        &records,
+        ValueType::RecordRef(31),
+        &records,
+        ValueType::RecordRef(31)
+    ));
+}
+
+#[test]
 fn integers_accept_the_entire_signed_scalar_range() {
     for value in [i64::MIN, -1, 0, 1, i64::MAX] {
         assert!(ValueType::Int.accepts(value));
@@ -144,6 +238,7 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
     assert_eq!(SCALAR_ABI_VERSION, 21);
+    assert_eq!(wings_abi::MAX_RECORD_REPLY_NODES, 64);
     assert_eq!(wings_abi::HEAP_STRING_LITERAL, 18);
     assert_eq!(wings_abi::HEAP_EQUAL_STRINGS, 21);
     assert_eq!(STATUS_OK, 0);

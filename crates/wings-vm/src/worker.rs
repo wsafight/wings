@@ -40,6 +40,7 @@ pub enum RequestOutcome {
     ReplyList(crate::IntListReply),
     ReplyBytes(crate::BytesReply),
     ReplyString(crate::StringReply),
+    ReplyRecord(crate::RecordReply),
     TimedOut,
     Cancelled,
     Failed,
@@ -922,6 +923,26 @@ impl ScalarWorker {
                     }
                     Ok(WorkerEvent::Delivered(pid))
                 }
+                Ok(ExecutionStatus::CompleteRecord(reply)) => {
+                    let active = self.slots[index]
+                        .actor
+                        .as_mut()
+                        .expect("running actor")
+                        .active
+                        .take()
+                        .expect("completed message");
+                    match (active.message.request, active.message.external) {
+                        (Some(request), None) => {
+                            self.finish_request(request, RequestOutcome::ReplyRecord(reply))
+                        }
+                        (None, Some(publisher)) => publisher.complete_record(reply),
+                        _ => {
+                            self.remove(index);
+                            return Err("record reply does not match message kind".into());
+                        }
+                    }
+                    Ok(WorkerEvent::Delivered(pid))
+                }
                 Err(reason) => {
                     let actor = self.slots[index].actor.as_ref().expect("failed actor");
                     let name = &actor
@@ -1272,11 +1293,10 @@ impl ScalarWorker {
                     | wings_abi::ValueType::ListRef
                     | wings_abi::ValueType::BytesRef
                     | wings_abi::ValueType::StringRef
+                    | wings_abi::ValueType::RecordRef(_)
             )
         ) {
-            return Err(
-                "request requires a scalar, RecordInt, IntList, Bytes or String reply".into(),
-            );
+            return Err("request requires a supported scalar or copied value reply".into());
         }
         let callback = module
             .manifest()
@@ -1385,51 +1405,82 @@ impl ScalarWorker {
             let mut arguments = [0; MAX_ARGUMENTS];
             let mut lists = ListPayload::default();
             let mut bytes = BytePayload::default();
-            arguments[0] = completion.capability;
-            (arguments[1], arguments[2]) = match outcome {
-                RequestOutcome::Reply(value) => (0, value),
-                RequestOutcome::ReplyList(value) => {
-                    lists.count = value.as_slice().len();
-                    lists.values[..lists.count].copy_from_slice(value.as_slice());
-                    (0, ListPayload::encode(0, lists.count))
-                }
-                RequestOutcome::ReplyBytes(value) => {
-                    let length = value.as_slice().len();
-                    bytes = BytePayload::completion(Some(value));
-                    (0, ListPayload::encode(0, length))
-                }
-                RequestOutcome::ReplyString(value) => {
-                    let length = value.as_str().len();
-                    bytes = BytePayload::string_completion(Some(value));
-                    (0, ListPayload::encode(0, length))
-                }
-                RequestOutcome::TimedOut => (1, 0),
-                RequestOutcome::Cancelled => (2, 0),
-                RequestOutcome::Failed => (3, 0),
-            };
-            let record_mask = u64::from(
+            let mut count = 3;
+            let mut record_mask = u64::from(
                 completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
             ) << 2;
-            if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
+            if let Some(wings_abi::ValueType::RecordRef(schema)) =
+                completion.handler.schema().completion_reply()
             {
-                lists.mask = 4;
-            }
-            if completion.handler.schema().completion_reply()
-                == Some(wings_abi::ValueType::BytesRef)
-                && bytes.mask == 0
-            {
-                bytes = BytePayload::completion(None);
-            }
-            if completion.handler.schema().completion_reply()
-                == Some(wings_abi::ValueType::StringRef)
-                && bytes.mask == 0
-            {
-                bytes = BytePayload::string_completion(None);
+                let (reply, status) = match &outcome {
+                    RequestOutcome::ReplyRecord(reply) => (Some(reply), 0),
+                    RequestOutcome::TimedOut => (None, 1),
+                    RequestOutcome::Cancelled => (None, 2),
+                    _ => (None, 3),
+                };
+                let records = &completion.handler.module.manifest().records;
+                let response = crate::RecordReply::completion(
+                    reply,
+                    schema,
+                    records,
+                    completion.capability,
+                    status,
+                )
+                .or_else(|_| {
+                    crate::RecordReply::completion(None, schema, records, completion.capability, 3)
+                })
+                .expect("validated named record completion");
+                arguments = response.arguments;
+                count = response.count;
+                record_mask = response.record_mask;
+                lists = response.lists;
+                bytes = response.bytes;
+            } else {
+                arguments[0] = completion.capability;
+                (arguments[1], arguments[2]) = match outcome {
+                    RequestOutcome::Reply(value) => (0, value),
+                    RequestOutcome::ReplyList(value) => {
+                        lists.count = value.as_slice().len();
+                        lists.values[..lists.count].copy_from_slice(value.as_slice());
+                        (0, ListPayload::encode(0, lists.count))
+                    }
+                    RequestOutcome::ReplyBytes(value) => {
+                        let length = value.as_slice().len();
+                        bytes = BytePayload::completion(Some(value));
+                        (0, ListPayload::encode(0, length))
+                    }
+                    RequestOutcome::ReplyString(value) => {
+                        let length = value.as_str().len();
+                        bytes = BytePayload::string_completion(Some(value));
+                        (0, ListPayload::encode(0, length))
+                    }
+                    RequestOutcome::ReplyRecord(_) => (3, 0),
+                    RequestOutcome::TimedOut => (1, 0),
+                    RequestOutcome::Cancelled => (2, 0),
+                    RequestOutcome::Failed => (3, 0),
+                };
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::ListRef)
+                {
+                    lists.mask = 4;
+                }
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::BytesRef)
+                    && bytes.mask == 0
+                {
+                    bytes = BytePayload::completion(None);
+                }
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::StringRef)
+                    && bytes.mask == 0
+                {
+                    bytes = BytePayload::string_completion(None);
+                }
             }
             let message = Message {
                 handler: completion.handler,
                 arguments,
-                count: 3,
+                count,
                 max_steps: completion.budget,
                 request: None,
                 system: true,
@@ -1511,6 +1562,7 @@ mod payload_tests {
                 data.manifest.handlers.push(wings_artifact::Handler {
                     name: "DoneList".into(),
                     reply: None,
+                    completion: None,
                     parameters: vec![
                         ("id".into(), wings_abi::ValueType::RequestId),
                         ("status".into(), wings_abi::ValueType::Int),
@@ -1706,6 +1758,7 @@ mod payload_tests {
                     data.manifest.handlers.push(wings_artifact::Handler {
                         name: "Completed".into(),
                         reply: None,
+                        completion: None,
                         parameters: vec![
                             ("id".into(), ValueType::RequestId),
                             ("status".into(), ValueType::Int),

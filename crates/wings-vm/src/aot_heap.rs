@@ -3,13 +3,13 @@ use std::alloc::{Layout, alloc};
 use wings_abi::{
     HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
     HEAP_READ_INT, HEAP_RECORD_INT, HEAP_TAIL_INTS, MAX_SHADOW_ROOTS, STATUS_EMPTY_LIST,
-    STATUS_HEAP_EXHAUSTED, STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK, ScalarContext,
-    ShadowFrame,
+    STATUS_HEAP_EXHAUSTED, STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK,
+    STATUS_REPLY_REJECTED, ScalarContext, ShadowFrame,
 };
 
 use crate::message_values::{BytePayload, ListPayload, MAX_LIST_ELEMENTS, MAX_MESSAGE_BYTES};
 use crate::{
-    FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordValue, Reservation,
+    FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordReply, RecordValue, Reservation,
     ResourceAccount, Resources, ShadowRoots,
 };
 
@@ -25,6 +25,203 @@ pub(crate) struct AotHeap {
     named: Box<[NamedLayout]>,
     _named_charge: Reservation,
     _metadata: Reservation,
+}
+
+pub(crate) unsafe fn export_record_reply(
+    context: &mut ScalarContext,
+    encoded: i64,
+    root: u16,
+    records: &[wings_abi::RecordSchema],
+) -> Result<RecordReply, u32> {
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+    heap.typed_reference(wings_abi::ValueType::RecordRef(root), encoded)?;
+    let account = heap.account.clone();
+    let lease = RecordReply::reserve(&account, root, records, Some(context))?;
+    let expansion =
+        wings_abi::expand_record_schema(records, root).map_err(|_| STATUS_REPLY_REJECTED)?;
+    let mut arguments = [0; 64];
+    let mut references = [0; 64];
+    let mut record_mask = 0;
+    let mut lists = ListPayload::default();
+    let mut count = 0;
+    collect_record_fields(
+        context,
+        encoded,
+        root,
+        records,
+        &mut arguments,
+        &mut references,
+        &mut record_mask,
+        &mut count,
+    )?;
+    if count != expansion.count {
+        return Err(STATUS_INVALID_ROOT);
+    }
+
+    for (index, ty) in expansion.fields[..count].iter().enumerate() {
+        if *ty != wings_abi::ValueType::ListRef {
+            continue;
+        }
+        lists.mask |= 1u64 << index;
+        let start = lists.count;
+        let mut current = references[index] as i64;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+            let Some((value, tail)) = heap.list_node(current)? else {
+                break;
+            };
+            if lists.count == MAX_LIST_ELEMENTS {
+                return Err(STATUS_REPLY_REJECTED);
+            }
+            lists.values[lists.count] = value;
+            lists.count += 1;
+            current = tail;
+        }
+        arguments[index] = ListPayload::encode(start, lists.count - start);
+    }
+
+    let mut bytes_mask = 0;
+    let mut string_mask = 0;
+    let mut byte_count = 0usize;
+    for (index, ty) in expansion.fields[..count].iter().enumerate() {
+        if !matches!(
+            ty,
+            wings_abi::ValueType::BytesRef | wings_abi::ValueType::StringRef
+        ) {
+            continue;
+        }
+        crate::execution::runtime_checkpoint(context, true)?;
+        let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+        let reference = heap.typed_reference(*ty, references[index] as i64)?;
+        let is_string = *ty == wings_abi::ValueType::StringRef;
+        let length = message_buffer(heap, reference, is_string)?.len();
+        byte_count = byte_count
+            .checked_add(length)
+            .filter(|total| *total <= MAX_MESSAGE_BYTES)
+            .ok_or(STATUS_REPLY_REJECTED)?;
+        bytes_mask |= 1u64 << index;
+        if is_string {
+            string_mask |= 1u64 << index;
+        }
+    }
+    let mut bytes = if bytes_mask == 0 {
+        BytePayload::default()
+    } else {
+        let mut payload = BytePayload::new(&account, bytes_mask, byte_count)
+            .map_err(|_| STATUS_HEAP_EXHAUSTED)?;
+        payload.string_mask = string_mask;
+        payload
+    };
+    for (index, ty) in expansion.fields[..count].iter().enumerate() {
+        if bytes_mask & (1u64 << index) == 0 {
+            continue;
+        }
+        let is_string = *ty == wings_abi::ValueType::StringRef;
+        let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+        let reference = heap.typed_reference(*ty, references[index] as i64)?;
+        let length = message_buffer(heap, reference, is_string)?.len();
+        let start = bytes.data.len();
+        for offset in (0..length).step_by(256) {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+            let reference = heap.typed_reference(*ty, references[index] as i64)?;
+            let source = message_buffer(heap, reference, is_string)?;
+            bytes
+                .data
+                .extend_from_slice(&source[offset..(offset + 256).min(length)]);
+        }
+        arguments[index] = ListPayload::encode(start, length);
+    }
+    let payload = crate::host_values::HostMessage {
+        arguments,
+        count,
+        record_mask,
+        lists,
+        bytes,
+    };
+    RecordReply::from_parts(lease, payload).map_err(|_| STATUS_INVALID_ROOT)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_record_fields(
+    context: &mut ScalarContext,
+    encoded: i64,
+    schema: u16,
+    records: &[wings_abi::RecordSchema],
+    arguments: &mut [i64; 64],
+    references: &mut [u64; 64],
+    record_mask: &mut u64,
+    count: &mut usize,
+) -> Result<(), u32> {
+    crate::execution::runtime_checkpoint(context, true)?;
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
+    let reference = heap.typed_reference(wings_abi::ValueType::RecordRef(schema), encoded)?;
+    let record = records
+        .get(usize::from(schema))
+        .ok_or(STATUS_INVALID_ROOT)?;
+    heap.named
+        .get(usize::from(schema))
+        .filter(|layout| layout.count == record.fields.len())
+        .ok_or(STATUS_INVALID_ROOT)?;
+    for (field_index, (_, ty)) in record.fields.iter().enumerate() {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let value = unsafe { pointer.as_ref() }
+            .ok_or(STATUS_INVALID_ROOT)?
+            .heap
+            .get(reference, field_index)
+            .map_err(|_| STATUS_INVALID_ROOT)?;
+        if let wings_abi::ValueType::RecordRef(nested) = ty {
+            let RecordValue::Ref(nested_value) = value else {
+                return Err(STATUS_INVALID_ROOT);
+            };
+            collect_record_fields(
+                context,
+                nested_value.encoded() as i64,
+                *nested,
+                records,
+                arguments,
+                references,
+                record_mask,
+                count,
+            )?;
+            continue;
+        }
+        if *count == wings_abi::MAX_RECORD_REPLY_NODES {
+            return Err(STATUS_REPLY_REJECTED);
+        }
+        let index = *count;
+        let bit = 1u64 << index;
+        match (*ty, value) {
+            (wings_abi::ValueType::Int, RecordValue::Int(value)) => arguments[index] = value,
+            (wings_abi::ValueType::Bool, RecordValue::Bool(value)) => {
+                arguments[index] = i64::from(value)
+            }
+            (wings_abi::ValueType::Unit, RecordValue::Unit) => arguments[index] = 0,
+            (wings_abi::ValueType::Ref, RecordValue::Ref(value)) => {
+                *record_mask |= bit;
+                arguments[index] = unsafe { pointer.as_ref() }
+                    .ok_or(STATUS_INVALID_ROOT)?
+                    .record_value(value.encoded() as i64)?;
+            }
+            (
+                ty @ (wings_abi::ValueType::ListRef
+                | wings_abi::ValueType::BytesRef
+                | wings_abi::ValueType::StringRef),
+                RecordValue::Ref(value),
+            ) => {
+                unsafe { pointer.as_ref() }
+                    .ok_or(STATUS_INVALID_ROOT)?
+                    .typed_reference(ty, value.encoded() as i64)?;
+                references[index] = value.encoded();
+            }
+            _ => return Err(STATUS_INVALID_ROOT),
+        }
+        *count += 1;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

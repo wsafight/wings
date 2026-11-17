@@ -407,6 +407,7 @@ fn spinning_module() -> ScalarModule {
         name: "Spin".into(),
         parameters: vec![],
         reply: None,
+        completion: None,
     });
     let mut entries = fixture.inner.entries.to_vec();
     entries.push(spin);
@@ -1014,6 +1015,7 @@ fn scheduler_language_request_deadlines_and_cancellation_keep_terminal_outcome()
         name: "Spin".into(),
         parameters: vec![],
         reply: None,
+        completion: None,
     });
     let mut entries = data.entries.to_vec();
     entries.push(spin);

@@ -17,7 +17,7 @@ process Profiles {
 
 每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v21，旧产物须重编译。
 
-[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 开放具名记录单向/请求消息参数，支持 `send_self`/`send`/`request`，同形异名仍拒绝。compiler 按字段顺序展开为原有叶值，目标在业务前创建独立记录；实参仅求值一次。源码至多 64 参数，全部参数展开树的记录节点及叶值按出现次数合计至多 64（含空记录），超界在 AOT 前拒绝。列表合计 64 整数、String/Bytes 合计 65536 字节及原堆容量不变。宿主按清单位置使用 `MessageValue` 传展开后的叶值，不提供原 record handle；JSON 对象入口与具名记录回复仍拒绝。示例 [`examples/named-record-messages.wings`](../examples/named-record-messages.wings)。
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 开放具名记录单向/请求消息参数，支持 `send_self`/`send`/`request`，同形异名仍拒绝。compiler 按字段顺序展开为原有叶值，目标在业务前创建独立记录；实参仅求值一次。源码至多 64 参数，全部参数展开树的记录节点及叶值按出现次数合计至多 64（含空记录），超界在 AOT 前拒绝。列表合计 64 整数、String/Bytes 合计 65536 字节及原堆容量不变。宿主按清单位置使用 `MessageValue` 传展开后的叶值，不提供原 record handle；JSON 对象入口仍拒绝，具名记录回复由 ADR-0116 补充。示例 [`examples/named-record-messages.wings`](../examples/named-record-messages.wings)。
 
 ## 有界字符串值
 
@@ -40,9 +40,11 @@ process Profiles {
 
 [ADR-0098](adr/0098-accounted-byte-replies.md) 开放 `-> Bytes` 和精确匹配的 `(RequestId, Int, Bytes)` 完成入口，单次 0..=65536 字节。仅成功状态携带结果，其他状态导入 `fill_bytes(0, 0)`，须先判 status。结果与候选引用状态在原栈出口保活，分块复制/计费全部成功后才提交。示例 [`examples/bytes-replies.wings`](../examples/bytes-replies.wings) 可检查并 AOT 运行；CLI 输出 `{"reply":{"bytes":[...]}}`，JSON 输入仍限标量。字符串/通用记录及大小写提案不因此完成。
 
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 开放 `-> Result` 形式的具名不可变记录回复。完成入口第三个源码参数可声明同名 schema，例如 `on Done(id: RequestId, status: Int, result: Result)`；产物保存名义完成类型，运行时按字段顺序深度优先复制叶值，最多 64 个记录节点与叶、64 个列表元素及 65536 编码字节。非成功状态导入与 schema 同形的默认空值，业务仍须先检查 status。宿主结果使用 `RecordReply::schema()`、`schemas()` 和 `values()` 读取脱离原堆的副本；JSON CLI 不接受记录参数，具名记录 CLI 回复也未开放。源码 ABI v21 不变，manifest format v2，旧产物须重编译。真实 AOT 示例见 [`examples/named-record-replies.wings`](../examples/named-record-replies.wings)。
+
 [ADR-0097](adr/0097-accounted-int-list-replies.md) 接入 `-> IntList` 与匹配的 `(RequestId, Int, IntList)` 完成入口，单次回复最多 64 元素。非成功完成导入空列表，仍须先判 status；类型拼写方案另行处理。示例 [`examples/list-replies.wings`](../examples/list-replies.wings) 覆盖列表状态、出口 GC、异步完成与导入失败；CLI 输出 `{"reply":{"int_list":[...]}}`，JSON 输入仍只接受原标量。
 
-[ADR-0096](adr/0096-copied-record-replies.md) 接入现有 `-> RecordInt` 类型与匹配的 `(RequestId, Int, RecordInt)` 完成入口，不改变拼写。Reply 复制唯一 i64 内容，其他终态导入 `record_int(0)`，须先判 status。发起方须配置计费堆，导入失败使其受管失败。宿主结果返回内容副本，JSON 输出 `{"reply":{"record_int":N}}`；通用记录回复仍未开放，Bytes 回复另见 ADR-0098，具体平台证据见[验证记录](validation-2026-11-14.md)。可运行示例为 [`examples/record-replies.wings`](../examples/record-replies.wings) 和 [`examples/record-reply-state.wings`](../examples/record-reply-state.wings)。
+[ADR-0096](adr/0096-copied-record-replies.md) 接入现有 `-> RecordInt` 类型与匹配的 `(RequestId, Int, RecordInt)` 完成入口，不改变拼写。Reply 复制唯一 i64 内容，其他终态导入 `record_int(0)`，须先判 status。发起方须配置计费堆，导入失败使其受管失败。宿主结果返回内容副本，JSON 输出 `{"reply":{"record_int":N}}`；具名记录回复另见 ADR-0116，Bytes 回复另见 ADR-0098，具体平台证据见[验证记录](validation-2026-11-14.md)。可运行示例为 [`examples/record-replies.wings`](../examples/record-replies.wings) 和 [`examples/record-reply-state.wings`](../examples/record-reply-state.wings)。
 
 [ADR-0095](adr/0095-typed-scalar-request-events.md) 为语言异步 `request` 接入 Int/Bool/Unit 回复。完成入口第三参数必须与目标回复类型精确匹配，status 仍为 Int；非成功终态分别携带 0/false/()，须先判 status。无箭头入口不能请求，`-> Unit` 仍有回复。语法拼写、其他引用回复限制和待审语法稿保持。可检查/AOT 运行的完整示例见 [`examples/scalar-completions.wings`](../examples/scalar-completions.wings)：
 
@@ -89,7 +91,7 @@ on CompletedBool(id: RequestId, status: Int, value: Bool) {
 
 宿主可用 worker `wait` 推进空闲时的 deadline/完成事件准入，不必 sleep 轮询；仍不在 wait 内执行 handler，也无自动外部 I/O 事件泵，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
 
-`request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: T)`；T 精确匹配目标的 Int/Bool/Unit/RecordInt/IntList/Bytes 回复，status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3。仅 status=0 的 value 为结果，其他状态分别为 0/false/()/record_int(0)/empty_ints()/fill_bytes(0, 0)。`cancel_request(id)` 不撤回目标消息，静态类型契约见 [ADR-0095](adr/0095-typed-scalar-request-events.md)、[ADR-0096](adr/0096-copied-record-replies.md) 与 [ADR-0097](adr/0097-accounted-int-list-replies.md)，额度/队满及能力有效期沿 [ADR-0040](adr/0040-language-request-events.md)。
+`request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: T)`；T 精确匹配目标的 Int/Bool/Unit/RecordInt/IntList/Bytes/String/具名记录回复，status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3。仅 status=0 的 value 为结果，其他状态分别为 0/false/()/record_int(0)/empty_ints()/fill_bytes(0, 0)/空字符串/同形默认记录。`cancel_request(id)` 不撤回目标消息，静态类型契约见 [ADR-0095](adr/0095-typed-scalar-request-events.md)、[ADR-0096](adr/0096-copied-record-replies.md)、[ADR-0097](adr/0097-accounted-int-list-replies.md) 与 [ADR-0116](adr/0116-bounded-named-record-replies.md)，额度/队满及能力有效期沿 [ADR-0040](adr/0040-language-request-events.md)。
 
 `self_pid()` / `spawn_self()` 返回局部 Pid，`send(pid, Message, args...)` 向同 worker 同模块的单向入口投递；仅 handler 可调用。Pid 暂不允许 state、消息、回复或比较。创建继承资源配置、不继承状态，细节见 [ADR-0039](adr/0039-local-process-capabilities.md)。
 

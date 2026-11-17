@@ -65,6 +65,7 @@ fn fixture(
         name: "Get".into(),
         parameters: vec![("count".into(), ValueType::Int)],
         reply: Some(ValueType::ListRef),
+        completion: None,
     }];
     data.entries = vec![return_list as ScalarEntry].into_boxed_slice();
     data.manifest.validate().unwrap();
