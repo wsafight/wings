@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0130](docs/adr/0130-readonly-cgroup-cpu-quota-observation.md) 为开环/心跳测量增加可选只读的 Linux cgroup CPU 条件核对，记录整作业范围和变化，保持原阶段与重复。现有本机验证见[记录](docs/validation-cpu-quota-2026-11-18.md)；原生 Linux 配额执行和性能门禁仍待验证。
+
 [ADR-0129](docs/adr/0129-native-module-dependency-boundary.md) 为计费产物限定平台系统运行库依赖，在动态装载前拒绝额外原生库和加载重定向，保持显式非计费工具入口。范围与验证见[记录](docs/validation-module-dependencies-2026-11-18.md)；宿主装载器环境和完整账本仍独立验收。
 
 [ADR-0128](docs/adr/0128-native-module-image-admission.md) 在动态装载前核对 ELF/Mach-O 映像跨度，补计原生页取整、零填充和空洞，保持 64 MiB 上限；文件快照先释放再追加不足预算。专项与全量验证见[记录](docs/validation-module-image-2026-11-18.md)，逻辑映像准入不等同 RSS 或完整账本。

@@ -17,6 +17,7 @@ import time
 import verify_scalar_aot as aot
 import verify_resource_receipt as receipts
 import measure_memory
+import measure_cpu
 from verify_open_loop import CASES, DEADLINE_NS, integer, require, target
 
 
@@ -191,7 +192,7 @@ def memory_snapshot(root, probe=None):
             "platform_memory": {"complete": False, "status": "not_configured"}}
 
 
-def measurement(command, trace, destination, name, rate, memory_probe=None, *, runtime, validator=validate_trace):
+def measurement(command, trace, destination, name, rate, memory_probe=None, *, runtime, validator=validate_trace, cpu_control=None):
     require(runtime in ("wings", "beam"), "expected measurement runtime")
     environment = os.environ.copy()
     for variable in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
@@ -205,11 +206,16 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
     manifest = {"command": [str(value) for value in command], "trace": str(trace), "runtime": runtime, "status": "running"}
     destination.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
     try:
+        if cpu_control is not None:
+            initial_cpu = cpu_control.snapshot()
+            require(initial_cpu["processes"] == [os.getpid()], "CPU quota job contains a prior live child")
+            manifest["cpu_quota"] = {"initial": initial_cpu, "samples": 0, "status": "observing"}
+            destination.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
         with errors.open("xb") as stderr:
             child = subprocess.Popen([str(value) for value in command], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=stderr,
                                      start_new_session=True, preexec_fn=limit_child, env=environment, cwd=aot.ROOT)
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         manifest.update({"status": "invalid_experiment", "error": str(error)})
         destination.with_suffix(".json").write_text(json.dumps(manifest, indent=2) + "\n")
         raise
@@ -231,6 +237,9 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
                 require(now - started < 130, "measurement wall deadline")
                 if now >= next_snapshot:
                     sample = memory_snapshot(os.getpid(), memory_probe)
+                    if cpu_control is not None:
+                        sample["cpu_quota"] = cpu_control.snapshot()
+                        manifest["cpu_quota"]["samples"] += 1
                     sample["elapsed_seconds"] = now - started
                     sample["phase"] = "initializing" if not events else "sampling" if len(events) >= 2 else "warmup"
                     peak = max(peak, sample["rss_bytes"])
@@ -270,9 +279,14 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
         if runtime == "wings":
             receipts.validate(events[-1])
         summary = validator(trace, name, rate, events[-1])
+        if cpu_control is not None:
+            manifest["cpu_quota"].update({"status": "observations_complete", "final": cpu_control.snapshot(),
+                                         "performance_gate_proven": False})
         manifest.update({"status": "ok", "summary": summary, "result": events[-1],
                          "rss_tree_plus_driver_peak_bytes": peak, "wall_seconds": time.monotonic() - started})
     except BaseException as error:
+        if cpu_control is not None:
+            manifest["cpu_quota"].update({"status": "invalid_experiment", "error": str(error)})
         manifest.update({"status": "invalid_experiment", "error": str(error), "wall_seconds": time.monotonic() - started})
         raise
     finally:
@@ -292,7 +306,9 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scan", action="store_true")
+    measure_cpu.add_arguments(parser)
     arguments = parser.parse_args()
+    cpu_control = measure_cpu.from_arguments(arguments)
     require(platform.system() in ("Darwin", "Linux"), "supported measurement OS")
     require(aot.PROFILE == "release", "WINGS_PROFILE=release required")
     require(platform.machine() in ("arm64", "aarch64", "x86_64"), "measurement architecture")
@@ -352,6 +368,7 @@ def main():
         "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120,
                    "file_bytes": MAX_TRACE, "observed_rss_stop_bytes": MAX_RSS},
         "memory_probe_build": memory_build,
+        "cpu_quota_preflight": None if cpu_control is None else cpu_control.initial,
         "memory_scope": "driver plus captured descendants; census/probe helpers excluded from tree totals; host compressor/swap not attributed to VM; non-atomic samples",
         "missing_gates": ["OS CPU hard quota", "complete platform memory acceptance and monitoring overhead", "fairness",
                           "native dual-platform", "same-workload throughput and memory acceptance"],
@@ -371,7 +388,7 @@ def main():
                 command = ([executable, "--trusted", artifact, "--measure"] if runtime == "wings"
                            else [escript, frozen / "beam_open_loop.escript", "--measure"])
                 result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate, memory_probe,
-                                     runtime=runtime)
+                                     runtime=runtime, cpu_control=cpu_control)
                 results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                                 "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"],
                                 "platform_memory": result["platform_memory"]})

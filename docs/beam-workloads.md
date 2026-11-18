@@ -150,7 +150,9 @@ WINGS_PROFILE=release python3 scripts/measure_open_loop.py --case hot-queue --ar
 
 选择其他 case 或增加 `--scan`，但不能减少时段/重复次数。[ADR-0075](adr/0075-platform-memory-observation.md) 增加冻结的原生 C helper，逐秒分列 Linux smaps_rollup 的 RSS/PSS/private/shared/swap、macOS resident/physical footprint 和主机压缩/swap；主机值不归因给 VM、不与进程 footprint 混加。驱动及后代有界前后 census 排除当次监测 helper，保留各 PID/start_id/时间窗、helper CPU/max RSS/wall；拓扑变化/读失败/身份变化时平台总数为 null，原始样本与完整数不丢弃。原 `ps` RSS 安全停止保持，不是 OS 硬配额。
 
-当前 runner 仍明确标注未验证主机隔离/CPU 硬配额、未记录电源/热状态/QoS/核分配；平台采样不覆盖全部瞬时峰值、共享/内核成本或每进程压缩/swap，监测偏差未验收。因此只能提供分口径长时集成证据。fairness、最新原生双平台、最大持续吞吐、完整整机内存与可试用 MVP 均未据此通过。
+[ADR-0130](adr/0130-readonly-cgroup-cpu-quota-observation.md) 为本入口与 v8 Python 驱动增加成对的 `--cpu-quota-us`/`--cpu-period-us`。仅在预先配置、启动时只有 driver 的 Linux cgroup v2 leaf domain 组内使用；入口只读检查，不创建、移动或调整组。原生路径/目录身份、祖先配额、成员/线程策略和 cpu.stat 随平台内存样本记录，每轮有首尾 CPU 观测；不匹配/变化/非 fair class/退出竞争使实验无效。范围是整个测量作业，含 driver 与 probe helper，不能称为单独 VM 配额；无参数不读取此控制层，原默认行为不变。本机只完成模型与 macOS 拒绝验证，实际命令和边界见[验证记录](validation-cpu-quota-2026-11-18.md)。
+
+当前 runner 仍明确标注未验收主机隔离/CPU 硬配额、未记录电源/热状态/QoS/核分配；平台采样不覆盖全部瞬时峰值、共享/内核成本或每进程压缩/swap，监测偏差未验收。因此只能提供分口径长时集成证据。fairness、最新原生双平台、最大持续吞吐、完整整机内存与可试用 MVP 均未据此通过。
 
 本机 hot-queue 基准点五对长测的有限证据见 [验证记录](validation-2026-11-14.md#独立长时采样adr-0069)和 [JSON 摘要](open-loop-hot-macos-2026-11-14.json)。ADR-0075 另完成 mixed-4k 原规模五对长测，见[验证记录](validation-2026-11-14.md#分口径平台内存观测adr-0075)和 [JSON 摘要](open-loop-memory-mixed-macos-2026-11-14.json)：两端各仅一轮通过候选尾延迟，拒绝/超时及一份不完整采样均保留。没有饱和扫描、CPU 硬配额或完整平台内存验收，不作最大持续吞吐/整机内存领先结论；其余两组与长时 fairness 仍待验证。
 

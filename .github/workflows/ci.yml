@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 scripts/verify_workspace_tests.py
           python3 scripts/verify_scalar_aot_tests.py
+          python3 scripts/verify_cpu_quota.py
       - name: Execute every debug test harness under OS limits
         run: python3 scripts/verify_workspace.py --output target/workspace-validation/debug
       - run: cargo test --workspace --doc --locked

@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0130 为计划开环和 CPU/心跳长测增加可选成对 CPU quota/period 参数，只读核对预配置的独占 Linux cgroup v2 leaf domain；范围含 driver、runtime 和 probe helper，记录祖先配置/成员/策略/cpu.stat 并在变化时保留失败。无参数保持原探索模式，不写/创建/迁移 cgroup、不提高任何业务/时间/资源上限。十项模型、原 Wings/BEAM 长测入口回归与 macOS 早拒绝通过；原生 Linux 执行/节流、观测偏差和 CPU/MVP 门禁仍未验证，见 `docs/validation-cpu-quota-2026-11-18.md`。
+
 - ADR-0129 为计费模块限定系统运行库依赖：Mach-O 只接受普通 libSystem load，ELF 只接受 libc SONAME 或无依赖；额外库/加载重定向与错误动态表在装载前拒绝，文件/控制票据完整退账。真实只读依赖专项、两种构建各 698 项、MSRV 与 Linux 交叉检查通过；本轮完整 Debug 在 control_tokens 原 3s 阶段失败，Release 在 TCP readiness 原 5s 超时，三次正常启动诊断未捕获根因。ABI v22/额度/时限和显式非计费工具入口不变，完整账本、原生双平台与 BEAM/MVP 门禁仍未完成，见 `docs/validation-module-dependencies-2026-11-18.md`。
 
 - ADR-0128 在计费模块装载前解析 ELF64/Mach-O64 段表，预算改为原 2 MiB 控制加文件页/原生页对齐映像跨度的较大者，含零填充和空洞；映像独立上限 64 MiB。先由文件票据保护快照，释放后追加不足预算，末代码 owner 交还 Library 后退账。原 ABI v22/执行/账户限制不变；两构建各 695 项及 Release 完整 AOT 通过，Debug 完整 AOT 的 TCP 启动 5s 超时仍保留。逻辑映像不是 RSS/装载器完整成本，完整账本与原生双平台/BEAM/MVP 门禁仍待完成，见 `docs/validation-module-image-2026-11-18.md`。

@@ -259,6 +259,8 @@ WASM 常规线性内存页大小 `64KiB` 不代表每实例额外 RSS 至少 `64
 
 ## 双平台验收
 
+[ADR-0130](adr/0130-readonly-cgroup-cpu-quota-observation.md) 为开环/CPU 心跳长测补只读的整作业 cgroup v2 条件核对。固定 quota/period、原生路径/目录身份、所有可见祖先配置、成员和 SCHED_OTHER 线程、节流累计值均保留；共享/改变/缺失时失败，不写系统设置。显式参数在不支持的平台上先于实验目录和测量启动拒绝。它只提供条件观测入口，本机格式模型与非 Linux 拒绝不证明原生节流、CPU 公平性或 BEAM 双目标；实际验证见[记录](validation-cpu-quota-2026-11-18.md)，报告的缺失门禁仍保留。
+
 - macOS AArch64（Apple Silicon）与 Linux x86-64 都要运行完整的装载、ABI、根发布、抢占恢复、GC、消息、额度与监督测试，分别报告 M0 至 M4 的适用项目状态。Linux 测试通过不代表 macOS 也已通过。
 - 每个平台都在同一台机器、同一系统下比较 Wings 与 BEAM，不跨 Apple Silicon 和 x86-64 机器比较。记录 OS、芯片、核心类型、页大小、工具链、链接和签名配置。
 - 记录实际可用的 CPU/内存限制及测量方法。Apple Silicon 还需记录 QoS、性能核/能效核调度、电源模式和热状态；QoS 和 affinity hint 都不是硬绑核。除 RSS 外，报告物理占用、压缩和 swap，区分 OS 压缩与 VM 本身的节省。

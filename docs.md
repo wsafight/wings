@@ -59,6 +59,7 @@
 | [2026-11-18 字符串索引与切片验证](docs/validation-string-slicing-2026-11-18.md) | Unicode scalar value、独立副本、GC/配额/取消、LSP 与原限回归 |
 | [2026-11-18 模块映像准入验证](docs/validation-module-image-2026-11-18.md) | 原生页/零填充/空洞、装载前准入、精确预算、末 owner 和失败退账 |
 | [2026-11-18 模块依赖边界验证](docs/validation-module-dependencies-2026-11-18.md) | 系统运行库白名单、额外只读依赖拒绝、格式边界与装载前退账 |
+| [2026-11-18 CPU 配额条件验证](docs/validation-cpu-quota-2026-11-18.md) | 只读 cgroup v2 控制、整作业范围、格式/变化模型及 macOS 早拒绝 |
 | [2026-11-18 hot-queue 原生采样](docs/validation-hotqueue-profile-2026-11-18.md) | 同一冻结源码的两种速率、原始重放、等待/锁栈样本及真实 BEAM 短测 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |

@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 import measure_memory
+import measure_cpu
 import measure_open_loop as measure
 import verify_scalar_aot as aot
 import verify_resource_receipt as receipts
@@ -221,7 +222,9 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--observe", action="store_true", help="enable Wings yield diagnostics; reports instrumentation mode")
+    measure_cpu.add_arguments(parser)
     arguments = parser.parse_args()
+    cpu_control = measure_cpu.from_arguments(arguments)
     require(aot.PROFILE == "release", "WINGS_PROFILE=release required")
     escript = shutil.which("escript")
     require(escript is not None, "OTP 29 escript required; no model fallback")
@@ -255,6 +258,7 @@ def main():
                    "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=aot.ROOT, text=True),
                    "yield_observation_enabled": arguments.observe, "warmup_seconds": 30, "sample_seconds": 60,
                    "repetitions": 5, "memory_probe_build": memory_build,
+                   "cpu_quota_preflight": None if cpu_control is None else cpu_control.initial,
                    "inputs": {str(path.relative_to(frozen)): hashlib.sha256(path.read_bytes()).hexdigest()
                               for path in sorted(frozen.rglob("*")) if path.is_file()},
                    "host_isolation": "unverified; exploratory integration measurement, not acceptance",
@@ -276,6 +280,7 @@ def main():
                 command.append("--observe")
             result = measure.measurement(command, trace, output / name, "fairness", 10000, probe,
                                          runtime=runtime,
+                                         cpu_control=cpu_control,
                                          validator=lambda path, _name, _rate, result: validate_trace(path, result))
             results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                             "platform_memory": result["platform_memory"],

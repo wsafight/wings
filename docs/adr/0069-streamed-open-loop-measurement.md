@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（长时测量入口；完整性能门禁仍未通过）
+- 后续：[ADR-0130](0130-readonly-cgroup-cpu-quota-observation.md) 增加可选的只读 cgroup v2 整作业 CPU 条件核对；不改变本决定的业务、时段、重复和安全限制。
 - 扩展：[ADR-0068](0068-bounded-open-loop-counter.md)
 - 协议：[BEAM 工作负载](../beam-workloads.md)
 

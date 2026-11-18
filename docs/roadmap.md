@@ -266,6 +266,8 @@ MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运�
 
 [ADR-0129](adr/0129-native-module-dependency-boundary.md) 收紧第 4 项的旁加载边界：计费模块拒绝除固定系统运行库外的原生依赖及加载重定向，避免单库预算下隐式引入任意映像。保留可信宿主前提；并不完成装载器/allocator 内存计量或 MVP 门禁。
 
+[ADR-0130](adr/0130-readonly-cgroup-cpu-quota-observation.md) 为第 5/7 项补 Linux 整测量作业 CPU 条件入口，只读核对预配置独占 cgroup v2，原业务/配额/时段/重复不变。本机仅验证格式、变化、失败保留与 macOS 早拒绝；仍缺原生 Linux 节流和两端完整复验，不移除 CPU 或其他 MVP 缺失门禁。
+
 | 顺序 | 技术切片 | 最小验收 |
 |---|---|---|
 | 1 | 同线程活栈让出与恢复 | 生成代码在强制检查点让出；保留原栈和活跃值；取消、丢弃挂起调用不跨 ABI unwind，不重放 handler |
