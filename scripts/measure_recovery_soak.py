@@ -29,19 +29,24 @@ def resources(value):
         driver.number(value[key], 0, maximum)
 
 
-def result(value):
+def result(value, runtime="wings"):
+    require(runtime in ("wings", "beam"), "recovery result runtime")
     keys = {"state_bytes", "queued", "retained_request_slots", "mailbox_full", "before_rejected",
             "after_rejected", "healthy_committed", "stop_restarted", "outcomes", "failures"}
     require(type(value) is dict and set(value) == keys, "recovery result fields")
     for key, expected in {"state_bytes": 4096, "queued": 16, "retained_request_slots": 16,
                           "mailbox_full": True, "healthy_committed": 7, "stop_restarted": False}.items():
         exact(value[key], expected, f"recovery {key}")
-    resources(value["before_rejected"])
-    resources(value["after_rejected"])
+    if runtime == "wings":
+        resources(value["before_rejected"])
+        resources(value["after_rejected"])
+        driver.number(value["before_rejected"]["processes"], 2, 2)
+        driver.number(value["before_rejected"]["messages"], 17, 17)
+    else:
+        for field in ("before_rejected", "after_rejected"):
+            exact(value[field], {"queued": 16, "requests": 16}, "BEAM protocol counters")
     require(value["before_rejected"] == value["after_rejected"], "rejected request changed resources")
     driver.number(value["before_rejected"]["requests"], 16, 16)
-    driver.number(value["before_rejected"]["processes"], 2, 2)
-    driver.number(value["before_rejected"]["messages"], 17, 17)
     require(type(value["outcomes"]) is list and len(value["outcomes"]) == 16, "recovery outcome count")
     seen = set()
     counts = {"timed_out": 0, "cancelled": 0, "failed": 0}
@@ -68,7 +73,7 @@ def result(value):
 
 
 def replay(path, config, events, runtime, *, soak):
-    require(runtime == "wings" and type(soak) is bool, "recovery runtime/mode")
+    require(runtime in ("wings", "beam") and type(soak) is bool, "recovery runtime/mode")
     workers = driver.number(config["workers"], 1, 2)
     count = 900 if soak else 3
     mode = "soak" if soak else "verify"
@@ -77,12 +82,19 @@ def replay(path, config, events, runtime, *, soak):
     for key, expected in {"version": 11, "event": "start", "mode": mode, "epochs": count,
                           "warmup_seconds": 30 if soak else 0, "sample_seconds": 60 if soak else 0,
                           "period_ns": driver.PERIOD_NS if soak else 0, "round_deadline_ns": 3_000_000_000,
-                          "trace_limit_bytes": driver.TRACE_BYTES, "max_cached_stacks": workers * 2}.items():
+                          "trace_limit_bytes": driver.TRACE_BYTES,
+                          "max_cached_stacks": workers * 2 if runtime == "wings" else None}.items():
         exact(start.get(key), expected, f"recovery start {key}")
-    exact(start.get("environment"), {"runtime": "wings", "workers": workers, "senders": 2,
-                                   "mailbox": 16, "result_slots": 17, "state_bytes": 4096}, "recovery environment")
-    cold = driver.number(start.get("cold_bytes"), 1, 128 << 20)
-    slot = driver.number(start.get("stack_slot_bytes"), 4096)
+    environment = {"runtime": runtime, "senders": 2, "mailbox": 16, "result_slots": 17, "state_bytes": 4096}
+    if runtime == "wings":
+        environment["workers"] = workers
+        cold = driver.number(start.get("cold_bytes"), 1, 128 << 20)
+        slot = driver.number(start.get("stack_slot_bytes"), 4096)
+    else:
+        environment.update({"schedulers": workers, "otp": "29"})
+        exact(start.get("cold_bytes"), None, "BEAM cold accounting")
+        exact(start.get("stack_slot_bytes"), None, "BEAM stack accounting")
+    exact(start.get("environment"), environment, "recovery environment")
     for key, expected in {"version": 11, "event": "complete", "status": "ok", "mode": mode, "epochs": count}.items():
         exact(final.get(key), expected, f"recovery final {key}")
     duration = driver.number(final.get("measurement_elapsed_ns"), 90_000_000_000 if soak else 0, 119_999_999_999)
@@ -90,7 +102,11 @@ def replay(path, config, events, runtime, *, soak):
         exact(events[1].get("version"), 11, "recovery sampling version")
         exact(events[1].get("event"), "sampling", "recovery sampling event")
         driver.number(events[1].get("elapsed_ns"), 30_000_000_000, duration)
-    receipts.validate(final)
+    if runtime == "wings":
+        receipts.validate(final)
+    else:
+        exact(final.get("actors_and_senders_terminated"), True, "BEAM process cleanup")
+        exact(final.get("protocol_slots_released"), True, "BEAM protocol cleanup")
     size = path.stat().st_size
     require(size <= driver.TRACE_BYTES, "recovery trace size")
     driver.number(final.get("trace_bytes"), size, size)
@@ -103,6 +119,8 @@ def replay(path, config, events, runtime, *, soak):
     maximum = 0
     keys = {"version", "epoch", "planned_ns", "started_ns", "completed_ns", "stale_identities_checked",
             "retained", "cached_stacks", "result"}
+    if runtime == "beam":
+        keys |= {"live_protocol_slots", "beam_process_count", "beam_port_count"}
     with path.open("rb") as source:
         while line := source.readline((1 << 20) + 1):
             require(len(line) <= 1 << 20 and line.endswith(b"\n"), "recovery bounded complete line")
@@ -120,12 +138,19 @@ def replay(path, config, events, runtime, *, soak):
             previous = ended
             stale = 4 if epochs == 1 else 8
             checks += driver.number(row["stale_identities_checked"], stale, stale)
-            resources(row["retained"])
-            cached = driver.number(row["cached_stacks"], 0, workers * 2)
-            driver.number(row["retained"]["bytes"], cold + cached * slot, cold + cached * slot)
-            for key in ("processes", "messages", "requests"):
-                driver.number(row["retained"][key], 0, 0)
-            totals = result(row["result"])
+            if runtime == "wings":
+                resources(row["retained"])
+                cached = driver.number(row["cached_stacks"], 0, workers * 2)
+                driver.number(row["retained"]["bytes"], cold + cached * slot, cold + cached * slot)
+                for key in ("processes", "messages", "requests"):
+                    driver.number(row["retained"][key], 0, 0)
+            else:
+                exact(row["retained"], None, "BEAM retained accounting")
+                exact(row["cached_stacks"], None, "BEAM cache accounting")
+                driver.number(row["live_protocol_slots"], 0, 0)
+                driver.number(row["beam_process_count"], 1, 1024)
+                driver.number(row["beam_port_count"], 0, 1024)
+            totals = result(row["result"], runtime)
             group = phases["warmup" if soak and planned < 30_000_000_000 else "sample"]
             group["epochs"] += 1
             group["automatic_restarts"] += 1
@@ -141,12 +166,23 @@ def replay(path, config, events, runtime, *, soak):
             "performance_or_memory_gate_proven": False}
 
 
+def beam_command(workers, script, mode, trace):
+    driver.number(workers, 1, 2)
+    require(mode in ("--verify-reuse", "--soak"), "BEAM recovery mode")
+    escript, env = shutil.which("escript"), shutil.which("env")
+    require(escript is not None and env is not None, "OTP 29 and env required; no fallback")
+    return [env, f"ERL_FLAGS=+S {workers}:{workers}", escript, script, mode, workers, trace]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Persistent cancellation and automatic recovery: fixed 30s/60s, 900 epochs per worker count")
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--compare-beam", action="store_true")
     arguments = parser.parse_args()
     require(aot.PROFILE == "release", "WINGS_PROFILE=release required")
+    if arguments.compare_beam:
+        beam_command(1, "", "--soak", "")
     runner = aot.TARGET / "release/examples/concurrent_recovery"
     artifact = arguments.artifact.resolve()
     require(runner.is_file() and artifact.is_dir(), "build recovery runner and artifact first")
@@ -171,19 +207,25 @@ def main():
                 "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120, "round_seconds": 3,
                            "trace_bytes": driver.TRACE_BYTES, "observed_rss_safety_bytes": 1 << 30},
                 "warmup_seconds": 30, "sample_seconds": 60, "epochs": 900,
-                "missing_gates": ["equivalent BEAM recovery protocol", "long overload and service I/O races", "CPU hard quota",
+                "compare_beam": arguments.compare_beam,
+                "missing_gates": ["long overload and service I/O races", "CPU hard quota",
                                   "complete memory and monitoring overhead", "native dual-platform", "BEAM throughput and memory acceptance"]}
+    if not arguments.compare_beam:
+        metadata["missing_gates"].append("BEAM recovery comparison not requested")
     (output / "environment.json").write_text(json.dumps(metadata, indent=2) + "\n")
     reports = []
     for workers in (1, 2):
-        require(all(driver.checksum(frozen / name) == digest for name, digest in inputs.items()), "frozen recovery input changed")
-        trace = output / f"workers-{workers}.epochs.jsonl"
-        command = [frozen / "concurrent_recovery", "--trusted", frozen / "artifact", "--soak", workers, trace]
-        trial = driver.trial(command, b"", trace, output / f"workers-{workers}", {"workers": workers}, "wings", soak=True, replayer=replay)
-        require(all(driver.checksum(frozen / name) == digest for name, digest in inputs.items()), "frozen recovery input changed")
-        reports.append({"workers": workers, **trial["summary"]})
-        (output / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
-        print(f"workers={workers}: 900 persistent cancellation/recovery epochs replayed; no complete fault/performance/memory gate", flush=True)
+        for runtime in (("wings", "beam") if arguments.compare_beam else ("wings",)):
+            require(all(driver.checksum(frozen / name) == digest for name, digest in inputs.items()), "frozen recovery input changed")
+            name = f"{runtime}-workers-{workers}" if arguments.compare_beam else f"workers-{workers}"
+            trace = output / f"{name}.epochs.jsonl"
+            command = ([frozen / "concurrent_recovery", "--trusted", frozen / "artifact", "--soak", workers, trace]
+                       if runtime == "wings" else beam_command(workers, frozen / "source/scripts/beam_recovery_soak.escript", "--soak", trace))
+            trial = driver.trial(command, b"", trace, output / name, {"workers": workers}, runtime, soak=True, replayer=replay)
+            require(all(driver.checksum(frozen / name) == digest for name, digest in inputs.items()), "frozen recovery input changed")
+            reports.append({"runtime": runtime, "workers": workers, **trial["summary"]})
+            (output / "report.json").write_text(json.dumps(reports, indent=2) + "\n")
+            print(f"{runtime} workers={workers}: 900 persistent cancellation/recovery epochs replayed; no complete fault/performance/memory gate", flush=True)
 
 
 if __name__ == "__main__":

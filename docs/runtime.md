@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 为既有恢复契约补 BEAM 对照：有限票据在 caller 结束且 publisher 实际回复/退出后才归还，取消不能撤回 Fail。OTP 为每个目标 child 单设监督分支，使一次/60s 强度耗尽不牵连健康 sibling；这只是对照适配，不改变 Wings 运行协议或账本。
+
 ABI v22 的 String HeapCall 增加 Unicode scalar value 索引和切片：扫描/复制分块检查预算、取消与让出，切片准入独立 UTF-8 buffer，越界通过独立状态码返回。固定 scratch、控制预留、最大编码长度、compiler 根和提交规则不变，细节见 [ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md)。
 
 原恢复 FIFO 的 1024 槽显式启用、原子观察的独立意义不变；长测宿主保留原 800 万记录上限，v13 满后只累加历史丢样，仍消费 FIFO。两层容量、停止后的守恒和缺样范围见 [ADR-0126](adr/0126-bounded-resume-trace-retention.md)；这是测试宿主保留策略，不改变 Scheduler 运行合同。

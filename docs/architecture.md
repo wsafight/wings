@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 在独立 OTP 对照端使用持续有限请求适配器和按 child 的监督分支，验证与 Wings 相同的取消/恢复业务。所有适配/监督进程计入 BEAM 作业；没有引入 VM 运行依赖或改变受管 ABI。
+
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 在默认关闭的诊断模式记录每次 Scheduler 恢复调用的墙钟区间；它与原子请求到切回的观测分开，不改变受管 ABI、执行预算或调度顺序。时间边界和未覆盖范围见 [runtime](runtime.md) 与[验证记录](validation-scheduler-slices-2026-11-18.md)。
 
 [ADR-0123](adr/0123-status-only-resource-rejection.md) 将资源准入事务的内部失败表示为 ResourceLevel，公开接口继续包装原文本；记录回复直接映射为受管状态码。门闩、逐级检查、回滚与票据共享原实现，不改变 ABI/执行预留或增加第二套准入算法。

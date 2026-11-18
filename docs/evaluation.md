@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 将 v11 取消/恢复扩展到真实 OTP 29；两端共享逐条重放的结果、旧状态与强度契约，BEAM 容量计数和 Wings 逻辑字节分开。原短回归三轮和显式 900 轮条件保持，实际记录见[验证记录](validation-beam-recovery-2026-11-18.md)。正确性对照不代替过载/服务 I/O、原生双平台或吞吐/整机内存双门禁。
+
 [ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 的长测诊断保持原 30s/60s 业务与保护边界，核对实际恢复、请求接受/结果时钟和两类丢样；v12 首次满额失败及 v13 验证状态见[记录](validation-resume-fairness-2026-11-18.md)。只在没有缺样时认为恢复流完整，子集分位与原子让出、端到端心跳延迟分开，不因业务跑满宣布公平性或 MVP。
 
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 新增实际恢复调用区间诊断，独立验证固定 FIFO、序号缺口、三种结果和停止后的计数守恒；真实 AOT 比较关闭/容量 1/256 与一/双 worker，见[记录](validation-scheduler-slices-2026-11-18.md)。这是观测正确性前置，未接入 v8 长测、不用零原子样本或本短测声明公平性门禁通过。

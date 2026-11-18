@@ -1,4 +1,4 @@
-# BEAM 工作负载协议 v1–v9
+# BEAM 工作负载协议 v1–v11
 
 本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。
 
@@ -243,6 +243,24 @@ WINGS_PROFILE=release python3 scripts/measure_failure_soak.py --artifact target/
 ```
 
 默认 AOT 只执行 `--verify-soak` 三轮、三种 state 和模型伪造拒绝；原短子进程 CPU 5s/墙钟 10s 不变。只有显式 `--compare-beam` 跑 OTP 29，无模型回退；只有 `measure_failure_soak.py` 启动固定长测。实际结果见[验证记录](validation-failure-soak-2026-11-18.md)。这没有覆盖长时 timeout/cancel、自动重启强度、过载竞争、完整内存、CPU 硬配额或最新原生双平台，不宣称完整故障或 MVP 门禁通过。
+
+## v11：持续取消与监督恢复
+
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 的 Wings 业务与 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 的真实 OTP 29 运行端共用独立重放契约：4 KiB 零初始 Bytes，两个 sender 各八条 Add，目标 mailbox 16、健康 sibling mailbox 1、共享结果 17。Hold 占实际 handler；每 sender 前两条立即超时、第三四条取消并消费，仍保留十六条队列消息与十六个 publisher 票据。满队列拒绝不得改变容量，健康 sibling 仍可提交 +7。
+
+剩余八条取消与 stop 竞争只认一个合法结果，已消费结果不得再取。stop 不自动重启；显式新零状态目标两次 Fail 都须实际除零且不提交候选 99。第一次自动重启，第二次超限；健康 sibling 仍为 +7。本轮及下一轮新目标活着时验证前代 Pid/入口/child ID 拒绝。
+
+BEAM 的持续有限请求 `gen_server` 只有在 caller 消费且真实回复或 monitor DOWN 后释放票据；没有把调用者退出当成撤回。持久 root 下每个目标 child 使用独立的一次/60s OTP supervisor，健康 sibling 单独监督，避免把按 supervisor 的强度错误解释成 Wings 的按 child 强度。每轮新建目标监督分支属于显式创建，原 root、适配器和 VM 持续复用。BEAM 控制进程/monitor 开销全计入 OS 作业，逻辑保留字节和栈为 null；队列/票据是真实协议计数，不能等同 Wings 的三级资源快照。
+
+```sh
+cargo build --workspace --bins --examples --locked
+python3 scripts/verify_recovery_soak.py --compare-beam
+cargo build --release --workspace --bins --examples --locked
+target/release/wings-compile build examples/concurrent-recovery.wings -o target/recovery-aot
+WINGS_PROFILE=release python3 scripts/measure_recovery_soak.py --artifact target/recovery-aot --output target/recovery-paired --compare-beam
+```
+
+普通验证一/双 worker 或 scheduler 各三轮；只有显式测量入口才在每配置每端跑 900 轮、30s 预热/60s 采样、100ms 计划间隔。原三秒轮期限、长测 CPU 240s/墙钟 130s/阶段 120s/core 0、短测 CPU 5s/墙钟 10s、64 KiB 写缓冲与 64 MiB trace 上限保持。冻结输入前后核对并保留失败；BEAM 总/online scheduler 必须一致，不把 scheduler 数当 CPU 硬配额。默认 AOT 只跑 Wings/两端模型，无 OTP 回退。实际验证见[记录](validation-beam-recovery-2026-11-18.md)，完整故障、过载/服务 I/O、平台内存和 MVP 门禁仍未完成。
 
 ## 代表性负载与性能验收冻结条件
 
