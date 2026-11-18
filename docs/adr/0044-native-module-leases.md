@@ -2,6 +2,7 @@
 
 - 日期：2026-11-13
 - 状态：已采纳（M1 模块资源切片）
+- 后续：[ADR-0128](0128-native-module-image-admission.md) 将文件页预算扩展为文件页与原生页对齐映像跨度的较大者，保留控制预算与最后代码 owner 退账。
 - 替代：[ADR-0013](0013-shared-scalar-modules.md) 的共享库永久泄留决定
 - 后续：[ADR-0045](0045-concurrent-resource-admission.md) 将资源账户改为线程安全；本决定的模块 Rc 租约和原线程执行限制保持不变。
 - 后续：[ADR-0052](0052-cross-thread-module-leases.md) 将只读模块租约改为 Arc，允许不同 worker 线程中的独立进程共享代码；actor/活栈仍不迁移。

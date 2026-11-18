@@ -133,16 +133,18 @@ fn verify_loading_order(directory: &Path) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    assert!(arguments.len() == 5 && arguments[0] == "--trusted");
+    assert!(arguments.len() >= 6 && arguments[0] == "--trusted");
     let directory = Path::new(&arguments[1]);
     verify_loading_order(directory);
     verify_execution_binding(directory);
-    let bytes = std::fs::metadata(directory.join(wings_artifact::library_name()))
+    let file_bytes = std::fs::metadata(directory.join(wings_artifact::library_name()))
         .unwrap()
         .len()
         .div_ceil(4096)
         * 4096
         + (2 << 20);
+    let bytes: u64 = arguments.last().unwrap().parse().unwrap();
+    assert!(bytes >= file_bytes);
     let vm = ResourceAccount::vm(limits(32 << 20));
     let tenant = vm.tenant(limits(16 << 20)).unwrap();
     let account = tenant.process(limits(8 << 20)).unwrap();
@@ -151,7 +153,12 @@ fn main() {
         assert_eq!(vm.used(), Resources::default());
     }
     let small = ResourceAccount::vm(limits(bytes - 1));
-    assert!(unsafe { ScalarModule::load_accounted(directory, &small) }.is_err());
+    assert!(
+        unsafe { ScalarModule::load_accounted(directory, &small) }
+            .err()
+            .unwrap()
+            .contains("resource_exhausted at Vm account")
+    );
     assert_eq!(small.used(), Resources::default());
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }.unwrap();
     assert_eq!(
@@ -290,11 +297,21 @@ fn main() {
     assert_eq!(vm.used(), baseline);
     drop((process, pool));
     assert_eq!(vm.used(), Resources::default());
-    for artifact in &arguments[2..] {
+    for artifact in &arguments[2..arguments.len() - 1] {
         assert!(unsafe { ScalarModule::load_accounted(Path::new(artifact), &vm) }.is_err());
         assert_eq!(vm.used(), Resources::default());
     }
+    if arguments.len() > 6 {
+        let error = unsafe { ScalarModule::load_accounted(Path::new(&arguments[5]), &vm) }
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("module image span exceeds 64 MiB"),
+            "{error}"
+        );
+        assert_eq!(vm.used(), Resources::default());
+    }
     println!(
-        "Module accounting verified: path/control/library admission order, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
+        "Module accounting verified: path/control/file/image admission order, exact capacity, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
     );
 }

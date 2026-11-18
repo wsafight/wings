@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0128](0128-native-module-image-admission.md) | 原生模块段表预检、映像跨度/文件页较大者准入与末 owner 退账 | 已采纳（模块账本切片） |
 | [0127](0127-accounted-string-indexing-and-slicing.md) | String 按 Unicode scalar value 索引、切片及独立计费复制 | 已采纳（定向 AOT 通过；完整门禁未完成） |
 | [0126](0126-bounded-resume-trace-retention.md) | 原恢复历史上限内显式丢样并完成业务，区分两类缺口 | 已采纳（有界诊断保留） |
 | [0125](0125-streamed-resume-fairness-diagnostics.md) | 独立恢复区间流、业务时钟配对与精确子集重放 | 已采纳；满额行为部分由 0126 替代 |

@@ -28,6 +28,7 @@ pub(crate) struct ModuleLease {
     vm: ResourceAccount,
     _charge: Reservation,
     _library_charge: Option<Reservation>,
+    _image_charge: Option<Reservation>,
 }
 
 #[derive(Clone)]
@@ -74,6 +75,7 @@ impl ScalarModule {
                     vm: vm.clone(),
                     _charge: charge,
                     _library_charge: None,
+                    _image_charge: None,
                 })
             })
             .transpose()?;
@@ -94,6 +96,14 @@ impl ScalarModule {
             })?);
         }
         let manifest = Manifest::read(&directory)?;
+        if let Some(lease) = lease.as_mut() {
+            let file_bytes = metadata.len().div_ceil(4096) * 4096;
+            let image_bytes = crate::module_image::read_image_bytes(&library_path, metadata.len())?;
+            lease._image_charge = Some(lease.vm.reserve(Resources {
+                bytes: image_bytes.saturating_sub(file_bytes),
+                ..Resources::default()
+            })?);
+        }
         let library = unsafe { Library::new(&library_path) }.map_err(|error| error.to_string())?;
         let initializer = unsafe {
             *library
@@ -450,6 +460,7 @@ mod tests {
                 lease: Some(ModuleLease {
                     vm: vm.clone(),
                     _library_charge: None,
+                    _image_charge: None,
                     _charge: vm
                         .reserve(Resources {
                             bytes: 1024,
@@ -528,7 +539,13 @@ mod tests {
             .unwrap();
         let library_charge = vm
             .reserve(Resources {
-                bytes: 512,
+                bytes: 256,
+                ..Resources::default()
+            })
+            .unwrap();
+        let image_charge = vm
+            .reserve(Resources {
+                bytes: 256,
                 ..Resources::default()
             })
             .unwrap();
@@ -558,6 +575,7 @@ mod tests {
                     vm: vm.clone(),
                     _charge: charge,
                     _library_charge: Some(library_charge),
+                    _image_charge: Some(image_charge),
                 }),
             }),
         };

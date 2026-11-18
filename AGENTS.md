@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0128 在计费模块装载前解析 ELF64/Mach-O64 段表，预算改为原 2 MiB 控制加文件页/原生页对齐映像跨度的较大者，含零填充和空洞；映像独立上限 64 MiB。先由文件票据保护快照，释放后追加不足预算，末代码 owner 交还 Library 后退账。原 ABI v22/执行/账户限制不变；两构建各 695 项及 Release 完整 AOT 通过，Debug 完整 AOT 的 TCP 启动 5s 超时仍保留。逻辑映像不是 RSS/装载器完整成本，完整账本与原生双平台/BEAM/MVP 门禁仍待完成，见 `docs/validation-module-image-2026-11-18.md`。
+
 - ADR-0127 新增 `string_at(String, Int) -> Int` 与 `string_slice(String, Int, Int) -> String`，按 Unicode scalar value 操作，切片独立计费；索引/长度负数、溢出和越界返回独立受管错误。ABI 升至 v22，context/EffectRequest/4352 B 预留、单值 64 KiB 与原阶段限额不变。定向 Debug/Release AOT、三层配额/GC/取消、两种构建各 691 项测试及 Release 完整 AOT 通过；Debug 完整套件的 TCP/Counter/fairness 超时仍保留，记录见 `docs/validation-string-slicing-2026-11-18.md`。完整账本、原生双平台及 BEAM 门禁仍未完成，不代表 MVP 完成。
 
 - ADR-0125/0126 为原百万 checked 加法/100 突发心跳增加独立恢复区间诊断。v12 首轮约 51.65s 触及 800 万历史上限并保留失败；v13 不提高上限，分别披露 FIFO/历史丢样并继续原 30s/60s 业务。独立重放核对时钟/业务配对与可观察前缀，缺样不报完整分布；默认 AOT 不自动跑长测，原 v7/v8、ABI v21、资源和阶段限额不变，MVP 门禁仍待完成。

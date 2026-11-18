@@ -17,3 +17,4 @@ serde_json.workspace = true
 libloading.workspace = true
 corosensei = { version = "=0.3.3", default-features = false, features = ["default-stack"] }
 libc = "0.2"
+object = { version = "=0.36.7", default-features = false, features = ["read_core", "elf", "macho", "std", "unaligned"] }

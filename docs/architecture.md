@@ -140,7 +140,7 @@
 
 资源账户按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 用同 VM 共享门闩串行提交三级四维准入、净转移和归还；只在固定长度计数更新中持锁，不在锁内执行分配/业务/OS 等待或协程切换。账户与票据自动 Send/Sync，actor/活栈仍保持原线程执行权。
 
-原生模块按 [ADR-0044](adr/0044-native-module-leases.md) 持有 Library 代码租约，最后一个模块/ID/实例/活栈所有者销毁后交还装载器引用。`load_accounted` 在解析/装载前向 VM 预留库文件取整大小加 2 MiB 逻辑控制预算，跨 VM 计费 worker/pool 执行前拒绝；不把该预算当实际映射/RSS，也不是热更新。
+原生模块按 [ADR-0044](adr/0044-native-module-leases.md) 持有 Library 代码租约，最后一个模块/ID/实例/活栈所有者销毁后交还装载器引用。`load_accounted` 先准入 2 MiB 控制预算和文件页，再按 [ADR-0128](adr/0128-native-module-image-admission.md) 解析有界 ELF64/Mach-O64 段表；文件快照释放后补足原生页对齐的映像跨度预算，成功才调用装载器。常驻总额为控制预算加文件页/映像跨度的较大者，映像独立限制 64 MiB；失败完整退账，跨 VM 计费 worker/pool 执行前拒绝。不把该逻辑容量当动态装载器/依赖库内部开销或实际 RSS，也不是热更新。
 
 [ADR-0041](adr/0041-worker-deadline-parking.md) 用计费 parker 集成空闲等待与请求 deadline；ADR-0046 仅经有界 ingress 提供通知，不导出裸 notifier，也不是完整 reactor。
 

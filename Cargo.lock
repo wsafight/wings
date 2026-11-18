@@ -593,6 +593,7 @@ dependencies = [
  "corosensei",
  "libc",
  "libloading",
+ "object",
  "serde",
  "serde_json",
  "wings-abi",

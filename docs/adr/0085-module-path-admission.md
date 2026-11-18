@@ -2,6 +2,7 @@
 
 - 日期：2026-11-14
 - 状态：已采纳（模块加载资源顺序修正）
+- 后续：[ADR-0128](0128-native-module-image-admission.md) 在文件预算内读取快照，释放后补足映像跨度，成功才动态装载；本决定的控制先准入顺序保持。
 - 部分替代：[ADR-0044](0044-native-module-leases.md) 在路径解析和库元数据读取之后一次预留模块预算的顺序。
 - 沿用：[ADR-0083](0083-accounted-module-execution.md)、[ADR-0084](0084-accounted-root-module-admission.md) 的模块与执行树身份要求。
 

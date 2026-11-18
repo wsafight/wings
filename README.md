@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0128](docs/adr/0128-native-module-image-admission.md) 在动态装载前核对 ELF/Mach-O 映像跨度，补计原生页取整、零填充和空洞，保持 64 MiB 上限；文件快照先释放再追加不足预算。专项与全量验证见[记录](docs/validation-module-image-2026-11-18.md)，逻辑映像准入不等同 RSS 或完整账本。
+
 [ADR-0127](docs/adr/0127-accounted-string-indexing-and-slicing.md) 增加按 Unicode scalar value 的 String 索引和独立计费切片，使用 ABI v22；验证与资源/失败边界见[记录](docs/validation-string-slicing-2026-11-18.md)。功能切片不替代完整账本或 MVP 门禁。
 
 [ADR-0125](docs/adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](docs/adr/0126-bounded-resume-trace-retention.md) 将恢复区间接入独立长测：保留 v12 满额失败，v13 在原上限内显式计两类丢样并继续原业务；原 v7/v8 与 BEAM 入口保持。冻结运行和验证状态见[记录](docs/validation-resume-fairness-2026-11-18.md)，缺样分位不作完整公平性结论。

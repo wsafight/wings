@@ -190,6 +190,8 @@ v5/v6 接入同一池时，先以独立阶段探针记录创建、配置、实�
 
 [ADR-0044](adr/0044-native-module-leases.md) 的 `module_accounting` 在受限 AOT 子进程验证级别/额度拒绝、同路径独立加载准入、坏清单/库/缺符号回滚、clone/ID 共享计费、挂起 task/worker/借用入口保活及正常取消清理、跨 VM worker/pool/heap 拒绝。反复加载/销毁恢复 VM 基线，不用账面归零宣称 OS 已解除全部映射。debug/release AOT 脚本覆盖；实际 dyld/ld.so 与 allocator 内存仍须平台实测。
 
+[ADR-0128](adr/0128-native-module-image-admission.md) 将该回归的精确预算改为独立段表预言计算的文件页/映像跨度较大者。`scripts/verify_module_image.py` 用原编译器与只读零填充对象重链 Counter，文件不随 1 MiB 映像等量增长；原 VM/tenant/process 限额不变，少一字节拒绝、精确预算成功、共享/末 owner/挂起取消退账仍逐项核对。超过 64 MiB 的修改表只用于装载前拒绝，不交给动态装载器；两个格式的大/小端、4/16 KiB 页、空洞/重叠、截断和溢出另由受限单测覆盖。这不是映像驻留量或完整模块/allocator 账本验收。
+
 [ADR-0043](adr/0043-chunked-runtime-gc.md) 的 core 回归在各 phase 中止后重新收集，核对传递根、16 节点处理上限、generation 退役和计数守恒。受限真实 AOT `chunked_gc` 使用 1024 槽堆逐步执行嵌套 collect，覆盖取消/Drop/预算、32 槽分配触发回收与 hot/cold 轮转；旧 `aot_records` 按实际新步数校验总预算。命令仍为 debug/release AOT 脚本与 workspace 检查；尚无块耗时或性能达标数据。
 
 [ADR-0041](adr/0041-worker-deadline-parking.md) 验证私有等待端的配置/计费、就绪不睡眠、deadline 到期及结果不反复唤醒；OS 等待不等于业务公平性或完整 reactor 验收。

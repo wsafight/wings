@@ -570,6 +570,35 @@ def example(name, *arguments):
     return cargo_example("wings-vm", name, "--trusted", *arguments)
 
 
+def module_image_budget(directory):
+    library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    data = (directory / library_name).read_bytes()
+    segments = []
+    if os.uname().sysname == "Darwin":
+        assert data[:4] == b"\xcf\xfa\xed\xfe"
+        count = struct.unpack_from("<I", data, 16)[0]
+        offset = 32
+        for _ in range(count):
+            kind, size = struct.unpack_from("<II", data, offset)
+            if kind == 0x19:
+                segments.append(struct.unpack_from("<QQ", data, offset + 24))
+            offset += size
+    else:
+        assert data[:6] == b"\x7fELF\x02\x01"
+        offset = struct.unpack_from("<Q", data, 32)[0]
+        size, count = struct.unpack_from("<HH", data, 54)
+        for index in range(count):
+            base = offset + index * size
+            if struct.unpack_from("<I", data, base)[0] == 1:
+                segments.append((struct.unpack_from("<Q", data, base + 16)[0],
+                                 struct.unpack_from("<Q", data, base + 40)[0]))
+    page = os.sysconf("SC_PAGESIZE")
+    segments = [(address, memory) for address, memory in segments if memory]
+    start = min(address // page * page for address, _ in segments)
+    end = max((address + memory + page - 1) // page * page for address, memory in segments)
+    return (2 << 20) + max((len(data) + 4095) // 4096 * 4096, end - start)
+
+
 def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, record_messages=False, list_messages=False, byte_buffers=False):
     import ctypes
 
@@ -1239,7 +1268,12 @@ def main():
         symbol_source = parent / "module-empty.c"
         symbol_source.write_text("int wings_module_fixture(void) { return 0; }\n")
         command([os.environ.get("CC", "cc"), "-dynamiclib" if os.uname().sysname == "Darwin" else "-shared", "-fPIC", symbol_source, "-o", invalid_module_symbol / library_name])
-        example("module_accounting", counter, invalid_module_manifest, invalid_module_library, invalid_module_symbol)
+        print(example("module_accounting", counter, invalid_module_manifest, invalid_module_library,
+                      invalid_module_symbol, module_image_budget(counter)).stdout, end="")
+        from verify_module_image import verify as verify_module_image
+        module_images = parent / "module-images"
+        module_images.mkdir()
+        verify_module_image(module_images)
         result = example("handler_lookup", counter)
         print(result.stdout.splitlines()[-1])
         example("resource_accounts")

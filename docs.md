@@ -57,6 +57,7 @@
 | [2026-11-18 具名记录回复验证](docs/validation-named-record-replies-2026-11-18.md) | 有界独立叶复制、完成事件重建、单/多 worker AOT 与剩余平台门禁 |
 | [2026-11-18 CLI 记录输出验证](docs/validation-cli-record-replies-2026-11-18.md) | 有界流式记录 JSON、全部叶值、输出扩张/写失败与原限制回归 |
 | [2026-11-18 字符串索引与切片验证](docs/validation-string-slicing-2026-11-18.md) | Unicode scalar value、独立副本、GC/配额/取消、LSP 与原限回归 |
+| [2026-11-18 模块映像准入验证](docs/validation-module-image-2026-11-18.md) | 原生页/零填充/空洞、装载前准入、精确预算、末 owner 和失败退账 |
 | [2026-11-18 hot-queue 原生采样](docs/validation-hotqueue-profile-2026-11-18.md) | 同一冻结源码的两种速率、原始重放、等待/锁栈样本及真实 BEAM 短测 |
 | [BEAM 工作负载 v1–v8](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环与公平性长测及有界调度让出观测 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
