@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 补第 5 项的原子让出进展前置，区分无限步骤片下健康 actor 进展与已有一步片轮转。实际结果及失败保留见[记录](validation-atomic-progress-2026-11-18.md)；不关闭单核配额/长时公平性、资源账本、服务 I/O、原生双平台或 BEAM/MVP 门禁。
+
 [ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 继续补第 4 项，使用调用者固定原生缓冲为路径结果建立 Rust 分配前容量边界；不关闭 libc/装载器/allocator 完整账本或其他 MVP 门禁，实际证据见[记录](validation-native-paths-2026-11-18.md)。
 
 [ADR-0135](adr/0135-bounded-accounted-module-paths.md) 补第 4 项模块来源暂存边界，保留 3 MiB 来源超出原 2 MiB 控制的修改前证据；修复只推进相应 Rust 副本和拼接，不关闭 canonicalize/libc/allocator、完整账本或原生双平台/BEAM/MVP 门禁，见[记录](validation-module-paths-2026-11-18.md)。

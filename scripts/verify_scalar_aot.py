@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from verify_resource_receipt import validate as validate_resource_receipt
+from verify_atomic_progress import validate as validate_atomic_progress
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1185,6 +1186,8 @@ def main():
         locks = json.loads(example("scheduler_locks", counter).stdout)
         slices = parent / "scheduler-slices"
         command([COMPILER, "build", ROOT / "examples/scheduler-slices.wings", "-o", slices])
+        validate_atomic_progress(json.loads(example("scheduler_atomic_progress", slices).stdout))
+        print("Atomic yield progress verified: infinite step slices, one/two workers, healthy actors, stopped counters and cleanup; not fairness acceptance")
         slice_result = json.loads(example("scheduler_slices", slices).stdout)
         assert slice_result["status"] == "ok"
         assert slice_result["metric"] == "resume_wall_intervals_not_cpu_or_fairness_acceptance"

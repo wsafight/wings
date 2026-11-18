@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 scripts/verify_workspace_tests.py
           python3 scripts/verify_scalar_aot_tests.py
+          python3 scripts/verify_atomic_progress_tests.py
           python3 scripts/verify_multi_counter_tests.py
           python3 scripts/verify_lock_statistics.py
           python3 scripts/verify_cpu_quota.py

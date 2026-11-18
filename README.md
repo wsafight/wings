@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0137](docs/adr/0137-infinite-handler-atomic-progress.md) 增加无限步骤片下忙/健康 actor 同 worker 原子让出进展回归，保留固定 FIFO 的尾丢样及停止后计数/退账；实际状态见[验证](docs/validation-atomic-progress-2026-11-18.md)，不替代完整公平性或 MVP 门禁。
+
 [ADR-0136](docs/adr/0136-fixed-buffer-native-module-paths.md) 将计费模块的路径来源和解析输出改为固定缓冲，Rust 结果只在已知长度后构造；不覆盖 libc 内部分配或完整资源门禁，见[验证](docs/validation-native-paths-2026-11-18.md)。
 
 [ADR-0135](docs/adr/0135-bounded-accounted-module-paths.md) 为计费模块路径暂存设置原始/解析路径边界，避免超大宿主来源在原控制额度外复制；验证见[记录](docs/validation-module-paths-2026-11-18.md)，完整原生分配账本仍待闭环。

@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 独立验证无限步骤片下的原子让出与同 worker 业务进展，不改执行模型、ABI 或原代表业务；短时 AOT 和独立有限重放的证据范围见[记录](validation-atomic-progress-2026-11-18.md)。
+
 [ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 替代计费模块的拥有型 canonicalize：来源为固定 16385 B 数组，原生 realpath 写调用者 `PATH_MAX` 数组，验证后才按已知长度构造 Rust 路径；工具入口不变，不将 libc 内部 scratch 当作已闭环，见[验证](validation-native-paths-2026-11-18.md)。
 
 [ADR-0135](adr/0135-bounded-accounted-module-paths.md) 在原模块控制准入之后，先无分配检查计费路径的原始编码字节，再调用 canonicalize；解析结果再次检查后才拼接文件名。16 KiB 边界不改变原生映像/文件预算或 ABI，来源暂存修复与尚缺的原生分配口径见[记录](validation-module-paths-2026-11-18.md)。
