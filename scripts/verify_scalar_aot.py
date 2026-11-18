@@ -22,10 +22,20 @@ TARGET = Path(os.environ.get("WINGS_TARGET_DIR", ROOT / "target"))
 COMPILER = TARGET / PROFILE / "wings-compile"
 VM = TARGET / PROFILE / "wings-vm"
 
+# Opt-in bounded native sampling of processes that already exceeded a startup
+# deadline; disabled by default so ordinary runs keep their original behavior.
+TIMEOUT_SAMPLE = os.environ.get("WINGS_TIMEOUT_SAMPLE") == "1"
+
 
 def limit_child():
     resource.setrlimit(resource.RLIMIT_CPU, (20, 20))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def limit_sampler():
+    limit_child()
+    resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
 
 
 def command(arguments, text="", expected=0):
@@ -244,6 +254,32 @@ def verify_cli_stdio(directory):
     print("Owned CLI stdio verified: scalar/heap replies before EOF, broken output and read errors; not complete host accounting")
 
 
+def sample_timeout_stacks(child):
+    """Bounded native sampling of a process that already exceeded the readiness
+    deadline. The failure verdict and elapsed time are decided before this runs
+    and are never extended; the sampler has its own CPU/wall/file limits and
+    only attaches while the child is still alive. Default off."""
+    if child.poll() is not None:
+        return "sample_skipped=already exited before sampling"
+    output = TARGET / "startup-samples"
+    output.mkdir(parents=True, exist_ok=True)
+    destination = output / f"tcp-ready-{os.getpid()}-{time.time_ns()}.txt"
+    try:
+        result = subprocess.run(
+            ["/usr/bin/sample", str(child.pid), "2", "-mayDie", "-file", str(destination)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=3.5, preexec_fn=limit_sampler, cwd=ROOT,
+        )
+        exit_status = result.returncode
+        stderr_prefix = result.stderr[:4096]
+    except subprocess.TimeoutExpired as expired:
+        exit_status = "sampler wall deadline exceeded"
+        stderr_prefix = (expired.stderr or b"")[:4096]
+    sample_bytes = destination.stat().st_size if destination.exists() else None
+    return (f"sample_exit={exit_status}; sample_file={destination}; "
+            f"sample_bytes={sample_bytes}; sample_stderr_prefix={stderr_prefix!r}")
+
+
 def tcp_ready(child, timeout=5):
     started = time.monotonic()
     line = bytearray()
@@ -263,6 +299,7 @@ def tcp_ready(child, timeout=5):
             raise ValueError("invalid readiness schema")
         return ready
     except (OSError, ValueError) as error:
+        sampler = sample_timeout_stacks(child) if TIMEOUT_SAMPLE else None
         before_cleanup = child.poll()
         try:
             os.killpg(child.pid, signal.SIGKILL)
@@ -277,11 +314,16 @@ def tcp_ready(child, timeout=5):
             except BlockingIOError:
                 captured.append(b"")
         output = (bytes(line) + captured[0])[:4096]
-        raise AssertionError(
+        details = (
             f"TCP startup failed: {error}; elapsed={time.monotonic() - started:.3f}s; "
             f"exit_before_cleanup={before_cleanup}; exit={child.returncode}; "
             f"stdout_prefix={output!r}; stderr_prefix={captured[1]!r}"
-        ) from error
+        )
+        if sampler is not None:
+            details += f"; {sampler}"
+            if b'"listening"' in captured[0]:
+                details += "; readiness_completed_during_sampling=true"
+        raise AssertionError(details) from error
 
 
 def verify_tcp_service(directory):

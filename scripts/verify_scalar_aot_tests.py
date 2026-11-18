@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
 import unittest
+from pathlib import Path
 
 import verify_scalar_aot as aot
 
@@ -42,6 +44,11 @@ class TcpStartupVerification(unittest.TestCase):
         self.assertIsNotNone(child.poll())
         self.assertLess(time.monotonic() - started, timeout + 5)
         return message
+
+    def enable_sampling(self):
+        previous = aot.TIMEOUT_SAMPLE
+        aot.TIMEOUT_SAMPLE = True
+        self.addCleanup(setattr, aot, "TIMEOUT_SAMPLE", previous)
 
     def test_ready_line_does_not_consume_the_final_report(self):
         child = self.child('print(\'{"listening":"127.0.0.1:7"}\'); print(\'{"done":true}\')')
@@ -84,6 +91,35 @@ class TcpStartupVerification(unittest.TestCase):
             'import os; os.write(2, b"z" * 1000000)', "deadline", 0.2,
         )
         self.assertLess(len(message), 5000)
+
+    def test_timeout_sampling_is_absent_by_default(self):
+        message = self.failure("import time; time.sleep(10)", "deadline", 0.2)
+        self.assertNotIn("sample_exit=", message)
+
+    def test_timeout_sampling_captures_a_live_stuck_process(self):
+        self.enable_sampling()
+        message = self.failure("import time; time.sleep(10)", "deadline", 0.2)
+        self.assertIn("sample_exit=0", message)
+        match = re.search(r"sample_file=([^;]+); sample_bytes=(\d+)", message)
+        self.assertIsNotNone(match, message)
+        self.assertGreater(int(match.group(2)), 0)
+        report = Path(match.group(1)).read_text(errors="replace")
+        self.assertIn("Call graph", report)
+        self.assertIn("sleep", report)
+        self.assertNotIn("readiness_completed_during_sampling", message)
+
+    def test_timeout_sampling_notices_late_readiness(self):
+        self.enable_sampling()
+        message = self.failure(
+            'import time; time.sleep(0.8); print(\'{"listening":"127.0.0.1:9"}\')',
+            "deadline", 0.2,
+        )
+        self.assertIn("readiness_completed_during_sampling=true", message)
+
+    def test_timeout_sampling_skips_already_exited_processes(self):
+        self.enable_sampling()
+        message = self.failure("pass", "EOF before readiness")
+        self.assertIn("sample_skipped=already exited before sampling", message)
 
     def test_pipe_holding_descendant_is_terminated_on_failure(self):
         child = self.child(

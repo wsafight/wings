@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0142](adr/0142-opt-in-timeout-stack-sampling.md) 为第 5/6 项的启动稳定性补取证入口：`verify_scalar_aot.py` 默认关闭的 `WINGS_TIMEOUT_SAMPLE=1` 在握手失败判定之后、清理之前，对原超时进程做独立限额的原生采样并保留迟到就绪证据。判定/期限/默认行为不变；它只是诊断，不关闭启动根因、完整账本、公平/服务长测、原生双平台或 BEAM/MVP 门禁。实测见[记录](validation-startup-timeout-sampling-2026-11-19.md)。
+
 [ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 推进第 4/6 项的真实分配拒绝：有界测试 allocator 返回 null 后核对构造回滚、未发布参数/消息重试、受管 GC 重试/失败、候选不提交和健康 actor 进展。范围和实测见[记录](validation-allocator-failures-2026-11-19.md)；完整原生账本、启动稳定性、公平/服务长测、原生双平台和 BEAM/MVP 门禁保持。
 
 [ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 推进第 5/7 项的真实服务同业务基础：受限 TCP 支持三种完整 Bytes state，显式 Wings/BEAM/Python 逐帧核对与健康完整状态校验。它不关闭公平/过载/故障长测、完整账本、启动稳定性、原生双平台或 BEAM 吞吐/整机内存门禁；实际状态见[记录](validation-tcp-bytes-2026-11-19.md)。
