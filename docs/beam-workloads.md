@@ -46,6 +46,8 @@ v5/v6 Wings 开环也复用一槽计费初始化池，池创建计入原 3/120 �
 
 ## 多 actor 正确性协议 v2
 
+[ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 为本协议宿主按读取过程执行原 stdout 1 MiB/stderr 64 KiB 上限，所有管道与进程等待共享原十秒期限。失败保留有界用例标签、输入 SHA/头部、双流前缀/EOF 与清理状态；不等待全量退出后才发现越界，不以重试覆盖原失败。实际原限三端回归及七项短测试见[记录](validation-multi-counter-evidence-2026-11-18.md)，原业务、CPU/actor 期限和性能边界不变。
+
 [ADR-0063](adr/0063-multi-actor-byte-counter.md) 接入独立的 `verify_multi_counter.py`、`beam_multi_counter` 和 `beam_multi_workload.escript`，保留 v1 不变。JSON 为 `{version:2, actors, state_bytes, initial, requests:[{actor,delta,fail}]}`；actor 为 `1..N`，其余严格类型/重复键/未知字段/64 KiB 输入限制沿 v1。actor 数 1..10000，完整逻辑 state 总量最多 16 MiB，单次最多 256 请求、总在途窗口 32。
 
 真实状态布局仍为 counter/actor ID/零填充，ID 改为各目标独立编号。三组大容量测试为 10000×256 B、1000×4 KiB、100×64 KiB，每组 100 个活动目标、按 slot 间隔分布，不冒充后述性能协议的前 A 个活动集合。失败只终结原目标的已入队队尾，其他目标继续；输出按输入序号规范化，但只约束同发送者到同目标 FIFO，不要求跨 actor 全序。BEAM 在规范化前核对实际回复顺序和 monitor；Wings 核对唯一请求 handle 的值序列及每目标独立终态。

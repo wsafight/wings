@@ -1,14 +1,17 @@
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import resource
+import selectors
 import shutil
 import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 import verify_scalar_aot as aot
 import verify_resource_receipt as receipts
@@ -56,26 +59,104 @@ def limit_child():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def invoke(command, payload):
+def invoke(command, payload, *, label="unspecified", timeout=10):
+    if not 0 < timeout <= 10 or len(payload) > 65537:
+        raise ValueError("multi Counter capture limits")
     environment = os.environ.copy()
     for name in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
         environment.pop(name, None)
     environment["ERL_CRASH_DUMP"] = os.devnull
     environment["ERL_CRASH_DUMP_SECONDS"] = "0"
-    child = subprocess.Popen([str(item) for item in command], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             env=environment, cwd=aot.ROOT, start_new_session=True, preexec_fn=limit_child)
+    arguments = [str(item) for item in command]
+    selector = selectors.DefaultSelector()
+    child = None
+    streams = {name: bytearray() for name in ("stdout", "stderr")}
+    maximum = {"stdout": 1 << 20, "stderr": 65536}
+    observed = {name: 0 for name in streams}
+    complete = {name: False for name in streams}
+    offset = 0
+    started = time.monotonic()
+    failed = False
     try:
-        stdout, stderr = child.communicate(payload, timeout=10)
-    except BaseException:
-        try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        child.communicate()
-        raise
-    if len(stdout) > 1 << 20 or len(stderr) > 65536 or stderr:
-        raise RuntimeError(f"multi Counter stderr/output limit: {stderr[:4096]!r}")
-    return child.returncode, json.loads(stdout)
+        child = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=environment, cwd=aot.ROOT, start_new_session=True, preexec_fn=limit_child, bufsize=0)
+        for name in streams:
+            stream = getattr(child, name)
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        if payload:
+            os.set_blocking(child.stdin.fileno(), False)
+            selector.register(child.stdin, selectors.EVENT_WRITE, "stdin")
+        else:
+            child.stdin.close()
+        while selector.get_map():
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("multi Counter wall deadline")
+            for key, _ in selector.select(timeout=min(0.05, remaining)):
+                name = key.data
+                try:
+                    if name == "stdin":
+                        try:
+                            offset += os.write(key.fd, memoryview(payload)[offset:offset + 4096])
+                        except BrokenPipeError:
+                            selector.unregister(key.fileobj)
+                            key.fileobj.close()
+                            continue
+                        if offset == len(payload):
+                            selector.unregister(key.fileobj)
+                            key.fileobj.close()
+                        continue
+                    block = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not block:
+                    complete[name] = True
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                observed[name] += len(block)
+                streams[name].extend(block[:maximum[name] - len(streams[name])])
+                if observed[name] > maximum[name]:
+                    raise RuntimeError(f"multi Counter {name} exceeds {maximum[name]} bytes")
+        child.wait(timeout=max(0.001, timeout - (time.monotonic() - started)))
+        if streams["stderr"]:
+            raise RuntimeError("multi Counter unexpected stderr")
+        return child.returncode, json.loads(streams["stdout"])
+    except BaseException as error:
+        failed = True
+        elapsed = time.monotonic() - started
+        status = child.poll() if child is not None else None
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+        if not isinstance(error, Exception):
+            raise
+        evidence = {"label": label[:256], "error": str(error)[:512], "error_type": type(error).__name__,
+                    "command": [item[:512] for item in arguments[:8]],
+                    "command_truncated": len(arguments) > 8 or any(len(item) > 512 for item in arguments),
+                    "elapsed_seconds": elapsed, "pid": child.pid if child is not None else None,
+                    "exit_before_cleanup": status, "exit_after_cleanup": child.returncode if child is not None else None,
+                    "input_bytes": len(payload), "input_written_bytes": offset,
+                    "input_sha256": hashlib.sha256(payload).hexdigest(), "input_header_hex": payload[:40].hex()}
+        for name in streams:
+            evidence[f"{name}_observed_bytes"] = observed[name]
+            evidence[f"{name}_eof"] = complete[name]
+            evidence[f"{name}_prefix"] = streams[name][:1024].decode("utf-8", errors="backslashreplace")
+            evidence[f"{name}_prefix_truncated"] = observed[name] > 1024
+        raise RuntimeError("multi Counter capture failed: " + json.dumps(evidence, ensure_ascii=True)) from error
+    finally:
+        selector.close()
+        if child is not None:
+            if not failed and child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if not stream.closed:
+                    stream.close()
 
 
 def reference(workload):
@@ -151,12 +232,13 @@ def verify(artifact, compare_beam):
         raise RuntimeError("Erlang/OTP 29 escript is required")
     beam = [escript, aot.ROOT / "scripts/beam_multi_workload.escript"]
     valid = cases()
-    for workload in valid:
+    for index, workload in enumerate(valid, 1):
         payload = json.dumps(workload, separators=(",", ":")).encode()
         decode(payload)
         expected_code, expected = reference(workload)
         for command, data, runtime in [(wings, bridge(workload), "wings")] + ([(beam, payload, "beam")] if compare_beam else []):
-            code, result = invoke(command, data)
+            label = f"valid:{index}:{runtime}:actors={workload['actors']}:state_bytes={workload['state_bytes']}"
+            code, result = invoke(command, data, label=label)
             assert code == expected_code, (code, result, workload)
             for key, value in expected.items():
                 assert result.get(key) == value, (runtime, key, result, expected)
@@ -172,11 +254,11 @@ def verify(artifact, compare_beam):
         changed = bytearray(sample)
         struct.pack_into(">Q", changed, index * 8, value)
         rejected.append(bytes(changed))
-    for payload in rejected:
-        code, result = invoke([*wings[:2], artifact / "missing"], payload)
+    for index, payload in enumerate(rejected, 1):
+        code, result = invoke([*wings[:2], artifact / "missing"], payload, label=f"invalid-bridge:{index}:wings")
         assert code == 2 and result.get("status") == "invalid", (code, result)
     invalid = invalid_json()
-    for payload in invalid:
+    for index, payload in enumerate(invalid, 1):
         try:
             decode(payload)
         except (ValueError, RecursionError):
@@ -184,7 +266,7 @@ def verify(artifact, compare_beam):
         else:
             raise AssertionError(f"accepted invalid JSON: {payload[:200]!r}")
         if compare_beam:
-            code, result = invoke(beam, payload)
+            code, result = invoke(beam, payload, label=f"invalid-json:{index}:beam")
             assert code == 2 and result.get("status") == "invalid", (code, result, payload[:200])
     print(f"Multi Counter v2 {'Wings/BEAM/Python' if compare_beam else 'Wings/Python (BEAM not executed)'}: {len(valid)} byte-state/FIFO/exit cases, {len(rejected)} bridge and {len(invalid)} JSON rejections; no performance claim")
 

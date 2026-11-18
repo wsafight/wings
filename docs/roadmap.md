@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 为第 6 项诊断补 v2 子进程的有界 I/O、输入/用例身份与失败双流证据，保持原业务与期限。实际专项见[记录](validation-multi-counter-evidence-2026-11-18.md)，它没有修复或关闭启动稳定性、完整资源账本、原生双平台和 BEAM/MVP 门禁。
+
 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 为第 3/6 项补真实 BEAM 的有限请求、超时/取消不撤回、停止竞争、全新恢复和按 child 强度对照。原时段/容量和每轮限制保持，范围及本机证据见[记录](validation-beam-recovery-2026-11-18.md)；完整账本、长时过载/服务 I/O、原生双平台及同负载 BEAM 双门禁仍未完成，MVP 未完成。
 
 [ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md) 补 MVP 第 4 项 String 的基本字符读取/子串操作，UTF-8 扫描按 Unicode scalar value 分块且切片独立计费。ABI v22；定向 Debug/Release 真实 AOT、三层配额/GC/取消与两种构建各 691 项测试通过，Release 完整 AOT 通过；Debug 完整套件仍有启动/Counter/fairness 超时记录。它不关闭完整资源账本、Linux 原生验证、公平/故障长测及双平台 BEAM 双门禁，MVP 未完成，见[验证记录](validation-string-slicing-2026-11-18.md)。

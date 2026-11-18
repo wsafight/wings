@@ -62,6 +62,7 @@
 | [2026-11-18 CPU 配额条件验证](docs/validation-cpu-quota-2026-11-18.md) | 只读 cgroup v2 控制、整作业范围、格式/变化模型及 macOS 早拒绝 |
 | [2026-11-18 hot-queue 原生采样](docs/validation-hotqueue-profile-2026-11-18.md) | 同一冻结源码的两种速率、原始重放、等待/锁栈样本及真实 BEAM 短测 |
 | [2026-11-18 BEAM 恢复对照](docs/validation-beam-recovery-2026-11-18.md) | 有限请求双端生命周期、超时/取消、真实失败、独立 child 监督及原限长测 |
+| [2026-11-18 多 actor 失败取证](docs/validation-multi-counter-evidence-2026-11-18.md) | 读时限额、全程 I/O 期限、输入身份、双流前缀及进程组清理 |
 | [BEAM 工作负载 v1–v11](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环/公平性长测及取消恢复 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 
