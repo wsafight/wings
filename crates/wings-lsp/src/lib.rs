@@ -128,7 +128,7 @@ impl Server {
                         for (name, detail) in [("fill_bytes", "(Int, Int) -> Bytes"), ("bytes_len", "(Bytes) -> Int"), ("byte_at", "(Bytes, Int) -> Int"), ("replace_byte", "(Bytes, Int, Int) -> Bytes"), ("read_i64_be", "(Bytes, Int) -> Int"), ("replace_i64_be", "(Bytes, Int, Int) -> Bytes")] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
-                        for (name, detail) in [("string_from_bytes", "(Bytes) -> String"), ("string_bytes", "(String) -> Bytes"), ("string_len", "(String) -> Int"), ("concat_strings", "(String, String) -> String")] {
+                        for (name, detail) in [("string_from_bytes", "(Bytes) -> String"), ("string_bytes", "(String) -> Bytes"), ("string_len", "(String) -> Int"), ("string_at", "(String, Int) -> Int"), ("string_slice", "(String, Int, Int) -> String"), ("concat_strings", "(String, String) -> String")] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
                         }
                         for symbol in document.analysis.visible_symbols(offset) {

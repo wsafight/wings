@@ -2130,6 +2130,165 @@ mod tests {
     }
 
     #[test]
+    fn string_index_and_slice_keep_sources_live_through_every_gc_checkpoint() {
+        for text in [
+            String::new(),
+            "Aé中😀Z\0e\u{301}".into(),
+            "a".repeat(255) + "é中😀z",
+            "a".repeat(65536),
+        ] {
+            let (vm, mut heap) = fixture(4);
+            let flag = std::sync::atomic::AtomicU32::new(0);
+            let mut context = context(&mut heap, &flag);
+            context.slow_path = Some(resume_one_step);
+            let (status, source) = unsafe {
+                bytes(
+                    &mut context,
+                    wings_abi::HEAP_STRING_LITERAL,
+                    [text.as_ptr() as usize as i64, text.len() as i64, 0],
+                )
+            };
+            assert_eq!(status, STATUS_OK);
+            let roots = [source];
+            let frame = ShadowFrame {
+                previous: std::ptr::null(),
+                slots: roots.as_ptr(),
+                count: 1,
+            };
+            context.roots = &frame;
+            context.slow_path = Some(collect_on_resume);
+            let count = text.chars().count();
+            let baseline = vm.used();
+            for index in [0, 1, 255, 256, 257, count.saturating_sub(1)] {
+                let Some(expected) = text.chars().nth(index) else {
+                    continue;
+                };
+                context.remaining_steps = 4096;
+                assert_eq!(
+                    unsafe {
+                        bytes(
+                            &mut context,
+                            wings_abi::HEAP_STRING_AT,
+                            [source as i64, index as i64, 0],
+                        )
+                    },
+                    (STATUS_OK, u64::from(expected))
+                );
+                assert_eq!(vm.used(), baseline);
+            }
+            for (start, length) in [
+                (0, 0),
+                (0, count),
+                (count, 0),
+                (count.saturating_sub(1), usize::from(count > 0)),
+                (1.min(count), count.saturating_sub(2)),
+                (255.min(count), 3.min(count.saturating_sub(255))),
+            ] {
+                context.remaining_steps = 4096;
+                let (status, result) = unsafe {
+                    bytes(
+                        &mut context,
+                        wings_abi::HEAP_STRING_SLICE,
+                        [source as i64, start as i64, length as i64],
+                    )
+                };
+                assert_eq!(status, STATUS_OK);
+                assert_ne!(result, source);
+                let reference = heap.heap.import_reference(result).unwrap();
+                let expected: String = text.chars().skip(start).take(length).collect();
+                assert_eq!(
+                    heap.heap.string_bytes(reference).unwrap(),
+                    expected.as_bytes()
+                );
+                unsafe { heap.collect(context.roots) }.unwrap();
+                assert_eq!(vm.used(), baseline);
+                assert_eq!(heap.stats().allocated, 1);
+            }
+            drop(heap);
+            assert_eq!(vm.used(), Resources::default());
+        }
+    }
+
+    #[test]
+    fn string_index_and_slice_reject_bounds_budget_cancel_and_stale_types_without_output() {
+        let (vm, mut heap) = fixture(4);
+        let flag = std::sync::atomic::AtomicU32::new(0);
+        let mut context = context(&mut heap, &flag);
+        context.slow_path = Some(resume_one_step);
+        let text = "a".repeat(65536);
+        let (status, source) = unsafe {
+            bytes(
+                &mut context,
+                wings_abi::HEAP_STRING_LITERAL,
+                [text.as_ptr() as usize as i64, text.len() as i64, 0],
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        let baseline = vm.used();
+        for (operation, start, length) in [
+            (wings_abi::HEAP_STRING_AT, -1, 0),
+            (wings_abi::HEAP_STRING_AT, 65536, 0),
+            (wings_abi::HEAP_STRING_AT, i64::MAX, 0),
+            (wings_abi::HEAP_STRING_SLICE, -1, 0),
+            (wings_abi::HEAP_STRING_SLICE, 0, -1),
+            (wings_abi::HEAP_STRING_SLICE, 65536, 1),
+            (wings_abi::HEAP_STRING_SLICE, 65537, 0),
+            (wings_abi::HEAP_STRING_SLICE, i64::MAX, i64::MAX),
+        ] {
+            context.remaining_steps = 4096;
+            assert_eq!(
+                unsafe { bytes(&mut context, operation, [source as i64, start, length]) },
+                (wings_abi::STATUS_INVALID_STRING_INDEX, 79)
+            );
+            assert_eq!(vm.used(), baseline);
+        }
+        for (operation, start, length, budgets) in [
+            (wings_abi::HEAP_STRING_AT, 65535, 0, &[0, 1, 128, 255][..]),
+            (
+                wings_abi::HEAP_STRING_SLICE,
+                0,
+                65536,
+                &[0, 1, 256, 300][..],
+            ),
+        ] {
+            for steps in budgets {
+                context.remaining_steps = *steps;
+                assert_eq!(
+                    unsafe { bytes(&mut context, operation, [source as i64, start, length]) },
+                    (wings_abi::STATUS_BUDGET_EXHAUSTED, 79)
+                );
+                assert_eq!(vm.used(), baseline);
+            }
+            context.remaining_steps = 4096;
+            flag.store(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                unsafe { bytes(&mut context, operation, [source as i64, start, length]) },
+                (wings_abi::STATUS_CANCELLED, 79)
+            );
+            flag.store(0, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(vm.used(), baseline);
+        }
+        let (status, wrong_type) =
+            unsafe { bytes(&mut context, wings_abi::HEAP_FILL_BYTES, [0, 0, 0]) };
+        assert_eq!(status, STATUS_OK);
+        for operation in [wings_abi::HEAP_STRING_AT, wings_abi::HEAP_STRING_SLICE] {
+            assert_eq!(
+                unsafe { bytes(&mut context, operation, [wrong_type as i64, 0, 0]) },
+                (STATUS_INVALID_ROOT, 79)
+            );
+        }
+        unsafe { heap.collect(std::ptr::null()) }.unwrap();
+        for operation in [wings_abi::HEAP_STRING_AT, wings_abi::HEAP_STRING_SLICE] {
+            assert_eq!(
+                unsafe { bytes(&mut context, operation, [source as i64, 0, 0]) },
+                (STATUS_INVALID_ROOT, 79)
+            );
+        }
+        drop(heap);
+        assert_eq!(vm.used(), Resources::default());
+    }
+
+    #[test]
     fn string_equality_compares_contents_without_allocating_and_survives_every_gc_checkpoint() {
         let cases = [
             (String::new(), String::new(), true),

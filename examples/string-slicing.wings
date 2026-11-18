@@ -11,6 +11,7 @@ process StringSlicing {
     text = string_from_bytes(fill_bytes(65536, 97));
     string_len(text)
   }
+  on Length -> Int { string_len(text) }
   on Last -> String { string_slice(text, 65535, 1) }
   on NegativeIndex -> Int { string_at(text, -1) }
   on PastEnd -> String { string_slice(text, 5, 1) }

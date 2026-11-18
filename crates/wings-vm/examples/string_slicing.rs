@@ -2,13 +2,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wings_vm::{
-    CancellationToken, ExecutionStatus, PreemptionToken, ResourceAccount, Resources, ScalarModule,
-    StackPool,
+    CancellationToken, ExecutionFault, ExecutionPhase, ExecutionStatus, PreemptionToken,
+    ResourceAccount, Resources, ScalarModule, ScalarTask, StackPool,
 };
 
-fn limits() -> Resources {
+fn limits(bytes: u64) -> Resources {
     Resources {
-        bytes: 64 << 20,
+        bytes,
         processes: 2,
         messages: 2,
         requests: 2,
@@ -21,7 +21,7 @@ fn assert_invalid(
     baseline: Resources,
     handler: &str,
 ) -> Result<(), String> {
-    let account = tenant.process_accounted(limits())?;
+    let account = tenant.process_accounted(limits(64 << 20))?;
     let pool = StackPool::new_accounted(tenant, 1, 0)?.for_process(&account)?;
     let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
     let result = match handler {
@@ -40,11 +40,11 @@ fn main() -> Result<(), String> {
     let path = std::env::args_os()
         .nth(1)
         .ok_or("usage: string_slicing ARTIFACT")?;
-    let vm = ResourceAccount::vm_accounted(limits())?;
+    let vm = ResourceAccount::vm_accounted(limits(64 << 20))?;
     let module = unsafe { ScalarModule::load_accounted(Path::new(&path), &vm) }?;
-    let tenant = vm.tenant_accounted(limits())?;
+    let tenant = vm.tenant_accounted(limits(48 << 20))?;
     let baseline = tenant.used();
-    let account = tenant.process_accounted(limits())?;
+    let account = tenant.process_accounted(limits(64 << 20))?;
     let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
     let mut process = module.instantiate_with_heap(&pool, &account, 1024)?;
 
@@ -112,7 +112,7 @@ fn main() -> Result<(), String> {
     drop((process, pool, account));
     assert_eq!(tenant.used(), baseline);
 
-    let account = tenant.process_accounted(limits())?;
+    let account = tenant.process_accounted(limits(64 << 20))?;
     let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
     let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
     process.invoke("Fill", &[])?;
@@ -133,11 +133,52 @@ fn main() -> Result<(), String> {
     drop((process, pool, account));
     assert_eq!(tenant.used(), baseline);
 
+    for restricted in 0..3 {
+        let account = tenant.process_accounted(limits(32 << 20))?;
+        let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
+        let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
+        process.invoke("Fill", &[])?;
+        process.invoke("Sweep", &[])?;
+        assert_eq!(process.invoke("Length", &[])?, Some(65536));
+        let heap = process.heap_stats().unwrap();
+        assert_eq!(heap.allocated, 1);
+        let before = account.used();
+        let mut task = ScalarTask::new(process);
+        task.start(
+            &module.handler("Slice")?,
+            &[0, 65536],
+            1_000_000,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+            &pool,
+        )?;
+        let owner = [&account, &tenant, &vm][restricted];
+        let held = owner.reserve(Resources {
+            bytes: owner.limit().bytes - owner.used().bytes,
+            ..Resources::default()
+        })?;
+        assert_eq!(
+            task.resume(1_000_000).unwrap_err(),
+            "managed record heap exhausted"
+        );
+        let snapshot = task.snapshot().unwrap();
+        assert_eq!(snapshot.phase, ExecutionPhase::Failed);
+        assert_eq!(snapshot.fault, Some(ExecutionFault::HeapExhausted));
+        assert!(!task.is_active());
+        let after = task.heap_stats().unwrap();
+        assert_eq!(after.allocated, heap.allocated);
+        assert_eq!(after.charged_bytes, heap.charged_bytes);
+        drop(held);
+        assert_eq!(account.used(), before);
+        drop((task, pool, account));
+        assert_eq!(tenant.used(), baseline);
+    }
+
     for handler in ["NegativeIndex", "PastEnd", "NegativeLength", "Overflow"] {
         assert_invalid(&module, &tenant, baseline, handler)?;
     }
     println!(
-        "Unicode scalar indexing/slicing verified: bounds, chunk edges, 64 KiB, suspension, cancellation and cleanup"
+        "Unicode scalar indexing/slicing verified: bounds, chunk edges, 64 KiB, suspension, cancellation, three-level quota rejection and cleanup"
     );
     Ok(())
 }

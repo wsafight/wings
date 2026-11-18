@@ -7,11 +7,11 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 ## 当前决策
 
 | 编号 | 决策 | 状态 |
-| [0127](0127-accounted-string-indexing-and-slicing.md) | String 按 Unicode scalar value 索引、切片及独立计费复制 | 已采纳（业务值能力，验证中） |
+|---|---|---|
+| [0127](0127-accounted-string-indexing-and-slicing.md) | String 按 Unicode scalar value 索引、切片及独立计费复制 | 已采纳（定向 AOT 通过；完整门禁未完成） |
 | [0126](0126-bounded-resume-trace-retention.md) | 原恢复历史上限内显式丢样并完成业务，区分两类缺口 | 已采纳（有界诊断保留） |
 | [0125](0125-streamed-resume-fairness-diagnostics.md) | 独立恢复区间流、业务时钟配对与精确子集重放 | 已采纳；满额行为部分由 0126 替代 |
 | [0124](0124-bounded-scheduler-slice-observation.md) | 默认关闭的计费恢复区间 FIFO、结果计数和丢样守恒 | 已采纳（公平性诊断前置） |
-|---|---|---|
 | [0123](0123-status-only-resource-rejection.md) | 单一准入事务返回失败级别、记录回复拒绝跳过丢弃文本 | 已采纳（资源拒绝路径修正） |
 | [0122](0122-bounded-handler-lookup-diagnostics.md) | 宿主 handler 名称沿清单规则预检、有界错误来源与零分配成功路径 | 已采纳（资源拒绝路径修正） |
 | [0121](0121-persistent-cancellation-recovery.md) | 持续 Scheduler 的超时/取消、stop 竞争和一次重启强度验证 | 已采纳（持续恢复验证） |

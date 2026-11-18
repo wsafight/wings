@@ -4,7 +4,7 @@
 
 ## 项目现状
 
-- ADR-0127 新增 `string_at(String, Int) -> Int` 与 `string_slice(String, Int, Int) -> String`，按 Unicode scalar value 操作，切片独立计费；索引/长度负数、溢出和越界返回独立受管错误。ABI 升至 v22，context/EffectRequest/4352 B 预留、单值 64 KiB 与原阶段限额不变。定向 Debug/Release AOT、跨块、64 KiB、GC/取消及资源清理通过；完整 AOT 套件分别受 TCP 启动和 fairness 超时阻断，记录见 `docs/validation-string-slicing-2026-11-18.md`。完整账本、原生双平台及 BEAM 门禁仍未完成，不代表 MVP 完成。
+- ADR-0127 新增 `string_at(String, Int) -> Int` 与 `string_slice(String, Int, Int) -> String`，按 Unicode scalar value 操作，切片独立计费；索引/长度负数、溢出和越界返回独立受管错误。ABI 升至 v22，context/EffectRequest/4352 B 预留、单值 64 KiB 与原阶段限额不变。定向 Debug/Release AOT、三层配额/GC/取消、两种构建各 691 项测试及 Release 完整 AOT 通过；Debug 完整套件的 TCP/Counter/fairness 超时仍保留，记录见 `docs/validation-string-slicing-2026-11-18.md`。完整账本、原生双平台及 BEAM 门禁仍未完成，不代表 MVP 完成。
 
 - ADR-0125/0126 为原百万 checked 加法/100 突发心跳增加独立恢复区间诊断。v12 首轮约 51.65s 触及 800 万历史上限并保留失败；v13 不提高上限，分别披露 FIFO/历史丢样并继续原 30s/60s 业务。独立重放核对时钟/业务配对与可观察前缀，缺样不报完整分布；默认 AOT 不自动跑长测，原 v7/v8、ABI v21、资源和阶段限额不变，MVP 门禁仍待完成。
 

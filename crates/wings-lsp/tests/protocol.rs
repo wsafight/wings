@@ -48,6 +48,8 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
         ("string_from_bytes", "(Bytes) -> String"),
         ("string_bytes", "(String) -> Bytes"),
         ("string_len", "(String) -> Int"),
+        ("string_at", "(String, Int) -> Int"),
+        ("string_slice", "(String, Int, Int) -> String"),
         ("concat_strings", "(String, String) -> String"),
     ] {
         assert!(
@@ -57,20 +59,25 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
         );
     }
     assert!(items.iter().any(|item| item["label"] == "String"));
+    let slicing = "process P { state text: String = \"Aé😀\"; on At -> Int { string_at(text, 1) } on Part -> String { string_slice(text, 1, 2) } }";
+    assert_eq!(
+        open(&mut server, URI, 2, slicing)[0]["params"]["diagnostics"],
+        json!([])
+    );
     let messages =
         "process P { state n: Int = 0; on Set(value: String) { n = string_len(value) } }";
     assert_eq!(
-        open(&mut server, URI, 2, messages)[0]["params"]["diagnostics"],
+        open(&mut server, URI, 3, messages)[0]["params"]["diagnostics"],
         json!([])
     );
     let replies = "process P { state n: Int = 0; on Get -> String { \"\" } }";
     assert_eq!(
-        open(&mut server, URI, 3, replies)[0]["params"]["diagnostics"],
+        open(&mut server, URI, 4, replies)[0]["params"]["diagnostics"],
         json!([])
     );
     let invalid = "process P { state n: Int = 0; on Get -> String { fill_bytes(0, 0) } }";
     assert!(
-        open(&mut server, URI, 4, invalid)[0]["params"]["diagnostics"]
+        open(&mut server, URI, 5, invalid)[0]["params"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()
