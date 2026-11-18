@@ -247,7 +247,19 @@ def main():
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(aot.ROOT / name, destination)
     probe = frozen / "measure_memory"
-    memory_build = measure_memory.build(frozen / "measure_memory.c", probe)
+    memory_setup = {"status": "running"}
+    try:
+        memory_build = measure_memory.build(frozen / "measure_memory.c", probe)
+        # Setup-only preflight, same 30-second tool budget as the probe build;
+        # in-measurement snapshots keep the original 2-second deadline.
+        memory_preflight = measure_memory.snapshot(os.getpid(), probe, timeout=30)
+        memory_setup.update({"status": "ok", "command": memory_build})
+    except BaseException as error:
+        memory_setup.update({"status": "invalid_experiment", "error": str(error)})
+        raise
+    finally:
+        (output / "memory-setup.json").write_text(json.dumps(memory_setup, indent=2) + "\n")
+    (output / "memory-preflight.json").write_text(json.dumps(memory_preflight, indent=2) + "\n")
     environment = {"version": 8, "platform": platform.platform(), "machine": platform.machine(),
                    "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
                    "cpu": (subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()

@@ -326,7 +326,10 @@ def main():
     memory_setup = {"status": "running"}
     try:
         memory_build = measure_memory.build(frozen / "measure_memory.c", memory_probe)
-        memory_preflight = measure_memory.snapshot(os.getpid(), memory_probe)
+        # Setup-only: the freshly built probe's first execution can exceed the
+        # 2-second in-measurement snapshot deadline; preflight uses the same
+        # 30-second tool budget as the probe build. Measured samples keep 2s.
+        memory_preflight = measure_memory.snapshot(os.getpid(), memory_probe, timeout=30)
         memory_setup.update({"status": "ok", "command": memory_build})
     except BaseException as error:
         memory_setup.update({"status": "invalid_experiment", "error": str(error)})

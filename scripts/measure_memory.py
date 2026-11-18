@@ -122,10 +122,10 @@ def strict_object(pairs):
     return result
 
 
-def snapshot(root, probe):
+def snapshot(root, probe, timeout=2):
     before = census(root)
     started = time.monotonic_ns()
-    result = subprocess.run([str(probe), *before["processes"]], capture_output=True, timeout=2)
+    result = subprocess.run([str(probe), *before["processes"]], capture_output=True, timeout=timeout)
     if result.returncode or result.stderr or len(result.stdout) > 1 << 20:
         raise ValueError("memory probe failed or exceeded output limit")
     payload = json.loads(result.stdout, object_pairs_hook=strict_object)

@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- 2026-11-19 本机执行两项冻结长测：fairness 五对 Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、全部零超时）；hot-queue 开环 `--scan` 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，BEAM 五对全过，p99 对照仅探索性。测量工具链补 fairness 探针 preflight、两端 preflight 30s 设置期限（被测样本仍 2s）；探针首执行 0.74s/0.39s 与一次误用产物失败均保留，见 `docs/validation-fairness-measurement-2026-11-19.md`、`docs/validation-open-loop-scan-2026-11-19.md`。mailbox_full 为待定位现象，CPU 硬配额、过载分组、完整账本、原生双平台与 BEAM/MVP 门禁未完成。
+
 - ADR-0142/0143 为 AOT 验证脚本增加默认关闭的 `WINGS_TIMEOUT_SAMPLE=1`：握手失败判定后、清理前对原超时进程做独立限额（CPU 5s/墙钟 3.5s/core 0/文件 8 MiB）的原生采样，并标记采样窗口内迟到就绪；覆盖 `tcp_ready` 与八个脚本共用的 `verify_multi_counter.invoke`（含多 actor 十秒入口与 `observed_yield`），后者另在原上限内保留迟到输出。原期限、判定与默认行为不变。两组自检分别 10/11 项通过并验证真实卡死进程现场栈捕获；带采样的 Debug 完整 AOT 六轮均通过、未复现原间歇超时，不构成根因修复，历史失败保留。长测独立捕获路径未接入，完整账本、启动根因、公平/服务长测、原生双平台和 BEAM/MVP 门禁不变，见 `docs/validation-startup-timeout-sampling-2026-11-19.md` 与 `docs/validation-timeout-sampling-coverage-2026-11-19.md`。
 
 - ADR-0140 为 tcp_counter 新增显式三种 Bytes state，原 Int 模式/32 MiB/容量/期限不变；健康完整状态通过有限 Read -> Bytes 逐字节核对，失败只验原提交前缀。两种构建各 719 项/显式 42 次真实三端服务对照、工程/MSRV/Linux 交叉检查及 Release 完整 AOT 通过；Debug 完整 AOT 仍在旧 Int TCP 原五秒握手失败。默认不自动 OTP；比较失败不回退模型。首启动/BEAM badmatch 失败均保留，不把调整 socket 设置顺序当成已证明根因，范围和证据见 `docs/validation-tcp-bytes-2026-11-19.md`；完整账本、公平/过载/服务长测、启动稳定性、原生双平台和 BEAM/MVP 门禁不因此完成。
