@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0134](0134-opt-in-worker-cpu-observation.md) | 默认关闭的 worker 函数 CPU 区间、原子终态发布和独立诊断范围 | 已采纳（CPU 诊断；非性能门禁） |
 | [0133](0133-open-loop-worker-lock-diagnostics.md) | 原开环长测显式启用 worker 锁统计、join 后独立核对与两对开关诊断 | 已采纳（默认关闭；非 CPU 归因/性能门禁） |
 | [0132](0132-bounded-multi-counter-failure-evidence.md) | 多 actor 验证宿主的读时输出限额、绝对期限、用例/输入指纹和失败清理 | 已采纳（取证修正；原超时根因未定） |
 | [0131](0131-equivalent-beam-cancellation-recovery.md) | BEAM 有限请求双端生命周期、取消不撤回与独立 child 监督恢复对照 | 已采纳（恢复正确性对照） |

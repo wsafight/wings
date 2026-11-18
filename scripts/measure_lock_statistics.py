@@ -70,6 +70,29 @@ def checksum(path):
     return digest.hexdigest()
 
 
+def validate_cpu(result, enabled):
+    measure.require(type(enabled) is bool, "worker CPU observation switch")
+    if not enabled:
+        measure.require("worker_cpu_statistics" not in result, "disabled worker CPU statistics emitted")
+        return None
+    value = result.get("worker_cpu_statistics")
+    measure.require(type(value) is dict and set(value) == {"version", "scope", "metric", "after_worker_join", "workers"}, "worker CPU fields")
+    for key, expected in {"version": 1, "scope": "worker_function_including_setup_cleanup",
+                          "metric": "thread_cpu_time_not_wall", "after_worker_join": True}.items():
+        measure.require(type(value[key]) is type(expected) and value[key] == expected, f"worker CPU {key}")
+    rows = value["workers"]
+    measure.require(type(rows) is list and len(rows) == 2, "CPU worker count")
+    seen = set()
+    for row in rows:
+        measure.require(type(row) is dict and set(row) == {"worker", "status", "nanoseconds"}, "worker CPU record")
+        worker = number(row["worker"])
+        measure.require(worker < 2 and worker not in seen, "CPU worker identity")
+        seen.add(worker)
+        measure.require(row["status"] == "ok", "worker CPU unavailable or incomplete")
+        measure.require(number(row["nanoseconds"]) <= (1 << 64) - 3, "worker CPU encoding overflow")
+    return value
+
+
 def verify_inputs(frozen, inputs):
     for name, expected in inputs.items():
         measure.require(checksum(frozen / name) == expected, f"frozen lock diagnostic input changed: {name}")
@@ -119,6 +142,7 @@ def prepare(artifact, output):
         "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120,
                    "trace_bytes": measure.MAX_TRACE, "observed_rss_safety_bytes": 1 << 30},
         "scope": "whole scheduler lifetime including initialization and cleanup; joined workers; wall time, not CPU",
+        "worker_cpu_scope": "only worker function including its setup and cleanup; excludes timer/generator and OS thread startup/teardown",
         "missing_gates": ["CPU hard quota and attribution", "host isolation and monitoring bias", "overload/service I/O races",
                           "complete memory", "native dual-platform", "BEAM throughput and memory acceptance"],
     }
@@ -146,6 +170,7 @@ def run(output):
                 def validate(path, case, rate, result):
                     summary = measure.validate_trace(path, case, rate, result)
                     summary["worker_lock_statistics"] = validate_statistics(result, enabled)
+                    summary["worker_cpu_statistics"] = validate_cpu(result, enabled)
                     summary["performance_or_memory_gate_proven"] = False
                     return summary
 

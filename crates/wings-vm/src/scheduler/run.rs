@@ -31,6 +31,10 @@ pub(super) fn worker(
     index: usize,
     ready: mpsc::SyncSender<Result<(), String>>,
 ) {
+    let _cpu = shared
+        .lock_observations
+        .get(index)
+        .map(|observer| observer.cpu.begin());
     let _exit = WorkerExit(shared.clone());
     let preemption = shared
         .observations

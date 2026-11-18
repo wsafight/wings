@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 为既有可选 worker 锁统计增加线程 CPU 区间，只有 worker 入口/退出读取本线程时钟，单原子发布诊断终态；默认关闭，不改执行 ABI 或业务路径。范围和不可归因部分见 [runtime](runtime.md) 及[验证记录](validation-worker-cpu-2026-11-18.md)。
+
 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 在独立 OTP 对照端使用持续有限请求适配器和按 child 的监督分支，验证与 Wings 相同的取消/恢复业务。所有适配/监督进程计入 BEAM 作业；没有引入 VM 运行依赖或改变受管 ABI。
 
 [ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 在默认关闭的诊断模式记录每次 Scheduler 恢复调用的墙钟区间；它与原子请求到切回的观测分开，不改变受管 ABI、执行预算或调度顺序。时间边界和未覆盖范围见 [runtime](runtime.md) 与[验证记录](validation-scheduler-slices-2026-11-18.md)。

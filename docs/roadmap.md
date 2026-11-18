@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 补第 5/7 项诊断的 worker 线程 CPU 区间，默认关闭、先计费、join 后区分实际值与缺失。它不含 timer/发生器、不作锁内 CPU 归因，也不关闭原生双平台、完整账本或 BEAM/MVP 门禁；状态见[记录](validation-worker-cpu-2026-11-18.md)。
+
 [ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为第 5/7 项接同负载长测锁诊断，在 worker join 后核对累计与业务数量，不改变 VM 或预算。它只推进定位后续优化的证据，不能关闭 CPU 归因、完整内存、原生双平台或 BEAM/MVP 门禁，实际状态见[记录](validation-open-loop-locks-2026-11-18.md)。
 
 [ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 为第 6 项诊断补 v2 子进程的有界 I/O、输入/用例身份与失败双流证据，保持原业务与期限。实际专项见[记录](validation-multi-counter-evidence-2026-11-18.md)，它没有修复或关闭启动稳定性、完整资源账本、原生双平台和 BEAM/MVP 门禁。

@@ -12,6 +12,7 @@ use crate::{
     ScalarModule, StackPool,
 };
 
+mod cpu;
 mod locks;
 mod ready;
 mod run;
@@ -19,6 +20,7 @@ mod slices;
 mod state;
 mod supervisor;
 mod yields;
+pub use cpu::SchedulerWorkerCpu;
 pub use locks::{SchedulerLockMetrics, SchedulerLockStatistics};
 pub use slices::{SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics};
 pub use supervisor::{

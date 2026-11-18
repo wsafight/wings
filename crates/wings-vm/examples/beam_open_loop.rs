@@ -110,7 +110,7 @@ fn lock_metrics(metrics: SchedulerLockMetrics) -> Result<Value, String> {
     )
 }
 
-fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<Value, String> {
+fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<(Value, Value), String> {
     let expected = committed
         .iter()
         .try_fold(committed.len() as u64, |total, value| {
@@ -120,6 +120,7 @@ fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<Value,
     let mut starts = 0u64;
     let mut finishes = 0u64;
     let mut workers = Vec::with_capacity(2);
+    let mut cpu_workers = Vec::with_capacity(2);
     for worker in 0..2 {
         let stats = handle
             .lock_statistics(worker)?
@@ -138,14 +139,22 @@ fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<Value,
             "start": lock_metrics(stats.start)?, "snapshot": lock_metrics(stats.snapshot)?,
             "finish": lock_metrics(stats.finish)?}),
         );
+        let (status, nanoseconds) = match stats.worker_cpu {
+            wings_vm::SchedulerWorkerCpu::Pending => ("pending", None),
+            wings_vm::SchedulerWorkerCpu::Unavailable => ("unavailable", None),
+            wings_vm::SchedulerWorkerCpu::Nanoseconds(value) => ("ok", Some(value)),
+        };
+        cpu_workers.push(json!({"worker": worker, "status": status, "nanoseconds": nanoseconds}));
     }
     if starts != expected || finishes != expected {
         return Err("open-loop lock handler count mismatch".into());
     }
-    Ok(
+    Ok((
         json!({"version": 1, "scope": "whole_scheduler_lifetime", "metric": "wall_time_not_cpu",
         "after_worker_join": true, "workers": workers}),
-    )
+        json!({"version": 1, "scope": "worker_function_including_setup_cleanup",
+        "metric": "thread_cpu_time_not_wall", "after_worker_join": true, "workers": cpu_workers}),
+    ))
 }
 
 impl Workload {
@@ -509,8 +518,9 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         "states_verified": true, "resources_released": true,
         "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
         "environment": {"runtime": "wings", "workers": 2}});
-    if let Some(statistics) = statistics {
+    if let Some((statistics, cpu)) = statistics {
         output["worker_lock_statistics"] = statistics;
+        output["worker_cpu_statistics"] = cpu;
     }
     Ok(output)
 }

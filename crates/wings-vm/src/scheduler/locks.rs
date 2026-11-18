@@ -17,6 +17,7 @@ pub struct SchedulerLockMetrics {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SchedulerLockStatistics {
+    pub worker_cpu: super::SchedulerWorkerCpu,
     pub claim: SchedulerLockMetrics,
     pub start: SchedulerLockMetrics,
     pub snapshot: SchedulerLockMetrics,
@@ -43,6 +44,7 @@ struct Counters {
 
 #[derive(Default)]
 pub(super) struct WorkerLockObservation {
+    pub(super) cpu: super::cpu::WorkerCpuObservation,
     phases: [Counters; 4],
 }
 
@@ -100,6 +102,7 @@ impl Counters {
 impl WorkerLockObservation {
     pub(super) fn snapshot(&self) -> SchedulerLockStatistics {
         SchedulerLockStatistics {
+            worker_cpu: self.cpu.snapshot(),
             claim: self.phases[LockPhase::Claim as usize].snapshot(),
             start: self.phases[LockPhase::Start as usize].snapshot(),
             snapshot: self.phases[LockPhase::Snapshot as usize].snapshot(),
@@ -276,7 +279,21 @@ mod tests {
             let handle = scheduler.handle();
             assert!(handle.lock_statistics(2).is_err());
             assert_eq!(handle.lock_statistics(0).unwrap().is_some(), enabled);
+            if let Some(statistics) = handle.lock_statistics(0).unwrap() {
+                assert_eq!(
+                    statistics.worker_cpu,
+                    super::super::SchedulerWorkerCpu::Pending
+                );
+            }
             drop(scheduler);
+            for worker in 0..2 {
+                if let Some(statistics) = handle.lock_statistics(worker).unwrap() {
+                    assert!(matches!(
+                        statistics.worker_cpu,
+                        super::super::SchedulerWorkerCpu::Nanoseconds(_)
+                    ));
+                }
+            }
             for (worker, phase) in [
                 (0, LockPhase::Start),
                 (1, LockPhase::Snapshot),

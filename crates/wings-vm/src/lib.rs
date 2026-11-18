@@ -61,7 +61,7 @@ pub use scheduler::{
     SchedulerHandle, SchedulerLockMetrics, SchedulerLockStatistics, SchedulerPid,
     SchedulerRestartStatus, SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics,
     SchedulerSnapshot, SchedulerSupervisor, SchedulerSupervisorEvent, SchedulerTermination,
-    SchedulerYieldSample, SchedulerYieldStatistics,
+    SchedulerWorkerCpu, SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use string_reply::StringReply;

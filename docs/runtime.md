@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 在已有默认关闭的锁诊断区中，为每 worker 保留固定原子 CPU 终态。观测只覆盖 worker 函数内初始化/运行/清理的本线程 CPU；不含 deadline timer、宿主发生器、OS 线程启动退出，也不是持锁或六十秒采样期 CPU。Pending/Unavailable 不当零值，join 后跨线程读取及末 handle 计费生命周期见[验证记录](validation-worker-cpu-2026-11-18.md)。
+
 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 为既有恢复契约补 BEAM 对照：有限票据在 caller 结束且 publisher 实际回复/退出后才归还，取消不能撤回 Fail。OTP 为每个目标 child 单设监督分支，使一次/60s 强度耗尽不牵连健康 sibling；这只是对照适配，不改变 Wings 运行协议或账本。
 
 ABI v22 的 String HeapCall 增加 Unicode scalar value 索引和切片：扫描/复制分块检查预算、取消与让出，切片准入独立 UTF-8 buffer，越界通过独立状态码返回。固定 scratch、控制预留、最大编码长度、compiler 根和提交规则不变，细节见 [ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md)。

@@ -1,5 +1,7 @@
 # BEAM 工作负载协议 v1–v11
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 仅在 Wings 原独立 `--observe-locks` 诊断输出 worker 函数 CPU 区间；v6 业务、事件和 BEAM 不变。冻结驱动核对两个 join 后的实际终态，缺失使诊断失效；范围与结果见[记录](validation-worker-cpu-2026-11-18.md)，不代表两端性能验收。
+
 本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。
 
 ## 已执行的最小业务

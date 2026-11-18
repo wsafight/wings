@@ -10,6 +10,8 @@
 
 ## 实验约定
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 在原可选锁诊断中补 worker 函数 CPU 区间，只读入口/退出本线程时钟，默认关闭。它不含 timer/发生器，也不是锁内 CPU；不能把此前持锁墙钟当作 CPU 百分比。实际验证见[记录](validation-worker-cpu-2026-11-18.md)，不能据此跳过同业务配对消融。
+
 [ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 将既有四阶段锁统计接入同业务开环：只在显式 90s 长测开启，join 后校验全部 worker/handler 数；两对反序用于观察开销。它补锁路径的实际累计，仍不是 CPU 归因，也不自动授权恢复此前回退的通知/空表优化，结果见[记录](validation-open-loop-locks-2026-11-18.md)。
 
 [2026-11-18 原生采样](validation-hotqueue-profile-2026-11-18.md) 中，hot-queue 10000 次/秒的 worker 主要等待，80000 次/秒增加广播、通知、锁及请求维护栈样本，但仍有大量等待和发生器迟发，且队满/预热超时保留。下一项候选须先做这些路径的时序与 CPU 归因，不把墙钟栈样本当调用次数或 CPU 百分比，也不凭此恢复已回退的通知/空表优化。

@@ -95,6 +95,10 @@ fn run(directory: &Path, workers: usize, enabled: bool) -> Result<Value, String>
                 rows.push(json!({"worker": worker,
                     "claim": metrics(value.claim)?, "start": metrics(value.start)?,
                     "snapshot": metrics(value.snapshot)?, "finish": metrics(value.finish)?,
+                    "worker_cpu_ns": match value.worker_cpu {
+                        wings_vm::SchedulerWorkerCpu::Nanoseconds(value) => Some(value),
+                        _ => None,
+                    },
                 }));
             }
             None if !enabled => {}

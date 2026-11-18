@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 为默认关闭的 worker 锁诊断增加线程 CPU 区间，独立核对所有 worker 的 join 后终态。范围包括 worker 内初始化/清理，排除 timer/发生器与 OS 线程启动退出；它不是锁内或采样期 CPU，不与持锁墙钟相除做归因，实际验证见[记录](validation-worker-cpu-2026-11-18.md)。
+
 [ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为原 hot-queue 80000/s 长测提供两对统计开关诊断：固定业务/事件与 30s/60s 阶段，worker join 后独立核对累计锁区间和全部 handler 数。统计含初始化/预热/收尾，非 CPU/单独采样区间；范围和实际结果见[记录](validation-open-loop-locks-2026-11-18.md)，不改 BEAM 双门禁或默认完整 AOT 的执行时段。
 
 [ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 修正 v2 宿主在完整退出后才限输出、超时又丢弃证据的问题。现有 1 MiB/64 KiB 上限改为读时执行，原三秒业务阶段和十秒子进程期限保持；新七项受限测试与真实三端专项见[记录](validation-multi-counter-evidence-2026-11-18.md)。原完整 Debug 失败保留，未捕获原进程栈或确定启动根因。

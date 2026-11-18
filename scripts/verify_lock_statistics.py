@@ -19,7 +19,50 @@ def model():
         "after_worker_join": True, "workers": workers}}
 
 
+def cpu_model():
+    return {"worker_cpu_statistics": {"version": 1, "scope": "worker_function_including_setup_cleanup",
+        "metric": "thread_cpu_time_not_wall", "after_worker_join": True,
+        "workers": [{"worker": worker, "status": "ok", "nanoseconds": 10} for worker in (0, 1)]}}
+
+
 class LockStatistics(unittest.TestCase):
+    def test_cpu_switch_scope_and_version_are_explicit(self):
+        value = cpu_model()
+        self.assertEqual(diagnostic.validate_cpu(value, True), value["worker_cpu_statistics"])
+        self.assertIsNone(diagnostic.validate_cpu({}, False))
+        for result, enabled in ((value, False), ({}, True), (value, 1)):
+            with self.assertRaises(ValueError):
+                diagnostic.validate_cpu(result, enabled)
+        for key, forged in (("version", True), ("version", 2), ("scope", "whole_process"),
+                            ("metric", "wall_time"), ("after_worker_join", False), ("after_worker_join", 1)):
+            value = cpu_model()
+            value["worker_cpu_statistics"][key] = forged
+            with self.assertRaises(ValueError):
+                diagnostic.validate_cpu(value, True)
+
+    def test_cpu_missing_foreign_or_duplicate_workers_are_rejected(self):
+        for identity in (0, 2, True, -1):
+            value = cpu_model()
+            value["worker_cpu_statistics"]["workers"][1]["worker"] = identity
+            with self.assertRaises(ValueError):
+                diagnostic.validate_cpu(value, True)
+        for count in (0, 1, 3):
+            value = cpu_model()
+            value["worker_cpu_statistics"]["workers"] = (value["worker_cpu_statistics"]["workers"] * 2)[:count]
+            with self.assertRaises(ValueError):
+                diagnostic.validate_cpu(value, True)
+
+    def test_cpu_unavailable_or_incomplete_is_not_zero(self):
+        for status, nanoseconds in (("pending", None), ("unavailable", None), ("ok", None),
+                                    ("ok", True), ("ok", -1), ("ok", (1 << 64) - 2), ("ok", 1 << 64)):
+            value = cpu_model()
+            value["worker_cpu_statistics"]["workers"][0].update({"status": status, "nanoseconds": nanoseconds})
+            with self.assertRaises(ValueError):
+                diagnostic.validate_cpu(value, True)
+        value = cpu_model()
+        value["worker_cpu_statistics"]["workers"][0]["nanoseconds"] = 0
+        diagnostic.validate_cpu(value, True)
+
     def test_enabled_and_disabled_are_explicit(self):
         value = model()
         self.assertEqual(diagnostic.validate_statistics(value, True), value["worker_lock_statistics"])

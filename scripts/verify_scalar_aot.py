@@ -1199,12 +1199,13 @@ def main():
             validate_resource_receipt(case)
             assert len(case["statistics"]) == (case["workers"] if case["enabled"] else 0)
             for worker in case["statistics"]:
+                assert type(worker["worker_cpu_ns"]) is int and 0 <= worker["worker_cpu_ns"] <= (1 << 64) - 3
                 for phase in ("claim", "start", "snapshot", "finish"):
                     values = worker[phase]
                     assert values["saturated"] is False
                     assert 0 <= values["max_wait_ns"] <= values["wait_ns"]
                     assert 0 <= values["max_held_ns"] <= values["held_ns"]
-        print("Optional worker lock statistics verified: one/two worker real AOT, equal state/failure, stopped counts and cleanup; not CPU or performance acceptance")
+        print("Optional worker diagnostics verified: one/two worker real AOT, equal state/failure, stopped lock counts, joined thread CPU and cleanup; not full CPU attribution or performance acceptance")
         for count in (16, 64, 256):
             density = json.loads(example("scheduler_density", counter, count).stdout)
             assert density["actors"] == count and density["workers"] == 2
