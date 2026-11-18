@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0141](docs/adr/0141-bounded-allocator-failure-injection.md) 在 OS 受限测试子进程注入 18 次真实 Rust 分配 null，核对堆/根/调用/消息/回复的回滚、一次 GC 重试和健康 actor 进展；不触发宿主 OOM，不更换生产分配器。实际结果见[验证](docs/validation-allocator-failures-2026-11-19.md)，不等于完整 allocator/原生账本或 MVP 通过。
+
 [ADR-0140](docs/adr/0140-bytes-tcp-service-equivalence.md) 将受限 TCP 示例扩展至完整 256 B/4 KiB/64 KiB Bytes 状态，并提供显式 Wings/BEAM/Python 同业务正确性对照；不改变旧 Int 模式或原容量/期限。健康状态逐字节验收，失败仅核对已提交前缀，实际结果见[验证](docs/validation-tcp-bytes-2026-11-19.md)，不是吞吐/内存门禁。
 
 [ADR-0139](docs/adr/0139-regular-file-manifest-loading.md) 为清单读取增加普通文件与长度检查，拒绝 FIFO 等特殊目标；保留普通文件符号链接，按固定长度读取并核对失败退账。修改前阻塞与实际回归见[验证](docs/validation-manifest-loading-2026-11-18.md)，不是既有 TCP 启动超时修复或完整账本验收。

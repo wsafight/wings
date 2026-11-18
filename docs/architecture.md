@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 只为独立验证示例包装 Rust System allocator，在已有 fallible 路径返回有限次 null；生产 VM、ABI 和分配模型不变。固定/AOT 堆、参数、消息和回复的失败清理见[记录](validation-allocator-failures-2026-11-19.md)，不承诺 infallible Arc/Box 或系统全局 OOM 的进程内恢复。
+
 [ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 沿原受限 TCP 适配器增加显式 Bytes 状态模式，调用同一 AOT worker/有限 ingress，保留旧 Int 模式与原额度。独立 OTP 服务用于同业务逐条正确性核对，不引入通用 reactor 或新运行后端；范围和实际证据见[验证](validation-tcp-bytes-2026-11-19.md)。
 
 [ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 为宿主 worker/timer 增加原生启动栈边界核对，macOS/Linux 分别查询 pthread 的当前可用范围；沿既有控制发布启动结果和失败 join，不改 ABI/业务栈池。原生范围不是完整 mapping/资源账本，实际证据见[记录](validation-native-thread-stacks-2026-11-18.md)。

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 为准入/清理加入实际 allocator null 注入，而不是只把账户填满。18 次拒绝只在 CPU 20s/墙钟 30s/core 0 子进程执行，覆盖固定/AOT 堆、根、参数重试、GC 一次重试/耗尽、宿主消息和候选回复；失败点、根基线、旧状态、健康进展及原启动诊断见[记录](validation-allocator-failures-2026-11-19.md)。它不注入系统全局 OOM，也不替代完整账本或 BEAM 双门禁。
+
 [ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 新增真实 loopback 的完整 Bytes Counter 对照：三种状态分别在分片/流水线、跨连接、候选失败、正负溢出、非法帧与 8×64 上限下逐条比独立 Python 模型。仅显式 `--compare-beam` 执行 OTP；两端零超时正确性不替代开环/长测/CPU/整机内存门禁，证据和失败见[记录](validation-tcp-bytes-2026-11-19.md)。
 
 [ADR-0139](adr/0139-regular-file-manifest-loading.md) 验证清单普通文件、64 KiB 精确边界、特殊对象及符号链接目标；FIFO 修改前阻塞只在 OS 受限子进程复现并保留原生采样。计费/工具入口及真实 CLI 的拒绝退账和成功执行见[记录](validation-manifest-loading-2026-11-18.md)，不归因既有启动超时，也不替代原生双平台或 BEAM/MVP 门禁。

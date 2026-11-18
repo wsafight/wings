@@ -1365,6 +1365,10 @@ def main():
         command([COMPILER, "build", ROOT / "examples/tcp-bytes-counter.wings", "-o", tcp_bytes])
         from verify_tcp_bytes import verify as verify_tcp_bytes
         verify_tcp_bytes(tcp_bytes, parent / "tcp-bytes-evidence")
+        allocation_artifact = parent / "allocation-failures"
+        command([COMPILER, "build", ROOT / "examples/allocation-failures.wings", "-o", allocation_artifact])
+        from verify_allocation_failures import verify as verify_allocation_failures
+        verify_allocation_failures(allocation_artifact, parent / "allocation-failure-evidence")
         command([TARGET / PROFILE / "examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)

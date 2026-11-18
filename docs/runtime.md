@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 用 OS 受限独立示例验证分配器返回 null 与配额拒绝的区别：构造/参数/宿主消息拒绝前无发布，已执行的受管 buffer 连续失败正常退为 HeapExhausted，旧提交仍保留且健康 actor 可运行；一次失败沿既有 GC 重试。实际范围见[记录](validation-allocator-failures-2026-11-19.md)，不扩大运行时故障保证或把 Rust 请求存储当 RSS。
+
 [ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 为 tcp_counter 增加 `--state-bytes 256|4096|65536`，保留原 Int 模式、固定资源与期限。Bytes 配置/健康最终完整读取通过计费堆和有限请求；失败出口只验原长度/32 B 前缀并显式不宣称完整导出。OTP 对照使用同 32 B socket 业务及有限发送 gate，但不把无超时短测当作完整过载/取消等价，实际证据见[验证](validation-tcp-bytes-2026-11-19.md)。
 
 [ADR-0139](adr/0139-regular-file-manifest-loading.md) 在共享清单读取中拒绝特殊文件，并在固定长度读取前核对路径/句柄元数据；计费加载仍先预留控制和库预算，拒绝时原租约完整退账。普通文件符号链接保持兼容，可信产物/路径不变仍是前提，不将元数据检查称为文件替换沙箱或加载时间硬上界，实际证据见[验证](validation-manifest-loading-2026-11-18.md)。
