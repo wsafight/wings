@@ -14,9 +14,24 @@ BEAM 使用真实 CAS mailbox、有限票据适配器和 OTP supervisor；独立
 - 最终 Debug/Release 真实短回归均在一/双 worker 与 BEAM 一/双 scheduler 下各三轮通过。已有 trace 不覆盖，未知参数、非法 worker 数和 scheduler 不一致均在创建 trace 前拒绝；默认入口仍无 OTP 依赖。各次短测使用原 CPU 5s/墙钟 10s/core 0 和三秒轮期限。
 - `cargo check --workspace --locked`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all -- --check` 通过；183 份 Markdown 的相对链接/围栏和全部 Python 脚本语法通过。
 - Release 完整 `verify_scalar_aot.py` 一次通过，包含本切片默认 Wings/两端模型。Debug 完整套件在既有 `verify_multi_counter.py` 的 `beam_multi_counter` 原十秒子进程期限超时，尚未执行到本切片区块；没有放宽期限或重试来替代失败。本次没有捕获该进程原生栈，不能认定为历史 TCP 动态加载停顿的相同根因。
-- 显式冻结 900 轮双端长测尚待执行并另行记录。
+- 显式冻结双端一/双配置各 900 轮通过；每配置完整 300 轮预热/600 轮采样，共 3600 轮，没有缺轮、重试或增加任何原限制。
 
 最终短测证据为 `target/beam-recovery-short-debug-final-20261118/`、`target/beam-recovery-short-release-20261118/`，各有两端一/双配置的独立 `run.json`、控制输出、stderr、RSS 安全观测及三轮 trace。全量日志为 `/tmp/wings-beam-recovery-full-aot-{debug,release}-20261118.log`。初次开发证据为 `target/beam-recovery-development-20261118/` 和 `target/beam-recovery-short-debug-20261118/`；它们保留自己的源码阶段，不与最终冻结结果混用。
+
+## 冻结长测结果
+
+基于提交 `ae5706d77a517f9dde6ba2fbd4c7fd1d7f8a3862`，冻结 487 个源码/运行端/产物文件，分别在每轮前后与最终独立重放时核对全部 SHA。证据目录为 `target/beam-recovery-paired-macos-20261118/`，包含 `environment.json`、四份 `run.json`/原始 trace/控制输出/错误与 RSS 安全日志，汇总为 `report.json`；控制台日志为 `/tmp/wings-beam-recovery-soak-20261118.log`。
+
+| 运行端 | worker/scheduler | 预热/采样轮数 | 实际业务区间 | 最长整轮 | trace 字节 |
+|---|---:|---:|---:|---:|---:|
+| Wings | 1 | 300/600 | 90.002s | 32.164ms | 1671739 |
+| BEAM | 1 | 300/600 | 90.001s | 2.676ms | 1610548 |
+| Wings | 2 | 300/600 | 90.001s | 16.854ms | 1671310 |
+| BEAM | 2 | 300/600 | 90.000s | 3.573ms | 1611550 |
+
+整轮包含排队、结果消费、停止、两次失败/监督与清理；本表只核对原三秒轮期限，不能当作请求延迟或吞吐比较。四份 trace 各核对 7196 次旧身份失效、900 次自动重启与 900 次强度耗尽。共核对 57600 条 Add 的唯一结果和 7200 次真实 Fail：已取消/超时不撤回消息，候选 99 不提交，健康 sibling 保持 +7。stop 竞争的 Cancelled/Failed 分布允许两端不同；每个请求仍只消费一次。
+
+两份 Wings 最终资源回到原启动基线，BEAM 实际协议槽全部释放且 actor/发送者/监督与适配器结束。四轮均保留 `persistent_recovery_lifecycle_pass=true`，同时 `complete_concurrent_fault_gate_proven=false`、`performance_or_memory_gate_proven=false`。只有每配置一轮正确性长测；没有五对吞吐验收、CPU 带宽配额或完整平台内存。长测期间另外开展的 v2 取证宿主修改不在此冻结副本中，也没有替换运行端或重放本轮失败。
 
 ## 复现与边界
 

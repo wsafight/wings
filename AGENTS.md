@@ -4,7 +4,7 @@
 
 ## 项目现状
 
-- ADR-0131 增加真实 OTP 29 的有限请求和取消/恢复对照：票据保留至 caller 消费且 publisher 实际回复/退出，取消 Fail 仍实际除零；每目标独立 OTP 监督分支保留一次/60s 的按 child 强度范围，健康 sibling 不受牵连。Debug/Release 两端一/双 worker 或 scheduler 各三轮、75 组伪造拒绝、CLI 拒绝与 Release 完整 AOT 通过；本轮 Debug 完整 AOT 的既有多 actor 子进程在原 10s 超时，证据保留。显式双端 30s/60s 长测另记，ABI v22/容量/原限不变，完整账本、过载/服务 I/O、原生双平台与 BEAM/MVP 门禁仍未完成，见 `docs/validation-beam-recovery-2026-11-18.md`。
+- ADR-0131 增加真实 OTP 29 的有限请求和取消/恢复对照：票据保留至 caller 消费且 publisher 实际回复/退出，取消 Fail 仍实际除零；每目标独立 OTP 监督分支保留一次/60s 的按 child 强度范围，健康 sibling 不受牵连。Debug/Release 两端一/双配置各三轮、75 组伪造拒绝、CLI 拒绝与 Release 完整 AOT 通过；冻结 ae5706d 的双端一/双配置各 900 轮、30s/60s 与独立重放通过，共 3600 轮。本轮 Debug 完整 AOT 的既有多 actor 子进程在原 10s 超时，证据保留；ABI v22/容量/原限不变，完整账本、过载/服务 I/O、原生双平台与 BEAM/MVP 门禁仍未完成，见 `docs/validation-beam-recovery-2026-11-18.md`。
 
 - ADR-0130 为计划开环和 CPU/心跳长测增加可选成对 CPU quota/period 参数，只读核对预配置的独占 Linux cgroup v2 leaf domain；范围含 driver、runtime 和 probe helper，记录祖先配置/成员/策略/cpu.stat 并在变化时保留失败。无参数保持原探索模式，不写/创建/迁移 cgroup、不提高任何业务/时间/资源上限。十项模型、原 Wings/BEAM 长测入口回归与 macOS 早拒绝通过；原生 Linux 执行/节流、观测偏差和 CPU/MVP 门禁仍未验证，见 `docs/validation-cpu-quota-2026-11-18.md`。
 
