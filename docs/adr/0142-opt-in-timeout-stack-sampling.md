@@ -26,4 +26,4 @@ Debug 完整 AOT 的 TCP normal 场景反复在原五秒握手期限失败（ela
 
 ## 范围与限制
 
-这是取证能力，不是根因修复。采样在失败判定之后执行，不能回溯超时前的完整历史；报告是被采样时刻的原生栈快照，可能同时包含工具扰动。其他期限入口（多 actor 十秒入口、`observed_yield` 等）本轮未接入。实际捕捉结果见[验证记录](../validation-startup-timeout-sampling-2026-11-19.md)；完整资源账本、公平/过载/服务长测、原生双平台与 BEAM/MVP 门禁均不因本切片完成。
+这是取证能力，不是根因修复。采样在失败判定之后执行，不能回溯超时前的完整历史；报告是被采样时刻的原生栈快照，可能同时包含工具扰动。共享 `invoke` 入口的覆盖由 [ADR-0143](0143-shared-invoke-timeout-sampling.md) 扩展。实际捕捉结果见[验证记录](../validation-startup-timeout-sampling-2026-11-19.md)；完整资源账本、公平/过载/服务长测、原生双平台与 BEAM/MVP 门禁均不因本切片完成。

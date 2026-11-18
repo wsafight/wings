@@ -127,6 +127,25 @@ def invoke(command, payload, *, label="unspecified", timeout=10):
         failed = True
         elapsed = time.monotonic() - started
         status = child.poll() if child is not None else None
+        sampling = None
+        late_output = None
+        if child is not None and aot.TIMEOUT_SAMPLE:
+            sampling = aot.sample_timeout_stacks(child, label="multi-counter")
+            before_drain = dict(observed)
+            # Bounded non-blocking drain: output produced while the sampler ran
+            # is retained under the original caps instead of being silently lost.
+            for name in streams:
+                try:
+                    while True:
+                        block = os.read(getattr(child, name).fileno(), 65536)
+                        if not block:
+                            complete[name] = True
+                            break
+                        observed[name] += len(block)
+                        streams[name].extend(block[:max(0, maximum[name] - len(streams[name]))])
+                except (BlockingIOError, OSError, ValueError):
+                    pass
+            late_output = {name: observed[name] - before_drain[name] for name in streams}
         if child is not None:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
@@ -147,6 +166,9 @@ def invoke(command, payload, *, label="unspecified", timeout=10):
             evidence[f"{name}_eof"] = complete[name]
             evidence[f"{name}_prefix"] = streams[name][:1024].decode("utf-8", errors="backslashreplace")
             evidence[f"{name}_prefix_truncated"] = observed[name] > 1024
+        if sampling is not None:
+            evidence["timeout_sampling"] = sampling
+            evidence["output_bytes_during_sampling"] = late_output
         raise RuntimeError("multi Counter capture failed: " + json.dumps(evidence, ensure_ascii=True)) from error
     finally:
         selector.close()

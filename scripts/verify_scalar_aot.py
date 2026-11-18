@@ -254,7 +254,7 @@ def verify_cli_stdio(directory):
     print("Owned CLI stdio verified: scalar/heap replies before EOF, broken output and read errors; not complete host accounting")
 
 
-def sample_timeout_stacks(child):
+def sample_timeout_stacks(child, label="tcp-ready"):
     """Bounded native sampling of a process that already exceeded the readiness
     deadline. The failure verdict and elapsed time are decided before this runs
     and are never extended; the sampler has its own CPU/wall/file limits and
@@ -263,7 +263,8 @@ def sample_timeout_stacks(child):
         return "sample_skipped=already exited before sampling"
     output = TARGET / "startup-samples"
     output.mkdir(parents=True, exist_ok=True)
-    destination = output / f"tcp-ready-{os.getpid()}-{time.time_ns()}.txt"
+    safe_label = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40] or "process"
+    destination = output / f"{safe_label}-{os.getpid()}-{time.time_ns()}.txt"
     try:
         result = subprocess.run(
             ["/usr/bin/sample", str(child.pid), "2", "-mayDie", "-file", str(destination)],

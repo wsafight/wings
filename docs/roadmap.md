@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0143](adr/0143-shared-invoke-timeout-sampling.md) 将 ADR-0142 的默认关闭超时采样扩展到八个脚本共用的 `verify_multi_counter.invoke`（含多 actor 十秒入口与 `observed_yield`），并在原上限内保留采样窗口内迟到的输出；默认证据形状与期限不变。实测见[记录](validation-timeout-sampling-coverage-2026-11-19.md)，长测独立捕获路径未接入，启动根因与其余 MVP 门禁不变。
+
 [ADR-0142](adr/0142-opt-in-timeout-stack-sampling.md) 为第 5/6 项的启动稳定性补取证入口：`verify_scalar_aot.py` 默认关闭的 `WINGS_TIMEOUT_SAMPLE=1` 在握手失败判定之后、清理之前，对原超时进程做独立限额的原生采样并保留迟到就绪证据。判定/期限/默认行为不变；它只是诊断，不关闭启动根因、完整账本、公平/服务长测、原生双平台或 BEAM/MVP 门禁。实测见[记录](validation-startup-timeout-sampling-2026-11-19.md)。
 
 [ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 推进第 4/6 项的真实分配拒绝：有界测试 allocator 返回 null 后核对构造回滚、未发布参数/消息重试、受管 GC 重试/失败、候选不提交和健康 actor 进展。范围和实测见[记录](validation-allocator-failures-2026-11-19.md)；完整原生账本、启动稳定性、公平/服务长测、原生双平台和 BEAM/MVP 门禁保持。

@@ -2,12 +2,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import time
 import unittest
 
 import verify_multi_counter as counter
+import verify_scalar_aot as aot
 
 
 class MultiCounterCapture(unittest.TestCase):
@@ -94,6 +96,51 @@ class MultiCounterCapture(unittest.TestCase):
             with self.subTest(timeout=timeout):
                 with self.assertRaises(ValueError):
                     self.invoke("raise SystemExit(99)", payload, timeout)
+
+    def sampled_failure(self, source, timeout=0.2):
+        previous = aot.TIMEOUT_SAMPLE
+        aot.TIMEOUT_SAMPLE = True
+        self.addCleanup(setattr, aot, "TIMEOUT_SAMPLE", previous)
+        started = time.monotonic()
+        with self.assertRaises(RuntimeError) as raised:
+            self.invoke(source, timeout=timeout)
+        self.assertLess(time.monotonic() - started, timeout + 6)
+        result = json.loads(str(raised.exception).removeprefix("multi Counter capture failed: "))
+        self.assertEqual(result["label"], "capture-test")
+        self.assertIsNotNone(result["exit_after_cleanup"])
+        return result
+
+    def test_timeout_sampling_is_absent_by_default(self):
+        result = self.failure("import time; time.sleep(10)", timeout=0.2)
+        self.assertNotIn("timeout_sampling", result)
+
+    def test_timeout_sampling_captures_a_live_stuck_process(self):
+        result = self.sampled_failure("import time; time.sleep(10)")
+        sampling = result["timeout_sampling"]
+        self.assertIn("sample_exit=0", sampling)
+        match = re.search(r"sample_file=([^;]+); sample_bytes=(\d+)", sampling)
+        self.assertIsNotNone(match, sampling)
+        self.assertGreater(int(match.group(2)), 0)
+        self.assertIn("multi-counter-", match.group(1))
+        report = Path(match.group(1)).read_text(errors="replace")
+        self.assertIn("Call graph", report)
+        self.assertIn("sleep", report)
+        self.assertEqual(result["exit_after_cleanup"], -9)
+        self.assertEqual(result["output_bytes_during_sampling"], {"stdout": 0, "stderr": 0})
+
+    def test_timeout_sampling_retains_late_output(self):
+        result = self.sampled_failure(
+            'import sys, time; print("early"); sys.stdout.flush(); time.sleep(0.8); '
+            'print("late"); sys.stdout.flush(); time.sleep(10)'
+        )
+        self.assertIn("sample_exit=0", result["timeout_sampling"])
+        self.assertEqual(result["stdout_prefix"], "early\nlate\n")
+        self.assertEqual(result["output_bytes_during_sampling"], {"stdout": 5, "stderr": 0})
+
+    def test_timeout_sampling_skips_already_exited_processes(self):
+        result = self.sampled_failure("raise SystemExit(7)")
+        self.assertIn("sample_skipped=already exited before sampling", result["timeout_sampling"])
+        self.assertEqual(result["exit_before_cleanup"], 7)
 
 
 if __name__ == "__main__":
