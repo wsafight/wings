@@ -4,7 +4,7 @@
 
 ## 项目现状
 
-- ADR-0132 修正 v2 多 actor 验证宿主的退出后才限输出与超时证据丢弃：非阻塞 I/O 在读取时执行原 1 MiB/64 KiB 上限，所有管道和进程等待共用原十秒期限，失败保留有限输入/用例身份、双流前缀/EOF 和清理前后退出值，清理整个自建进程组。七项短测试、Debug/Release 真实三端 18/17/49 用例通过；原 Debug 全量十秒超时仍保留且根因未定，原业务/ABI v22/资源限制不变。完整账本、最新原生双平台和 BEAM/MVP 门禁仍待完成，见 `docs/validation-multi-counter-evidence-2026-11-18.md`。
+- ADR-0132 修正 v2 多 actor 验证宿主的退出后才限输出与超时证据丢弃：非阻塞 I/O 在读取时执行原 1 MiB/64 KiB 上限，所有管道和进程等待共用原十秒期限，失败保留有限输入/用例身份、双流前缀/EOF 和清理前后退出值，清理整个自建进程组。七项短测试、Debug/Release 真实三端 18/17/49 用例及共享调用器的七个 release Wings/BEAM 入口回归通过；原 Debug 全量十秒超时仍保留且根因未定，原业务/ABI v22/资源限制不变。完整账本、最新原生双平台和 BEAM/MVP 门禁仍待完成，见 `docs/validation-multi-counter-evidence-2026-11-18.md`。
 
 - ADR-0131 增加真实 OTP 29 的有限请求和取消/恢复对照：票据保留至 caller 消费且 publisher 实际回复/退出，取消 Fail 仍实际除零；每目标独立 OTP 监督分支保留一次/60s 的按 child 强度范围，健康 sibling 不受牵连。Debug/Release 两端一/双配置各三轮、75 组伪造拒绝、CLI 拒绝与 Release 完整 AOT 通过；冻结 ae5706d 的双端一/双配置各 900 轮、30s/60s 与独立重放通过，共 3600 轮。本轮 Debug 完整 AOT 的既有多 actor 子进程在原 10s 超时，证据保留；ABI v22/容量/原限不变，完整账本、过载/服务 I/O、原生双平台与 BEAM/MVP 门禁仍未完成，见 `docs/validation-beam-recovery-2026-11-18.md`。
 
