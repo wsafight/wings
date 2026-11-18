@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig, StackPool,
+    SchedulerConfig, SchedulerHandle, SchedulerLockMetrics, StackPool,
 };
 
 const PENDING: usize = 256;
@@ -21,6 +21,7 @@ struct Workload {
     rate: u64,
     count: usize,
     measure: bool,
+    observe_locks: bool,
 }
 
 fn number(text: &str) -> Result<u64, String> {
@@ -55,6 +56,7 @@ fn decode(name: &str, duration: &str, rate: &str) -> Result<Workload, String> {
         rate,
         count,
         measure: false,
+        observe_locks: false,
     })
 }
 
@@ -67,6 +69,83 @@ fn decode_measure(name: &str, rate: &str) -> Result<Workload, String> {
     workload.count = workload.rate as usize * 90;
     workload.measure = true;
     Ok(workload)
+}
+
+fn decode_arguments(arguments: &[String]) -> Result<Workload, String> {
+    if arguments
+        .first()
+        .is_none_or(|argument| argument != "--trusted")
+    {
+        return Err("arguments".into());
+    }
+    if arguments
+        .get(2)
+        .is_some_and(|argument| argument == "--measure")
+    {
+        let observe = arguments.len() == 7 && arguments[6] == "--observe-locks";
+        if arguments.len() != 6 && !observe {
+            return Err("arguments".into());
+        }
+        let mut workload = decode_measure(&arguments[3], &arguments[4])?;
+        workload.observe_locks = observe;
+        Ok(workload)
+    } else if arguments.len() == 5 {
+        decode(&arguments[2], &arguments[3], &arguments[4])
+    } else {
+        Err("arguments".into())
+    }
+}
+
+fn lock_metrics(metrics: SchedulerLockMetrics) -> Result<Value, String> {
+    if metrics.saturated
+        || metrics.max_wait_ns > metrics.wait_ns
+        || metrics.max_held_ns > metrics.held_ns
+    {
+        return Err("open-loop inconsistent lock metrics".into());
+    }
+    Ok(
+        json!({"acquisitions": metrics.acquisitions, "wait_ns": metrics.wait_ns,
+        "held_ns": metrics.held_ns, "max_wait_ns": metrics.max_wait_ns,
+        "max_held_ns": metrics.max_held_ns, "saturated": metrics.saturated}),
+    )
+}
+
+fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<Value, String> {
+    let expected = committed
+        .iter()
+        .try_fold(committed.len() as u64, |total, value| {
+            total.checked_add(u64::try_from(*value).ok()?)
+        })
+        .ok_or("open-loop lock handler count overflow")?;
+    let mut starts = 0u64;
+    let mut finishes = 0u64;
+    let mut workers = Vec::with_capacity(2);
+    for worker in 0..2 {
+        let stats = handle
+            .lock_statistics(worker)?
+            .ok_or("open-loop lock statistics missing")?;
+        if stats.claim.acquisitions < stats.start.acquisitions {
+            return Err("open-loop lock claims missing".into());
+        }
+        starts = starts
+            .checked_add(stats.start.acquisitions)
+            .ok_or("lock count overflow")?;
+        finishes = finishes
+            .checked_add(stats.finish.acquisitions)
+            .ok_or("lock count overflow")?;
+        workers.push(
+            json!({"worker": worker, "claim": lock_metrics(stats.claim)?,
+            "start": lock_metrics(stats.start)?, "snapshot": lock_metrics(stats.snapshot)?,
+            "finish": lock_metrics(stats.finish)?}),
+        );
+    }
+    if starts != expected || finishes != expected {
+        return Err("open-loop lock handler count mismatch".into());
+    }
+    Ok(
+        json!({"version": 1, "scope": "whole_scheduler_lifetime", "metric": "wall_time_not_cpu",
+        "after_worker_join": true, "workers": workers}),
+    )
 }
 
 impl Workload {
@@ -249,6 +328,7 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         SchedulerConfig {
             capacity: workload.actors,
             requests: PENDING,
+            lock_statistics: workload.observe_locks,
             ..SchedulerConfig::default()
         },
     )?;
@@ -412,19 +492,27 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             Vec::new()
         }
     };
-    drop((handle, scheduler, apply, configure, module, tenant));
+    drop(scheduler);
+    let statistics = if workload.observe_locks {
+        Some(lock_statistics(&handle, &committed)?)
+    } else {
+        None
+    };
+    drop((handle, apply, configure, module, tenant));
     if vm.used() != bootstrap {
         return Err("open-loop resources retained".into());
     }
-    Ok(
-        json!({"version": if workload.measure { 6 } else { 5 }, "status": "ok", "mode": if workload.measure { "measure" } else { "smoke" }, "actors": workload.actors,
+    let mut output = json!({"version": if workload.measure { 6 } else { 5 }, "status": "ok", "mode": if workload.measure { "measure" } else { "smoke" }, "actors": workload.actors,
         "state_bytes": workload.state_bytes, "mailbox_capacity": workload.mailbox,
         "rate": workload.rate, "deadline_ns": DEADLINE_NS, "pending_capacity": PENDING,
         "message_bytes": 32, "samples": samples, "committed": committed,
         "states_verified": true, "resources_released": true,
         "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
-        "environment": {"runtime": "wings", "workers": 2}}),
-    )
+        "environment": {"runtime": "wings", "workers": 2}});
+    if let Some(statistics) = statistics {
+        output["worker_lock_statistics"] = statistics;
+    }
+    Ok(output)
 }
 
 fn main() {
@@ -432,13 +520,7 @@ fn main() {
     let measure = arguments
         .get(2)
         .is_some_and(|argument| argument == "--measure");
-    let workload = if measure && arguments.len() == 6 && arguments[0] == "--trusted" {
-        decode_measure(&arguments[3], &arguments[4])
-    } else if arguments.len() == 5 && arguments[0] == "--trusted" {
-        decode(&arguments[2], &arguments[3], &arguments[4])
-    } else {
-        Err("arguments".into())
-    };
+    let workload = decode_arguments(&arguments);
     let (code, result) = match workload {
         Ok(workload) => match execute(
             Path::new(&arguments[1]),
@@ -466,6 +548,46 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_observation_requires_an_explicit_measurement_suffix() {
+        let base: Vec<String> = [
+            "--trusted",
+            "artifact",
+            "--measure",
+            "hot-queue",
+            "80000",
+            "trace",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert!(!decode_arguments(&base).unwrap().observe_locks);
+        let mut observed = base.clone();
+        observed.push("--observe-locks".into());
+        let workload = decode_arguments(&observed).unwrap();
+        assert!(workload.measure && workload.observe_locks);
+        assert_eq!(workload.count, 80000 * 90);
+        for arguments in [
+            Vec::new(),
+            vec!["--trusted".into()],
+            [base.as_slice(), &["--unknown".into()]].concat(),
+            [observed.as_slice(), &["--observe-locks".into()]].concat(),
+            [
+                "--trusted",
+                "artifact",
+                "hot-queue",
+                "10",
+                "80000",
+                "--observe-locks",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        ] {
+            assert!(decode_arguments(&arguments).is_err());
+        }
+    }
 
     #[test]
     fn long_measurement_is_separate_and_fixed_duration() {

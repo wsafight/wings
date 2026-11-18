@@ -10,6 +10,8 @@
 
 ## 实验约定
 
+[ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 将既有四阶段锁统计接入同业务开环：只在显式 90s 长测开启，join 后校验全部 worker/handler 数；两对反序用于观察开销。它补锁路径的实际累计，仍不是 CPU 归因，也不自动授权恢复此前回退的通知/空表优化，结果见[记录](validation-open-loop-locks-2026-11-18.md)。
+
 [2026-11-18 原生采样](validation-hotqueue-profile-2026-11-18.md) 中，hot-queue 10000 次/秒的 worker 主要等待，80000 次/秒增加广播、通知、锁及请求维护栈样本，但仍有大量等待和发生器迟发，且队满/预热超时保留。下一项候选须先做这些路径的时序与 CPU 归因，不把墙钟栈样本当调用次数或 CPU 百分比，也不凭此恢复已回退的通知/空表优化。
 
 [ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 先接默认关闭的四类 worker 锁区间统计，分别记录获取前等待与锁内墙钟，不含 Condvar 睡眠。原子累计/最大值只作路径诊断，活动读取不一致、开启有扰动，仍需 CPU/时序归因和同负载消融后才能选择下一项优化。

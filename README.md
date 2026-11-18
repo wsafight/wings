@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0133](docs/adr/0133-open-loop-worker-lock-diagnostics.md) 把已有 worker 锁统计接入原 hot-queue 长测，以显式开关、join 后累计与独立 handler 数核对定位后续测量方向。冻结两对诊断入口和验证见[记录](docs/validation-open-loop-locks-2026-11-18.md)；墙钟统计不作 CPU 或性能门禁结论。
+
 [ADR-0132](docs/adr/0132-bounded-multi-counter-failure-evidence.md) 为 v2 多 actor 对照补读时输出限额和有界失败证据，保留用例、输入指纹、双流前缀与清理状态。专项与原失败见[记录](docs/validation-multi-counter-evidence-2026-11-18.md)；原期限和业务不变，未把取证修正称为启动根因修复。
 
 [ADR-0131](docs/adr/0131-equivalent-beam-cancellation-recovery.md) 增加 BEAM 等价取消/恢复端，保留真实邮箱和请求票据到 publisher 完成，并以 OTP 独立 child 监督验证一次恢复及强度上限。短回归和显式长测均通过 `--compare-beam` 启用，范围与结果见[记录](docs/validation-beam-recovery-2026-11-18.md)；完整故障、原生双平台及 BEAM 性能/内存仍独立验收。

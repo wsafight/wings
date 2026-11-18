@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为第 5/7 项接同负载长测锁诊断，在 worker join 后核对累计与业务数量，不改变 VM 或预算。它只推进定位后续优化的证据，不能关闭 CPU 归因、完整内存、原生双平台或 BEAM/MVP 门禁，实际状态见[记录](validation-open-loop-locks-2026-11-18.md)。
+
 [ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 为第 6 项诊断补 v2 子进程的有界 I/O、输入/用例身份与失败双流证据，保持原业务与期限。实际专项见[记录](validation-multi-counter-evidence-2026-11-18.md)，它没有修复或关闭启动稳定性、完整资源账本、原生双平台和 BEAM/MVP 门禁。
 
 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 为第 3/6 项补真实 BEAM 的有限请求、超时/取消不撤回、停止竞争、全新恢复和按 child 强度对照。原时段/容量和每轮限制保持，范围及本机证据见[记录](validation-beam-recovery-2026-11-18.md)；完整账本、长时过载/服务 I/O、原生双平台及同负载 BEAM 双门禁仍未完成，MVP 未完成。
