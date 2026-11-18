@@ -1,5 +1,7 @@
 # 评测与验收
 
+[启动复验](validation-startup-followup-2026-11-18.md) 保留本轮 Debug TCP 五秒与 observed_yield 十秒失败。后续定向通过和模块加载采样不覆盖失败原现场，不作根因修复或整套通过声明；资源/业务/性能验收限制不变。
+
 [ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 增加一/双 worker 无限 handler 与八个健康 actor 的短时进展回归。保留原 3 秒内部/20 秒 CPU/30 秒墙钟、256 槽 FIFO 尾丢样与停止后守恒，独立验证逐请求顺序和初始实际让出；不是 p99 或完整公平性门禁，实际结果见[记录](validation-atomic-progress-2026-11-18.md)。
 
 [ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 验证计费路径固定来源/输出、无 NUL/绝对边界、符号链接及原生失败，并复用原十二场景分配探针和完整加载回归；初次 macOS 文件系统前提失败与后续验证分开保留，见[记录](validation-native-paths-2026-11-18.md)。

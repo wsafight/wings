@@ -33,6 +33,8 @@
 
 本轮 Debug 完整 AOT 已先通过新增原子进展回归，但随后 TCP normal 场景在原 5 秒启动握手期限失败：elapsed=5.012s、清理前仍活、清理 exit=-9、stdout/stderr 前缀均空。原日志 `/tmp/wings-atomic-progress-full-aot-debug-final-20261118.log` 保留；没有同时构建，也没有将旧启动采样套用到这次失败。不能宣称本轮 Debug 完整 AOT 通过。顺序执行的 Release 完整 AOT 通过，日志 `/tmp/wings-atomic-progress-full-aot-release-final-20261118.log`，它不覆盖或关闭 Debug 启动失败。
 
+后续 TCP 专项四轮/36 次握手通过，但 Debug 完整复验在 `observed_yield` 原十秒入口超时，双流仍空；两种构建该入口的定向冻结复验又通过。完整失败和两组模块加载采样见[启动复验](validation-startup-followup-2026-11-18.md)，不将其中任何一次通过称为启动问题修复。
+
 最终 `cargo check --workspace --locked`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo fmt --all -- --check`、MSRV 1.85 all-targets、Linux x86-64 all-targets 交叉检查和两构建 workspace doctest 全部通过，日志 `/tmp/wings-atomic-progress-{check,clippy,fmt-check,msrv,linux-cross,doctest-debug,doctest-release}-final-20261118.log`。工程命令在 Release AOT 结束后才启动；交叉检查没有执行 Linux 代码。源码/证据的最终指纹清单见 `target/atomic-progress-preflight-20261118/report.json`。
 
 复现入口：

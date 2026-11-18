@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- `a7812ec` 后 TCP 原限专项两构建各两轮/36 次握手通过，但 Debug 完整复验在 observed_yield 原十秒入口无输出超时；冻结该入口两构建定向又通过。仅首次 Debug TCP/观察入口的采样进入模块 dlopen/fcntl，不能归因原失败或宣称修复；原失败、原限与证据见 `docs/validation-startup-followup-2026-11-18.md`。不继续盲重试换取全绿，MVP 门禁不变。
+
 - ADR-0137 补无限 handler 下同 worker 健康进展的真实 AOT 前置回归：一步片/忙总预算为 u64::MAX，一/双 worker 各八个健康 actor、16 轮；固定 256 槽让出 FIFO、初始原子确认、开放态旧身份/槽复用与退账独立重放。最终两种构建各 106 harness/707 项、定向进展、Release 完整 AOT 及工程/MSRV/Linux 交叉检查通过；本轮 Debug 完整 AOT 在后续 TCP 5 秒启动失败，原限与证据保留，见 `docs/validation-atomic-progress-2026-11-18.md`。不改变原业务/ABI/预算，不关闭完整公平性、原生双平台或 BEAM/MVP 门禁。
 
 - ADR-0136 将计费模块的 canonicalize 改为调用者提供固定来源/`PATH_MAX` 输出的原生 realpath，先验证再按已知长度构造 Rust 结果；原控制/映像预算、ABI v22/4352 B 和工具加载行为不变。初次非 UTF-8 目录前提与 Clippy 常量断言失败保留；修正后两种构建各 105 harness/707 项、十二场景分配探针及完整 AOT、工程/MSRV/Linux 交叉检查通过。libc 内部暂存与完整账本、双平台和 BEAM/MVP 门禁仍待完成，见 `docs/validation-native-paths-2026-11-18.md`。
