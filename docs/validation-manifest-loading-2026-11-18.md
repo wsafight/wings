@@ -28,6 +28,14 @@ Debug 完整 AOT 已越过新增清单/模块专项，在后续 TCP normal 原�
 
 随后顺序 Release 完整 AOT 通过，日志 `/tmp/wings-manifest-full-aot-release-20261118.log`；不覆盖 Debug 失败。两种构建的专项、workspace 和完整 AOT 均在输入源码不再变化后执行，228 项输入指纹完成后再次逐一核对，无变化。没有放宽任何原有限额/时限，没有并行构建干扰这些 AOT 运行。
 
+## 提交后的启动采样尝试
+
+基于 `d49cbe2`，单独在完整 Debug 路径临时包装 tcp_ready 做显式旁路观测，不修改仓库代码或原业务期限。首次在三秒仍未就绪时启动 sample（CPU 5s、墙钟 3s、core 0、文件 8 MiB）；握手在 3.445378s 返回，但包装错误地在返回给业务前 join 观察线程。sample 超时到 6.021225s 才结束等待，超过服务自己的两秒 accept 期限，随后客户端被拒绝，服务正常退出且零连接/提交。这是诊断包装引入的干扰，不能当 VM 连接或原五秒握手缺陷。报告/双流与空 sample 输出见 `target/manifest-startup-live-20261118/` 和 `/tmp/wings-manifest-startup-live-20261118.log`。
+
+修正临时包装为不在握手返回路径等待、全部业务结束后才 join 观察线程，并在一秒仍未就绪时启动同限 sample。该次 TCP 九场景在原限内通过：首握手 1.086034s，其余 0.002887–0.003634s；唯一 sample 已完成采样但符号处理未在原三秒内结束，被限制终止，stdout 0 字节、stderr 127 字节，没有可用堆栈。不能称为成功采样，也不提高工具时限。后续完整 AOT 在独立 Counter equivalence 的 beam_counter 入口原十秒期限失败；没有把 TCP 定向通过或该次部分进展当作 Debug 完整通过。
+
+修正轮报告 `target/manifest-startup-live-final-20261118/report.json`，日志 `/tmp/wings-manifest-startup-live-final-20261118.log`；所有观察线程已 join，TCP 可执行前后 SHA 相同，两轮均保留 failed 状态和完整异常。两次诊断未获得原五秒超时现场的新堆栈，未定位根因，不再为本切片重试完整套件。
+
 ## 复现入口
 
 ```sh
