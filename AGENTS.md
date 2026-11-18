@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0139 为共享 Manifest::read 增加打开前/句柄元数据检查，仅接受至多 64 KiB 普通文件（保留普通目标符号链接）；按已知长度 fallible 预留、精确读取并探测一个额外字节。修改前 FIFO 在原生 open 阻塞已由受限子进程/采样确认；两种构建各 107 harness/717 项、11 类文件专项、Release 完整 AOT 及工程/MSRV/Linux 交叉检查通过，Debug 完整 AOT 仍在 TCP 原五秒启动失败。产物不变仍是前提，不抵御恶意换文件或承诺文件系统 I/O 时间上界，不是 TCP/dlopen 启动超时根因。实际回归见 `docs/validation-manifest-loading-2026-11-18.md`，完整账本/双平台/BEAM/MVP 门禁仍待完成。
+
 - ADR-0138 为 Scheduler worker/DeadlineTimer 在宣布启动成功前核对 pthread 实际可用栈与局部地址；上限沿原 2 MiB+64 KiB/256 KiB+两页，不增额度。首次误按请求值拒绝的失败保留，本机报告均多 12 KiB，后改用原已计费栈桶；拒绝必须 join 后退账。两种构建各 106 harness/713 项、Release 完整 AOT 及工程/MSRV/Linux 交叉检查通过，Debug 完整 AOT 仍在 TCP 5 秒启动失败，见 `docs/validation-native-thread-stacks-2026-11-18.md`。只验证可用范围，不覆盖 OS 创建前瞬时分配、guard/TLS/缓存或完整账本/MVP。
 
 - `a7812ec` 后 TCP 原限专项两构建各两轮/36 次握手通过，但 Debug 完整复验在 observed_yield 原十秒入口无输出超时；冻结该入口两构建定向又通过。仅首次 Debug TCP/观察入口的采样进入模块 dlopen/fcntl，不能归因原失败或宣称修复；原失败、原限与证据见 `docs/validation-startup-followup-2026-11-18.md`。不继续盲重试换取全绿，MVP 门禁不变。

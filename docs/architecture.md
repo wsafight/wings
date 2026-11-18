@@ -244,7 +244,7 @@ Wings 用 Rust 实现，作为 VM 程序运行。业务代码使用 `wings-lang`
 
 当前源码的 `wings-compile build` 将单个 process 的 handler 降为有类型寄存器 IR，校验结构化分支、标量/RecordInt state 回边及作用域后由 Cranelift 0.118 生成 PIC 对象，再用系统 `cc` 链接为共享库。不使用 JIT，也不执行源码完成编译或 LSP 查询。每入口最多 4096 条静态操作、每 process 最多 128 个 handler、每 handler 最多 64 个参数，超限拒绝构建；动态执行仍受总预算约束。
 
-输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
+输出目录必须新建，成功后包含 `manifest.json` 与 `program.dylib`（macOS）或 `program.so`（Linux）。清单上限 64 KiB，共享库上限 64 MiB；版本、标量 ABI、目标、名称、参数和回复类型在装载前检查，库路径固定，不接受清单指定的任意路径。按 [ADR-0139](adr/0139-regular-file-manifest-loading.md)，清单在打开前及句柄上检查普通文件/长度，接受指向普通文件的符号链接，拒绝 FIFO、目录和 socket；按已知长度读取，截断或额外字节均失败。仍要求产物及路径在验证和装载期间保持不变，不承诺并发替换防护或文件系统 I/O 时限。链接失败不生成清单，可能留下不完整目录，需要使用新的输出目录重试。
 
 未发布源码 ABI v22 的入口仍是 `(state: i64, args: *const i64, output: *mut ScalarOutput, context: *mut ScalarContext) -> u32`，C 调用约定；输出固定为两个连续 i64：候选状态、回复。context 按 C 布局依次保存取消标志指针、总剩余 `u64` 步数、让出标志指针、当前时间片剩余 `u64` 步数、可空慢路径函数指针、opaque 数据指针、`usize` 栈下界、shadow frame 链头、可空堆回调、独立 heap data 指针及可空 effect 回调，context 共 88 字节。两个标志均指向稳定且有效的 `AtomicU32`，其他线程只能原子设置；其余上下文只由执行线程访问。宿主原始整数参数只允许 Int/Bool/Unit；RecordInt 回复的 ABI 输出为当前堆引用，runtime 在候选提交前验证并复制唯一 i64 内容；语言消息与 ADR-0094 类型化宿主消息参数额外允许 RecordInt/有界 IntList/计费 Bytes/String 复制载荷，系统完成事件首参额外允许 RequestId，状态额外允许所属进程堆内 Ref/ListRef/BytesRef/StringRef，String 消息按 ADR-0105 复制，回复按 ADR-0106 导出独立计费结果；String 索引/切片按 ADR-0127 使用标量位置。Bool 编码 0/1，Unit 编码 0。宿主校验参数及成功输出，产物只在正常返回时写输出；算术、取消、预算、栈、堆、无效根、非法字节参数、非法字符串和 String 越界均以状态码返回，不 trap 或 unwind。
 

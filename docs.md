@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 清单读取边界](docs/validation-manifest-loading-2026-11-18.md) 保留 FIFO 打开阻塞的修改前采样，核对普通文件/符号链接、固定读取边界与加载拒绝退账。
+
 [2026-11-18 宿主线程栈边界](docs/validation-native-thread-stacks-2026-11-18.md) 保留请求值不等于实际可用范围的首次失败，核对原预留桶、启动拒绝和 join 退账。
 
 [2026-11-18 启动复验与原生采样](docs/validation-startup-followup-2026-11-18.md) 保留 Debug TCP 五秒与让出入口十秒失败，区分后续定向通过、模块 dlopen 采样与尚未定位的根因。

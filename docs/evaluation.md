@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0139](adr/0139-regular-file-manifest-loading.md) 验证清单普通文件、64 KiB 精确边界、特殊对象及符号链接目标；FIFO 修改前阻塞只在 OS 受限子进程复现并保留原生采样。计费/工具入口及真实 CLI 的拒绝退账和成功执行见[记录](validation-manifest-loading-2026-11-18.md)，不归因既有启动超时，也不替代原生双平台或 BEAM/MVP 门禁。
+
 [ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 核对 worker/timer 原生可用栈、无效范围、实际超上限拒绝与启动失败退账；一/双 worker、部分 sibling 拒绝和 timer 的受限回归不增加原资源额度。首次请求值前提失败与实际状态见[记录](validation-native-thread-stacks-2026-11-18.md)，不当作内存性能或双平台门禁通过。
 
 [启动复验](validation-startup-followup-2026-11-18.md) 保留本轮 Debug TCP 五秒与 observed_yield 十秒失败。后续定向通过和模块加载采样不覆盖失败原现场，不作根因修复或整套通过声明；资源/业务/性能验收限制不变。

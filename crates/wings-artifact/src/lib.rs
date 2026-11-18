@@ -168,15 +168,11 @@ impl Manifest {
     }
 
     pub fn read(directory: &Path) -> Result<Self, String> {
-        let mut bytes = Vec::new();
-        File::open(directory.join("manifest.json"))
-            .map_err(|error| error.to_string())?
-            .take(MAX_MANIFEST_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-            return Err("artifact manifest exceeds 64 KiB".into());
-        }
+        let path = directory.join("manifest.json");
+        manifest_file_size(&std::fs::metadata(&path).map_err(|error| error.to_string())?)?;
+        let mut file = File::open(path).map_err(|error| error.to_string())?;
+        let length = manifest_file_size(&file.metadata().map_err(|error| error.to_string())?)?;
+        let bytes = read_manifest_bytes(&mut file, length)?;
         preflight::check(&bytes)?;
         let manifest: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         manifest.validate()?;
@@ -184,6 +180,78 @@ impl Manifest {
     }
 }
 
+fn read_manifest_bytes(reader: &mut impl Read, length: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|error| error.to_string())?;
+    bytes.resize(length, 0);
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if reader.read(&mut [0]).map_err(|error| error.to_string())? != 0 {
+        return Err("artifact manifest changed while reading".into());
+    }
+    Ok(bytes)
+}
+
+fn manifest_file_size(metadata: &std::fs::Metadata) -> Result<usize, String> {
+    if !metadata.is_file() {
+        return Err("artifact manifest must be a regular file".into());
+    }
+    if metadata.len() > MAX_MANIFEST_BYTES {
+        return Err("artifact manifest exceeds 64 KiB".into());
+    }
+    usize::try_from(metadata.len()).map_err(|error| error.to_string())
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Cursor};
+
+    #[test]
+    fn fixed_manifest_read_accepts_exact_lengths_and_rejects_growth() {
+        for length in [0, 1, MAX_MANIFEST_BYTES as usize] {
+            let bytes = vec![b' '; length];
+            assert_eq!(
+                read_manifest_bytes(&mut Cursor::new(&bytes), length).unwrap(),
+                bytes
+            );
+            let longer = vec![b' '; length + 1];
+            let mut reader = Cursor::new(&longer);
+            assert_eq!(
+                read_manifest_bytes(&mut reader, length).unwrap_err(),
+                "artifact manifest changed while reading"
+            );
+            assert_eq!(reader.position(), length as u64 + 1);
+        }
+    }
+
+    #[test]
+    fn fixed_manifest_read_rejects_truncation_and_read_errors() {
+        for length in [1, MAX_MANIFEST_BYTES as usize] {
+            let bytes = vec![b' '; length - 1];
+            assert!(read_manifest_bytes(&mut Cursor::new(&bytes), length).is_err());
+        }
+        struct Unavailable;
+        impl Read for Unavailable {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "unavailable",
+                ))
+            }
+        }
+        for length in [0, 1] {
+            assert_eq!(
+                read_manifest_bytes(&mut Unavailable, length).unwrap_err(),
+                "unavailable"
+            );
+        }
+    }
 }

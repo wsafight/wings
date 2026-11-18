@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0139](docs/adr/0139-regular-file-manifest-loading.md) 为清单读取增加普通文件与长度检查，拒绝 FIFO 等特殊目标；保留普通文件符号链接，按固定长度读取并核对失败退账。修改前阻塞与实际回归见[验证](docs/validation-manifest-loading-2026-11-18.md)，不是既有 TCP 启动超时修复或完整账本验收。
+
 [ADR-0138](docs/adr/0138-native-thread-stack-startup-boundary.md) 为 worker/timer 增加启动前的原生可用栈范围核对，沿用原预留、拒绝时正常 join 退账；首次错误前提与实际结果见[验证](docs/validation-native-thread-stacks-2026-11-18.md)，不等于完整原生内存计量。
 
 [ADR-0137](docs/adr/0137-infinite-handler-atomic-progress.md) 增加无限步骤片下忙/健康 actor 同 worker 原子让出进展回归，保留固定 FIFO 的尾丢样及停止后计数/退账；实际状态见[验证](docs/validation-atomic-progress-2026-11-18.md)，不替代完整公平性或 MVP 门禁。

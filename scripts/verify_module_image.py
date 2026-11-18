@@ -1,13 +1,105 @@
+import hashlib
 import json
 import os
 from pathlib import Path
 import shlex
 import shutil
+import socket
 import struct
+import subprocess
 import sys
 import tempfile
 
 import verify_scalar_aot as aot
+
+
+def verify_manifest_files(parent, counter):
+    source = (counter / "manifest.json").read_bytes()
+    cases = []
+    sockets = []
+    report = {"status": "failed", "cases": [], "commands": []}
+
+    def execute(name, operation):
+        record = {"name": name}
+        report["commands"].append(record)
+        streams = {}
+        try:
+            result = operation()
+            record["exit"] = result.returncode
+            streams = {stream: getattr(result, stream) for stream in ("stdout", "stderr")}
+            return result
+        except BaseException as error:
+            record["error"] = str(error)
+            if isinstance(error, subprocess.TimeoutExpired):
+                streams = {"stdout": error.stdout or b"", "stderr": error.stderr or b""}
+            raise
+        finally:
+            for stream, value in streams.items():
+                path = parent / ("manifest-" + name + "." + stream)
+                path.write_bytes(value if isinstance(value, bytes) else value.encode())
+                record[stream] = {"path": path.name,
+                                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    try:
+        for name in ("regular", "exact", "oversized", "empty", "directory", "fifo", "socket",
+                     "symlink-regular", "symlink-fifo", "symlink-directory", "symlink-missing"):
+            directory = parent / ("manifest-" + name)
+            shutil.copytree(counter, directory)
+            path = directory / "manifest.json"
+            path.unlink()
+            if name == "regular":
+                path.write_bytes(source)
+            elif name in ("exact", "oversized"):
+                path.write_bytes(source + b" " * (65536 + (name == "oversized") - len(source)))
+            elif name == "empty":
+                path.write_bytes(b"")
+            elif name == "directory":
+                path.mkdir()
+            elif name == "fifo":
+                os.mkfifo(path, 0o600)
+            elif name == "socket":
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sockets.append(listener)
+                previous = Path.cwd()
+                try:
+                    os.chdir(directory)
+                    listener.bind("manifest.json")
+                finally:
+                    os.chdir(previous)
+            else:
+                target = directory / "target"
+                if name == "symlink-regular":
+                    target.write_bytes(source)
+                elif name == "symlink-fifo":
+                    os.mkfifo(target, 0o600)
+                elif name == "symlink-directory":
+                    target.mkdir()
+                path.symlink_to("target")
+            expected = ("ok" if name in ("regular", "exact", "symlink-regular") else
+                        "exceeds 64 KiB" if name == "oversized" else
+                        "EOF" if name == "empty" else
+                        "No such file" if name == "symlink-missing" else "must be a regular file")
+            cases.append((directory, expected))
+            report["cases"].append({"name": name, "directory": str(directory), "expected": expected})
+        arguments = [value for pair in cases for value in pair]
+        result = json.loads(execute("accounting", lambda: aot.example("manifest_loading", *arguments)).stdout)
+        report["accounting"] = result
+        assert result["status"] == "ok" and result["resources_released"], result
+        assert result["bootstrap_bytes"] == result["remaining_bytes"], result
+        assert result["accepted"] == 6 and result["rejected"] == 16, result
+        for directory, expected in cases:
+            result = execute(directory.name, lambda: aot.invoke(
+                directory, [aot.message("Inc", 7)], expected=0 if expected == "ok" else 1))
+            if expected == "ok":
+                assert json.loads(result.stdout) == {"reply": 7} and not result.stderr, result
+            else:
+                assert not result.stdout and expected in result.stderr, result
+        report["status"] = "ok"
+        print("Manifest loading verified: 11 file/target cases, accounted/trusted cleanup and real CLI execution")
+    finally:
+        for listener in sockets:
+            listener.close()
+        (parent / "manifest-report.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def build_with_linker(wrapper, artifact, compiler, extra):
@@ -41,6 +133,7 @@ def verify(parent):
                  "-fPIC", source, "-o", invalid[2] / library])
     baseline = aot.module_image_budget(counter)
     print(aot.example("module_accounting", counter, *invalid, baseline).stdout, end="")
+    verify_manifest_files(parent, counter)
 
     assembly = parent / "padding.s"
     padding = parent / "padding.o"

@@ -570,6 +570,40 @@ fn reader_accepts_exact_byte_limit_and_rejects_one_extra_byte() {
 }
 
 #[test]
+fn reader_rejects_directories_and_unix_sockets_before_reading() {
+    let directory = Directory::new();
+    let path = directory.path().join("manifest.json");
+    fs::create_dir(&path).unwrap();
+    assert_eq!(
+        Manifest::read(directory.path()).unwrap_err(),
+        "artifact manifest must be a regular file"
+    );
+    fs::remove_dir(&path).unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    assert_eq!(
+        Manifest::read(directory.path()).unwrap_err(),
+        "artifact manifest must be a regular file"
+    );
+}
+
+#[test]
+fn reader_follows_regular_file_symlinks_but_rejects_special_targets() {
+    let directory = Directory::new();
+    let target = directory.path().join("target.json");
+    let path = directory.path().join("manifest.json");
+    fs::write(&target, manifest().encode().unwrap()).unwrap();
+    std::os::unix::fs::symlink("target.json", &path).unwrap();
+    Manifest::read(directory.path()).unwrap();
+    fs::remove_file(&target).unwrap();
+    assert!(Manifest::read(directory.path()).is_err());
+    fs::create_dir(&target).unwrap();
+    assert_eq!(
+        Manifest::read(directory.path()).unwrap_err(),
+        "artifact manifest must be a regular file"
+    );
+}
+
+#[test]
 fn encoding_rejects_structurally_valid_but_oversized_metadata() {
     let mut manifest = manifest();
     manifest.handlers = (0..128)
