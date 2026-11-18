@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0133 冻结 `e2fe7de` 的 hot-queue 80000/s 两对锁诊断已完成：原 30s/60s、关闭/开启与反序，逐条重放和账本清理通过；采样队满依次 14180/18734/14845/43489，无超时，两对扰动方向相反。开启轮 claim 各约 2300 万次、四阶段累计持锁约 11.8s，都是完整生命周期墙钟，不作 CPU 或吞吐收益结论；下一步补 CPU 范围，保留原失败与全部 MVP 门禁。
+
 - ADR-0133 为原 `beam_open_loop --measure` 增加显式 `--observe-locks`，join 后输出已计费四阶段 worker 锁累计并独立核对 Configure+实际提交的 handler 数；覆盖完整 Scheduler 生命周期，不称 CPU 或采样阶段分布。默认关闭、原业务/ABI v22/4352 B/资源/时段不变；六项模型、两种构建示例各七项、CLI 拒绝、工程/MSRV/交叉检查及顺序 Debug/Release 全量 AOT 通过；初次 Debug 的原 30s worker_ingress 超时保留，显式冻结两对长测另记。完整账本、启动根因、过载/服务 I/O、原生双平台与 BEAM/MVP 门禁仍待完成，见 `docs/validation-open-loop-locks-2026-11-18.md`。
 
 - ADR-0132 修正 v2 多 actor 验证宿主的退出后才限输出与超时证据丢弃：非阻塞 I/O 在读取时执行原 1 MiB/64 KiB 上限，所有管道和进程等待共用原十秒期限，失败保留有限输入/用例身份、双流前缀/EOF 和清理前后退出值，清理整个自建进程组。七项短测试、Debug/Release 真实三端 18/17/49 用例及共享调用器的七个 release Wings/BEAM 入口回归通过；原 Debug 全量十秒超时仍保留且根因未定，原业务/ABI v22/资源限制不变。完整账本、最新原生双平台和 BEAM/MVP 门禁仍待完成，见 `docs/validation-multi-counter-evidence-2026-11-18.md`。
