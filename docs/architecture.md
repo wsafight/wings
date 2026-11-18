@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 替代计费模块的拥有型 canonicalize：来源为固定 16385 B 数组，原生 realpath 写调用者 `PATH_MAX` 数组，验证后才按已知长度构造 Rust 路径；工具入口不变，不将 libc 内部 scratch 当作已闭环，见[验证](validation-native-paths-2026-11-18.md)。
+
 [ADR-0135](adr/0135-bounded-accounted-module-paths.md) 在原模块控制准入之后，先无分配检查计费路径的原始编码字节，再调用 canonicalize；解析结果再次检查后才拼接文件名。16 KiB 边界不改变原生映像/文件预算或 ABI，来源暂存修复与尚缺的原生分配口径见[记录](validation-module-paths-2026-11-18.md)。
 
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 为既有可选 worker 锁统计增加线程 CPU 区间，只有 worker 入口/退出读取本线程时钟，单原子发布诊断终态；默认关闭，不改执行 ABI 或业务路径。范围和不可归因部分见 [runtime](runtime.md) 及[验证记录](validation-worker-cpu-2026-11-18.md)。

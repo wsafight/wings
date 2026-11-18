@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 在原 2 MiB 控制准入后，以固定来源/原生输出缓冲解析计费模块路径；先拒绝 NUL，成功后核对绝对/终止边界，再按已知长度 fallible 构造结果。原始 16 KiB、原生路径限制和 ABI 不变；libc 内部与完整账本仍未关闭，见[验证](validation-native-paths-2026-11-18.md)。
+
 [ADR-0135](adr/0135-bounded-accounted-module-paths.md) 的计费模块路径原始/解析结果各至多 16 KiB，保留 VM 类型与原 2 MiB 控制先准入、失败退账的顺序；超限错误不回显来源。此修复限制来源暂存和后续拼接，不把 native canonicalize 或装载器内部成本当作已闭环，见[记录](validation-module-paths-2026-11-18.md)。
 
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 在已有默认关闭的锁诊断区中，为每 worker 保留固定原子 CPU 终态。观测只覆盖 worker 函数内初始化/运行/清理的本线程 CPU；不含 deadline timer、宿主发生器、OS 线程启动退出，也不是持锁或六十秒采样期 CPU。Pending/Unavailable 不当零值，join 后跨线程读取及末 handle 计费生命周期见[验证记录](validation-worker-cpu-2026-11-18.md)。

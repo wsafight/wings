@@ -3,6 +3,7 @@
 - 日期：2026-11-18
 - 状态：已采纳（资源账本修正；验证结果另记）
 - 延续：[ADR-0044](0044-native-module-leases.md)、[ADR-0128](0128-native-module-image-admission.md)、[ADR-0129](0129-native-module-dependency-boundary.md)
+- 计费 canonicalize 实现由 [ADR-0136](0136-fixed-buffer-native-module-paths.md) 的调用者固定缓冲替代；原始路径上限、控制准入和可信工具行为保留。
 
 ## 问题
 

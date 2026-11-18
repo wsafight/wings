@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 继续补第 4 项，使用调用者固定原生缓冲为路径结果建立 Rust 分配前容量边界；不关闭 libc/装载器/allocator 完整账本或其他 MVP 门禁，实际证据见[记录](validation-native-paths-2026-11-18.md)。
+
 [ADR-0135](adr/0135-bounded-accounted-module-paths.md) 补第 4 项模块来源暂存边界，保留 3 MiB 来源超出原 2 MiB 控制的修改前证据；修复只推进相应 Rust 副本和拼接，不关闭 canonicalize/libc/allocator、完整账本或原生双平台/BEAM/MVP 门禁，见[记录](validation-module-paths-2026-11-18.md)。
 
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 补第 5/7 项诊断的 worker 线程 CPU 区间，默认关闭、先计费、join 后区分实际值与缺失。它不含 timer/发生器、不作锁内 CPU 归因，也不关闭原生双平台、完整账本或 BEAM/MVP 门禁；状态见[记录](validation-worker-cpu-2026-11-18.md)。

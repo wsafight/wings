@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [0136](0136-fixed-buffer-native-module-paths.md) | 计费加载的固定来源/原生输出缓冲与已知长度后构造 Rust 路径 | 已采纳（模块暂存账本切片） |
 | [0135](0135-bounded-accounted-module-paths.md) | 计费加载的原始/解析路径字节边界、固定错误与暂存分配回归 | 已采纳（资源账本修正） |
 | [0134](0134-opt-in-worker-cpu-observation.md) | 默认关闭的 worker 函数 CPU 区间、原子终态发布和独立诊断范围 | 已采纳（CPU 诊断；非性能门禁） |
 | [0133](0133-open-loop-worker-lock-diagnostics.md) | 原开环长测显式启用 worker 锁统计、join 后独立核对与两对开关诊断 | 已采纳（默认关闭；非 CPU 归因/性能门禁） |

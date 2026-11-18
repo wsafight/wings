@@ -1286,8 +1286,8 @@ def main():
             for available in (2 << 20, 0)]
         for row in paths["cases"]:
             assert row["resources_released"] and 0 < row["error_bytes"] <= 128
-            assert 0 < row["allocations"] and row["largest_requested_bytes"] <= (16 << 10) + 1
-            assert row["total_requested_bytes"] <= 64 << 10
+            assert 0 < row["allocations"] and row["largest_requested_bytes"] <= 128
+            assert row["total_requested_bytes"] <= 1024
             if row["available_bytes"] == 0:
                 assert row["error_prefix"] == "resource_exhausted at Vm account"
             elif row["input_bytes"] > 16 << 10:

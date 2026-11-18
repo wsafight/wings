@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 固定原生路径缓冲验证](docs/validation-native-paths-2026-11-18.md) 保留原生文件系统前提失败，核对固定来源/结果、符号链接与原模块边界。
+
 [2026-11-18 恢复区间长测验证](docs/validation-resume-fairness-2026-11-18.md) 保留 v12 事件满额失败，记录 v13 的显式丢样、冻结业务和独立逐次时钟配对。
 
 [2026-11-18 Scheduler 恢复区间验证](docs/validation-scheduler-slices-2026-11-18.md) 区分步骤片实际返回与原子请求延迟，记录有界计费 FIFO、丢样守恒和一/双 worker AOT 检查。

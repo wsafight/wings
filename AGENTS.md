@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0136 将计费模块的 canonicalize 改为调用者提供固定来源/`PATH_MAX` 输出的原生 realpath，先验证再按已知长度构造 Rust 结果；原控制/映像预算、ABI v22/4352 B 和工具加载行为不变。初次非 UTF-8 目录前提与 Clippy 常量断言失败保留；修正后两种构建各 105 harness/707 项、十二场景分配探针及完整 AOT、工程/MSRV/Linux 交叉检查通过。libc 内部暂存与完整账本、双平台和 BEAM/MVP 门禁仍待完成，见 `docs/validation-native-paths-2026-11-18.md`。
+
 - ADR-0135 修复计费模块的大路径来源暂存：原 2 MiB 控制准入后、canonicalize 前无分配检查原始编码字节至多 16 KiB，解析后再检查才拼接；固定错误，不放宽 CLI 参数/映像预算。修改前十二场景复现 ASCII/非 UTF-8/NUL 3 MiB 来源各产生 3145729 B Rust 分配，修复后各一次 38 B 固定错误；Debug/Release 各十二场景、105 harness/702 项及完整 AOT、工程/MSRV/Linux 交叉检查通过。原生 canonicalize/libc/装载器完整账本及原 MVP 门禁仍保留，见 `docs/validation-module-paths-2026-11-18.md`。
 
 - ADR-0134 的 `74678b9` 冻结两对原 hot-queue 80000/s 长测及独立重放已完成：开启轮 worker CPU 合计 87.216872916/90.976441875s，仅覆盖 worker 函数；四轮采样队满 13444/12153/31105/22714，第二开启轮保留 108 pending 满及 27 超时，首开启预热保留 282632 队满。全部实际提交/清理正确，仍不作 CPU 路径归因、优化收益、BEAM 双目标或 MVP 通过声明，见 `docs/validation-worker-cpu-2026-11-18.md`。
