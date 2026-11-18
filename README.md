@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0138](docs/adr/0138-native-thread-stack-startup-boundary.md) 为 worker/timer 增加启动前的原生可用栈范围核对，沿用原预留、拒绝时正常 join 退账；首次错误前提与实际结果见[验证](docs/validation-native-thread-stacks-2026-11-18.md)，不等于完整原生内存计量。
+
 [ADR-0137](docs/adr/0137-infinite-handler-atomic-progress.md) 增加无限步骤片下忙/健康 actor 同 worker 原子让出进展回归，保留固定 FIFO 的尾丢样及停止后计数/退账；实际状态见[验证](docs/validation-atomic-progress-2026-11-18.md)，不替代完整公平性或 MVP 门禁。
 
 [ADR-0136](docs/adr/0136-fixed-buffer-native-module-paths.md) 将计费模块的路径来源和解析输出改为固定缓冲，Rust 结果只在已知长度后构造；不覆盖 libc 内部分配或完整资源门禁，见[验证](docs/validation-native-paths-2026-11-18.md)。

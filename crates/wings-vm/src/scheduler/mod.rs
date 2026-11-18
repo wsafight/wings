@@ -229,6 +229,14 @@ struct Completion {
 
 impl Scheduler {
     pub fn new(tenant: &ResourceAccount, config: SchedulerConfig) -> Result<Self, String> {
+        Self::new_with_stack_check(tenant, config, crate::native_stack::check_current)
+    }
+
+    fn new_with_stack_check(
+        tenant: &ResourceAccount,
+        config: SchedulerConfig,
+        stack_check: fn(usize) -> Result<(), &'static str>,
+    ) -> Result<Self, String> {
         if tenant.level() != ResourceLevel::Tenant
             || !(1..=16).contains(&config.workers)
             || !(1..=MAX_ACTORS).contains(&config.capacity)
@@ -361,7 +369,7 @@ impl Scheduler {
             let thread = std::thread::Builder::new()
                 .name(format!("wings-worker-{index}"))
                 .stack_size(THREAD_STACK)
-                .spawn(move || run::worker(shared, index, ready))
+                .spawn(move || run::worker(shared, index, ready, stack_check))
                 .map_err(|error| format!("scheduler thread startup: {error}"))?;
             scheduler.threads.push(thread);
         }

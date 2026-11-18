@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 为宿主 worker/timer 增加原生启动栈边界核对，macOS/Linux 分别查询 pthread 的当前可用范围；沿既有控制发布启动结果和失败 join，不改 ABI/业务栈池。原生范围不是完整 mapping/资源账本，实际证据见[记录](validation-native-thread-stacks-2026-11-18.md)。
+
 [ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 独立验证无限步骤片下的原子让出与同 worker 业务进展，不改执行模型、ABI 或原代表业务；短时 AOT 和独立有限重放的证据范围见[记录](validation-atomic-progress-2026-11-18.md)。
 
 [ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 替代计费模块的拥有型 canonicalize：来源为固定 16385 B 数组，原生 realpath 写调用者 `PATH_MAX` 数组，验证后才按已知长度构造 Rust 路径；工具入口不变，不将 libc 内部 scratch 当作已闭环，见[验证](validation-native-paths-2026-11-18.md)。

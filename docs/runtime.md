@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 要求 worker/timer 在启动确认前核对 pthread 实际可用范围，分别不超过原 2 MiB+64 KiB 与 256 KiB+两页栈桶；错误或未知结果正常终止并 join 后退账。它不限制 OS 创建前瞬时分配，也不把 guard/TLS/缓存或 RSS 当作已精确计量，见[验证](validation-native-thread-stacks-2026-11-18.md)。
+
 [ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 不改变调度契约，补一/双 worker 无限步骤片与健康请求的并存验证；先确认原子让出，再检查完整请求、旧状态、停止清理与固定 FIFO 计数。短时进展不等于长期无饥饿或真实服务尾延迟，见[验证](validation-atomic-progress-2026-11-18.md)。
 
 [ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 在原 2 MiB 控制准入后，以固定来源/原生输出缓冲解析计费模块路径；先拒绝 NUL，成功后核对绝对/终止边界，再按已知长度 fallible 构造结果。原始 16 KiB、原生路径限制和 ABI 不变；libc 内部与完整账本仍未关闭，见[验证](validation-native-paths-2026-11-18.md)。

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 核对 worker/timer 原生可用栈、无效范围、实际超上限拒绝与启动失败退账；一/双 worker、部分 sibling 拒绝和 timer 的受限回归不增加原资源额度。首次请求值前提失败与实际状态见[记录](validation-native-thread-stacks-2026-11-18.md)，不当作内存性能或双平台门禁通过。
+
 [启动复验](validation-startup-followup-2026-11-18.md) 保留本轮 Debug TCP 五秒与 observed_yield 十秒失败。后续定向通过和模块加载采样不覆盖失败原现场，不作根因修复或整套通过声明；资源/业务/性能验收限制不变。
 
 [ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 增加一/双 worker 无限 handler 与八个健康 actor 的短时进展回归。保留原 3 秒内部/20 秒 CPU/30 秒墙钟、256 槽 FIFO 尾丢样与停止后守恒，独立验证逐请求顺序和初始实际让出；不是 p99 或完整公平性门禁，实际结果见[记录](validation-atomic-progress-2026-11-18.md)。

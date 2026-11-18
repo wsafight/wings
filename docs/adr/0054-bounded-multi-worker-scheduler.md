@@ -1,6 +1,7 @@
 # ADR-0054：有界多 worker 调度与 handler 边界迁移
 
 - 日期：2026-11-13
+- 后续：[ADR-0138](0138-native-thread-stack-startup-boundary.md) 在原 worker/timer 预留桶内核对 pthread 实际可用栈，未通过前不发布启动成功；不增加配额或改变调度。
 - 状态：已采纳（有界 M:N 集成切片；macOS 功能已验证，Linux 与完整门禁另记）
 - 扩展诊断：[ADR-0102](0102-opt-in-worker-lock-statistics.md) 增加默认关闭的 worker 四类锁区间墙钟计数，保留原锁顺序、容量与时限。
 - 后续实验：[ADR-0101](0101-empty-language-request-maintenance.md) 曾以同锁存活计数跳过空语言请求表维护，五对无稳定收益后回退；当前仍沿原扫描与双端回收。

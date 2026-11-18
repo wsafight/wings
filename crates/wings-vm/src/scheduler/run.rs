@@ -30,6 +30,7 @@ pub(super) fn worker(
     shared: Arc<Shared>,
     index: usize,
     ready: mpsc::SyncSender<Result<(), String>>,
+    stack_check: fn(usize) -> Result<(), &'static str>,
 ) {
     let _cpu = shared
         .lock_observations
@@ -42,6 +43,7 @@ pub(super) fn worker(
         .map(|observer| observer.token.clone())
         .unwrap_or_default();
     let setup = (|| {
+        stack_check(THREAD_STACK + 65536)?;
         let pool = StackPool::new_on_demand(
             &shared.tenant,
             shared.config.capacity,

@@ -6,6 +6,82 @@ use wings_abi::{ScalarContext, ScalarOutput, ValueType};
 use wings_artifact::{Handler, Manifest};
 
 #[test]
+fn rejected_native_worker_stacks_join_and_restore_all_startup_reservations() {
+    fn reject(maximum: usize) -> Result<(), &'static str> {
+        assert_eq!(maximum, THREAD_STACK + 65536);
+        assert!(
+            std::thread::current()
+                .name()
+                .unwrap()
+                .starts_with("wings-worker-")
+        );
+        Err("injected native worker stack rejection")
+    }
+    for workers in [1, 2] {
+        let limits = Resources {
+            bytes: 32 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm_accounted(limits).unwrap();
+        let bootstrap = vm.used();
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let baseline = vm.used();
+        let config = SchedulerConfig {
+            workers,
+            capacity: 1,
+            requests: 1,
+            ..SchedulerConfig::default()
+        };
+        assert_eq!(
+            Scheduler::new_with_stack_check(&tenant, config, reject)
+                .err()
+                .as_deref(),
+            Some("injected native worker stack rejection")
+        );
+        assert_eq!(vm.used(), baseline);
+        let scheduler = Scheduler::new(&tenant, config).unwrap();
+        drop(scheduler);
+        assert_eq!(vm.used(), baseline);
+        drop(tenant);
+        assert_eq!(vm.used(), bootstrap);
+    }
+}
+
+#[test]
+fn one_rejected_native_worker_joins_siblings_and_releases_timer_and_pool_startup() {
+    fn reject_second(maximum: usize) -> Result<(), &'static str> {
+        if std::thread::current().name() == Some("wings-worker-1") {
+            Err("injected second worker stack rejection")
+        } else {
+            crate::native_stack::check_current(maximum)
+        }
+    }
+    let limits = Resources {
+        bytes: 32 << 20,
+        ..Resources::default()
+    };
+    let vm = ResourceAccount::vm_accounted(limits).unwrap();
+    let bootstrap = vm.used();
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let baseline = vm.used();
+    let config = SchedulerConfig {
+        workers: 2,
+        capacity: 1,
+        requests: 1,
+        ..SchedulerConfig::default()
+    };
+    assert_eq!(
+        Scheduler::new_with_stack_check(&tenant, config, reject_second)
+            .err()
+            .as_deref(),
+        Some("injected second worker stack rejection")
+    );
+    assert_eq!(vm.used(), baseline);
+    drop(tenant);
+    assert_eq!(vm.used(), bootstrap);
+}
+
+#[test]
 fn actor_cancellation_charge_survives_stop_until_last_control_owner_exits() {
     for workers in [1, 2] {
         let limits = Resources {

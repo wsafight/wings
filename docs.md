@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-18 宿主线程栈边界](docs/validation-native-thread-stacks-2026-11-18.md) 保留请求值不等于实际可用范围的首次失败，核对原预留桶、启动拒绝和 join 退账。
+
 [2026-11-18 启动复验与原生采样](docs/validation-startup-followup-2026-11-18.md) 保留 Debug TCP 五秒与让出入口十秒失败，区分后续定向通过、模块 dlopen 采样与尚未定位的根因。
 
 [2026-11-18 原子让出进展验证](docs/validation-atomic-progress-2026-11-18.md) 区分无限步骤片下的同 worker 健康进展、固定 FIFO 丢样和完整公平性门禁，另保留启动采样的有限旁证。

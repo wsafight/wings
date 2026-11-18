@@ -23,6 +23,7 @@ mod message_values;
 mod module;
 mod module_image;
 mod module_path;
+mod native_stack;
 mod native_sync;
 mod preemption;
 mod record_reply;

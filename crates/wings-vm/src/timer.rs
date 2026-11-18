@@ -23,6 +23,7 @@ struct Control {
 }
 
 struct State {
+    startup: Option<Result<(), &'static str>>,
     deadline: Option<Instant>,
     stopped: bool,
 }
@@ -31,6 +32,14 @@ impl DeadlineTimer {
     pub(crate) fn new(
         tenant: &ResourceAccount,
         preemption: &PreemptionToken,
+    ) -> Result<Self, String> {
+        Self::new_with_stack_check(tenant, preemption, crate::native_stack::check_current)
+    }
+
+    fn new_with_stack_check(
+        tenant: &ResourceAccount,
+        preemption: &PreemptionToken,
+        stack_check: impl FnOnce(usize) -> Result<(), &'static str> + Send + 'static,
     ) -> Result<Self, String> {
         let page_bytes = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| "failed to query timer OS page size")?;
@@ -43,6 +52,7 @@ impl DeadlineTimer {
         })?;
         let control = Arc::new(Control {
             state: crate::native_sync::mutex(State {
+                startup: None,
                 deadline: None,
                 stopped: false,
             }),
@@ -50,17 +60,47 @@ impl DeadlineTimer {
         });
         let shared = control.clone();
         let token = preemption.clone();
+        let stack_bytes = TIMER_STACK_BYTES + 2 * page_bytes;
         let thread = thread::Builder::new()
             .name("wings-deadline".into())
             .stack_size(TIMER_STACK_BYTES)
-            .spawn(move || run(shared, token))
+            .spawn(move || {
+                let status = stack_check(stack_bytes);
+                let mut state = shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                state.startup = Some(status);
+                shared.changed.notify_one();
+                drop(state);
+                if status.is_ok() {
+                    run(shared, token);
+                }
+            })
             .map_err(|error| format!("failed to create worker timer: {error}"))?;
-        Ok(Self {
+        let timer = Self {
             thread: Some(thread),
             control,
             preemption: preemption.clone(),
             _charge: charge,
-        })
+        };
+        let status = {
+            let mut state = timer
+                .control
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            while state.startup.is_none() {
+                state = timer
+                    .control
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            state.startup.expect("timer startup result")
+        };
+        status?;
+        Ok(timer)
     }
 
     pub(crate) fn arm(&self, deadline: Instant) -> Result<(), String> {
@@ -135,5 +175,41 @@ fn run(control: Arc<Control>, preemption: PreemptionToken) {
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_native_stack_joins_before_returning_its_original_charge() {
+        let limits = Resources {
+            bytes: 4 << 20,
+            ..Resources::default()
+        };
+        let vm = ResourceAccount::vm_accounted(limits).unwrap();
+        let bootstrap = vm.used();
+        let tenant = vm.tenant_accounted(limits).unwrap();
+        let baseline = vm.used();
+        let account = tenant.clone();
+        let result = DeadlineTimer::new_with_stack_check(
+            &tenant,
+            &PreemptionToken::default(),
+            move |maximum| {
+                let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+                assert_eq!(maximum, TIMER_STACK_BYTES + 2 * page);
+                assert_eq!(std::thread::current().name(), Some("wings-deadline"));
+                assert!(account.used().bytes >= TIMER_STACK_BYTES as u64);
+                Err("injected native timer stack rejection")
+            },
+        );
+        assert_eq!(
+            result.err().as_deref(),
+            Some("injected native timer stack rejection")
+        );
+        assert_eq!(vm.used(), baseline);
+        drop(tenant);
+        assert_eq!(vm.used(), bootstrap);
     }
 }
