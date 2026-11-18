@@ -311,6 +311,22 @@ fn main() {
         );
         assert_eq!(vm.used(), Resources::default());
     }
+    if arguments.len() > 7 {
+        let dependency = Path::new(&arguments[6]);
+        let baseline = vm.used();
+        let error = unsafe { ScalarModule::load_accounted(dependency, &vm) }
+            .err()
+            .unwrap();
+        assert!(error.contains("unsupported native dependency"), "{error}");
+        assert_eq!(vm.used(), baseline);
+        let tools = unsafe { ScalarModule::load_trusted(dependency) }.unwrap();
+        assert_eq!(vm.used(), baseline);
+        drop(tools);
+        assert_eq!(vm.used(), baseline);
+        println!(
+            "Native module dependency boundary verified: additional library rejected before loading; trusted tools remain explicit"
+        );
+    }
     println!(
         "Module accounting verified: path/control/file/image admission order, exact capacity, failure rollback, shared leases, suspended cleanup, VM ownership and no unaccounted execution fallback"
     );

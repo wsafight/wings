@@ -142,6 +142,8 @@
 
 原生模块按 [ADR-0044](adr/0044-native-module-leases.md) 持有 Library 代码租约，最后一个模块/ID/实例/活栈所有者销毁后交还装载器引用。`load_accounted` 先准入 2 MiB 控制预算和文件页，再按 [ADR-0128](adr/0128-native-module-image-admission.md) 解析有界 ELF64/Mach-O64 段表；文件快照释放后补足原生页对齐的映像跨度预算，成功才调用装载器。常驻总额为控制预算加文件页/映像跨度的较大者，映像独立限制 64 MiB；失败完整退账，跨 VM 计费 worker/pool 执行前拒绝。不把该逻辑容量当动态装载器/依赖库内部开销或实际 RSS，也不是热更新。
 
+计费产物按 [ADR-0129](adr/0129-native-module-dependency-boundary.md) 限制原生依赖：macOS 只接受普通系统 libSystem 装载命令，Linux 只接受 libc 的明确 SONAME，不支持额外原生库、rpath 或其他加载重定向。依赖预检在动态装载前进行；平台系统运行库属于可信宿主基线，仍计入整机内存观测。该规则不认证宿主装载器环境，也不是 native 沙箱。
+
 [ADR-0041](adr/0041-worker-deadline-parking.md) 用计费 parker 集成空闲等待与请求 deadline；ADR-0046 仅经有界 ingress 提供通知，不导出裸 notifier，也不是完整 reactor。
 
 [ADR-0040](adr/0040-language-request-events.md) 在 ABI v10 扩展固定 EffectRequest，整数请求使用静态完成事件；完成消息预留随 pending 保留、入队时净转移，普通外部入口不能伪造 RequestId。记录/列表复制最初在 ABI v12 接入，当前 Bytes 消息使用 ABI v15。

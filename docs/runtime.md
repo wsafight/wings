@@ -97,6 +97,8 @@ let outcome = request.wait(timeout)?;
 
 [ADR-0085](adr/0085-module-path-admission.md) 要求计费加载先预留原 2 MiB 控制容量，额度不足优先于目录错误；[ADR-0128](adr/0128-native-module-image-admission.md) 在文件页保护下读取有界快照，解析 ELF64/Mach-O64 的装载段（含零填充与空洞），释放快照后补足映像跨度，成功才动态装载。常驻总额为 `2 MiB + max(4096 B 取整文件大小, 原生页对齐映像跨度)`，映像不得超过 64 MiB；追加/解析/装载失败归还全部票据。模块、handler、实例和活栈共享一次预算；最后代码 owner 交还 Library 后退账，不声称 OS 全部解除映射或物理占用相等。
 
+[ADR-0129](adr/0129-native-module-dependency-boundary.md) 在同一快照内预检依赖，Mach-O 只允许普通 `LC_LOAD_DYLIB` 的 `/usr/lib/libSystem.B.dylib`，ELF 只允许 `DT_NEEDED` 的 `libc.so.6`；无依赖也合法。额外库/加载重定向/错误表在动态装载前正常拒绝并完整退账。非计费工具入口仍受原可信 ABI 要求；宿主装载器环境、系统库内部成本和完整资源账本仍另行验收。
+
 [ADR-0084](adr/0084-accounted-root-module-admission.md) 在现有 VM 身份校验中拒绝未计费模块接入计费根，先于业务入口、堆/进程分配、调度槽占用与镜像消费；失败后原工具实例和镜像仍可使用。
 
 [ADR-0083](adr/0083-accounted-module-execution.md) 禁止计费模块通过未计费或未绑定 process 的池初始化、执行或接回镜像；跨 VM 同样拒绝。失败发生在进入原生入口、移动 heap/Bytes 或消耗镜像前，保留原状态与重试能力。默认 `instantiate()` 要求显式配置，不再偷偷使用 TLS 工具池；未计费模块工具行为保持。

@@ -2,6 +2,7 @@
 
 - 日期：2026-11-18
 - 状态：已采纳（模块账本切片；验证结果另记）
+- 后续：[ADR-0129](0129-native-module-dependency-boundary.md) 限制额外依赖旁加载，保留本决定的单映像预算与最后 owner 清理。
 - 部分替代：[ADR-0044](0044-native-module-leases.md)、[ADR-0085](0085-module-path-admission.md) 仅按库文件大小预留库页的规则；控制先准入和代码租约不变。
 
 ## 原因

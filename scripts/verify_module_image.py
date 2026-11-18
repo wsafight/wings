@@ -10,6 +10,20 @@ import tempfile
 import verify_scalar_aot as aot
 
 
+def build_with_linker(wrapper, artifact, compiler, extra):
+    wrapper.write_text("#!/bin/sh\nexec " + " ".join(map(shlex.quote, [compiler, *extra])) + ' "$@"\n')
+    wrapper.chmod(0o700)
+    previous = os.environ.get("CC")
+    os.environ["CC"] = str(wrapper)
+    try:
+        aot.command([aot.COMPILER, "build", aot.ROOT / "examples/counter.wings", "-o", artifact])
+    finally:
+        if previous is None:
+            del os.environ["CC"]
+        else:
+            os.environ["CC"] = previous
+
+
 def verify(parent):
     counter = parent / "counter"
     aot.command([aot.COMPILER, "build", aot.ROOT / "examples/counter.wings", "-o", counter])
@@ -39,18 +53,8 @@ def verify(parent):
     compiler = os.environ.get("CC", "cc")
     aot.command([compiler, "-c", assembly, "-o", padding])
     wrapper = parent / "linker"
-    wrapper.write_text("#!/bin/sh\nexec " + " ".join(map(shlex.quote, [compiler, str(padding), *flags])) + ' "$@"\n')
-    wrapper.chmod(0o700)
-    previous = os.environ.get("CC")
-    os.environ["CC"] = str(wrapper)
     expanded = parent / "expanded"
-    try:
-        aot.command([aot.COMPILER, "build", aot.ROOT / "examples/counter.wings", "-o", expanded])
-    finally:
-        if previous is None:
-            del os.environ["CC"]
-        else:
-            os.environ["CC"] = previous
+    build_with_linker(wrapper, expanded, compiler, [str(padding), *flags])
     budget = aot.module_image_budget(expanded)
     file_bytes = (expanded / library).stat().st_size
     assert budget >= baseline + (1 << 20)
@@ -79,9 +83,19 @@ def verify(parent):
         else:
             raise AssertionError("missing read-only zero-fill segment")
     (oversized / library).write_bytes(data)
-    print(aot.example("module_accounting", expanded, *invalid, oversized, budget).stdout, end="")
+    dependency = parent / ("dependency.dylib" if os.uname().sysname == "Darwin" else "dependency.so")
+    if os.uname().sysname == "Darwin":
+        aot.command([compiler, "-dynamiclib", padding, *flags, "-o", dependency])
+        dependency_flags = ["-Wl,-needed_library," + str(dependency)]
+    else:
+        aot.command([compiler, "-shared", "-nostdlib", padding, "-o", dependency])
+        dependency_flags = ["-Wl,--no-as-needed", str(dependency)]
+    dependent = parent / "dependent"
+    build_with_linker(wrapper, dependent, compiler, dependency_flags)
+    print(aot.example("module_accounting", expanded, *invalid, oversized, dependent, budget).stdout, end="")
     print(json.dumps({"status": "ok", "baseline_budget": baseline, "expanded_budget": budget,
                       "expanded_file_bytes": file_bytes, "zero_fill_bytes": 1 << 20,
+                      "unsupported_dependency_rejected": True,
                       "metric": "logical_image_span_not_rss_or_mvp_acceptance"}))
 
 
