@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0140 为 tcp_counter 新增显式三种 Bytes state，原 Int 模式/32 MiB/容量/期限不变；健康完整状态通过有限 Read -> Bytes 逐字节核对，失败只验原提交前缀。两种构建各 719 项/显式 42 次真实三端服务对照、工程/MSRV/Linux 交叉检查及 Release 完整 AOT 通过；Debug 完整 AOT 仍在旧 Int TCP 原五秒握手失败。默认不自动 OTP；比较失败不回退模型。首启动/BEAM badmatch 失败均保留，不把调整 socket 设置顺序当成已证明根因，范围和证据见 `docs/validation-tcp-bytes-2026-11-19.md`；完整账本、公平/过载/服务长测、启动稳定性、原生双平台和 BEAM/MVP 门禁不因此完成。
+
 - ADR-0139 为共享 Manifest::read 增加打开前/句柄元数据检查，仅接受至多 64 KiB 普通文件（保留普通目标符号链接）；按已知长度 fallible 预留、精确读取并探测一个额外字节。修改前 FIFO 在原生 open 阻塞已由受限子进程/采样确认；两种构建各 107 harness/717 项、11 类文件专项、Release 完整 AOT 及工程/MSRV/Linux 交叉检查通过，Debug 完整 AOT 仍在 TCP 原五秒启动失败。产物不变仍是前提，不抵御恶意换文件或承诺文件系统 I/O 时间上界，不是 TCP/dlopen 启动超时根因。实际回归见 `docs/validation-manifest-loading-2026-11-18.md`，完整账本/双平台/BEAM/MVP 门禁仍待完成。
 
 - `d49cbe2` 后两次显式完整 Debug 启动采样没有获得可用堆栈。首次临时包装在握手后 join sample 导致 accept 期限耗尽，属于观察干扰；修正为业务后 join 后九个 TCP 场景原限通过，但后续 Counter equivalence 原十秒入口超时。sample 均在原三秒工具限内未完成符号输出，保留空 stdout/实际 stderr/报告，不提高限额或宣称根因修复，见同一清单验证记录的采样章节。

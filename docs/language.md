@@ -81,6 +81,8 @@ on CompletedBool(id: RequestId, status: Int, value: Bool) {
 
 `examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。
 
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 的 `examples/tcp-bytes-counter.wings` 保持同一 Apply 入口，使用已支持的不可变 Bytes/state、big-endian 读写、Configure 和 Read -> Bytes；宿主显式选择三种完整状态长度。它已用于真实 TCP 功能验证，不引入新的语法、语言 I/O 或阻塞等待，也不将独立 BEAM/Python 工具当作可执行 Wings 源码的前端。
+
 [ADR-0047](adr/0047-cross-thread-ingress-requests.md) 仅扩展宿主标量请求入口，保留无 `->` 的单向消息与 `-> Unit` 的请求确认区别；外部线程可以等待结果，业务 handler 仍不支持阻塞 receive/await/call。
 
 [ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit；ADR-0047 增加宿主请求模式，均不增加语言语法或引用消息能力。

@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 新增真实 loopback 的完整 Bytes Counter 对照：三种状态分别在分片/流水线、跨连接、候选失败、正负溢出、非法帧与 8×64 上限下逐条比独立 Python 模型。仅显式 `--compare-beam` 执行 OTP；两端零超时正确性不替代开环/长测/CPU/整机内存门禁，证据和失败见[记录](validation-tcp-bytes-2026-11-19.md)。
+
 [ADR-0139](adr/0139-regular-file-manifest-loading.md) 验证清单普通文件、64 KiB 精确边界、特殊对象及符号链接目标；FIFO 修改前阻塞只在 OS 受限子进程复现并保留原生采样。计费/工具入口及真实 CLI 的拒绝退账和成功执行见[记录](validation-manifest-loading-2026-11-18.md)，不归因既有启动超时，也不替代原生双平台或 BEAM/MVP 门禁。
 
 [ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 核对 worker/timer 原生可用栈、无效范围、实际超上限拒绝与启动失败退账；一/双 worker、部分 sibling 拒绝和 timer 的受限回归不增加原资源额度。首次请求值前提失败与实际状态见[记录](validation-native-thread-stacks-2026-11-18.md)，不当作内存性能或双平台门禁通过。

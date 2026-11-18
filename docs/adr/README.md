@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [ADR-0140](0140-bytes-tcp-service-equivalence.md) | 完整 Bytes 状态的受限 TCP 服务与显式 BEAM 正确性对照 | 已采纳（真实服务前置；非性能门禁） |
 | [ADR-0139](0139-regular-file-manifest-loading.md) | 清单普通文件/长度检查、固定读取与拒绝退账 | 已采纳（可信静态产物输入边界） |
 | [0138](0138-native-thread-stack-startup-boundary.md) | worker/timer 原生可用栈的原预留桶核对、启动结果与失败 join | 已采纳（宿主栈边界；非完整账本） |
 | [0137](0137-infinite-handler-atomic-progress.md) | 无限步骤片下的原子让出、同 worker 健康进展、有限观测与停止清理 | 已采纳（短时进展前置；非公平性门禁） |

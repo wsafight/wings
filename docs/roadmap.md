@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 推进第 5/7 项的真实服务同业务基础：受限 TCP 支持三种完整 Bytes state，显式 Wings/BEAM/Python 逐帧核对与健康完整状态校验。它不关闭公平/过载/故障长测、完整账本、启动稳定性、原生双平台或 BEAM 吞吐/整机内存门禁；实际状态见[记录](validation-tcp-bytes-2026-11-19.md)。
+
 [ADR-0139](adr/0139-regular-file-manifest-loading.md) 补第 4 项清单打开/读取边界，拒绝特殊文件并按已验证长度构造输入；保留修改前 FIFO 阻塞与普通文件符号链接兼容。实际证据见[记录](validation-manifest-loading-2026-11-18.md)，产物不变前提、完整资源账本、启动稳定性、原生双平台及 BEAM/MVP 门禁保持。
 
 [ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 补第 4/5 项宿主线程栈的启动边界：实际可用范围不得超过原计费桶，失败先 join 再退账。验证和首次失败见[记录](validation-native-thread-stacks-2026-11-18.md)；没有完成 OS 分配前硬限额、完整原生账本、原生双平台或 BEAM/MVP 门禁。

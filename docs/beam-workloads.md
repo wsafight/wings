@@ -1,5 +1,7 @@
 # BEAM 工作负载协议 v1–v11
 
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 的独立受限 TCP 正确性入口沿用 v1 的三种逻辑完整状态和 32 B 请求/成功回复，另用原 TCP 错误回复映射；不改 v1–v11 的已有输入/测量协议。一个 adapter 对一个 actor，mailbox 1，连接/帧/期限固定；健康全量状态逐字节核对，失败只验提交前缀。显式 `python3 scripts/verify_tcp_bytes.py --artifact <tcp-bytes-artifact> --output <new-directory> --compare-beam` 才执行真实 OTP，默认完整 AOT 只跑 Wings/模型。范围和实测见[记录](validation-tcp-bytes-2026-11-19.md)，不是新性能协议或 BEAM 双门禁。
+
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 仅在 Wings 原独立 `--observe-locks` 诊断输出 worker 函数 CPU 区间；v6 业务、事件和 BEAM 不变。冻结驱动核对两个 join 后的实际终态，缺失使诊断失效；范围与结果见[记录](validation-worker-cpu-2026-11-18.md)，不代表两端性能验收。
 
 本协议配合[评测与验收](evaluation.md)和[里程碑](roadmap.md)使用。v1–v5 是 M0 的独立正确性切片，**只有显式 `--compare-beam` 才实际运行 BEAM**；v6 是另行显式启动的长时测量，必须有真实 OTP 29，不回退成模型。两类入口都不作未经验证的性能或内存领先声明，不修改副作用或提交契约。

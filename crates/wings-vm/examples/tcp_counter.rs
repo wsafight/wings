@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use wings_abi::ValueType;
 use wings_vm::{
-    IngressSender, IngressWake, RequestOutcome, Reservation, ResourceAccount, Resources,
-    ScalarModule, ScalarWorker,
+    IngressSender, IngressWake, Pid, RequestOutcome, Reservation, ResourceAccount, Resources,
+    ScalarModule, ScalarWorker, WorkerEvent,
 };
 
 const THREAD_BYTES: usize = 256 * 1024;
@@ -396,7 +396,48 @@ fn write_frame(
     Ok(())
 }
 
-fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String> {
+fn finish_request(
+    worker: &mut ScalarWorker,
+    pid: Pid,
+    handler: &wings_vm::HandlerId,
+    arguments: &[i64],
+) -> Result<RequestOutcome, String> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let request = worker.request(pid, handler, arguments, 4096, Duration::from_secs(3))?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err("TCP Bytes state request deadline".into());
+        }
+        match worker.tick(64)? {
+            WorkerEvent::Delivered(actual) if actual == pid => {
+                return worker
+                    .take_reply(request)?
+                    .ok_or("missing TCP Bytes state reply".into());
+            }
+            WorkerEvent::Suspended(actual) if actual == pid => {}
+            _ => return Err("TCP Bytes state request failed".into()),
+        }
+    }
+}
+
+fn verify_full_state(bytes: &[u8], length: usize, value: i64) -> Result<(), String> {
+    if bytes.len() != length
+        || bytes.len() < 16
+        || bytes[..8] != value.to_be_bytes()
+        || bytes[8..16] != 1u64.to_be_bytes()
+        || bytes[16..].iter().any(|byte| *byte != 0)
+    {
+        return Err("TCP Bytes full state mismatch".into());
+    }
+    Ok(())
+}
+
+fn run(
+    directory: &Path,
+    connections: usize,
+    frames: usize,
+    state_bytes: Option<usize>,
+) -> Result<(), String> {
     let limits = Resources {
         bytes: 32 << 20,
         processes: 1,
@@ -408,17 +449,39 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
     let tenant = vm.tenant_accounted(limits)?;
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
     let handler = module.handler("Apply")?;
-    if module.manifest().state != ValueType::Int
+    if module.manifest().state != state_bytes.map_or(ValueType::Int, |_| ValueType::BytesRef)
         || handler.schema().reply != Some(ValueType::Int)
         || handler.schema().parameters.len() != 2
         || handler.schema().parameters[0].1 != ValueType::Int
         || handler.schema().parameters[1].1 != ValueType::Bool
     {
-        return Err("TCP Counter requires Int state and Apply(Int, Bool) -> Int".into());
+        return Err("TCP Counter state mode or Apply(Int, Bool) -> Int schema mismatch".into());
     }
     let mut worker = ScalarWorker::new(&tenant, 1)?;
     worker.enable_wait()?;
-    let pid = worker.spawn(&module, limits, 1)?;
+    let pid = if let Some(length) = state_bytes {
+        let configure = module.handler("Configure")?;
+        let read = module.handler("Read")?;
+        if configure.schema().parameters.len() != 1
+            || configure.schema().parameters[0].1 != ValueType::Int
+            || configure.schema().reply != Some(ValueType::Int)
+            || !read.schema().parameters.is_empty()
+            || read.schema().reply != Some(ValueType::BytesRef)
+        {
+            return Err(
+                "TCP Bytes Counter requires Configure(Int) -> Int and Read -> Bytes".into(),
+            );
+        }
+        let pid = worker.spawn_with_heap(&module, limits, 1, 4)?;
+        if finish_request(&mut worker, pid, &configure, &[length as i64])?
+            != RequestOutcome::Reply(0)
+        {
+            return Err("TCP Bytes configuration mismatch".into());
+        }
+        pid
+    } else {
+        worker.spawn(&module, limits, 1)?
+    };
     let sender = worker.open_request_ingress(pid, &handler, 2, 4096)?;
     drop(handler);
     let mut adapter = Adapter::start(&tenant, sender, connections, frames)?;
@@ -434,11 +497,42 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
         worker.wait(Duration::from_millis(20))?;
     }
     let report = adapter.join()?;
-    let committed = worker.committed_state(pid).ok().or_else(|| {
-        worker
-            .last_exit()
-            .and_then(|snapshot| snapshot.committed_state)
-    });
+    let mut full_state_verified = false;
+    let committed = if let Some(length) = state_bytes {
+        let snapshot = worker
+            .byte_state_snapshot(pid)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                worker
+                    .last_exit()
+                    .filter(|exit| exit.pid == pid)
+                    .and_then(|exit| exit.byte_state)
+            })
+            .ok_or("missing TCP Bytes committed state")?;
+        if snapshot.length != length
+            || snapshot.prefix[8..16] != 1u64.to_be_bytes()
+            || snapshot.prefix[16..].iter().any(|byte| *byte != 0)
+        {
+            return Err("TCP Bytes committed prefix mismatch".into());
+        }
+        let value = i64::from_be_bytes(snapshot.prefix[..8].try_into().unwrap());
+        if worker.process_count() == 1 {
+            let outcome = finish_request(&mut worker, pid, &module.handler("Read")?, &[])?;
+            let RequestOutcome::ReplyBytes(bytes) = outcome else {
+                return Err("missing TCP Bytes full state reply".into());
+            };
+            verify_full_state(bytes.as_slice(), length, value)?;
+            full_state_verified = true;
+        }
+        Some(value)
+    } else {
+        worker.committed_state(pid).ok().or_else(|| {
+            worker
+                .last_exit()
+                .and_then(|snapshot| snapshot.committed_state)
+        })
+    };
     drop((adapter, worker, module, tenant));
     if vm.used() != bootstrap {
         return Err("TCP service leaked resource reservations".into());
@@ -456,6 +550,7 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
             "max_tcp_segment": report.max_tcp_segment,
             "committed": committed, "resources_released": true,
             "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
+            "state_bytes": state_bytes, "full_state_verified": full_state_verified,
         })
     ).map_err(|error| error.to_string())?;
     Ok(())
@@ -464,6 +559,32 @@ fn run(directory: &Path, connections: usize, frames: usize) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_byte_state_checks_the_entire_tail_not_only_the_snapshot_prefix() {
+        for length in [256, 4096, 65536] {
+            let mut bytes = vec![0; length];
+            bytes[..8].copy_from_slice(&i64::MIN.to_be_bytes());
+            bytes[8..16].copy_from_slice(&1u64.to_be_bytes());
+            verify_full_state(&bytes, length, i64::MIN).unwrap();
+            for offset in [16, 31, 32, length - 1] {
+                bytes[offset] = 1;
+                assert!(verify_full_state(&bytes, length, i64::MIN).is_err());
+                bytes[offset] = 0;
+            }
+            assert!(verify_full_state(&bytes, length - 1, i64::MIN).is_err());
+            assert!(verify_full_state(&bytes, length, i64::MAX).is_err());
+            bytes[15] = 2;
+            assert!(verify_full_state(&bytes, length, i64::MIN).is_err());
+        }
+    }
+
+    #[test]
+    fn truncated_full_state_is_rejected_without_indexing_outside_it() {
+        for length in 0..16 {
+            assert!(verify_full_state(&vec![0; length], length, 0).is_err());
+        }
+    }
 
     #[test]
     fn listener_and_accepted_socket_buffers_have_verified_limits() {
@@ -586,9 +707,9 @@ mod tests {
 fn main() -> std::process::ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let result = (|| {
-        if arguments.len() != 4 || arguments[0] != "--trusted" {
+        if !matches!(arguments.len(), 4 | 6) || arguments[0] != "--trusted" {
             return Err(
-                "Usage: tcp_counter --trusted <artifact> <connections:1..=8> <frames:1..=64>"
+                "Usage: tcp_counter --trusted <artifact> <connections:1..=8> <frames:1..=64> [--state-bytes <256|4096|65536>]"
                     .into(),
             );
         }
@@ -601,7 +722,21 @@ fn main() -> std::process::ExitCode {
         if !(1..=8).contains(&connections) || !(1..=64).contains(&frames) {
             return Err("TCP adapter limits are out of range".into());
         }
-        run(Path::new(&arguments[1]), connections, frames)
+        let state_bytes = if arguments.len() == 6 {
+            if arguments[4] != "--state-bytes" {
+                return Err("invalid TCP state mode".into());
+            }
+            let length = arguments[5]
+                .parse::<usize>()
+                .map_err(|_| "invalid TCP state length")?;
+            if !matches!(length, 256 | 4096 | 65536) {
+                return Err("invalid TCP state length".into());
+            }
+            Some(length)
+        } else {
+            None
+        };
+        run(Path::new(&arguments[1]), connections, frames, state_bytes)
     })();
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,

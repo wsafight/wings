@@ -1,5 +1,7 @@
 # 运行时
 
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 为 tcp_counter 增加 `--state-bytes 256|4096|65536`，保留原 Int 模式、固定资源与期限。Bytes 配置/健康最终完整读取通过计费堆和有限请求；失败出口只验原长度/32 B 前缀并显式不宣称完整导出。OTP 对照使用同 32 B socket 业务及有限发送 gate，但不把无超时短测当作完整过载/取消等价，实际证据见[验证](validation-tcp-bytes-2026-11-19.md)。
+
 [ADR-0139](adr/0139-regular-file-manifest-loading.md) 在共享清单读取中拒绝特殊文件，并在固定长度读取前核对路径/句柄元数据；计费加载仍先预留控制和库预算，拒绝时原租约完整退账。普通文件符号链接保持兼容，可信产物/路径不变仍是前提，不将元数据检查称为文件替换沙箱或加载时间硬上界，实际证据见[验证](validation-manifest-loading-2026-11-18.md)。
 
 [ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 要求 worker/timer 在启动确认前核对 pthread 实际可用范围，分别不超过原 2 MiB+64 KiB 与 256 KiB+两页栈桶；错误或未知结果正常终止并 join 后退账。它不限制 OS 创建前瞬时分配，也不把 guard/TLS/缓存或 RSS 当作已精确计量，见[验证](validation-native-thread-stacks-2026-11-18.md)。

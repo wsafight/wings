@@ -1361,6 +1361,10 @@ def main():
         tcp_artifact = parent / "tcp-counter"
         command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
         verify_tcp_service(tcp_artifact)
+        tcp_bytes = parent / "tcp-bytes-counter"
+        command([COMPILER, "build", ROOT / "examples/tcp-bytes-counter.wings", "-o", tcp_bytes])
+        from verify_tcp_bytes import verify as verify_tcp_bytes
+        verify_tcp_bytes(tcp_bytes, parent / "tcp-bytes-evidence")
         command([TARGET / PROFILE / "examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
         example("scalar_requests", worker_artifact)
         example("scalar_supervisor", worker_artifact)

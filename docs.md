@@ -2,6 +2,8 @@
 
 项目目标与当前进度见[项目概览](README.md)，详细设计按主题拆分如下。
 
+[2026-11-19 Bytes TCP 同业务验证](docs/validation-tcp-bytes-2026-11-19.md) 覆盖三种完整状态、真实 socket 分片/流水线/跨连接、checked 失败和显式 BEAM 对照，保留启动与缓冲设置首次失败。
+
 [2026-11-18 清单读取边界](docs/validation-manifest-loading-2026-11-18.md) 保留 FIFO 打开阻塞的修改前采样，核对普通文件/符号链接、固定读取边界与加载拒绝退账；另记录后续完整 Debug 采样的观察干扰、工具超时与 Counter 十秒失败。
 
 [2026-11-18 宿主线程栈边界](docs/validation-native-thread-stacks-2026-11-18.md) 保留请求值不等于实际可用范围的首次失败，核对原预留桶、启动拒绝和 join 退账。
