@@ -1,5 +1,7 @@
 # 架构设计
 
+[ADR-0135](adr/0135-bounded-accounted-module-paths.md) 在原模块控制准入之后，先无分配检查计费路径的原始编码字节，再调用 canonicalize；解析结果再次检查后才拼接文件名。16 KiB 边界不改变原生映像/文件预算或 ABI，来源暂存修复与尚缺的原生分配口径见[记录](validation-module-paths-2026-11-18.md)。
+
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 为既有可选 worker 锁统计增加线程 CPU 区间，只有 worker 入口/退出读取本线程时钟，单原子发布诊断终态；默认关闭，不改执行 ABI 或业务路径。范围和不可归因部分见 [runtime](runtime.md) 及[验证记录](validation-worker-cpu-2026-11-18.md)。
 
 [ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 在独立 OTP 对照端使用持续有限请求适配器和按 child 的监督分支，验证与 Wings 相同的取消/恢复业务。所有适配/监督进程计入 BEAM 作业；没有引入 VM 运行依赖或改变受管 ABI。

@@ -30,6 +30,8 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 开发
 
+[ADR-0135](docs/adr/0135-bounded-accounted-module-paths.md) 为计费模块路径暂存设置原始/解析路径边界，避免超大宿主来源在原控制额度外复制；验证见[记录](docs/validation-module-paths-2026-11-18.md)，完整原生分配账本仍待闭环。
+
 [ADR-0134](docs/adr/0134-opt-in-worker-cpu-observation.md) 为该可选诊断增加 worker 函数 CPU 区间，默认不读取 CPU 时钟；不含 timer/发生器，也不是锁内 CPU，验证见[记录](docs/validation-worker-cpu-2026-11-18.md)。
 
 [ADR-0133](docs/adr/0133-open-loop-worker-lock-diagnostics.md) 把已有 worker 锁统计接入原 hot-queue 长测，以显式开关、join 后累计与独立 handler 数核对定位后续测量方向。冻结两对诊断入口和验证见[记录](docs/validation-open-loop-locks-2026-11-18.md)；墙钟统计不作 CPU 或性能门禁结论。

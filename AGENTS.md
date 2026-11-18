@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0135 修复计费模块的大路径来源暂存：原 2 MiB 控制准入后、canonicalize 前无分配检查原始编码字节至多 16 KiB，解析后再检查才拼接；固定错误，不放宽 CLI 参数/映像预算。修改前十二场景复现 ASCII/非 UTF-8/NUL 3 MiB 来源各产生 3145729 B Rust 分配，修复后各一次 38 B 固定错误；Debug/Release 各十二场景、105 harness/702 项及完整 AOT、工程/MSRV/Linux 交叉检查通过。原生 canonicalize/libc/装载器完整账本及原 MVP 门禁仍保留，见 `docs/validation-module-paths-2026-11-18.md`。
+
 - ADR-0134 的 `74678b9` 冻结两对原 hot-queue 80000/s 长测及独立重放已完成：开启轮 worker CPU 合计 87.216872916/90.976441875s，仅覆盖 worker 函数；四轮采样队满 13444/12153/31105/22714，第二开启轮保留 108 pending 满及 27 超时，首开启预热保留 282632 队满。全部实际提交/清理正确，仍不作 CPU 路径归因、优化收益、BEAM 双目标或 MVP 通过声明，见 `docs/validation-worker-cpu-2026-11-18.md`。
 
 - ADR-0134 在原可选锁统计中增加固定计费的 worker 函数 CPU 区间：入口/退出两次线程时钟、默认无 CPU 读时钟，单原子发布 Pending/Unavailable/实际纳秒；不含 timer/发生器或 OS 线程启动退出，也不是采样期/锁内 CPU。Debug/Release 各 104 harness/702 项及全量 AOT、九项 Python 模型、工程/MSRV/交叉检查通过，实际两对长测另记。ABI v22/4352 B 与原业务/预算保持，验证状态见 `docs/validation-worker-cpu-2026-11-18.md`；完整 MVP 门禁不变。

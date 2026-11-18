@@ -8,7 +8,7 @@
 
 0133 的两对同业务长测已经核对锁累计，但持锁/等待墙钟包含 OS 停顿，不能据此定位 CPU 开销。保留原业务和开关，在 `SchedulerConfig.lock_statistics=true` 时，为每 worker 的既有计费观测存储增加一个原子状态，并在 worker 函数入口和退出清理后读取两次本线程 CPU 时钟。默认路径不读取时钟，不增加每次认领/恢复的 CPU 时钟调用。
 
-macOS/Linux 使用 `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`；区间只累计该 worker 线程的用户态和内核态 CPU，包含 worker 函数内的初始化、执行、统计和清理，不含线程创建前启动、OS 线程退出、独立 deadline timer、业务发生器或其他线程。纳秒是返回单位，不承诺纳秒精度或采样分布。它不是采样期 CPU、整进程 CPU、CPU 硬配额或锁内 CPU。原生时钟定义可核对 [Linux 手册](https://man7.org/linux/man-pages/man3/clock_gettime.3.html) 和 [Apple Libc 实现](https://github.com/apple-oss-distributions/Libc/blob/main/gen/clock_gettime.c)。
+macOS/Linux 使用 `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`；区间只累计该 worker 线程的用户态和内核态 CPU，包含 worker 函数内的初始化、执行、统计和清理，不含线程创建前启动、OS 线程退出、独立 deadline timer、业务发生器或其他线程。纳秒是返回单位，不承诺纳秒精度或采样分布。它不是采样期 CPU、整进程 CPU、CPU 硬配额或锁内 CPU。线程时钟范围可核对 [Linux 手册](https://man7.org/linux/man-pages/man3/clock_gettime.3.html)；本机 macOS 的接口可用性由 SDK 声明、原生定向测试和实际长测分别核对，不以未取得的在线源码作证据。
 
 区间以两个读时钟调用为界：CPU guard 先于 worker 局部变量创建，晚于它们和退出 guard 清理；函数入参最终释放及线程封套不在区间内，不宣称覆盖整个 OS 线程寿命。
 

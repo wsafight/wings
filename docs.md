@@ -65,6 +65,7 @@
 | [2026-11-18 多 actor 失败取证](docs/validation-multi-counter-evidence-2026-11-18.md) | 读时限额、全程 I/O 期限、输入身份、双流前缀及进程组清理 |
 | [2026-11-18 开环 worker 锁诊断](docs/validation-open-loop-locks-2026-11-18.md) | 显式长测统计、join 后累计、handler 数核对与两对反序扰动诊断 |
 | [2026-11-18 worker CPU 区间](docs/validation-worker-cpu-2026-11-18.md) | 默认关闭的线程 CPU、终态/缺失、末 owner 计费与同业务诊断 |
+| [2026-11-18 模块路径暂存](docs/validation-module-paths-2026-11-18.md) | 大来源副本复现、计费路径边界、固定错误和分配请求计数 |
 | [BEAM 工作负载 v1–v11](docs/beam-workloads.md) | 单/多 actor、双发送者、有限准入、开环/公平性长测及取消恢复 |
 | [风险与里程碑](docs/roadmap.md) | 风险登记、M0–M7 范围与验收条件 |
 

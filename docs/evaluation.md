@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0135](adr/0135-bounded-accounted-module-paths.md) 的固定十二场景探针，在仅余模块控制预算/VM 满额时，计数 ASCII/非 UTF-8/NUL 大来源及路径边界的 Rust 分配请求。修改前 3145729 B 暂存副本与修复后原限回归分别保留，计数不是活字节或 RSS，见[记录](validation-module-paths-2026-11-18.md)。
+
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 为默认关闭的 worker 锁诊断增加线程 CPU 区间，独立核对所有 worker 的 join 后终态。范围包括 worker 内初始化/清理，排除 timer/发生器与 OS 线程启动退出；它不是锁内或采样期 CPU，不与持锁墙钟相除做归因，实际验证见[记录](validation-worker-cpu-2026-11-18.md)。
 
 [ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为原 hot-queue 80000/s 长测提供两对统计开关诊断：固定业务/事件与 30s/60s 阶段，worker join 后独立核对累计锁区间和全部 handler 数。统计含初始化/预热/收尾，非 CPU/单独采样区间；范围和实际结果见[记录](validation-open-loop-locks-2026-11-18.md)，不改 BEAM 双门禁或默认完整 AOT 的执行时段。

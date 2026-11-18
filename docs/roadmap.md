@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0135](adr/0135-bounded-accounted-module-paths.md) 补第 4 项模块来源暂存边界，保留 3 MiB 来源超出原 2 MiB 控制的修改前证据；修复只推进相应 Rust 副本和拼接，不关闭 canonicalize/libc/allocator、完整账本或原生双平台/BEAM/MVP 门禁，见[记录](validation-module-paths-2026-11-18.md)。
+
 [ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 补第 5/7 项诊断的 worker 线程 CPU 区间，默认关闭、先计费、join 后区分实际值与缺失。它不含 timer/发生器、不作锁内 CPU 归因，也不关闭原生双平台、完整账本或 BEAM/MVP 门禁；状态见[记录](validation-worker-cpu-2026-11-18.md)。
 
 [ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为第 5/7 项接同负载长测锁诊断，在 worker join 后核对累计与业务数量，不改变 VM 或预算。它只推进定位后续优化的证据，不能关闭 CPU 归因、完整内存、原生双平台或 BEAM/MVP 门禁，实际状态见[记录](validation-open-loop-locks-2026-11-18.md)。

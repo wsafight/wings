@@ -1277,6 +1277,23 @@ def main():
         verify_module_image(module_images)
         result = example("handler_lookup", counter)
         print(result.stdout.splitlines()[-1])
+        paths = json.loads(example("module_path_accounting").stdout)
+        assert paths["metric"] == "rust_allocation_requests_not_live_bytes_or_rss"
+        assert paths["status"] == "ok" and paths["resources_released"]
+        assert paths["remaining_bytes"] == paths["bootstrap_bytes"]
+        assert [(row["case"], row["available_bytes"]) for row in paths["cases"]] == [
+            (name, available) for name in ("ascii-large", "non-utf8-large", "nul-large", "one-past", "exact", "empty")
+            for available in (2 << 20, 0)]
+        for row in paths["cases"]:
+            assert row["resources_released"] and 0 < row["error_bytes"] <= 128
+            assert 0 < row["allocations"] and row["largest_requested_bytes"] <= (16 << 10) + 1
+            assert row["total_requested_bytes"] <= 64 << 10
+            if row["available_bytes"] == 0:
+                assert row["error_prefix"] == "resource_exhausted at Vm account"
+            elif row["input_bytes"] > 16 << 10:
+                assert row["error_prefix"] == "artifact directory path exceeds 16 KiB"
+                assert row["largest_requested_bytes"] <= 128 and row["total_requested_bytes"] <= 1024
+        print("Accounted module paths verified: bounded source staging, native byte lengths, full-account precedence and cleanup; not complete native allocator or MVP acceptance")
         example("resource_accounts")
         print(example("sync_accounting").stdout, end="")
         example("record_heap")

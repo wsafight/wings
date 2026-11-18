@@ -10,6 +10,8 @@ use wings_artifact::{
 use crate::{Reservation, ResourceAccount, ResourceLevel, Resources, ScalarProcess, check_status};
 
 const MODULE_CONTROL_BYTES: u64 = 2 << 20;
+const MAX_DIRECTORY_BYTES: usize = 16 << 10;
+const DIRECTORY_TOO_LONG: &str = "artifact directory path exceeds 16 KiB";
 
 #[derive(Clone)]
 pub struct ScalarModule {
@@ -79,9 +81,15 @@ impl ScalarModule {
                 })
             })
             .transpose()?;
+        if lease.is_some() && directory.as_os_str().as_encoded_bytes().len() > MAX_DIRECTORY_BYTES {
+            return Err(DIRECTORY_TOO_LONG.into());
+        }
         let directory = directory
             .canonicalize()
             .map_err(|error| error.to_string())?;
+        if lease.is_some() && directory.as_os_str().as_encoded_bytes().len() > MAX_DIRECTORY_BYTES {
+            return Err(DIRECTORY_TOO_LONG.into());
+        }
         let library_path = directory.join(library_name());
         let metadata = library_path
             .symlink_metadata()
