@@ -7,9 +7,10 @@ class AllocationFailureReportTests(unittest.TestCase):
     def report(self):
         return {
             "status": "ok", "fixed_heap_failures": 4, "root_failures": 1,
+            "module_path_failures": 1,
             "aot_heap_failures": 7, "invocation_failures": 1, "managed_recovered_failures": 1,
             "managed_terminal_failures": 2, "host_payload_failures": 1, "reply_payload_failures": 1,
-            "total_injected_failures": 18, "healthy_replies": 2, "invocation_retry_value": 8,
+            "total_injected_failures": 19, "healthy_replies": 2, "invocation_retry_value": 8,
             "resources_released": True, "bootstrap_bytes": 232, "remaining_bytes": 232,
             "metric": "rust_requested_storage_not_rss_or_complete_resource_acceptance",
         }

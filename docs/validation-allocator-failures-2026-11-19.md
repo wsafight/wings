@@ -6,7 +6,7 @@
 
 `allocation_failures` 先核对 OS 子进程 CPU 至多 20s、core=0，父进程保持 30s 墙钟限制。按分配序号或请求大小，对有限次 Rust `alloc`/`alloc_zeroed`/`realloc` 返回 null，其他请求交给 System；不是访问空指针，也不制造宿主 OOM。
 
-最终冻结 Debug/Release 可执行与各自新编译的 AOT 产物分别通过，stderr 均为空。每个构建实际注入 18 次：固定堆四份存储 4 次、根表 1 次、带名义记录布局的 AOT 堆构造 7 次、调用参数 1 次、受管 Bytes 一次失败后 GC 重试 1 次、连续失败 2 次、宿主消息副本 1 次、候选回复副本 1 次。各失败必须观察到注入计数，不以未命中故障的正常执行代替。
+初版冻结 Debug/Release 可执行与各自新编译的 AOT 产物分别通过，stderr 均为空。每个构建实际注入 18 次：固定堆四份存储 4 次、根表 1 次、带名义记录布局的 AOT 堆构造 7 次、调用参数 1 次、受管 Bytes 一次失败后 GC 重试 1 次、连续失败 2 次、宿主消息副本 1 次、候选回复副本 1 次。各失败必须观察到注入计数，不以未命中故障的正常执行代替。
 
 - 构造失败后三级账户、请求存储和栈池回到调用前；正常根构造/收集仍可执行。
 - 调用参数失败没有启动 handler 或丢失原堆，同一任务重试返回 8。
@@ -15,6 +15,14 @@
 - 两次受管分配场景中的健康 actor 各完成一次回复，失败没有阻止其进展；所有 owner 释放后 VM 账面回到原根 232 B。
 
 可执行、产物、逐次 stdout/stderr 和 SHA 位于 `target/allocator-validation-20261119/`；专项报告为 `null-{debug,release}/report.json`，总命令/退出/日志指纹见 `report.json`。先前扩展探针及其旧输出保留于 `target/allocation-failures-expanded-20261119/`；该旧输出尚无总注入字段，不冒充最终严格报告。
+
+## 模块路径结果分配补充
+
+基于 `5ff358f` 的后续审计没有发现新的模块租约泄漏或绕账缺陷，不为审计结论硬改生产代码。补充覆盖此前未执行的加载自身 fallible 分配：按 canonical 路径原生字节数精确命中 `module_path::resolve_with` 的 `try_reserve_exact`，第一次 `ScalarModule::load_accounted` 必须返回 `module path storage allocation failed`，实际注入计数为 1，三级账户及 Rust 请求存储回到加载前。随后不注入重试同一真实 AOT 模块，继续执行上述全部业务场景。
+
+新增场景使每个构建的实际注入总数由 18 增至 19；业务 owner 释放后另核对三级账户基线，账户节点释放后 VM 仍回到原根 232 B。Debug/Release 定向入口分别通过，exit=0、stderr 为空，报告均含 `module_path_failures=1`、`total_injected_failures=19` 和 `resources_released=true`。可执行、AOT 产物、stdout/stderr 与 SHA 分别保存在 `target/module-path-allocation-{debug,release}-{artifact,evidence}/`；这些报告不覆盖上方初版历史，也不证明完整资源或性能门禁。
+
+本轮四项报告模型测试、workspace all-target check、Rust 1.100 beta clippy `-D warnings` 和 MSRV 1.85 all-target check 通过。随后顺序执行原限完整 AOT：Debug 已执行并通过新增 19 次注入，但之后的 `scalar_requests --trusted` 在原 30 秒期限超时，日志为 `target/module-path-allocation-full-aot-debug.log`；没有延长期限、自动重试或将它归因为本次模块路径改动。Release 完整 AOT 通过，日志为 `target/module-path-allocation-full-aot-release.log`。此次 Debug 失败与上方历史 TCP 失败分别保留，启动/执行间歇超时的根因仍未关闭。
 
 ## 回归与失败保留
 

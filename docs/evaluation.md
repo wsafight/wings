@@ -1,6 +1,6 @@
 # 评测与验收
 
-[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 为准入/清理加入实际 allocator null 注入，而不是只把账户填满。18 次拒绝只在 CPU 20s/墙钟 30s/core 0 子进程执行，覆盖固定/AOT 堆、根、参数重试、GC 一次重试/耗尽、宿主消息和候选回复；失败点、根基线、旧状态、健康进展及原启动诊断见[记录](validation-allocator-failures-2026-11-19.md)。它不注入系统全局 OOM，也不替代完整账本或 BEAM 双门禁。
+[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 为准入/清理加入实际 allocator null 注入，而不是只把账户填满。19 次拒绝只在 CPU 20s/墙钟 30s/core 0 子进程执行，覆盖模块路径结果、固定/AOT 堆、根、参数重试、GC 一次重试/耗尽、宿主消息和候选回复；失败点、三级账户与根基线、无注入重试、旧状态、健康进展及原启动诊断见[记录](validation-allocator-failures-2026-11-19.md)。它不注入系统全局 OOM，也不替代完整账本或 BEAM 双门禁。
 
 [ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 新增真实 loopback 的完整 Bytes Counter 对照：三种状态分别在分片/流水线、跨连接、候选失败、正负溢出、非法帧与 8×64 上限下逐条比独立 Python 模型。仅显式 `--compare-beam` 执行 OTP；两端零超时正确性不替代开环/长测/CPU/整机内存门禁，证据和失败见[记录](validation-tcp-bytes-2026-11-19.md)。
 

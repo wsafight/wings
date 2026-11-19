@@ -10,9 +10,10 @@ import verify_scalar_aot as aot
 def validate(report):
     expected = {
         "status": "ok", "fixed_heap_failures": 4, "root_failures": 1,
+        "module_path_failures": 1,
         "aot_heap_failures": 7, "invocation_failures": 1, "managed_recovered_failures": 1,
         "managed_terminal_failures": 2, "host_payload_failures": 1, "reply_payload_failures": 1,
-        "total_injected_failures": 18, "healthy_replies": 2, "invocation_retry_value": 8,
+        "total_injected_failures": 19, "healthy_replies": 2, "invocation_retry_value": 8,
         "resources_released": True, "metric": "rust_requested_storage_not_rss_or_complete_resource_acceptance",
     }
     if type(report) is not dict or set(report) != set(expected) | {"bootstrap_bytes", "remaining_bytes"}:
@@ -57,8 +58,9 @@ def verify(artifact, output):
             path.write_bytes(value if isinstance(value, bytes) else value.encode())
             record[name + "_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
         (output / "report.json").write_text(json.dumps(record, indent=2) + "\n")
-    print("Allocator failures verified: 18 actual null results, fixed/AOT heaps, roots, argument retry, "
-          "managed GC retry/failure, message/reply copies, old state and healthy progress; not complete resource acceptance")
+    print("Allocator failures verified: 19 actual null results, fixed/AOT heaps, roots, module path storage, "
+          "argument retry, managed GC retry/failure, message/reply copies, old state and healthy progress; "
+          "not complete resource acceptance")
 
 
 def main():

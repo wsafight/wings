@@ -367,6 +367,26 @@ fn reply_payload(module: &ScalarModule, tenant: &ResourceAccount) {
     assert_eq!(tenant.used(), before);
 }
 
+fn module_loading(directory: &Path, accounts: [&ResourceAccount; 3]) -> ScalarModule {
+    let canonical = directory.canonicalize().unwrap();
+    let requested = canonical.as_os_str().len();
+    assert!(requested > 0);
+    drop(canonical);
+    let before = accounts.map(ResourceAccount::used);
+    let live = LIVE.load(Ordering::SeqCst);
+    arm(1, requested, 1);
+    let result = unsafe { ScalarModule::load_accounted(directory, accounts[0]) };
+    disarm(1);
+    let error = result
+        .err()
+        .expect("injected module path storage allocation must fail");
+    assert_eq!(error, "module path storage allocation failed");
+    drop(error);
+    assert_eq!(accounts.map(ResourceAccount::used), before);
+    assert_eq!(LIVE.load(Ordering::SeqCst), live);
+    unsafe { ScalarModule::load_accounted(directory, accounts[0]) }.unwrap()
+}
+
 fn main() {
     require_limits();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -376,8 +396,9 @@ fn main() {
     let tenant = vm.tenant_accounted(limits()).unwrap();
     let account = tenant.process_accounted(limits()).unwrap();
     let accounts = [&vm, &tenant, &account];
+    let account_baselines = accounts.map(ResourceAccount::used);
     fixed_heap(accounts);
-    let module = unsafe { ScalarModule::load_accounted(Path::new(&arguments[1]), &vm) }.unwrap();
+    let module = module_loading(Path::new(&arguments[1]), accounts);
     let pool = StackPool::new_accounted(&tenant, 1, 1).unwrap();
     let bound = pool.for_process(&account).unwrap();
     aot_heap(&module, accounts, &bound);
@@ -386,13 +407,16 @@ fn main() {
     managed_buffer(&module, &tenant, 2);
     host_payload(&module, accounts);
     reply_payload(&module, &tenant);
-    drop((bound, pool, module, account, tenant));
+    drop((bound, pool, module));
+    assert_eq!(accounts.map(ResourceAccount::used), account_baselines);
+    drop((account, tenant));
     assert_eq!(vm.used(), bootstrap);
-    assert_eq!(TOTAL_INJECTED.load(Ordering::SeqCst), 18);
+    assert_eq!(TOTAL_INJECTED.load(Ordering::SeqCst), 19);
     println!(
         "{}",
         json!({
             "status": "ok", "fixed_heap_failures": 4, "root_failures": 1,
+            "module_path_failures": 1,
             "aot_heap_failures": 7, "invocation_failures": 1, "managed_recovered_failures": 1,
             "managed_terminal_failures": 2, "healthy_replies": 2, "invocation_retry_value": 8,
             "host_payload_failures": 1, "reply_payload_failures": 1,
