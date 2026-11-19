@@ -18,9 +18,13 @@ Debug/Release 的 `verify_measurement.py` 与 `verify_fairness_measurement.py` �
 
 只读重放 `target/fairness-measure-final-20261119/2-wings.events.bin` 后，除新增字段外历史摘要同样**逐字段完全一致**：采样 mailbox_full=56、warmup=0、tail_candidate_pass=false。
 
-56 条全部保留且未截断，全部属于采样段、planned 均为 51690000000ns，即同一个 10ms 同刻 burst 的 sequence 516945..517000、actor 46..101。sent 窗口仅 121667ns，前一到达间隔中位数 916.5ns、最大 9416ns；拒绝事件自身迟发只有 102583..224250ns。这里没有 open-loop 的数十毫秒迟发后补发特征，不能再仅因全轮最高迟发 9.86ms 同现就把它称为同一机制候选。同刻 burst 下的排队/准入压力仍是候选，但当前字段不能区分前次消息未排尽、调度进展或其他背压，需另行取证；不得改写成已证明 VM 根因。
+56 条全部保留且未截断，全部属于采样段、planned 均为 51690000000ns，即同一个 10ms 同刻 burst 的 sequence 516945..517000、actor 46..101。sent 窗口仅 121667ns，前一到达间隔中位数 916.5ns、最大 9416ns；拒绝事件自身迟发只有 102583..224250ns，没有 open-loop 首次拒绝时已达数十毫秒迟发的形态。
 
-派生核对汇总保存在 `target/mailbox-full-attribution-replay-20261119.json`，冻结 trace/manifest 未改写。旧记录只保留当时证据与结论边界，本节及原记录新增的后续链接明确修正 fairness 候选。
+本记录最初据此写成“不再支持同一迟发机制”，这是过度推断：当前事件的迟发和全局前一到达间隔不能排除**前一 per-actor burst** 的影响。继续只读扫描原 trace 后，56 个被拒 actor 的前一次心跳（sequence−100）全部已接受且拒绝时尚未完成；这些前次到达自身迟发为 9715417..9862375ns，中位数 9786145.5ns。原计划相隔 10ms 的前后 burst，对每个被拒 actor 的实际到达间隔仅 356083..389750ns，中位数 378166.5ns。相比之下，同 burst 前 44 个被接受心跳的前一次心跳均已完成。
+
+因此，证据支持“前一迟发 burst 尚未排尽，当前按计划追上的 burst 在约 0.38ms 后到达，mailbox 1 拒绝”的关联；它保留迟发压缩类候选，但不等于 open-loop 的 29–43ms 阈值关系，也不定位 OS 延迟来源或证明 VM 内部根因。第一次分析脚本有一次字典赋值语法错误，修正后只读执行；不影响 trace 或结果。
+
+派生核对汇总保存在 `target/mailbox-full-attribution-replay-20261119.json`，前一 actor 核对及 56 条明细保存在 `target/fairness-mailbox-full-previous-actor-20261119.json`，冻结 trace/manifest 未改写。原记录和本节的最终表述保留初次过度推断及修正，不将其从历史中抹掉。
 
 ## 范围
 

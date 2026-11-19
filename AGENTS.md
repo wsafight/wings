@@ -4,7 +4,7 @@
 
 ## 项目现状
 
-- ADR-0147 为 open-loop/fairness 离线摘要增加至多 1024 条、显式截断的逐拒绝 planned/sent、迟发、阶段、actor 和前一到达间隔；不改原始 trace、拒绝计数或尾候选。冻结重放保持开环 211 次、fairness 56 次拒绝及全部历史汇总不变。开环 211 次集中在 0.849ms，首条迟发 28.85ms、间隔中位数 1µs，符合 OS 迟发后追时刻补发；fairness 56 次全在同一 planned burst 的 actor 46..101，迟发仅 0.103–0.224ms，不再凭全局 9.86ms 峰值同现归为同类机制。OS 延迟来源与 fairness 背压机制均未定位，见 `docs/validation-mailbox-full-attribution-summary-2026-11-19.md`。
+- ADR-0147 为 open-loop/fairness 离线摘要增加至多 1024 条、显式截断的逐拒绝 planned/sent、迟发、阶段、actor 和前一到达间隔；不改原始 trace、拒绝计数或尾候选。冻结重放保持开环 211 次、fairness 56 次拒绝及全部历史汇总不变。开环 211 次集中在 0.849ms，首条迟发 28.85ms、间隔中位数 1µs，符合 OS 迟发后追时刻补发；fairness 56 次当前拒绝全在同一 planned burst 的 actor 46..101、迟发仅 0.103–0.224ms，但前一同 actor burst 迟发约 9.72–9.86ms 且均未完成，实际间隔约 0.38ms，保留迟发压缩关联。OS 延迟来源、阈值与 fairness 的 VM 内部机制均未定位，见 `docs/validation-mailbox-full-attribution-summary-2026-11-19.md`。
 
 - 2026-11-19 开环间歇 mailbox_full 已逐条归因：发生器（或其进程）被 OS 延迟 29–43ms 后追时刻以约 1µs 间隔补发，热 actor（9000/s、mailbox 100）约 11ms 即达满槽阈值；211 次拒绝集中在 0.85ms 单窗口，锁峰值 ≤94µs 排除锁竞争，各轮迟发 ≤11.5ms 均零拒绝。OS 延迟来源未定位，补发协议变更须另行 ADR；门禁解读须区分发生器迟发关联拒绝与 VM 背压，见 `docs/validation-mailbox-full-attribution-2026-11-19.md`。
 
