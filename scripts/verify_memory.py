@@ -49,10 +49,25 @@ def models():
                                      "compressor_swapped_page_bytes": 8192, "swap_used_bytes": 1024})
             require(memory.validate(distinct, {"10"})["10"] == record,
                     "swapped compressor pages not decompressed logical or disk swap bytes")
+            unavailable = copy.deepcopy(sample)
+            unavailable["host"]["compressor_swapped_page_bytes"] = None
+            require(memory.validate(unavailable, {"10"})["10"] == record,
+                    "SDK without rev2 retains other host metrics and discloses missing swap pages")
+            for invalid in (True, "0", -1, 2**64):
+                changed = copy.deepcopy(unavailable)
+                changed["host"]["compressor_swapped_page_bytes"] = invalid
+                rejected(lambda: memory.validate(changed, {"10"}))
+            missing = copy.deepcopy(unavailable)
+            del missing["host"]["compressor_swapped_page_bytes"]
+            rejected(lambda: memory.validate(missing, {"10"}))
         before = {"started_ns": 1, "finished_ns": 2, "processes": {"10": {"parent": 1, "rss_bytes": 2048}}}
         combined = memory.combine(before, before, sample, 3, 4)
         require(combined["rss_bytes"] == 6144 and combined["platform_memory"]["totals"]["rss_bytes"] == 1024,
                 "census RSS and platform sample not conflated")
+        if system == "Darwin":
+            partial_host = memory.combine(before, before, unavailable, 3, 4)["platform_memory"]
+            require(partial_host["complete"] and partial_host["totals"]["rss_bytes"] == 1024,
+                    "optional host rev2 absence does not invalidate process memory totals")
         identities = {}
         require(memory.track_identities(combined["platform_memory"], identities) == 0, "initial pid identity")
         require(memory.track_identities(combined["platform_memory"], identities) == 0, "stable pid identity")

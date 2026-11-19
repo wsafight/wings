@@ -122,24 +122,33 @@ static void host_values(void) {
         printf("{\"status\":\"error\",\"errno\":%d}", errno ? errno : EINVAL);
         return;
     }
-    vm_statistics64_data_t statistics;
+    vm_statistics64_data_t statistics = {0};
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     mach_port_t host = mach_host_self();
     kern_return_t status = host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&statistics, &count);
     mach_port_deallocate(mach_task_self(), host);
     long page_bytes = sysconf(_SC_PAGESIZE);
-    if (status != KERN_SUCCESS || count < HOST_VM_INFO64_REV2_COUNT || page_bytes <= 0) {
+    if (status != KERN_SUCCESS || count < HOST_VM_INFO64_REV1_COUNT || page_bytes <= 0) {
         if (status != KERN_SUCCESS) printf("{\"status\":\"error\",\"mach_status\":%d}", status);
         else printf("{\"status\":\"error\",\"errno\":%d}", EINVAL);
         return;
     }
     printf("{\"status\":\"ok\",\"swap_total_bytes\":%" PRIu64
            ",\"swap_used_bytes\":%" PRIu64 ",\"compressor_resident_bytes\":%" PRIu64
-           ",\"compressed_logical_bytes\":%" PRIu64 ",\"compressor_swapped_page_bytes\":%" PRIu64 "}",
+           ",\"compressed_logical_bytes\":%" PRIu64 ",\"compressor_swapped_page_bytes\":",
            swap.xsu_total, swap.xsu_used,
            (uint64_t)statistics.compressor_page_count * (uint64_t)page_bytes,
-           statistics.total_uncompressed_pages_in_compressor * (uint64_t)page_bytes,
-           statistics.swapped_count * (uint64_t)page_bytes);
+           statistics.total_uncompressed_pages_in_compressor * (uint64_t)page_bytes);
+#ifdef HOST_VM_INFO64_REV2_COUNT
+    if (count >= HOST_VM_INFO64_REV2_COUNT) {
+        printf("%" PRIu64, statistics.swapped_count * (uint64_t)page_bytes);
+    } else {
+        printf("null");
+    }
+#else
+    printf("null");
+#endif
+    printf("}");
 }
 #endif
 

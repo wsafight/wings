@@ -99,8 +99,12 @@ def validate(payload, expected):
         fields = ("swap_total_bytes", "swap_used_bytes")
         if payload["platform"] == "Darwin":
             fields += ("compressor_resident_bytes", "compressed_logical_bytes", "compressor_swapped_page_bytes")
-        if any(type(host.get(field)) is not int or not 0 <= host[field] <= 2**64 - 1 for field in fields):
-            raise ValueError("memory probe host value")
+        for field in fields:
+            value = host.get(field)
+            if field == "compressor_swapped_page_bytes" and field in host and value is None:
+                continue
+            if type(value) is not int or not 0 <= value <= 2**64 - 1:
+                raise ValueError("memory probe host value")
         if host["swap_used_bytes"] > host["swap_total_bytes"]:
             raise ValueError("memory probe swap totals")
     elif not ((type(host.get("errno")) is int and host["errno"] > 0)
