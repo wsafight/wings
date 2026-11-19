@@ -48,17 +48,19 @@ unsafe impl GlobalAlloc for Allocator {
 }
 
 fn main() {
-    let mutex = Mutex::new(());
-    let before_mutex = LIVE.load(Ordering::SeqCst);
-    drop(mutex.lock().unwrap());
-    let mutex_bytes = LIVE.load(Ordering::SeqCst) - before_mutex;
-    drop(mutex);
+    let (mutex_bytes, before_mutex) = {
+        let mutex = Mutex::new(());
+        let before = LIVE.load(Ordering::SeqCst);
+        drop(mutex.lock().unwrap());
+        (LIVE.load(Ordering::SeqCst) - before, before)
+    };
     assert_eq!(LIVE.load(Ordering::SeqCst), before_mutex);
-    let condvar = Condvar::new();
-    let before_condvar = LIVE.load(Ordering::SeqCst);
-    condvar.notify_all();
-    let condvar_bytes = LIVE.load(Ordering::SeqCst) - before_condvar;
-    drop(condvar);
+    let (condvar_bytes, before_condvar) = {
+        let condvar = Condvar::new();
+        let before = LIVE.load(Ordering::SeqCst);
+        condvar.notify_all();
+        (LIVE.load(Ordering::SeqCst) - before, before)
+    };
     assert_eq!(LIVE.load(Ordering::SeqCst), before_condvar);
     #[cfg(target_os = "macos")]
     let (mutex_limit, condvar_limit) = (

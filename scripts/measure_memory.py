@@ -21,7 +21,10 @@ def build(source, destination):
     if not compiler or destination.exists():
         raise ValueError("memory probe compiler or destination")
     command = [*compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(destination)]
-    subprocess.run(command, check=True, capture_output=True, timeout=30)
+    result = subprocess.run(command, capture_output=True, timeout=30)
+    if result.returncode:
+        diagnostic = result.stderr.decode(errors="replace")[:4096]
+        raise ValueError(f"memory probe compiler exit {result.returncode}: {diagnostic}")
     return command
 
 
