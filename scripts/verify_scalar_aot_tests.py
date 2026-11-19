@@ -7,6 +7,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import verify_scalar_aot as aot
 
@@ -149,6 +150,59 @@ class TcpStartupVerification(unittest.TestCase):
             time.sleep(0.01)
         else:
             self.fail("TCP startup left a pipe-holding descendant running")
+
+
+class CommandTimeoutSampling(unittest.TestCase):
+    def enable_sampling(self):
+        previous = aot.TIMEOUT_SAMPLE
+        aot.TIMEOUT_SAMPLE = True
+        self.addCleanup(setattr, aot, "TIMEOUT_SAMPLE", previous)
+
+    def test_default_timeout_behavior_does_not_start_the_sampler(self):
+        with mock.patch.object(aot, "sample_timeout_stacks") as sampler:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                aot.command([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.2)
+        sampler.assert_not_called()
+
+    def test_opt_in_timeout_samples_before_bounded_group_cleanup(self):
+        self.enable_sampling()
+        started = time.monotonic()
+        with mock.patch.object(aot, "sample_timeout_stacks", return_value="sample_exit=test") as sampler:
+            with self.assertRaises(AssertionError) as raised:
+                aot.command(
+                    [sys.executable, "-u", "-c",
+                     'import sys, time; print("partial"); print("stuck", file=sys.stderr); time.sleep(10)'],
+                    timeout=0.2,
+                )
+        message = str(raised.exception)
+        self.assertIn("timed out after 0.2 seconds", message)
+        self.assertIn("exit_before_cleanup=None", message)
+        self.assertIn(f"exit={-signal.SIGKILL}", message)
+        self.assertIn("sample_exit=test", message)
+        self.assertIn("partial", message)
+        self.assertIn("stuck", message)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(sampler.call_count, 1)
+        self.assertIsNotNone(sampler.call_args.args[0].poll())
+
+    def test_sampler_failure_does_not_replace_timeout_or_skip_cleanup(self):
+        self.enable_sampling()
+        with mock.patch.object(aot, "sample_timeout_stacks", side_effect=OSError("denied")):
+            with self.assertRaises(AssertionError) as raised:
+                aot.command([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.2)
+        message = str(raised.exception)
+        self.assertIn("timed out after 0.2 seconds", message)
+        self.assertIn("sample_error=OSError('denied')", message)
+        self.assertIn(f"exit={-signal.SIGKILL}", message)
+
+    def test_opt_in_success_and_expected_exit_keep_the_command_contract(self):
+        self.enable_sampling()
+        with mock.patch.object(aot, "sample_timeout_stacks") as sampler:
+            result = aot.command([sys.executable, "-c", 'print("ok")'])
+            failure = aot.command([sys.executable, "-c", "raise SystemExit(7)"], expected=7)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "ok\n", ""))
+        self.assertEqual(failure.returncode, 7)
+        sampler.assert_not_called()
 
 
 if __name__ == "__main__":

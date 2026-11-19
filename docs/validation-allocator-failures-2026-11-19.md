@@ -24,6 +24,8 @@
 
 本轮四项报告模型测试、workspace all-target check、Rust 1.100 beta clippy `-D warnings` 和 MSRV 1.85 all-target check 通过。随后顺序执行原限完整 AOT：Debug 已执行并通过新增 19 次注入，但之后的 `scalar_requests --trusted` 在原 30 秒期限超时，日志为 `target/module-path-allocation-full-aot-debug.log`；没有延长期限、自动重试或将它归因为本次模块路径改动。Release 完整 AOT 通过，日志为 `target/module-path-allocation-full-aot-release.log`。此次 Debug 失败与上方历史 TCP 失败分别保留，启动/执行间歇超时的根因仍未关闭。
 
+提交 `e6e7501` 的 push CI 中，Linux/MSRV 及 macOS 首次完整 AOT 通过，macOS 预构建复验的 `verify_failure_soak.py` 返回 `[Errno 1] Operation not permitted`，run 为 `44477376615`；同一提交的 PR CI `44477382518` 双平台与 MSRV 全部通过。本机普通及嵌套限额定向复现均通过。PR 通过不覆盖 push 失败，现有错误文本不足以确定具体系统调用，不据此调整限额或宣布故障稳定性完成。
+
 ## 回归与失败保留
 
 四项报告突变测试、六项 AOT 运行器测试、八项 workspace 运行器测试通过。最终 Debug/Release workspace 各 108 harness/719 项测试通过；新增 example 的零项 libtest harness 不替代上述真实 main 注入。workspace all-target check、clippy `-D warnings`、fmt、两种构建 bins/examples 与 doctest、MSRV 1.85 all-target 和 Linux x86-64 VM all-target 交叉检查通过。首次 fmt 和 clippy 分别拒绝排版及两处 `err().expect()`，修正后独立 final 日志通过，初次失败日志保留；没有修改旧测试或降低门槛。

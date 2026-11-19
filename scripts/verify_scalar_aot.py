@@ -22,8 +22,8 @@ TARGET = Path(os.environ.get("WINGS_TARGET_DIR", ROOT / "target"))
 COMPILER = TARGET / PROFILE / "wings-compile"
 VM = TARGET / PROFILE / "wings-vm"
 
-# Opt-in bounded native sampling of processes that already exceeded a startup
-# deadline; disabled by default so ordinary runs keep their original behavior.
+# Opt-in bounded native sampling of processes that already exceeded a deadline;
+# disabled by default so ordinary runs keep their original behavior.
 TIMEOUT_SAMPLE = os.environ.get("WINGS_TIMEOUT_SAMPLE") == "1"
 
 
@@ -38,22 +38,62 @@ def limit_sampler():
     resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
 
 
-def command(arguments, text="", expected=0):
-    result = subprocess.run(
-        [str(argument) for argument in arguments],
-        input=text,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        cwd=ROOT,
-        preexec_fn=limit_child,
-    )
+def command_result(arguments, expected, result):
     if result.returncode != expected:
         raise AssertionError(
             f"{arguments}: expected exit {expected}, got {result.returncode}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
     return result
+
+
+def sampled_command(arguments, text="", expected=0, timeout=30):
+    arguments = [str(argument) for argument in arguments]
+    started = time.monotonic()
+    child = subprocess.Popen(
+        arguments,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=ROOT,
+        start_new_session=True,
+        preexec_fn=limit_child,
+    )
+    try:
+        stdout, stderr = child.communicate(input=text, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        before_cleanup = child.poll()
+        try:
+            sampling = sample_timeout_stacks(child, Path(arguments[0]).name)
+        except Exception as sampling_error:
+            sampling = f"sample_error={sampling_error!r}"
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = child.communicate()
+        raise AssertionError(
+            f"{arguments}: command timed out after {timeout} seconds; "
+            f"elapsed={time.monotonic() - started:.3f}s; exit_before_cleanup={before_cleanup}; "
+            f"exit={child.returncode}; {sampling}\nstdout: {stdout}\nstderr: {stderr}"
+        ) from error
+    return command_result(arguments, expected, subprocess.CompletedProcess(arguments, child.returncode, stdout, stderr))
+
+
+def command(arguments, text="", expected=0, timeout=30):
+    if TIMEOUT_SAMPLE:
+        return sampled_command(arguments, text, expected, timeout)
+    result = subprocess.run(
+        [str(argument) for argument in arguments],
+        input=text,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        cwd=ROOT,
+        preexec_fn=limit_child,
+    )
+    return command_result(arguments, expected, result)
 
 
 def invoke(directory, messages, expected=0):

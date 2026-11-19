@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0144](adr/0144-command-timeout-stack-sampling.md) 将默认关闭的超时采样扩展到通用 `command`：原 30 秒判定后对直接子进程取证并保留输出，默认路径不变；cargo 包装与业务 example 不作混同。实测见[记录](validation-command-timeout-sampling-2026-11-19.md)，`scalar_requests` 等原超时根因和其余 MVP 门禁不变。
+
 2026-11-19 [开环 mailbox_full 归因](validation-mailbox-full-attribution-2026-11-19.md)：间歇拒绝由发生器 OS 迟发后追时刻突发触发，热 actor 约 11ms 即达满槽阈值，锁证据排除 VM 内部停顿；OS 延迟来源未定位，补发协议变更须另行 ADR，门禁解读须区分发生器迟发关联拒绝与 VM 背压。
 
 2026-11-19 在本机执行两项冻结长测并补测量工具链：[fairness 五对](validation-fairness-measurement-2026-11-19.md) Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、零超时）；[hot-queue 开环 --scan](validation-open-loop-scan-2026-11-19.md) 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，不是最大吞吐证明。测量前置补 fairness 探针 preflight，两端 preflight 用 30s 设置期限、被测样本仍 2s；探针首执行 0.74s/0.39s 证据保留。CPU 硬配额、过载分组、原生双平台与 BEAM 双门禁仍未完成。

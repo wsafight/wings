@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [ADR-0144](0144-command-timeout-stack-sampling.md) | 通用命令原限超时后的直接子进程采样与失败证据保留 | 已采纳（诊断入口扩展；原超时根因未定） |
 | [ADR-0143](0143-shared-invoke-timeout-sampling.md) | 共享有界 invoke 失败路径的同款超时采样与有界迟到输出保留 | 已采纳（诊断入口扩展；原超时根因未定） |
 | [ADR-0142](0142-opt-in-timeout-stack-sampling.md) | 默认关闭的有界超时现场采样，只覆盖已判定失败的原进程 | 已采纳（诊断入口；原超时根因未定） |
 | [ADR-0141](0141-bounded-allocator-failure-injection.md) | 受限子进程真实 null 分配、回滚、重试及健康进展验证 | 已采纳（故障验证；非全局 OOM 隔离） |
