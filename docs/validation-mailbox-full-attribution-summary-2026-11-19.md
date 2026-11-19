@@ -28,4 +28,6 @@ Debug/Release 的 `verify_measurement.py` 与 `verify_fairness_measurement.py` �
 
 ## 范围
 
-关联摘要改善可复核性，不删除任何拒绝、不放宽尾候选、不证明公平性或最大可持续吞吐。完整公平/过载/服务故障、CPU 硬配额、完整原生账本、原生双平台和 BEAM 吞吐/整机内存门禁仍未完成。CI 状态另补。
+关联摘要改善可复核性，不删除任何拒绝、不放宽尾候选、不证明公平性或最大可持续吞吐。完整公平/过载/服务故障、CPU 硬配额、完整原生账本、原生双平台和 BEAM 吞吐/整机内存门禁仍未完成。
+
+功能提交 `95fa412` 的 PR 流水线 [`44546726622`](https://github.com/wsafight/wings/actions/runs/44546726622) 在 macOS、Linux、MSRV 全绿；push 流水线 [`44546712454`](https://github.com/wsafight/wings/actions/runs/44546712454) 的 Linux/MSRV 成功，macOS 未执行任何步骤即被取消，整 run 为 failure，未重跑。纠正提交 `28712ec` 的 push [`44547456300`](https://github.com/wsafight/wings/actions/runs/44547456300) 与 PR [`44547473410`](https://github.com/wsafight/wings/actions/runs/44547473410) 均三平台全绿。部分本地 `gh run watch` 曾因 API 连接重置或 annotations 获取失败退出，直接 run 查询确认这些监控错误不是业务测试失败。
