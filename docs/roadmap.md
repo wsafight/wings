@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0146](adr/0146-measurement-artifact-schema-preflight.md) 在 open-loop/fairness 创建 actor 和业务 `t0` 前核对 state/handler schema；真实错误 Counter 产物以固定错误、0 B trace 和无开始事件拒绝，正确负载与期限不变。实测见[记录](validation-measurement-schema-preflight-2026-11-19.md)，其余 MVP 门禁不变。
+
 [ADR-0145](adr/0145-bounded-failure-soak-tracebacks.md) 为失败长测验证保留异常位置、因果链和至多 8192 B 的 UTF-8 诊断，以定位旧 push CI 中仅有 `[Errno 1]` 的间歇失败；不重试或修改期限，根因与其余 MVP 门禁不变。实测见[记录](validation-failure-soak-diagnostics-2026-11-19.md)。
 
 [ADR-0144](adr/0144-command-timeout-stack-sampling.md) 将默认关闭的超时采样扩展到通用 `command`：原 30 秒判定后对直接子进程取证并保留输出，默认路径不变；cargo 包装与业务 example 不作混同。实测见[记录](validation-command-timeout-sampling-2026-11-19.md)，`scalar_requests` 等原超时根因和其余 MVP 门禁不变。

@@ -92,6 +92,14 @@ def verify(compare_beam):
         sentinel.write_bytes(b"retain")
         result = aot.command([aot.TARGET / aot.PROFILE / "examples/beam_fairness", "--trusted", parent / "missing", "--measure", sentinel], expected=3)
         require("File exists" in result.stderr and sentinel.read_bytes() == b"retain", "exclusive Wings trace creation")
+        wrong_artifact = parent / "wrong-fairness-artifact"
+        aot.command([aot.COMPILER, "build", aot.ROOT / "examples/beam-counter.wings", "-o", wrong_artifact])
+        wrong_trace = parent / "wrong-fairness.bin"
+        wrong = aot.command([aot.TARGET / aot.PROFILE / "examples/beam_fairness", "--trusted", wrong_artifact,
+                             "--measure", wrong_trace], expected=3)
+        require(json.loads(wrong.stdout) == {"version": 8, "status": "oracle_error"}
+                and "fairness artifact schema mismatch" in wrong.stderr
+                and wrong_trace.read_bytes() == b"", "fairness schema rejected before business start")
         commands = [("wings", [aot.TARGET / aot.PROFILE / "examples/beam_fairness", "--trusted", parent / "missing"])]
         if compare_beam:
             escript = shutil.which("escript")

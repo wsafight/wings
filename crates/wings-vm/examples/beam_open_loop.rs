@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use wings_abi::ValueType;
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
     SchedulerConfig, SchedulerHandle, SchedulerLockMetrics, StackPool,
@@ -331,6 +332,26 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     let vm = ResourceAccount::vm_accounted(limits())?;
     let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
+    let configure = module.handler("Configure")?;
+    let apply = module.handler("Apply")?;
+    if module.manifest().state != ValueType::BytesRef
+        || configure.schema().parameters.len() != 3
+        || configure
+            .schema()
+            .parameters
+            .iter()
+            .any(|(_, ty)| *ty != ValueType::Int)
+        || configure.schema().reply != Some(ValueType::Int)
+        || apply.schema().parameters.len() != 4
+        || apply
+            .schema()
+            .parameters
+            .iter()
+            .any(|(_, ty)| *ty != ValueType::Int)
+        || apply.schema().reply != Some(ValueType::Int)
+    {
+        return Err("open-loop artifact schema mismatch".into());
+    }
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
         &tenant,
@@ -342,8 +363,6 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         },
     )?;
     let handle = scheduler.handle();
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
     let deadline = Instant::now() + Duration::from_secs(if workload.measure { 120 } else { 3 });
     let initializer_pool = StackPool::new_accounted(&tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);

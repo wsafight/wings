@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use wings_abi::ValueType;
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
     SchedulerConfig, SchedulerHandle, SchedulerPid, SchedulerSliceOutcome,
@@ -268,6 +269,31 @@ fn execute(
     let vm = ResourceAccount::vm_accounted(limits())?;
     let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
+    let configure = module.handler("Configure")?;
+    if module.manifest().state != ValueType::BytesRef
+        || configure.schema().parameters.len() != 1
+        || configure
+            .schema()
+            .parameters
+            .iter()
+            .any(|(_, ty)| *ty != ValueType::Int)
+        || configure.schema().reply != Some(ValueType::Int)
+    {
+        return Err("fairness artifact schema mismatch".into());
+    }
+    let cpu = module.handler("Cpu")?;
+    let pulse = module.handler("Pulse")?;
+    if [&cpu, &pulse].iter().any(|handler| {
+        handler.schema().parameters.len() != 4
+            || handler
+                .schema()
+                .parameters
+                .iter()
+                .any(|(_, ty)| *ty != ValueType::Int)
+            || handler.schema().reply != Some(ValueType::Int)
+    }) {
+        return Err("fairness artifact schema mismatch".into());
+    }
     let tenant = vm.tenant_accounted(limits())?;
     let scheduler = Scheduler::new(
         &tenant,
@@ -288,9 +314,6 @@ fn execute(
         bounded: bounded_slices,
         ..SliceTrace::default()
     };
-    let configure = module.handler("Configure")?;
-    let cpu = module.handler("Cpu")?;
-    let pulse = module.handler("Pulse")?;
     let deadline = observation_start + Duration::from_secs(if measure { 120 } else { 3 });
     let mut pids = Vec::with_capacity(ACTORS);
     for identity in 1..=ACTORS {

@@ -144,6 +144,14 @@ def verify(compare_beam=False):
             cwd=aot.ROOT / "scripts", capture_output=True, text=True, timeout=3,
         )
         require(limited.returncode == 0 and not limited.stdout and not limited.stderr, "inherited harder limits preserved")
+        wrong_artifact = parent / "wrong-open-loop-artifact"
+        aot.command([aot.COMPILER, "build", aot.ROOT / "examples/beam-counter.wings", "-o", wrong_artifact])
+        wrong_trace = parent / "wrong-open-loop.bin"
+        wrong = aot.command([aot.TARGET / aot.PROFILE / "examples/beam_open_loop", "--trusted", wrong_artifact,
+                             "--measure", "hot-queue", 10000, wrong_trace], expected=3)
+        require(json.loads(wrong.stdout) == {"version": 6, "status": "oracle_error"}
+                and "open-loop artifact schema mismatch" in wrong.stderr
+                and wrong_trace.read_bytes() == b"", "open-loop schema rejected before business start")
         commands = [[aot.TARGET / aot.PROFILE / "examples/beam_open_loop", "--trusted", parent / "missing", "--measure"]]
         if compare_beam:
             escript = shutil.which("escript")

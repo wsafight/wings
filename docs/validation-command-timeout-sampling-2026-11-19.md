@@ -22,4 +22,4 @@
 
 报告的一段 1282 样本启动调用图中有 1269 个位于 `_dyld_start`；另一段 245 样本的主线程调用图中，243 个位于 `ScalarModule::load_accounted` → `libloading::Library::new` → `dlopen` → `mapSegments` → `fcntl`，1 个位于 Manifest 解析，1 个位于 `main` 其他位置。由此只能断定**这次**原限超时主要处于原生启动及模块装载，而不是受管 handler 执行。`fcntl` 缓慢的系统原因、采样扰动和其他超时是否同类仍未确定；不修改 socket、安全设置、文件属性或业务期限来规避，也不宣称启动根因已修复。带采样 Debug 不是完整通过。
 
-默认 Release 完整 AOT 通过，日志为 `target/command-timeout-full-aot-release.log`。workspace all-target check、clippy `-D warnings`、fmt、MSRV 1.85 all-target check 与 `git diff --check` 通过；双平台 CI 结果另补。完整资源账本、公平/过载/服务长测、CPU 硬配额和 BEAM/MVP 门禁均未因此完成。
+默认 Release 完整 AOT 通过，日志为 `target/command-timeout-full-aot-release.log`。workspace all-target check、clippy `-D warnings`、fmt、MSRV 1.85 all-target check 与 `git diff --check` 通过。提交 `f25e7ff` 的 push 流水线 [`44539019883`](https://github.com/wsafight/wings/actions/runs/44539019883) 与 PR 流水线 [`44539027188`](https://github.com/wsafight/wings/actions/runs/44539027188) 均在 macOS AArch64、Linux x86-64 和 MSRV 通过；这只复核诊断切片，不覆盖历史超时。完整资源账本、公平/过载/服务长测、CPU 硬配额和 BEAM/MVP 门禁均未因此完成。
