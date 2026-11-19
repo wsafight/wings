@@ -196,8 +196,8 @@ fn execute(directory: &Path, workload: &Workload) -> Result<Value, String> {
         {
             return Err("senders Counter state layout".into());
         }
-        for sender in 0..2 {
-            let expected = workload.streams[sender]
+        for (sender, stream) in workload.streams.iter().enumerate() {
+            let expected = stream
                 .iter()
                 .filter(|request| request.actor == index + 1)
                 .count() as i64;
