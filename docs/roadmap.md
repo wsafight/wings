@@ -1,12 +1,14 @@
 # 风险与里程碑
 
+[ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 在离线摘要有界保留逐拒绝的 planned/sent、迟发、阶段、actor 和前一到达间隔；冻结重放保持 211/56 次拒绝及尾候选不变。open-loop 符合迟发补发关联；fairness 56 次实际同属一个 planned burst、迟发仅 0.103–0.224ms，不再借全局峰值同现归为同类机制。实测见[记录](validation-mailbox-full-attribution-summary-2026-11-19.md)，其余 MVP 门禁不变。
+
 [ADR-0146](adr/0146-measurement-artifact-schema-preflight.md) 在 open-loop/fairness 创建 actor 和业务 `t0` 前核对 state/handler schema；真实错误 Counter 产物以固定错误、0 B trace 和无开始事件拒绝，正确负载与期限不变。实测见[记录](validation-measurement-schema-preflight-2026-11-19.md)，其余 MVP 门禁不变。
 
 [ADR-0145](adr/0145-bounded-failure-soak-tracebacks.md) 为失败长测验证保留异常位置、因果链和至多 8192 B 的 UTF-8 诊断，以定位旧 push CI 中仅有 `[Errno 1]` 的间歇失败；不重试或修改期限，根因与其余 MVP 门禁不变。实测见[记录](validation-failure-soak-diagnostics-2026-11-19.md)。
 
 [ADR-0144](adr/0144-command-timeout-stack-sampling.md) 将默认关闭的超时采样扩展到通用 `command`：原 30 秒判定后对直接子进程取证并保留输出，默认路径不变；cargo 包装与业务 example 不作混同。实测见[记录](validation-command-timeout-sampling-2026-11-19.md)，`scalar_requests` 等原超时根因和其余 MVP 门禁不变。
 
-2026-11-19 [开环 mailbox_full 归因](validation-mailbox-full-attribution-2026-11-19.md)：间歇拒绝由发生器 OS 迟发后追时刻突发触发，热 actor 约 11ms 即达满槽阈值，锁证据排除 VM 内部停顿；OS 延迟来源未定位，补发协议变更须另行 ADR，门禁解读须区分发生器迟发关联拒绝与 VM 背压。
+2026-11-19 [开环 mailbox_full 归因](validation-mailbox-full-attribution-2026-11-19.md)：开环间歇拒绝由发生器 OS 迟发后追时刻突发触发，热 actor 约 11ms 即达满槽阈值，锁证据排除 VM 内部停顿；OS 延迟来源未定位，补发协议变更须另行 ADR。fairness 的 56 次拒绝经 [ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 逐事件重放后不支持同一迟发机制，门禁解读须区分发生器迟发关联拒绝与 VM 背压。
 
 2026-11-19 在本机执行两项冻结长测并补测量工具链：[fairness 五对](validation-fairness-measurement-2026-11-19.md) Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、零超时）；[hot-queue 开环 --scan](validation-open-loop-scan-2026-11-19.md) 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，不是最大吞吐证明。测量前置补 fairness 探针 preflight，两端 preflight 用 30s 设置期限、被测样本仍 2s；探针首执行 0.74s/0.39s 证据保留。CPU 硬配额、过载分组、原生双平台与 BEAM 双门禁仍未完成。
 

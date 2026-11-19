@@ -40,6 +40,28 @@ def verify(compare_beam):
     records.append((1, 0, records[-1][2] + 1, 1000000, 6))
     model = replay(records)
     require(model.values == [1] + [3] * 100 and not model.pending and model.hot is None, "burst FIFO/results")
+    associated = replay([(1, 0, 0, 0, 5), (1, 0, 0, 0, 3), (2, 123456, 0, 0, 3)])
+    require(associated.mailbox_full_attribution["events"] == [
+        {"sequence": 1, "actor": 2, "phase": "warmup", "planned_ns": 0, "sent_ns": 0,
+         "generator_lateness_ns": 0, "previous_arrival_gap_ns": None},
+        {"sequence": 2, "actor": 3, "phase": "warmup", "planned_ns": 0, "sent_ns": 123456,
+         "generator_lateness_ns": 123456, "previous_arrival_gap_ns": 123456},
+    ], "fairness per-refusal lateness and previous arrival")
+    sampled = replay([(1, 0, 0, 0, 5)])
+    sampled.next = 300001
+    sampled.previous_time = sampled.last_sent = 29_999_999_000
+    sampled.consume((300001, 30_000_123_456, 0, 0, 3))
+    require(sampled.mailbox_full_attribution["events"][0] == {
+        "sequence": 300001, "actor": 2, "phase": "sample", "planned_ns": 30_000_000_000,
+        "sent_ns": 30_000_123_456, "generator_lateness_ns": 123456, "previous_arrival_gap_ns": 124456,
+    }, "fairness sample refusal association")
+    truncated = replay([(1, 0, 0, 0, 5)])
+    for sequence in range(1, measure.MAILBOX_FULL_ATTRIBUTION_LIMIT + 2):
+        truncated.consume((sequence, fairness.planned(sequence), 0, 0, 3))
+    require(truncated.mailbox_full_attribution["total"] == measure.MAILBOX_FULL_ATTRIBUTION_LIMIT + 1
+            and truncated.mailbox_full_attribution["retained"] == measure.MAILBOX_FULL_ATTRIBUTION_LIMIT
+            and len(truncated.mailbox_full_attribution["events"]) == measure.MAILBOX_FULL_ATTRIBUTION_LIMIT
+            and truncated.mailbox_full_attribution["truncated"], "fairness refusal association is explicitly truncated")
     rejected(lambda: model.finish({"committed": model.values}))
     for boundary, expected in ((1, 0), (100, 0), (101, 10_000_000), (300000, 29_990_000_000),
                                (300001, 30_000_000_000), (900000, 89_990_000_000)):

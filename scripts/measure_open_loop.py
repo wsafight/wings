@@ -25,6 +25,28 @@ EVENT = struct.Struct(">QQQqQ")
 WARMUP_NS = 30_000_000_000
 MAX_TRACE = 10 * 1024**3
 MAX_RSS = 1024**3
+MAILBOX_FULL_ATTRIBUTION_LIMIT = 1024
+
+
+def new_mailbox_full_attribution():
+    return {"version": 1, "retained": 0, "total": 0, "truncated": False, "events": []}
+
+
+def attribute_mailbox_full(attribution, sequence, actor, phase, planned, sent, previous_sent):
+    attribution["total"] += 1
+    if attribution["retained"] == MAILBOX_FULL_ATTRIBUTION_LIMIT:
+        attribution["truncated"] = True
+        return
+    attribution["events"].append({
+        "sequence": sequence,
+        "actor": actor,
+        "phase": phase,
+        "planned_ns": planned,
+        "sent_ns": sent,
+        "generator_lateness_ns": sent - planned,
+        "previous_arrival_gap_ns": sent - previous_sent if sequence > 1 else None,
+    })
+    attribution["retained"] += 1
 
 
 def trace_events(path):
@@ -97,6 +119,7 @@ def validate_trace(path, name, rate, result):
     warmup = dict(counts)
     latency = statistics()
     lateness = statistics()
+    attribution = new_mailbox_full_attribution()
     next_sequence = 1
     previous_sent = 0
     previous_observed = 0
@@ -118,6 +141,10 @@ def validate_trace(path, name, rate, result):
                     require(sequence == next_sequence, "arrival sequence")
                     require(sent >= planned and sent >= previous_sent and sent < 120_000_000_000, "arrival time")
                     require(observed == 0 and value == 0, "arrival payload")
+                    if kind == 3:
+                        attribute_mailbox_full(attribution, sequence, actor + 1,
+                                               "sample" if planned >= WARMUP_NS else "warmup",
+                                               planned, sent, previous_sent)
                     previous_sent = sent
                     next_sequence += 1
                     if planned >= WARMUP_NS:
@@ -155,7 +182,7 @@ def validate_trace(path, name, rate, result):
                "timeout_ratio": counts["timed_out"] / (rate * 60),
                "refusal_ratio": (counts["mailbox_full"] + counts["pending_full"]) / (rate * 60),
                "on_time_replies_per_second": counts["reply"] / 60,
-               "generator_lateness": lateness}
+               "generator_lateness": lateness, "mailbox_full_attribution": attribution}
     summary.update({"warmup": warmup, "events": events, "trace_bytes": path.stat().st_size,
                     "sha256": digest.hexdigest(), "drained": True})
     summary["tail_candidate_pass"] = (

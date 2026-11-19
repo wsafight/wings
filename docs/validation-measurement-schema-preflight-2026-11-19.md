@@ -14,7 +14,7 @@
 
 两种构建的原 `verify_open_loop.py` 与 `verify_fairness.py` 正确产物短回归也通过：open-loop 六组调度及配置拒绝、fairness 10ms/30ms 百万 checked 加法与同刻心跳、原状态/清理核对保持。压力短测的拒绝数量按实际结果保留，不作性能或长测结论。BEAM 未在这些默认入口执行。
 
-`cargo check -p wings-vm --example beam_open_loop --example beam_fairness`、两种构建的相应 example 构建、Python 语法与 `cargo fmt --all -- --check` 通过。`cargo check --workspace --all-targets --locked`、clippy `-D warnings`、MSRV 1.85 all-target check、`git diff --check` 与 Release 完整 `verify_scalar_aot.py` 通过；双平台 CI 结果另补。
+`cargo check -p wings-vm --example beam_open_loop --example beam_fairness`、两种构建的相应 example 构建、Python 语法与 `cargo fmt --all -- --check` 通过。`cargo check --workspace --all-targets --locked`、clippy `-D warnings`、MSRV 1.85 all-target check、`git diff --check` 与 Release 完整 `verify_scalar_aot.py` 通过。提交 `afee47d` 的 PR 流水线 [`44543722345`](https://github.com/wsafight/wings/actions/runs/44543722345) 与 push 流水线 [`44543713853`](https://github.com/wsafight/wings/actions/runs/44543713853) 均在 macOS、Linux、MSRV 全绿。
 
 ## 范围
 

@@ -50,6 +50,7 @@ class Replay:
         self.by_actor = [{"actor": actor, **phase(), "latencies": array("Q")} for actor in range(2, 102)]
         self.latencies = array("Q")
         self.lateness = array("Q")
+        self.mailbox_full_attribution = measure.new_mailbox_full_attribution()
         self.hot_durations = array("Q")
         self.warmup_hot = 0
         self.sample_hot_completions = 0
@@ -108,6 +109,10 @@ class Replay:
             require(self.hot is not None, "CPU load absent during heartbeat arrival")
             require(sent >= expected_at and observed == value == 0, "heartbeat admission clock/value")
             self.next += 1
+            if kind == 3:
+                measure.attribute_mailbox_full(self.mailbox_full_attribution, sequence, actor + 1,
+                                               "sample" if group is not None else "warmup",
+                                               expected_at, sent, self.last_sent)
             self.last_sent = sent
             if group is not None:
                 self.lateness.append(sent - expected_at)
@@ -178,6 +183,7 @@ class Replay:
                 "refusal_ratio": (self.counts["mailbox_full"] + self.counts["pending_full"]) / 600000,
                 "on_time_replies_per_second": self.counts["reply"] / 60,
                 "generator_lateness": quantiles(self.lateness), "warmup": self.warmup,
+                "mailbox_full_attribution": self.mailbox_full_attribution,
                 "cpu": {"warmup_started_completions": self.warmup_hot, "sample_started_completions": len(self.hot_durations),
                         "completed_in_sample": self.sample_hot_completions,
                         "completions_per_second": self.sample_hot_completions / 60, **quantiles(self.hot_durations)},

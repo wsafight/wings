@@ -32,7 +32,8 @@ def models(parent):
             planned = (sequence - 1) * 1_000_000
             actor = target("sparse-256", sequence - 1) - 1
             if sequence in (1, 40000):
-                output.write(measure.EVENT.pack(sequence, planned, 0, 0, 3))
+                sent = planned + (123456 if sequence == 40000 else 0)
+                output.write(measure.EVENT.pack(sequence, sent, 0, 0, 3))
                 continue
             values[actor] += 1
             delay = sequence % 1000 * 1000
@@ -54,7 +55,17 @@ def models(parent):
         rank = (len(ordered) * numerator + denominator - 1) // denominator
         require(summary[field] == ordered[rank - 1], "exact radix nearest-rank")
     require(summary["max_ns"] == measure.DEADLINE_NS and not summary["tail_candidate_pass"], "late result retained")
-    require(summary["generator_lateness"]["p999_ns"] == 0, "lateness includes refusals")
+    require(summary["generator_lateness"]["p999_ns"] == 0
+            and summary["generator_lateness"]["max_ns"] == 123456, "lateness includes refusals without changing quantile semantics")
+    attribution = summary["mailbox_full_attribution"]
+    require(attribution["version"] == 1 and attribution["total"] == 2
+            and attribution["retained"] == 2 and not attribution["truncated"], "bounded refusal association")
+    require(attribution["events"] == [
+        {"sequence": 1, "actor": 1, "phase": "warmup", "planned_ns": 0, "sent_ns": 0,
+         "generator_lateness_ns": 0, "previous_arrival_gap_ns": None},
+        {"sequence": 40000, "actor": 100, "phase": "sample", "planned_ns": 39_999_000_000,
+         "sent_ns": 39_999_123_456, "generator_lateness_ns": 123456, "previous_arrival_gap_ns": 1_123_456},
+    ], "per-refusal phase, lateness and previous arrival")
     beam = copy.deepcopy(result)
     beam["environment"] = {"runtime": "beam", "otp": "29", "schedulers": 2}
     measure.validate_trace(trace, "sparse-256", 1000, beam)
@@ -105,6 +116,13 @@ def models(parent):
     bounded_result["committed"] = bounded_values
     bounded_summary = measure.validate_trace(bounded, "sparse-256", 1000, bounded_result)
     require(bounded_summary["warmup"]["timed_out"] == 256 and bounded_summary["warmup"]["pending_full"] == 1, "timeout pending retained")
+    bounded_attribution = bounded_summary["mailbox_full_attribution"]
+    require(bounded_attribution["total"] == 89743
+            and bounded_attribution["retained"] == measure.MAILBOX_FULL_ATTRIBUTION_LIMIT
+            and len(bounded_attribution["events"]) == measure.MAILBOX_FULL_ATTRIBUTION_LIMIT
+            and bounded_attribution["truncated"], "refusal association is explicitly truncated")
+    require(bounded_attribution["events"][0]["sequence"] == 258
+            and bounded_attribution["events"][-1]["sequence"] == 1281, "first refusal associations retained")
     shutil.copyfile(bounded, changed)
     with changed.open("r+b") as output:
         output.seek(256 * 40 + 32)

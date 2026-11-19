@@ -4,9 +4,11 @@
 
 ## 项目现状
 
-- 2026-11-19 开环间歇 mailbox_full 已逐条归因：发生器（或其进程）被 OS 延迟 29–43ms 后追时刻以约 1µs 间隔补发，热 actor（9000/s、mailbox 100）约 11ms 即达满槽阈值；211 次拒绝集中在 0.85ms 单窗口，锁峰值 ≤94µs 排除锁竞争，各轮迟发 ≤11.5ms 均零拒绝。fairness 56 次拒绝与该轮最高迟发同现为同类候选。OS 延迟来源未定位，补发协议变更须另行 ADR；门禁解读须区分发生器迟发关联拒绝与 VM 背压，见 `docs/validation-mailbox-full-attribution-2026-11-19.md`。
+- ADR-0147 为 open-loop/fairness 离线摘要增加至多 1024 条、显式截断的逐拒绝 planned/sent、迟发、阶段、actor 和前一到达间隔；不改原始 trace、拒绝计数或尾候选。冻结重放保持开环 211 次、fairness 56 次拒绝及全部历史汇总不变。开环 211 次集中在 0.849ms，首条迟发 28.85ms、间隔中位数 1µs，符合 OS 迟发后追时刻补发；fairness 56 次全在同一 planned burst 的 actor 46..101，迟发仅 0.103–0.224ms，不再凭全局 9.86ms 峰值同现归为同类机制。OS 延迟来源与 fairness 背压机制均未定位，见 `docs/validation-mailbox-full-attribution-summary-2026-11-19.md`。
 
-- 2026-11-19 本机执行两项冻结长测：fairness 五对 Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、全部零超时）；hot-queue 开环 `--scan` 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，BEAM 五对全过，p99 对照仅探索性。测量工具链补 fairness 探针 preflight、两端 preflight 30s 设置期限（被测样本仍 2s）；探针首执行 0.74s/0.39s 与一次误用产物失败均保留，见 `docs/validation-fairness-measurement-2026-11-19.md`、`docs/validation-open-loop-scan-2026-11-19.md`。间歇 mailbox_full 已由下条归因记录解释，CPU 硬配额、过载分组、完整账本、原生双平台与 BEAM/MVP 门禁未完成。
+- 2026-11-19 开环间歇 mailbox_full 已逐条归因：发生器（或其进程）被 OS 延迟 29–43ms 后追时刻以约 1µs 间隔补发，热 actor（9000/s、mailbox 100）约 11ms 即达满槽阈值；211 次拒绝集中在 0.85ms 单窗口，锁峰值 ≤94µs 排除锁竞争，各轮迟发 ≤11.5ms 均零拒绝。OS 延迟来源未定位，补发协议变更须另行 ADR；门禁解读须区分发生器迟发关联拒绝与 VM 背压，见 `docs/validation-mailbox-full-attribution-2026-11-19.md`。
+
+- 2026-11-19 本机执行两项冻结长测：fairness 五对 Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、全部零超时）；hot-queue 开环 `--scan` 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，BEAM 五对全过，p99 对照仅探索性。测量工具链补 fairness 探针 preflight、两端 preflight 30s 设置期限（被测样本仍 2s）；探针首执行 0.74s/0.39s 与一次误用产物失败均保留，见 `docs/validation-fairness-measurement-2026-11-19.md`、`docs/validation-open-loop-scan-2026-11-19.md`。开环间歇 mailbox_full 已由下条归因记录解释，fairness 逐事件重放见上条且机制未定位；CPU 硬配额、过载分组、完整账本、原生双平台与 BEAM/MVP 门禁未完成。
 
 - ADR-0142/0143 为 AOT 验证脚本增加默认关闭的 `WINGS_TIMEOUT_SAMPLE=1`：握手失败判定后、清理前对原超时进程做独立限额（CPU 5s/墙钟 3.5s/core 0/文件 8 MiB）的原生采样，并标记采样窗口内迟到就绪；覆盖 `tcp_ready` 与八个脚本共用的 `verify_multi_counter.invoke`（含多 actor 十秒入口与 `observed_yield`），后者另在原上限内保留迟到输出。原期限、判定与默认行为不变。两组自检分别 10/11 项通过并验证真实卡死进程现场栈捕获；带采样的 Debug 完整 AOT 六轮均通过、未复现原间歇超时，不构成根因修复，历史失败保留。长测独立捕获路径未接入，完整账本、启动根因、公平/服务长测、原生双平台和 BEAM/MVP 门禁不变，见 `docs/validation-startup-timeout-sampling-2026-11-19.md` 与 `docs/validation-timeout-sampling-coverage-2026-11-19.md`。
 
