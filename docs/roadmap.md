@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0145](adr/0145-bounded-failure-soak-tracebacks.md) 为失败长测验证保留异常位置、因果链和至多 8192 B 的 UTF-8 诊断，以定位旧 push CI 中仅有 `[Errno 1]` 的间歇失败；不重试或修改期限，根因与其余 MVP 门禁不变。实测见[记录](validation-failure-soak-diagnostics-2026-11-19.md)。
+
 [ADR-0144](adr/0144-command-timeout-stack-sampling.md) 将默认关闭的超时采样扩展到通用 `command`：原 30 秒判定后对直接子进程取证并保留输出，默认路径不变；cargo 包装与业务 example 不作混同。实测见[记录](validation-command-timeout-sampling-2026-11-19.md)，`scalar_requests` 等原超时根因和其余 MVP 门禁不变。
 
 2026-11-19 [开环 mailbox_full 归因](validation-mailbox-full-attribution-2026-11-19.md)：间歇拒绝由发生器 OS 迟发后追时刻突发触发，热 actor 约 11ms 即达满槽阈值，锁证据排除 VM 内部停顿；OS 延迟来源未定位，补发协议变更须另行 ADR，门禁解读须区分发生器迟发关联拒绝与 VM 背压。

@@ -6,11 +6,26 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 
 import measure_failure_soak as soak
 import verify_concurrent_failure as failure
 import verify_scalar_aot as aot
 from verify_open_loop import require
+
+
+DIAGNOSTIC_BYTES = 8192
+
+
+def failure_diagnostic(error):
+    text = "".join(traceback.format_exception(type(error), error, error.__traceback__, limit=12))
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) > DIAGNOSTIC_BYTES:
+        marker = b"\n... failure-soak diagnostic truncated ...\n"
+        prefix = encoded[:2048]
+        suffix = encoded[-(DIAGNOSTIC_BYTES - len(prefix) - len(marker)):]
+        text = (prefix + marker + suffix).decode("utf-8", errors="ignore")
+    return f"Failure soak verification failed:\n{text}"
 
 
 def model(parent):
@@ -176,5 +191,5 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, RuntimeError, ValueError, AssertionError, subprocess.SubprocessError) as error:
-        print(f"Failure soak verification failed: {error}", file=sys.stderr)
+        print(failure_diagnostic(error), file=sys.stderr)
         sys.exit(3)

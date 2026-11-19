@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [ADR-0145](0145-bounded-failure-soak-tracebacks.md) | 失败长测验证的异常位置、因果链与有界 UTF-8 诊断 | 已采纳（失败取证；EPERM 根因未定） |
 | [ADR-0144](0144-command-timeout-stack-sampling.md) | 通用命令原限超时后的直接子进程采样与失败证据保留 | 已采纳（诊断入口扩展；原超时根因未定） |
 | [ADR-0143](0143-shared-invoke-timeout-sampling.md) | 共享有界 invoke 失败路径的同款超时采样与有界迟到输出保留 | 已采纳（诊断入口扩展；原超时根因未定） |
 | [ADR-0142](0142-opt-in-timeout-stack-sampling.md) | 默认关闭的有界超时现场采样，只覆盖已判定失败的原进程 | 已采纳（诊断入口；原超时根因未定） |
