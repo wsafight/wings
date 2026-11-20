@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0151 的无等待者结果完成通知省略候选已回退：五对 hot-queue 中候选服务 p99 中位数 80.333µs、基线 48.667µs，候选第 2/4 对共 305 次 mailbox_full 且尾候选失败，基线 5/5 通过、零拒绝，内存无稳定改善。首次部分实验因 waiters 重复计费作废并保留；修正后完整 trace、两个 runner 与配对 A/B 驱动保留，当前 runtime 恢复无条件 finish 通知，见 `docs/validation-reply-notification-candidate-2026-11-20.md`。
+
 - ADR-0150 为 v6 开环离线摘要增加真实回复的 `observed-sent` 服务延迟，与原 `observed-planned` 和发生器迟发并列；原 40 B 事件、尾候选、扫描停止和资源限制不变。合成模型及十份冻结 hot-queue trace 重放通过，历史字段完全不变。当前五对中 Wings 5/5 尾候选通过、0 拒绝，BEAM 3/5 通过；Wings 服务 p99 35.916–46.167µs 仍高于 BEAM 5.333–10.041µs，Wings 同轮 RSS/物理占用较低但完整门禁未过，见 `docs/validation-open-loop-service-latency-2026-11-20.md`。
 
 - ADR-0149 将 `wings-ir` 的线性引用根集合计算替换为与 codegen 同构的内部 CFG、边 phi 输入和反向 liveness；`Loop`/`EndIf` 在检查点前定义，`EndLoop` 结果只在 after-loop 定义，`last_uses` 仅保留兼容诊断。连续/空分支、嵌套回边、零次循环与 state/reply 去重均有精确 IR 回归，两种构建各 108 harness/728 项、doctest、定向强制 GC 与原限完整 AOT、MSRV/Linux 交叉检查通过。不新增源码/IR phi、任意跳转或 ABI 变化，不完成动态调用根链、完整账本或 BEAM/MVP 门禁，见 `docs/validation-cfg-reference-root-plan-2026-11-20.md`。
