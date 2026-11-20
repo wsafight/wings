@@ -30,3 +30,5 @@
 基线/候选服务 p99 中位数分别为 48667/80333ns，端到端 p99 中位数为 53084/95708ns；候选只在第 4/5 对服务 p99 略低，其余三对显著更高。候选 RSS 相对基线三升两降，物理占用同样没有稳定改善，不用不同轮次拼出内存收益。
 
 结果满足预定回退条件，已恢复 `ingress_requests.rs` 到原无条件 finish 通知；候选源码只保存在冻结实验目录，不进入当前 runtime。恢复后 `cargo test --locked -p wings-vm` 的原 **424 项**测试通过，fmt/diff 与 228 份 Markdown 链接/围栏检查通过；随后重建 Release 并进入 fairness。该实验不证明通知成本不存在，只否定当前省略通知候选在本负载下的端到端收益；不归因发生器、OS 或 Condvar 内部机制，不宣称最大吞吐、完整内存或 BEAM/MVP 门禁通过。
+
+回退与测量驱动提交为 `fba107ae7173504db9f9d4c800a519a347b7a78f`。push CI [`44733880540`](https://github.com/wsafight/wings/actions/runs/44733880540) 与 PR CI [`44733888504`](https://github.com/wsafight/wings/actions/runs/44733888504) 均成功。

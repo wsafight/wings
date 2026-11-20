@@ -4,6 +4,12 @@
 
 ## 项目现状
 
+- 2026-11-20 本轮 hot-queue、fairness 与两个独立通知候选实验已收尾，当前 runtime 不含候选。hot-queue Wings 5/5 尾候选通过但服务 p99 明显高于 BEAM；fairness 两端 5/5 通过，Wings 热完成率和同轮内存采样有探索性优势。完整吞吐/整机内存双目标仍未验收，汇总见 `docs/validation-performance-benchmark-2026-11-20.md`。
+
+- ADR-0152 的 Scheduler finish 新增 ready 才广播候选已回退：五对中候选服务 p99 中位数 49.084µs、基线 80.542µs，但基线第 4 对严重退化，候选自身也只有 3/5 尾候选通过、共 741 次队满；RSS 四升一降、物理占用两升三降，无稳定内存改善。两个 runner、完整 trace 与全部基线/候选失败保留，当前 runtime 恢复无条件 finish 广播，见 `docs/validation-scheduler-finish-notification-2026-11-20.md`。
+
+- 2026-11-20 最终 runtime 的 fairness 五对长测完成：Wings/BEAM 各 5/5 尾候选通过、全部零拒绝/超时。Wings 心跳 p99 中位数 645333ns，高于 BEAM 441469ns，p999 中位数较低；Wings 热完成率及每对 RSS/物理占用采样呈探索性优势，但缺样、驱动成本、CPU 硬配额与完整内存边界保留，两个正式 gate 仍为 false，见 `docs/validation-fairness-measurement-2026-11-20.md`。
+
 - ADR-0151 的无等待者结果完成通知省略候选已回退：五对 hot-queue 中候选服务 p99 中位数 80.333µs、基线 48.667µs，候选第 2/4 对共 305 次 mailbox_full 且尾候选失败，基线 5/5 通过、零拒绝，内存无稳定改善。首次部分实验因 waiters 重复计费作废并保留；修正后完整 trace、两个 runner 与配对 A/B 驱动保留，当前 runtime 恢复无条件 finish 通知，见 `docs/validation-reply-notification-candidate-2026-11-20.md`。
 
 - ADR-0150 为 v6 开环离线摘要增加真实回复的 `observed-sent` 服务延迟，与原 `observed-planned` 和发生器迟发并列；原 40 B 事件、尾候选、扫描停止和资源限制不变。合成模型及十份冻结 hot-queue trace 重放通过，历史字段完全不变。当前五对中 Wings 5/5 尾候选通过、0 拒绝，BEAM 3/5 通过；Wings 服务 p99 35.916–46.167µs 仍高于 BEAM 5.333–10.041µs，Wings 同轮 RSS/物理占用较低但完整门禁未过，见 `docs/validation-open-loop-service-latency-2026-11-20.md`。

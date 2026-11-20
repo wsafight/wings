@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [ADR-0152](0152-scheduler-finish-ready-notification-candidate.md) | Scheduler finish 仅在新增 ready 时广播候选 | 实验后回退（尾候选不稳且内存无稳定改善） |
 | [ADR-0151](0151-reply-completion-notification-candidate.md) | 结果表锁内等待者计数与无等待者 finish 通知省略候选 | 实验后回退（退化且 305 次队满；保留证据） |
 | [ADR-0150](0150-open-loop-service-latency.md) | 开环离线并列端到端与 `observed-sent` 服务延迟，原事件和判定不变 | 已采纳（归因诊断；非门禁改判） |
 | [ADR-0149](0149-cfg-reference-root-plan.md) | 与 codegen 同构的内部 CFG、边 phi 输入及反向 liveness 根计划 | 已采纳（M0 内部分析切片） |

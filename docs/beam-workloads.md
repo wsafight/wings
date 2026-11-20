@@ -145,6 +145,8 @@ WINGS_PROFILE=release python3 scripts/verify_open_loop.py --compare-beam --outpu
 
 [ADR-0150](adr/0150-open-loop-service-latency.md) 只为 v6 离线 summary 增加 `service_latency`：对真实回复计算 `observed-sent`，与原 `observed-planned` 端到端分位和发生器迟发并列。它仍包含 mailbox 等待、worker 唤醒、执行、结果发布与调用者观察，不是 handler CPU；新字段不删除迟发样本，不改变原事件、尾候选、扫描停止或资源限制。历史 trace 可重放但历史报告不回写。
 
+2026-11-20 的 hot-queue、fairness、同轮内存和两个回退候选由[性能基准收尾记录](validation-performance-benchmark-2026-11-20.md)统一汇总。测量完成不等于双目标达标：hot-queue 服务 p99 仍落后，最大持续吞吐和完整整机内存未验收。
+
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为同一业务新增 `--measure <case> <rate> <new-trace-file>`，Wings 前置 `--trusted <artifact>`；只允许下表四组非 fairness 的基准速率乘 `2^0..2^7`。固定连续 90 秒，前 30 秒预热、后 60 秒按计划时刻分组采样，边界不暂停/重置 state 或清 pending；结果仍 checked +1、完整 state、原路由/mailbox 和 256 实际 pending。外部 100ms deadline、迟发不重基准、超时保留至实际回复、拒绝不重试均不变。
 
 每条到达和真实回复按发生顺序写 40 B big-endian：`sequence:u64, sent_ns:u64, observed_ns:u64, value:i64, kind:u64`。kind 0=接受到达，1=按时真实回复，2=超时后的真实回复，3=mailbox_full，4=pending_full；非回复的 observed/value 为零。先有接受再有回复，拒绝无回复，目标/计划由 sequence 重算。固定 64 KiB 缓冲，独占新建文件不覆盖，写入成本计入业务运行；不随总请求数分配内存样本。stdout 只有 start、sampling 和最终结果三个控制 JSON，stderr 非空、缺事件/截断/重复/未闭合 pending 都判实验无效，不能当成功或预期业务失败。
@@ -213,6 +215,8 @@ WINGS_PROFILE=release python3 scripts/measure_fairness.py --artifact target/long
 ```
 
 增加 `--observe` 会为五对中的 Wings 启用原 64 槽计费 FIFO；仪器模式单列，不能写成默认性能结果。两次观测的请求时间各自单调、返回时间各自单调，但后继请求可能先于上一轮确认到达，不能据区间重叠拒绝合法记录。`measurement_elapsed_ns` 保留业务循环退出时间，完整采样窗不得早于 90 秒，即便最后一批心跳计划在 89.99 秒。运行器冻结源/runner/产物/BEAM/验证器与 hash，沿用 CPU 240 秒/墙钟 130 秒/业务阶段 120 秒/禁 core、文件与 observed RSS 安全停止和分口径平台内存采样。全局 `tail_candidate_pass` 仅按既有候选规则展示，`fairness_gate_proven` 始终 false：CPU 硬配额、监测开销、过载/非过载分组、原生双平台及同负载吞吐/整机内存双目标仍须验收，不因某轮分位较好或全部正常退出判定 MVP。
+
+2026-11-20 最终 runtime 的五对结果见[验证记录](validation-fairness-measurement-2026-11-20.md)：两端各 5/5 尾候选通过、全部零拒绝/超时；Wings 心跳 p99 中位数 645333ns，高于 BEAM 441469ns，p999 中位数较低。Wings 热完成率及每对 RSS/物理占用采样呈探索性优势，但缺样、驱动成本和监测边界全部保留，两个正式 gate 仍为 false。
 
 ## v9：双发送者的并发失败前缀
 

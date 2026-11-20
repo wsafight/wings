@@ -1,5 +1,11 @@
 # 评测与验收
 
+[2026-11-20 性能基准收尾](validation-performance-benchmark-2026-11-20.md)汇总 hot-queue、fairness、同轮内存及两个回退候选：本轮测量完成，但 hot-queue 服务 p99 仍落后、饱和吞吐未证明，内存只有探索性优势，完整 BEAM 双目标与 MVP 门禁未通过。
+
+[ADR-0152](adr/0152-scheduler-finish-ready-notification-candidate.md) 的 Scheduler finish 条件广播候选已回退：候选服务 p99 中位数 49.084µs、基线 80.542µs，但基线第 4 对严重退化，候选自身也只有 3/5 尾候选通过、共 741 次队满；RSS 四升一降，物理占用两升三降。全部基线/候选失败保留，不以中位数或较少拒绝替代稳定双目标。
+
+[2026-11-20 fairness 五对](validation-fairness-measurement-2026-11-20.md)中 Wings/BEAM 各 5/5 尾候选通过、全部零拒绝/超时。Wings 心跳 p99 中位数 645333ns，高于 BEAM 441469ns，p999 中位数较低；热完成率和每对 RSS/物理占用采样呈探索性优势。CPU 硬配额、缺样/监测偏差、过载分组和完整内存边界不变，两个正式 gate 仍为 false。
+
 [ADR-0151](adr/0151-reply-completion-notification-candidate.md) 的无等待者结果通知省略候选已回退：正确性通过但五对 hot-queue 服务 p99 中位数由 48.667µs 升至 80.333µs，候选共 305 次 mailbox_full、2/5 尾候选失败，基线 5/5 通过且零拒绝，内存无稳定收益。首次重复计费部分实验与修正后完整数据均保留，不把该候选写成性能优化。
 
 [ADR-0150](adr/0150-open-loop-service-latency.md) 为 v6 离线摘要并列 `observed-planned` 与真实回复的 `observed-sent`，后者仍含排队、唤醒、执行、发布和观察，不是 handler CPU。两个口径共用原事件和精确分位，新字段不改变尾候选、扫描停止或资源限制；不得用服务时间改善掩盖发生器迟发或端到端退化。
