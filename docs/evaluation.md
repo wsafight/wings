@@ -367,6 +367,8 @@ debug：`cargo build --locked -p wings-compile -p wings-vm --bins --examples` �
 
 `scripts/verify_scalar_aot.py` 在 CPU/墙钟上限、禁 core dump 子进程内执行编译端 `build_aot_records`，再由 VM 端 `aot_records` 运行生成代码，不给 VM 添加前端或代码生成依赖。覆盖一个 live root 与多个 dead records 在二槽堆反复回收、128 次单槽复用、64 个同时存活根、跨时间片与双实例交错恢复、initializer 中分配/收集、整数位型不保活、堆满/算术/预算/取消/Drop 失败及三级归零。IR 与编译回归拒绝 65 个同时活跃根且不创建产物目录；Rust 运行时回归验证嵌套链、重复根、stale handle、无效根零回收、帧/根总上限、初始化各阶段准入回滚。
 
+[ADR-0149](adr/0149-cfg-reference-root-plan.md) 将根集合计算改为内部 CFG 边 phi 与反向 liveness，保留 `last_uses` 兼容诊断但不再用它决定根准入。IR 精确检查连续合流和引用 state 零次循环；`record-loops` 真实 AOT 新增连续合流四路径、嵌套回边和零次出口，在每次 heap/slow-path 回调前强制 GC。实际验证见[记录](validation-cfg-reference-root-plan-2026-11-20.md)，不据此宣称动态调用根链或完整 M0 已完成。
+
 构建与执行命令仍为 `cargo build --locked -p wings-compile -p wings-vm --bins --examples` 和 `python3 scripts/verify_scalar_aot.py`；release 增加 `--release` 与 `WINGS_PROFILE=release`。本机 macOS AArch64 已通过 debug/release 原生行为验证、workspace 测试、clippy 及 Rust 1.85 all-target 检查；Linux x86-64 待本分支 CI 独立验证，不沿用历史结果。此为内部 IR 的有界临时堆，不是语言业务堆或全部根证明，也没有 BEAM 性能对照，见 [ADR-0025](adr/0025-aot-record-roots.md)。
 
 ## 语言临时记录回归

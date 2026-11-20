@@ -33,6 +33,47 @@ process RecordLoops {
     }
     read_int(value)
   }
+  on Sequential(first: Bool, second: Bool, next: Int) -> Int {
+    let left = if first { record_int(next) } else { record_int(next + 1) }
+    let right = if second { left } else { record_int(next + 2) }
+    collect()
+    read_int(left) + 10 * read_int(right)
+  }
+  on Backedges(limit: Int, next: Int) -> Int {
+    let saved = record_int(next)
+    value = record_int(0)
+    while read_int(value) < limit {
+      let until = read_int(value) + 2
+      let outer = if read_int(saved) < 0 { record_int(0) } else { saved }
+      while read_int(value) < until {
+        let inner = if read_int(value) < until - 1 { outer } else { record_int(next + 1) }
+        value = record_int(read_int(value) + 1)
+        collect()
+        read_int(inner);
+        read_int(outer);
+      }
+      read_int(saved);
+    }
+    collect()
+    read_int(value) + read_int(saved)
+  }
+  on ZeroExit(flag: Bool, next: Int) -> Int {
+    let saved = record_int(next)
+    while flag {
+      let selected = if read_int(value) < 0 { saved } else { record_int(next + 1) }
+      value = selected
+      collect()
+      read_int(saved);
+    }
+    collect()
+    read_int(saved) + read_int(value)
+  }
+  on EmptyBranches(flag: Bool, next: Int) -> Int {
+    let saved = record_int(next)
+    value = if flag { saved } else { value }
+    collect()
+    read_int(value)
+  }
   on Nested(limit: Int) -> Int {
     let saved = value
     while read_int(value) < limit {

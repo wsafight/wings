@@ -8,6 +8,7 @@ ADR 记录为什么做出某项架构选择、考虑过哪些替代方案，以�
 
 | 编号 | 决策 | 状态 |
 |---|---|---|
+| [ADR-0149](0149-cfg-reference-root-plan.md) | 与 codegen 同构的内部 CFG、边 phi 输入及反向 liveness 根计划 | 已采纳（M0 内部分析切片） |
 | [ADR-0148](0148-bounded-startup-stage-tracing.md) | 默认关闭的逐进程有界模块启动阶段轨迹，与同 PID 超时原生栈关联 | 已采纳（历史取证；启动根因未定） |
 | [ADR-0147](0147-bounded-mailbox-full-attribution.md) | 离线派生逐拒绝迟发/到达间隔关联，最多保留 1024 条并显式截断 | 已采纳（观测关联；非因果或门禁改判） |
 | [ADR-0146](0146-measurement-artifact-schema-preflight.md) | open-loop/fairness 在 actor 与业务计时前核对 state、handler 参数和回复 schema | 已采纳（实验输入前置校验） |

@@ -884,11 +884,139 @@ fn nested_record_merges_restore_path_roots_within_loops() {
     function.reply = 14;
     program.validate().unwrap();
     let plan = program.handlers[0].function.root_plan();
-    assert_eq!(plan.at[10], vec![1, 6, 10]);
+    assert_eq!(plan.at[9], vec![1, 8]);
+    // The inner else input is consumed before the merge checkpoint. On the
+    // then path only the merged value, not the unselected else input, is live.
+    assert_eq!(plan.at[10], vec![1, 10]);
     assert_eq!(plan.at[12], vec![1, 12]);
     assert_eq!(plan.at[14], vec![1]);
     assert!(plan.at[15].is_empty());
-    assert_eq!(plan.capacity, 3);
+    assert_eq!(plan.capacity, 2);
+}
+
+#[test]
+fn zero_exit_loop_defines_the_after_value_without_rooting_it_at_the_backedge() {
+    let mut program = valid_program();
+    program.state = ValueType::Ref;
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Constant(0)),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Ref, Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::Ref, Operation::Loop(0)),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::While(3)),
+        instruction(ValueType::Ref, Operation::EndLoop(2)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, Operation::ReadInt(5)),
+    ];
+    function.state = 5;
+    function.reply = 7;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[1], vec![0]);
+    assert_eq!(plan.at[2], vec![2]);
+    assert_eq!(plan.at[4], vec![2]);
+    assert_eq!(plan.at[5], vec![2]);
+    assert_eq!(plan.at[6], vec![5]);
+    assert_eq!(plan.at[7], vec![5]);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn identical_reference_state_and_reply_share_one_final_root_slot() {
+    let function = Function {
+        instructions: vec![
+            instruction(ValueType::Int, Operation::Constant(7)),
+            instruction(ValueType::Ref, Operation::RecordInt(0)),
+        ],
+        state: 1,
+        reply: 1,
+    };
+    let plan = function.root_plan();
+    assert_eq!(plan.at[2], vec![1]);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn empty_reference_branches_keep_only_their_own_edge_input_before_the_merge() {
+    let mut program = valid_program();
+    program.state = ValueType::Ref;
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::Ref, Operation::RecordInt(0)),
+        instruction(ValueType::Unit, Operation::Constant(0)),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Ref, Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::Unit, Operation::Else(2)),
+        instruction(ValueType::Ref, Operation::EndIf(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, Operation::ReadInt(6)),
+    ];
+    function.state = 6;
+    function.reply = 8;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[4], vec![0, 2]);
+    assert_eq!(plan.at[5], vec![2]);
+    assert_eq!(plan.at[6], vec![6]);
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[8], vec![6]);
+    assert_eq!(plan.at[9], vec![6]);
+    assert_eq!(plan.capacity, 2);
+}
+
+#[test]
+fn consecutive_reference_merges_use_edge_phi_inputs_and_exact_checkpoint_roots() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(10)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(4)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Unit, Operation::Else(6)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Ref, Operation::EndIf(8)),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::If(10)),
+        instruction(ValueType::Unit, Operation::Else(9)),
+        instruction(ValueType::Ref, Operation::RecordInt(1)),
+        instruction(ValueType::Ref, Operation::EndIf(13)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, Operation::ReadInt(9)),
+        instruction(ValueType::Int, Operation::ReadInt(14)),
+        instruction(ValueType::Int, Operation::Binary(Operator::Add, 16, 17)),
+    ];
+    function.state = 0;
+    function.reply = 18;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[9], vec![9]);
+    assert_eq!(plan.at[12], vec![9]);
+    assert_eq!(plan.at[14], vec![9, 14]);
+    assert_eq!(plan.at[15], vec![9, 14]);
+    assert_eq!(plan.at[16], vec![9, 14]);
+    assert_eq!(plan.at[17], vec![14]);
+    assert_eq!(plan.capacity, 2);
 }
 
 #[test]

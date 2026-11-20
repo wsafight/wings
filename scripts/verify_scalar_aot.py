@@ -1112,6 +1112,16 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 ("Preserve", [0, 10], 10, 10), ("Nested", [15], 17, 27),
                 ("Advance", [12, 8], 12, 12), ("Advance", [5, 9], 9, 9),
                 ("Retain", [15], 15, 15),
+                ("Sequential", [1, 1, 10], 15, 110),
+                ("Sequential", [1, 0, 10], 15, 130),
+                ("Sequential", [0, 1, 10], 15, 121),
+                ("Sequential", [0, 0, 10], 15, 131),
+                ("Backedges", [0, 20], 0, 20),
+                ("Backedges", [1, 20], 2, 22),
+                ("Backedges", [5, 20], 6, 26),
+                ("ZeroExit", [0, 30], 6, 36),
+                ("EmptyBranches", [1, 40], 40, 40),
+                ("EmptyBranches", [0, 50], 40, 40),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
@@ -1129,7 +1139,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 status = entry(committed, arguments, ctypes.byref(output), ctypes.byref(context))
                 assert status in [2, 4] and not errors and not context.roots, (status, errors)
                 assert (output.state, output.reply) == (71, 91) and records[committed] == previous
-            print("Compiler roots verified: record headers, backedges, zero exits, fresh initial candidates and nested aliases")
+            print("Compiler roots verified: record headers, empty/consecutive merges, nested backedges, zero exits, fresh candidates and aliases")
             return
         for first, second in [(1, 1), (1, 0), (0, 1), (0, 0), (1, 1)]:
             previous = records[committed]

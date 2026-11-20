@@ -1,5 +1,7 @@
 use wings_abi::{MAX_SHADOW_ROOTS, ValueType};
 
+mod root_plan;
+
 pub const MAX_OPERATIONS: usize = 4096;
 pub const MAX_HANDLERS: usize = 128;
 pub const MAX_PARAMETERS: usize = 64;
@@ -766,87 +768,7 @@ impl Function {
     }
 
     pub fn root_plan(&self) -> RootPlan {
-        let mut last_uses: Vec<usize> = (0..self.instructions.len()).collect();
-        for (index, instruction) in self.instructions.iter().enumerate() {
-            let operands = operands(&instruction.operation);
-            for operand in operands {
-                if let Some(last) = last_uses.get_mut(operand) {
-                    *last = index;
-                }
-            }
-        }
-        for output in [self.state, self.reply] {
-            if let Some(last) = last_uses.get_mut(output) {
-                *last = self.instructions.len();
-            }
-        }
-        let mut loops = Vec::new();
-        for (index, instruction) in self.instructions.iter().enumerate() {
-            match instruction.operation {
-                Operation::Loop(_) => loops.push(index),
-                Operation::While(_) => {
-                    if let Some(start) = loops.last() {
-                        last_uses[*start] = last_uses[*start].max(index);
-                    }
-                }
-                Operation::EndLoop(_) => {
-                    if let Some(start) = loops.pop() {
-                        for last in &mut last_uses[..start] {
-                            if *last > start && *last < index {
-                                *last = index;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut active = Vec::new();
-        let mut branches = Vec::new();
-        let mut loops = Vec::new();
-        let mut at = Vec::with_capacity(self.instructions.len() + 1);
-        let mut capacity = 0;
-        for (index, instruction) in self.instructions.iter().enumerate() {
-            if matches!(instruction.operation, Operation::Loop(_)) {
-                active.retain(|register: &usize| last_uses[*register] > index);
-                loops.push(active.clone());
-                if instruction.ty.is_reference() && last_uses[index] > index {
-                    active.push(index);
-                }
-            }
-            if matches!(instruction.operation, Operation::EndIf(_)) {
-                active = branches.pop().unwrap_or_default();
-                if instruction.ty.is_reference() && last_uses[index] > index {
-                    active.push(index);
-                }
-            }
-            active.retain(|register: &usize| last_uses[*register] >= index);
-            capacity = capacity.max(active.len());
-            at.push(active.clone());
-            match instruction.operation {
-                Operation::If(_) => branches.push(active.clone()),
-                Operation::Else(_) => active = branches.last().cloned().unwrap_or_default(),
-                Operation::EndLoop(_) => active = loops.pop().unwrap_or_default(),
-                _ => {}
-            }
-            if instruction.ty.is_reference()
-                && last_uses[index] > index
-                && !matches!(
-                    instruction.operation,
-                    Operation::EndIf(_) | Operation::Loop(_)
-                )
-            {
-                active.push(index);
-            }
-        }
-        active.retain(|register: &usize| last_uses[*register] == self.instructions.len());
-        capacity = capacity.max(active.len());
-        at.push(active);
-        RootPlan {
-            last_uses,
-            capacity,
-            at,
-        }
+        root_plan::build(self)
     }
 }
 

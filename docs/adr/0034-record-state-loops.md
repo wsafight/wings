@@ -3,6 +3,7 @@
 - 日期：2026-11-13
 - 状态：已采纳（M0 引用回边切片）
 - 替代：[ADR-0031](0031-scalar-state-loops.md) 的“while 仅支持标量 state”限制；补充 [ADR-0033](0033-record-conditional-roots.md) 的结构化路径根。
+- 后续：[ADR-0149](0149-cfg-reference-root-plan.md) 以 CFG 反向 liveness 统一 header、回边和 after-loop 根集合，保留原检查点及状态提交语义。
 
 ## 决定与理由
 
