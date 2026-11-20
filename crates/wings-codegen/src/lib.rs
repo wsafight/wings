@@ -71,15 +71,22 @@ pub fn build_with_frame_limit(
         .map_err(|error| error.to_string())?;
     let mut module = ObjectModule::new(object);
     let mut procedures = Vec::new();
+    let mut procedure_summaries = Vec::new();
     for (index, procedure) in program.functions.iter().enumerate() {
-        procedures.push(compile_function(
+        let (func_id, entry_frame) = compile_function(
             &mut module,
             &format!("wings_managed_function_{index}"),
             &procedure.function,
             max_frame_bytes,
             Linkage::Local,
             &procedures,
-        )?);
+        )?;
+        procedures.push(func_id);
+        procedure_summaries.push(summarize_direct_function(
+            &procedure.function,
+            entry_frame,
+            &procedure_summaries,
+        ));
     }
     compile_function(
         &mut module,
@@ -89,8 +96,9 @@ pub fn build_with_frame_limit(
         Linkage::Export,
         &procedures,
     )?;
+    let mut direct_meta_bytes = Vec::with_capacity(program.handlers.len() * 16);
     for (index, handler) in program.handlers.iter().enumerate() {
-        compile_function(
+        let (_, entry_frame) = compile_function(
             &mut module,
             &handler_symbol(index),
             &handler.function,
@@ -98,7 +106,25 @@ pub fn build_with_frame_limit(
             Linkage::Export,
             &procedures,
         )?;
+        let summary =
+            summarize_direct_function(&handler.function, entry_frame, &procedure_summaries);
+        let (word0, word1) = summary.encode();
+        direct_meta_bytes.extend_from_slice(&word0.to_ne_bytes());
+        direct_meta_bytes.extend_from_slice(&word1.to_ne_bytes());
     }
+    let meta_id = module
+        .declare_data("wings_scalar_direct_meta", Linkage::Export, false, false)
+        .map_err(|error| error.to_string())?;
+    let mut meta_data = DataDescription::new();
+    meta_data.define(if direct_meta_bytes.is_empty() {
+        vec![0u8; 16].into_boxed_slice()
+    } else {
+        direct_meta_bytes.into_boxed_slice()
+    });
+    meta_data.set_align(8);
+    module
+        .define_data(meta_id, &meta_data)
+        .map_err(|error| error.to_string())?;
     let bytes = module.finish().emit().map_err(|error| error.to_string())?;
     fs::create_dir(directory).map_err(|error| format!("create new artifact directory: {error}"))?;
     let directory = directory
@@ -130,6 +156,136 @@ pub fn build_with_frame_limit(
     Ok(())
 }
 
+#[derive(Clone, Copy, Default)]
+struct DirectSummary {
+    eligible: bool,
+    uses_heap: bool,
+    base_steps: u64,
+    state_byte_copies: u64,
+    record_allocs: u64,
+    max_stack_bytes: u32,
+}
+
+impl DirectSummary {
+    fn encode(self) -> (u64, u64) {
+        if !self.eligible
+            || self.base_steps == 0
+            || self.max_stack_bytes > 32 * 1024
+            || self.state_byte_copies > u64::from(u16::MAX)
+            || self.record_allocs > u64::from(u16::MAX)
+        {
+            return (0, 0);
+        }
+        let flags =
+            u64::from(self.uses_heap) | (self.state_byte_copies << 1) | (self.record_allocs << 17);
+        (self.base_steps, flags)
+    }
+}
+
+fn summarize_direct_function(
+    function: &Function,
+    own_frame_bytes: u32,
+    callees: &[DirectSummary],
+) -> DirectSummary {
+    let mut base_steps = 1u64;
+    let mut uses_heap = false;
+    let mut state_byte_copies = 0u64;
+    let mut record_allocs = 0u64;
+    let mut max_callee_stack = 0u32;
+    for instruction in &function.instructions {
+        match instruction.operation {
+            Operation::Constant(_)
+            | Operation::State
+            | Operation::Argument(_)
+            | Operation::Negate(_)
+            | Operation::Compare(_, _, _)
+            | Operation::Binary(_, _, _)
+            | Operation::If(_)
+            | Operation::Else(_)
+            | Operation::EndIf(_) => {
+                let Some(next) = base_steps.checked_add(1) else {
+                    return DirectSummary::default();
+                };
+                base_steps = next;
+            }
+            Operation::Call {
+                function: callee_idx,
+                ..
+            } => {
+                let Some(callee) = callees.get(callee_idx).copied() else {
+                    return DirectSummary::default();
+                };
+                if !callee.eligible {
+                    return DirectSummary::default();
+                }
+                let Some(next) = base_steps
+                    .checked_add(1)
+                    .and_then(|steps| steps.checked_add(callee.base_steps))
+                else {
+                    return DirectSummary::default();
+                };
+                base_steps = next;
+                uses_heap |= callee.uses_heap;
+                state_byte_copies = state_byte_copies.saturating_add(callee.state_byte_copies);
+                record_allocs = record_allocs.saturating_add(callee.record_allocs);
+                max_callee_stack = max_callee_stack.max(callee.max_stack_bytes);
+            }
+            Operation::BytesLen(_)
+            | Operation::ByteAt(_, _)
+            | Operation::ReadI64Be(_, _)
+            | Operation::IsEmptyInts(_)
+            | Operation::HeadInt(_)
+            | Operation::TailInts(_)
+            | Operation::ReadInt(_)
+            | Operation::RecordField { .. } => {
+                uses_heap = true;
+                let Some(next) = base_steps.checked_add(2) else {
+                    return DirectSummary::default();
+                };
+                base_steps = next;
+            }
+            Operation::EmptyInts
+            | Operation::PrependInt(_, _)
+            | Operation::RecordInt(_)
+            | Operation::RecordNew { .. } => {
+                uses_heap = true;
+                let Some(next) = base_steps.checked_add(2) else {
+                    return DirectSummary::default();
+                };
+                base_steps = next;
+                record_allocs = record_allocs.saturating_add(1);
+            }
+            Operation::ReplaceByte([source, _, _]) | Operation::ReplaceI64Be([source, _, _]) => {
+                if !function
+                    .instructions
+                    .get(source)
+                    .is_some_and(|origin| matches!(origin.operation, Operation::State))
+                {
+                    return DirectSummary::default();
+                }
+                uses_heap = true;
+                let Some(next) = base_steps.checked_add(2) else {
+                    return DirectSummary::default();
+                };
+                base_steps = next;
+                state_byte_copies = state_byte_copies.saturating_add(1);
+            }
+            _ => return DirectSummary::default(),
+        }
+    }
+    let Some(max_stack_bytes) = own_frame_bytes.checked_add(max_callee_stack) else {
+        return DirectSummary::default();
+    };
+    DirectSummary {
+        eligible: true,
+        uses_heap,
+        base_steps,
+        state_byte_copies,
+        record_allocs,
+        max_stack_bytes,
+    }
+}
+
 fn compile_function(
     module: &mut ObjectModule,
     name: &str,
@@ -137,7 +293,7 @@ fn compile_function(
     max_frame_bytes: u32,
     linkage: Linkage,
     procedures: &[FuncId],
-) -> Result<FuncId, String> {
+) -> Result<(FuncId, u32), String> {
     let (body, frame_bytes) = compile_body(module, name, function, max_frame_bytes, procedures)?;
     let mut context = module.make_context();
     let pointer_type = module.target_config().pointer_type();
@@ -196,7 +352,7 @@ fn compile_function(
         ));
     }
     module.clear_context(&mut context);
-    Ok(identifier)
+    Ok((identifier, frame_bytes + ENTRY_STACK_MARGIN))
 }
 
 fn compile_body(

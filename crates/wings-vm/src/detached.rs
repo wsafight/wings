@@ -36,6 +36,14 @@ impl ScalarProcess {
 }
 
 impl DetachedProcess {
+    pub(crate) fn is_failed(&self) -> bool {
+        self.image.as_ref().is_none_or(|image| image.failed)
+    }
+
+    pub(crate) fn heap_ref(&self) -> Option<&AotHeap> {
+        self.image.as_ref()?.heap.as_deref()
+    }
+
     pub(crate) fn byte_state_snapshot(&self) -> Option<crate::ByteStateSnapshot> {
         let image = self.image.as_ref()?;
         if image.module.manifest().state != wings_abi::ValueType::BytesRef {

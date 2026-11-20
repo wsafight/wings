@@ -171,9 +171,7 @@ impl ReplyTable {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             self.changed.notify_all();
-            return;
         }
-        self.changed.notify_all();
     }
 
     pub(crate) fn start(

@@ -275,8 +275,9 @@ impl State {
                 };
                 if pending.outcome.is_none()
                     || actor.stopping
-                    || actor.mailbox.count + usize::from(actor.starting)
-                        == actor.mailbox.slots.len()
+                    || actor.mailbox.count()
+                        + usize::from(actor.starting || actor.mailbox.is_starting())
+                        == actor.mailbox.capacity()
                 {
                     continue;
                 }
@@ -431,7 +432,7 @@ impl Shared {
                         (
                             actor.module.clone(),
                             actor.account.limit(),
-                            actor.mailbox.slots.len(),
+                            actor.mailbox.capacity(),
                             actor.heap_records,
                         )
                     })

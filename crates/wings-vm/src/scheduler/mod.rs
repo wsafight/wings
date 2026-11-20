@@ -1,5 +1,7 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::cell::UnsafeCell;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -124,7 +126,9 @@ pub struct SchedulerHandle {
 
 struct Shared {
     state: Mutex<State>,
-    changed: Condvar,
+    closed: AtomicBool,
+    fast_slots: Box<[FastSlot]>,
+    changed: ready::WorkerWakeHub,
     ready_mask: AtomicU32,
     tenant: ResourceAccount,
     replies: Arc<ReplyTable>,
@@ -138,7 +142,6 @@ struct Shared {
 
 struct State {
     closed: bool,
-    parked_mask: u32,
     ready_bits: u32,
     last_exit: Option<SchedulerExitSnapshot>,
     slots: Box<[Slot]>,
@@ -171,15 +174,133 @@ struct Actor {
     cancellation: CancellationToken,
     capability: i64,
     heap_records: Option<usize>,
-    mailbox: Mailbox,
+    mailbox: ActorMailbox,
     _charge: Reservation,
     termination: Option<supervisor::ExitPublisher>,
 }
+
+struct ActorMailbox(SharedMailbox);
+
+impl Deref for ActorMailbox {
+    type Target = SharedMailbox;
+    fn deref(&self) -> &SharedMailbox {
+        &self.0
+    }
+}
+
+impl Drop for ActorMailbox {
+    fn drop(&mut self) {
+        self.0.retire_clear();
+    }
+}
+
+struct FastSlot {
+    locked: AtomicBool,
+    entry: UnsafeCell<Option<(u32, Weak<SharedMailboxInner>)>>,
+}
+
+unsafe impl Send for FastSlot {}
+unsafe impl Sync for FastSlot {}
+
+impl Default for FastSlot {
+    fn default() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            entry: UnsafeCell::new(None),
+        }
+    }
+}
+
+impl FastSlot {
+    fn lock(&self) -> FastSlotGuard<'_> {
+        let mut spins = 0u32;
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            if spins < 16 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        FastSlotGuard(self)
+    }
+
+    fn set(&self, generation: u32, mailbox: &SharedMailbox) {
+        let mut guard = self.lock();
+        *guard = Some((generation, Arc::downgrade(&mailbox.inner)));
+    }
+
+    fn clear(&self) {
+        let current = {
+            let mut guard = self.lock();
+            guard.take()
+        };
+        drop(current);
+    }
+
+    fn get(&self, generation: u32) -> Option<SharedMailbox> {
+        let guard = self.lock();
+        match guard.as_ref() {
+            Some((slot_gen, weak)) if *slot_gen == generation => weak
+                .upgrade()
+                .map(|inner| SharedMailbox { inner })
+                .filter(|mailbox| !mailbox.is_retired()),
+            _ => None,
+        }
+    }
+}
+
+struct FastSlotGuard<'slot>(&'slot FastSlot);
+
+impl std::ops::Deref for FastSlotGuard<'_> {
+    type Target = Option<(u32, Weak<SharedMailboxInner>)>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0.entry.get() }
+    }
+}
+
+impl std::ops::DerefMut for FastSlotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.0.entry.get() }
+    }
+}
+
+impl Drop for FastSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.0.locked.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+struct SharedMailbox {
+    inner: Arc<SharedMailboxInner>,
+}
+
+struct SharedMailboxInner {
+    module: ScalarModule,
+    account: ResourceAccount,
+    capacity: usize,
+    count_atomic: AtomicUsize,
+    occupancy_atomic: AtomicUsize,
+    retired: AtomicBool,
+    locked: AtomicBool,
+    state: UnsafeCell<Mailbox>,
+}
+
+unsafe impl Send for SharedMailboxInner {}
+unsafe impl Sync for SharedMailboxInner {}
 
 struct Mailbox {
     slots: Box<[Option<Envelope>]>,
     head: usize,
     count: usize,
+    starting: bool,
+    stopping: bool,
+    active_or_queued: bool,
 }
 
 struct Envelope {
@@ -252,7 +373,7 @@ impl Scheduler {
             return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield/slice samples per worker".into());
         }
         let bytes = std::mem::size_of::<Shared>()
-            + config.capacity * std::mem::size_of::<Slot>()
+            + config.capacity * (std::mem::size_of::<Slot>() + std::mem::size_of::<FastSlot>())
             + config.requests * std::mem::size_of::<RequestSlot>()
             + config.workers * std::mem::size_of::<ready::ReadyQueue>()
             + if config.yield_samples == 0 {
@@ -318,7 +439,6 @@ impl Scheduler {
         let shared = Arc::new(Shared {
             state: crate::native_sync::mutex(State {
                 closed: false,
-                parked_mask: 0,
                 ready_bits: 0,
                 last_exit: None,
                 slots: storage(config.capacity, || {
@@ -340,7 +460,9 @@ impl Scheduler {
                 ready: storage(config.workers, ready::ReadyQueue::default)?,
                 free: Some(0),
             }),
-            changed: crate::native_sync::condvar(),
+            closed: AtomicBool::new(false),
+            fast_slots: storage(config.capacity, FastSlot::default)?,
+            changed: ready::WorkerWakeHub::new(),
             ready_mask: AtomicU32::new(0),
             tenant: tenant.clone(),
             replies: ReplyTable::new(tenant, config.requests)?,
@@ -405,7 +527,11 @@ impl Drop for Scheduler {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for index in 0..state.slots.len() {
+            self.handle.shared.fast_slots[index].clear();
             let mut actor = state.slots[index].actor.take();
+            if let Some(actor_ref) = actor.as_ref() {
+                actor_ref.mailbox.retire_clear();
+            }
             if let Some(publisher) = actor.as_mut().and_then(|actor| actor.termination.as_mut()) {
                 publisher.set(SchedulerTermination::Closed);
             }
@@ -542,6 +668,8 @@ impl SchedulerHandle {
             let charge = account.reserve(Resources {
                 processes: 1,
                 bytes: (std::mem::size_of::<Actor>()
+                    + std::mem::size_of::<SharedMailboxInner>()
+                    + 2 * std::mem::size_of::<usize>()
                     + mailbox * std::mem::size_of::<Option<Envelope>>())
                     as u64,
                 ..Resources::default()
@@ -564,6 +692,7 @@ impl SchedulerHandle {
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
             let cancellation = CancellationToken::new_accounted(&account)?;
+            let shared_mailbox = SharedMailbox::new(module.clone(), account.clone(), slots);
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
@@ -578,11 +707,7 @@ impl SchedulerHandle {
                 cancellation,
                 capability: next_identity(&NEXT_CAPABILITY)? as i64,
                 heap_records,
-                mailbox: Mailbox {
-                    slots,
-                    head: 0,
-                    count: 0,
-                },
+                mailbox: ActorMailbox(shared_mailbox),
                 _charge: charge,
                 termination,
             })
@@ -591,11 +716,13 @@ impl SchedulerHandle {
         state.slots[pid.slot as usize].creating = false;
         match result {
             Ok(actor) if !state.closed => {
+                self.shared.fast_slots[pid.slot as usize].set(pid.generation, &actor.mailbox);
                 state.slots[pid.slot as usize].actor = Some(actor);
                 drop(state);
                 Ok(pid)
             }
             Ok(actor) => {
+                actor.mailbox.retire_clear();
                 state.release_slot(pid.slot as usize);
                 drop(state);
                 drop(actor);
@@ -615,6 +742,55 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
+        if !self.shared.closed.load(Ordering::Acquire)
+            && self.shared.identity == pid.scheduler
+            && let Some(fast_slot) = self.shared.fast_slots.get(pid.slot as usize)
+            && let Some(mailbox) = fast_slot.get(pid.generation)
+        {
+            validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
+            if handler.schema().reply.is_some() {
+                return Err("send requires a one-way handler".into());
+            }
+            if mailbox.occupancy_hint() < mailbox.capacity() {
+                let mut owned = [0; 64];
+                owned[..arguments.len()].copy_from_slice(arguments);
+                let charge = mailbox.inner.account.reserve(Resources {
+                    bytes: std::mem::size_of::<Envelope>() as u64,
+                    ..Resources::default()
+                })?;
+                let message_charge = mailbox.inner.account.reserve(Resources {
+                    messages: 1,
+                    ..Resources::default()
+                })?;
+                let message = Envelope {
+                    handler: handler.clone(),
+                    arguments: owned,
+                    count: arguments.len(),
+                    max_steps,
+                    record_mask: 0,
+                    lists: ListPayload::default(),
+                    bytes: BytePayload::default(),
+                    reply: Reply::None,
+                    _charge: charge,
+                    _message_charge: Some(message_charge),
+                };
+                match mailbox.try_push_fast(&self.shared.closed, message) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {
+                        let mut state = self.shared.lock();
+                        if !state.closed {
+                            let wake = state.enqueue(pid);
+                            self.shared.publish_signal(&state);
+                            drop(state);
+                            wake.fire(&self.shared.changed);
+                        }
+                        return Ok(());
+                    }
+                    Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
+                    Err(FastPushError::ClosedOrStopped) => {}
+                }
+            }
+        }
         let mut owned = [0; 64];
         if arguments.len() <= 64 {
             owned[..arguments.len()].copy_from_slice(arguments);
@@ -653,6 +829,73 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
+        if !self.shared.closed.load(Ordering::Acquire)
+            && self.shared.identity == pid.scheduler
+            && let Some(fast_slot) = self.shared.fast_slots.get(pid.slot as usize)
+            && let Some(mailbox) = fast_slot.get(pid.generation)
+        {
+            validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
+            let reply = match handler.schema().reply {
+                Some(
+                    ty @ (wings_abi::ValueType::Int
+                    | wings_abi::ValueType::Bool
+                    | wings_abi::ValueType::Unit
+                    | wings_abi::ValueType::Ref
+                    | wings_abi::ValueType::ListRef
+                    | wings_abi::ValueType::BytesRef
+                    | wings_abi::ValueType::StringRef),
+                ) => ty,
+                _ => {
+                    return Err(
+                        "request requires a scalar, RecordInt, IntList, Bytes or String reply"
+                            .into(),
+                    );
+                }
+            };
+            if mailbox.occupancy_hint() < mailbox.capacity() {
+                let mut owned = [0; 64];
+                owned[..arguments.len()].copy_from_slice(arguments);
+                let charge = mailbox.inner.account.reserve(Resources {
+                    bytes: std::mem::size_of::<Envelope>() as u64,
+                    ..Resources::default()
+                })?;
+                let message_charge = mailbox.inner.account.reserve(Resources {
+                    messages: 1,
+                    ..Resources::default()
+                })?;
+                let (request, publisher) =
+                    self.shared
+                        .replies
+                        .start(deadline, &mailbox.inner.account, reply)?;
+                let message = Envelope {
+                    handler: handler.clone(),
+                    arguments: owned,
+                    count: arguments.len(),
+                    max_steps,
+                    record_mask: 0,
+                    lists: ListPayload::default(),
+                    bytes: BytePayload::default(),
+                    reply: Reply::External(publisher),
+                    _charge: charge,
+                    _message_charge: Some(message_charge),
+                };
+                match mailbox.try_push_fast(&self.shared.closed, message) {
+                    Ok(true) => return Ok(request),
+                    Ok(false) => {
+                        let mut state = self.shared.lock();
+                        if !state.closed {
+                            let wake = state.enqueue(pid);
+                            self.shared.publish_signal(&state);
+                            drop(state);
+                            wake.fire(&self.shared.changed);
+                        }
+                        return Ok(request);
+                    }
+                    Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
+                    Err(FastPushError::ClosedOrStopped) => {}
+                }
+            }
+        }
         let mut owned = [0; 64];
         if arguments.len() <= 64 {
             owned[..arguments.len()].copy_from_slice(arguments);
@@ -700,7 +943,9 @@ impl SchedulerHandle {
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
         actor.stopping = true;
+        actor.mailbox.mark_stopping();
         actor.cancellation.cancel();
+        self.shared.fast_slots[pid.slot as usize].clear();
         let retired = if actor.owner.is_none() {
             state.retire(self.shared.identity, pid)
         } else {
@@ -709,6 +954,9 @@ impl SchedulerHandle {
         let wake = state.wake_all_parked();
         self.shared.publish_signal(&state);
         drop(state);
+        if let Some(actor_ref) = retired.as_ref() {
+            actor_ref.mailbox.retire_clear();
+        }
         drop(retired);
         wake.fire(&self.shared.changed);
         Ok(())
@@ -761,7 +1009,9 @@ impl SchedulerHandle {
                 return Err("host message module, phase or handler mode mismatch".into());
             }
             HostMessage::validate(handler, values)?;
-            if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
+            if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
+                == actor.mailbox.capacity()
+            {
                 return Err("mailbox_full".into());
             }
             actor.account.clone()
@@ -831,7 +1081,7 @@ impl SchedulerHandle {
             owner: actor.owner,
             last_worker: actor.last_worker,
             migrations: actor.migrations,
-            queued: actor.mailbox.count,
+            queued: actor.mailbox.count(),
             stopping: actor.stopping,
             execution: actor.execution,
             committed_state: actor.committed_state,
@@ -873,7 +1123,12 @@ impl Shared {
     fn close(&self) {
         let mut state = self.lock();
         state.closed = true;
+        self.closed.store(true, Ordering::Release);
+        for index in 0..self.fast_slots.len() {
+            self.fast_slots[index].clear();
+        }
         for actor in state.slots.iter().filter_map(|slot| slot.actor.as_ref()) {
+            actor.mailbox.mark_stopping();
             actor.cancellation.cancel();
         }
         let wake = state.wake_all_parked();
@@ -916,25 +1171,194 @@ fn storage<Value>(
     Ok(values.into_boxed_slice())
 }
 
-impl Mailbox {
-    fn push(&mut self, message: Envelope) -> Result<(), String> {
-        if self.count == self.slots.len() {
+enum FastPushError {
+    MailboxFull,
+    ClosedOrStopped,
+}
+
+struct MailboxGuard<'mb>(&'mb SharedMailboxInner);
+
+impl std::ops::Deref for MailboxGuard<'_> {
+    type Target = Mailbox;
+    fn deref(&self) -> &Mailbox {
+        unsafe { &*self.0.state.get() }
+    }
+}
+
+impl std::ops::DerefMut for MailboxGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Mailbox {
+        unsafe { &mut *self.0.state.get() }
+    }
+}
+
+impl Drop for MailboxGuard<'_> {
+    fn drop(&mut self) {
+        let state = unsafe { &*self.0.state.get() };
+        self.0.count_atomic.store(state.count, Ordering::Release);
+        self.0
+            .occupancy_atomic
+            .store(state.count + usize::from(state.starting), Ordering::Release);
+        self.0.locked.store(false, Ordering::Release);
+    }
+}
+
+impl SharedMailbox {
+    fn new(module: ScalarModule, account: ResourceAccount, slots: Box<[Option<Envelope>]>) -> Self {
+        let capacity = slots.len();
+        Self {
+            inner: Arc::new(SharedMailboxInner {
+                module,
+                account,
+                capacity,
+                count_atomic: AtomicUsize::new(0),
+                occupancy_atomic: AtomicUsize::new(0),
+                retired: AtomicBool::new(false),
+                locked: AtomicBool::new(false),
+                state: UnsafeCell::new(Mailbox {
+                    slots,
+                    head: 0,
+                    count: 0,
+                    starting: false,
+                    stopping: false,
+                    active_or_queued: false,
+                }),
+            }),
+        }
+    }
+
+    fn lock(&self) -> MailboxGuard<'_> {
+        let mut spins = 0u32;
+        while self
+            .inner
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            if spins < 16 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        MailboxGuard(&self.inner)
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.inner.capacity
+    }
+
+    pub(super) fn count(&self) -> usize {
+        self.inner.count_atomic.load(Ordering::Acquire)
+    }
+
+    pub(super) fn occupancy_hint(&self) -> usize {
+        self.inner.occupancy_atomic.load(Ordering::Acquire)
+    }
+
+    pub(super) fn is_retired(&self) -> bool {
+        self.inner.retired.load(Ordering::Acquire)
+    }
+
+    pub(super) fn is_starting(&self) -> bool {
+        self.lock().starting
+    }
+
+    pub(super) fn set_starting(&self, starting: bool) {
+        self.lock().starting = starting;
+    }
+
+    pub(super) fn mark_stopping(&self) {
+        self.lock().stopping = true;
+    }
+
+    pub(super) fn retire_clear(&self) {
+        self.inner.retired.store(true, Ordering::Release);
+        let mut drained = Vec::new();
+        {
+            let mut guard = self.lock();
+            guard.stopping = true;
+            guard.starting = false;
+            guard.active_or_queued = false;
+            if guard.count > 0 {
+                let _ = drained.try_reserve_exact(guard.count);
+                while guard.count > 0 {
+                    let head = guard.head;
+                    let msg = guard.slots[head].take().expect("queued envelope");
+                    guard.head = (head + 1) % guard.slots.len();
+                    guard.count -= 1;
+                    if drained.capacity() > drained.len() {
+                        drained.push(msg);
+                    }
+                }
+            }
+        }
+        drop(drained);
+    }
+
+    pub(super) fn set_active_or_queued(&self, active: bool) {
+        self.lock().active_or_queued = active;
+    }
+
+    pub(super) fn mark_enqueued_if_nonempty(&self) -> bool {
+        let mut guard = self.lock();
+        if !guard.stopping && guard.count > 0 {
+            guard.active_or_queued = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn keep_active_if_nonempty(&self) -> bool {
+        let mut guard = self.lock();
+        if !guard.stopping && guard.count > 0 {
+            guard.active_or_queued = true;
+            true
+        } else {
+            guard.active_or_queued = false;
+            false
+        }
+    }
+
+    fn try_push_fast(&self, closed: &AtomicBool, message: Envelope) -> Result<bool, FastPushError> {
+        let mut guard = self.lock();
+        if closed.load(Ordering::Acquire) || guard.stopping || self.is_retired() {
+            return Err(FastPushError::ClosedOrStopped);
+        }
+        if guard.count + usize::from(guard.starting) == guard.slots.len() {
+            return Err(FastPushError::MailboxFull);
+        }
+        let tail = (guard.head + guard.count) % guard.slots.len();
+        guard.slots[tail] = Some(message);
+        guard.count += 1;
+        Ok(guard.active_or_queued)
+    }
+
+    pub(super) fn push(&self, message: Envelope) -> Result<(), String> {
+        let mut guard = self.lock();
+        if guard.count == guard.slots.len() {
             return Err("mailbox_full".into());
         }
-        let tail = (self.head + self.count) % self.slots.len();
-        self.slots[tail] = Some(message);
-        self.count += 1;
+        let tail = (guard.head + guard.count) % guard.slots.len();
+        guard.slots[tail] = Some(message);
+        guard.count += 1;
         Ok(())
     }
-    fn pop(&mut self) -> Envelope {
-        let message = self.slots[self.head].take().expect("ready mailbox");
-        self.head = (self.head + 1) % self.slots.len();
-        self.count -= 1;
+
+    pub(super) fn pop(&self) -> Envelope {
+        let mut guard = self.lock();
+        let head = guard.head;
+        let message = guard.slots[head].take().expect("ready mailbox");
+        guard.head = (head + 1) % guard.slots.len();
+        guard.count -= 1;
         message
     }
-    fn front_is_fast(&self) -> bool {
-        self.count > 0
-            && self.slots[self.head].as_ref().is_some_and(|message| {
+
+    pub(super) fn front_is_fast(&self) -> bool {
+        let guard = self.lock();
+        guard.count > 0
+            && guard.slots[guard.head].as_ref().is_some_and(|message| {
                 crate::execution::WorkerFibers::can_run_fast(
                     &message.handler,
                     message.record_mask,
@@ -943,17 +1367,79 @@ impl Mailbox {
                 )
             })
     }
-    fn restore(&mut self, message: Envelope) {
-        self.head = (self.head + self.slots.len() - 1) % self.slots.len();
-        self.slots[self.head] = Some(message);
-        self.count += 1;
+
+    pub(super) fn front_can_run_direct(
+        &self,
+        image: &DetachedProcess,
+        fibers: &crate::execution::WorkerFibers,
+        slice_steps: u64,
+        yield_observed: bool,
+    ) -> bool {
+        let guard = self.lock();
+        guard.count > 0
+            && guard.slots[guard.head].as_ref().is_some_and(|message| {
+                crate::execution::WorkerFibers::can_run_fast(
+                    &message.handler,
+                    message.record_mask,
+                    &message.lists,
+                    &message.bytes,
+                ) && fibers.can_run_direct_image(
+                    image,
+                    &message.handler,
+                    message.max_steps,
+                    slice_steps,
+                    yield_observed,
+                )
+            })
+    }
+
+    pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
+        let mut guard = self.lock();
+        if guard.stopping || guard.count < threshold {
+            return None;
+        }
+        let is_fast = guard.slots[guard.head].as_ref().is_some_and(|message| {
+            crate::execution::WorkerFibers::can_run_fast(
+                &message.handler,
+                message.record_mask,
+                &message.lists,
+                &message.bytes,
+            )
+        });
+        if !is_fast {
+            return None;
+        }
+        let head = guard.head;
+        let message = guard.slots[head].take().expect("batch mailbox");
+        guard.head = (head + 1) % guard.slots.len();
+        guard.count -= 1;
+        Some(message)
+    }
+
+    pub(super) fn restore(&self, message: Envelope) {
+        let mut guard = self.lock();
+        let head = (guard.head + guard.slots.len() - 1) % guard.slots.len();
+        guard.head = head;
+        guard.slots[head] = Some(message);
+        guard.count += 1;
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_slot0_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let guard = self.lock();
+        f(&guard.slots[0].as_ref().unwrap().bytes.data)
     }
 }
 
-fn validate_scalar(actor: &Actor, handler: &HandlerId, arguments: &[i64]) -> Result<(), String> {
+fn validate_scalar_module(
+    module: &ScalarModule,
+    stopping: bool,
+    handler: &HandlerId,
+    arguments: &[i64],
+) -> Result<(), String> {
     let schema = handler.schema();
-    if actor.stopping
-        || !Arc::ptr_eq(&actor.module.inner, &handler.module.inner)
+    if stopping
+        || !Arc::ptr_eq(&module.inner, &handler.module.inner)
         || schema.is_completion()
         || arguments.len() != schema.parameters.len()
         || arguments.len() > 64
@@ -969,6 +1455,10 @@ fn validate_scalar(actor: &Actor, handler: &HandlerId, arguments: &[i64]) -> Res
         }
     }
     Ok(())
+}
+
+fn validate_scalar(actor: &Actor, handler: &HandlerId, arguments: &[i64]) -> Result<(), String> {
+    validate_scalar_module(&actor.module, actor.stopping, handler, arguments)
 }
 
 fn validate(
@@ -1025,7 +1515,9 @@ fn envelope_precopied(
     max_steps: u64,
     reply: Reply,
 ) -> Result<Envelope, String> {
-    if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
+    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
+        == actor.mailbox.capacity()
+    {
         return Err("mailbox_full".into());
     }
     let charge = actor.account.reserve(Resources {
@@ -1062,7 +1554,9 @@ fn envelope(
     _system: bool,
     reply: Reply,
 ) -> Result<Envelope, String> {
-    if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
+    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
+        == actor.mailbox.capacity()
+    {
         return Err("mailbox_full".into());
     }
     bytes.transfer(&actor.account)?;

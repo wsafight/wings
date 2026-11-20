@@ -23,6 +23,19 @@ pub(crate) fn check_current(maximum: usize) -> Result<(), &'static str> {
     range.validate(maximum, std::ptr::from_ref(&range) as usize)
 }
 
+pub(crate) fn current_managed_limit() -> Result<usize, &'static str> {
+    let range = current()?;
+    range.validate(usize::MAX, std::ptr::from_ref(&range) as usize)?;
+    let limit = range
+        .start
+        .checked_add(crate::stack_pool::SLOW_PATH_STACK_BYTES)
+        .ok_or(INVALID)?;
+    if limit >= range.start + range.bytes {
+        return Err(INVALID);
+    }
+    Ok(limit)
+}
+
 #[cfg(target_os = "macos")]
 fn current() -> Result<StackRange, &'static str> {
     let thread = unsafe { libc::pthread_self() };

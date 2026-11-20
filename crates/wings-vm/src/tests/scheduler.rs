@@ -418,6 +418,7 @@ fn spinning_module() -> ScalarModule {
             manifest,
             initializer: initialize,
             entries: entries.into_boxed_slice(),
+            direct_meta: Box::new([]),
             _library: None,
             lease: None,
         }),

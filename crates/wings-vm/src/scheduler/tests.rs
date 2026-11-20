@@ -352,6 +352,7 @@ pub(super) fn module() -> ScalarModule {
             },
             initializer: entry,
             entries: vec![entry as wings_abi::ScalarEntry; 4].into_boxed_slice(),
+            direct_meta: Box::new([]),
             _library: None,
             lease: None,
         }),
@@ -496,7 +497,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                             let actor = state.actor(handle.shared.identity, owner).unwrap();
                             if state.requests.iter().all(|slot| slot.pending.is_none())
                                 && actor.owner.is_none()
-                                && actor.mailbox.count == 0
+                                && actor.mailbox.count() == 0
                             {
                                 assert_eq!(
                                     actor.committed_state,
@@ -863,7 +864,7 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
         for sequence in capacity / 2 + 1..=capacity + capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
-        assert_eq!(actor.mailbox.count, 0);
+        assert_eq!(actor.mailbox.count(), 0);
         assert_eq!(actor.account.used(), baseline);
         drop(state);
         handle.stop(pid).unwrap();
@@ -1601,7 +1602,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         .is_err()
     );
     assert_eq!(vm.used().bytes, baseline.bytes - 8);
-    assert_eq!(actor.mailbox.count, 0);
+    assert_eq!(actor.mailbox.count(), 0);
     assert_eq!(source.used(), Resources::default());
     drop(filler);
     let actor_baseline = actor.account.used();
@@ -1644,7 +1645,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     );
     assert_eq!(vm.used(), baseline);
     assert_eq!(
-        actor.mailbox.slots[0].as_ref().unwrap().bytes.data,
+        actor.mailbox.with_slot0_bytes(|data| data.to_vec()),
         b"abcdefgh"
     );
     drop(state);

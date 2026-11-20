@@ -340,6 +340,10 @@ impl RecordHeap {
         }
     }
 
+    pub(crate) fn has_free_slot(&self) -> bool {
+        self.allocated + self.retired < self.slots.len()
+    }
+
     pub fn collect(&mut self, roots: &ShadowRoots) -> Result<CollectionStats, String> {
         let mut collection = self.begin_collection(roots)?;
         loop {
@@ -369,6 +373,16 @@ impl RecordHeap {
         &mut self,
         roots: &ShadowRoots,
         collection: &mut Collection,
+    ) -> Option<CollectionStats> {
+        self.collect_chunk_recycling(roots, collection, 0, &mut None)
+    }
+
+    pub(crate) fn collect_chunk_recycling(
+        &mut self,
+        roots: &ShadowRoots,
+        collection: &mut Collection,
+        recycle_len: usize,
+        recycled: &mut Option<ByteBuffer>,
     ) -> Option<CollectionStats> {
         match collection.phase {
             CollectionPhase::Clear => {
@@ -423,17 +437,28 @@ impl RecordHeap {
                         collection.retained += 1;
                         slot.marked = false;
                     } else if slot.occupied {
-                        if let Some(buffer) = self.buffers[collection.cursor + index].take() {
-                            let ByteBuffer {
-                                data,
-                                heap: _,
-                                _charge: charge,
-                            } = buffer;
-                            self.buffer_bytes -= charge.amount().bytes;
-                            drop(data);
-                            match &mut reclaimed_charge {
-                                Some(combined) => combined.merge(charge),
-                                None => reclaimed_charge = Some(charge),
+                        if let Some(mut buffer) = self.buffers[collection.cursor + index].take() {
+                            if recycled.is_none()
+                                && recycle_len != 0
+                                && buffer.data.capacity() == recycle_len
+                                && buffer._charge.amount().bytes == recycle_len as u64
+                            {
+                                self.buffer_bytes -= buffer._charge.amount().bytes;
+                                buffer.data.clear();
+                                buffer.heap = self.identity;
+                                *recycled = Some(buffer);
+                            } else {
+                                let ByteBuffer {
+                                    data,
+                                    heap: _,
+                                    _charge: charge,
+                                } = buffer;
+                                self.buffer_bytes -= charge.amount().bytes;
+                                drop(data);
+                                match &mut reclaimed_charge {
+                                    Some(combined) => combined.merge(charge),
+                                    None => reclaimed_charge = Some(charge),
+                                }
                             }
                         }
                         slot.occupied = false;

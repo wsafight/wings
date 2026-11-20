@@ -12,7 +12,7 @@ const MAX_POOL_SLOTS: usize = 2048;
 
 mod demand;
 use demand::DemandState;
-pub(crate) use demand::FiberStack;
+pub(crate) use demand::{DirectStackLease, FiberStack};
 
 #[derive(Clone)]
 pub struct StackPool {

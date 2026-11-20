@@ -6,9 +6,14 @@ pub(super) struct DemandState {
     parked: usize,
 }
 
-pub(super) struct CachedStack {
+pub(crate) struct CachedStack {
     mapping: DefaultStack,
     charge: Reservation,
+}
+
+pub(crate) enum DirectStackLease {
+    Cached(CachedStack),
+    Cold(Reservation),
 }
 
 pub(crate) struct FiberStack {
@@ -204,6 +209,62 @@ impl StackPool {
             .expect("demand pool")
             .borrow_mut();
         state.active -= 1;
+    }
+
+    pub(crate) fn acquire_direct_stack_charge(
+        &self,
+        process: &ResourceAccount,
+    ) -> Result<DirectStackLease, String> {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        if state.active == self.inner.capacity {
+            return Err("execution stack pool exhausted".into());
+        }
+        if let Some(cached) = state.cached.last_mut() {
+            cached.charge.transfer(process)?;
+            let cached = state.cached.pop().expect("cached stack");
+            state.active += 1;
+            Ok(DirectStackLease::Cached(cached))
+        } else {
+            let charge = process.reserve(Resources {
+                bytes: self.inner.slot_bytes as u64,
+                ..Resources::default()
+            })?;
+            state.active += 1;
+            Ok(DirectStackLease::Cold(charge))
+        }
+    }
+
+    pub(crate) fn release_direct_stack_charge(&self, lease: DirectStackLease) {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        state.active -= 1;
+        match lease {
+            DirectStackLease::Cached(mut cached) => {
+                if state.cached.len() + state.parked < self.inner.max_cached {
+                    let tenant = &self
+                        .inner
+                        .accounting
+                        .as_ref()
+                        .expect("demand accounting")
+                        .tenant;
+                    cached
+                        .charge
+                        .transfer(tenant)
+                        .expect("return cached stack charge");
+                    state.cached.push(cached);
+                }
+            }
+            DirectStackLease::Cold(charge) => drop(charge),
+        }
     }
 
     pub(super) fn demand_stats(&self, state: &DemandState) -> StackPoolStats {

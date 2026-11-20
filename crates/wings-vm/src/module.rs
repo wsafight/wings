@@ -16,10 +16,46 @@ pub struct ScalarModule {
     pub(crate) inner: Arc<ModuleData>,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DirectHandlerMeta {
+    pub base_steps: u64,
+    pub flags: u64,
+}
+
+impl DirectHandlerMeta {
+    pub(crate) fn max_steps(self, heap: Option<&crate::aot_heap::AotHeap>) -> Option<u64> {
+        if self.base_steps == 0 {
+            return None;
+        }
+        let uses_heap = (self.flags & 1) != 0;
+        if !uses_heap {
+            return Some(self.base_steps);
+        }
+        let heap = heap?;
+        let stats = heap.stats();
+        let chunk_scan = (stats.capacity.div_ceil(16) as u64).max(1);
+        let gc_steps = 3 * chunk_scan + (stats.capacity as u64) + 2;
+        let state_byte_copies = (self.flags >> 1) & 0xFFFF;
+        let record_allocs = (self.flags >> 17) & 0xFFFF;
+        let copy_steps = if state_byte_copies != 0 {
+            let state_len = heap.committed_bytes_len()?;
+            let per_copy = (state_len.div_ceil(256) as u64).max(1) + 2 * chunk_scan + gc_steps;
+            state_byte_copies.checked_mul(per_copy)?
+        } else {
+            0
+        };
+        let alloc_steps = record_allocs.checked_mul(2 * chunk_scan + gc_steps)?;
+        self.base_steps
+            .checked_add(copy_steps)?
+            .checked_add(alloc_steps)
+    }
+}
+
 pub(crate) struct ModuleData {
     pub manifest: Manifest,
     pub initializer: ScalarEntry,
     pub entries: Box<[ScalarEntry]>,
+    pub direct_meta: Box<[DirectHandlerMeta]>,
     pub _library: Option<Library>,
     pub lease: Option<ModuleLease>,
 }
@@ -134,12 +170,31 @@ impl ScalarModule {
                     .map_err(|error| error.to_string())?
             });
         }
+        let mut direct_meta = Vec::new();
+        if let Ok(raw_meta) = unsafe { library.get::<*const u64>(b"wings_scalar_direct_meta\0") } {
+            let base_ptr = *raw_meta;
+            if !base_ptr.is_null()
+                && direct_meta
+                    .try_reserve_exact(manifest.handlers.len())
+                    .is_ok()
+            {
+                for index in 0..manifest.handlers.len() {
+                    let word0 = unsafe { base_ptr.add(index * 2).read_unaligned() };
+                    let word1 = unsafe { base_ptr.add(index * 2 + 1).read_unaligned() };
+                    direct_meta.push(DirectHandlerMeta {
+                        base_steps: word0,
+                        flags: word1,
+                    });
+                }
+            }
+        }
         crate::startup_trace::mark(trace, "module_symbols_ready");
         Ok(Self {
             inner: Arc::new(ModuleData {
                 manifest,
                 initializer,
                 entries: entries.into_boxed_slice(),
+                direct_meta: direct_meta.into_boxed_slice(),
                 _library: Some(library),
                 lease,
             }),
@@ -259,6 +314,15 @@ impl HandlerId {
     pub fn schema(&self) -> &Handler {
         &self.module.inner.manifest.handlers[self.index]
     }
+
+    pub(crate) fn direct_max_steps(&self, heap: Option<&crate::aot_heap::AotHeap>) -> Option<u64> {
+        self.module
+            .inner
+            .direct_meta
+            .get(self.index)
+            .copied()
+            .and_then(|meta| meta.max_steps(heap))
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +436,7 @@ mod tests {
                 },
                 initializer: entry,
                 entries: vec![entry as ScalarEntry].into_boxed_slice(),
+                direct_meta: Box::new([]),
                 _library: None,
                 lease: None,
             }),
@@ -470,6 +535,7 @@ mod tests {
                 },
                 initializer: entry,
                 entries: vec![entry as ScalarEntry].into_boxed_slice(),
+                direct_meta: Box::new([]),
                 _library: None,
                 lease: Some(ModuleLease {
                     vm: vm.clone(),
@@ -584,6 +650,7 @@ mod tests {
                 },
                 initializer: entry,
                 entries: Box::new([]),
+                direct_meta: Box::new([]),
                 _library: None,
                 lease: Some(ModuleLease {
                     vm: vm.clone(),

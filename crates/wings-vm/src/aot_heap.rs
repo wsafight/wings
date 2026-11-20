@@ -332,6 +332,11 @@ impl AotHeap {
         self.heap.stats()
     }
 
+    pub(crate) fn committed_bytes_len(&self) -> Option<usize> {
+        let reference = self.committed?;
+        self.heap.bytes(reference).ok().map(<[u8]>::len)
+    }
+
     pub(crate) fn commit(&mut self, encoded: i64) -> Result<(), String> {
         let reference = self.heap.import_reference(encoded as u64)?;
         if !self.heap.has_layout(reference, self.layout)? {
@@ -783,6 +788,13 @@ unsafe fn root_incoming(
     Ok(())
 }
 unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
+    unsafe { collect_managed_recycling(context, 0) }.map(|_| ())
+}
+
+unsafe fn collect_managed_recycling(
+    context: &mut ScalarContext,
+    recycle_len: usize,
+) -> Result<Option<crate::heap::ByteBuffer>, u32> {
     let pointer = context.heap_data.cast::<AotHeap>();
     let mut collection = {
         let heap = unsafe { &mut *pointer };
@@ -791,16 +803,17 @@ unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
             .begin_collection(&heap.roots)
             .map_err(|_| STATUS_INVALID_ROOT)?
     };
+    let mut recycled = None;
     loop {
         crate::execution::runtime_checkpoint(context, true)?;
         let finished = {
             let heap = unsafe { &mut *pointer };
             heap.heap
-                .collect_chunk(&heap.roots, &mut collection)
+                .collect_chunk_recycling(&heap.roots, &mut collection, recycle_len, &mut recycled)
                 .is_some()
         };
         if finished {
-            return Ok(());
+            return Ok(recycled);
         }
     }
 }
@@ -892,14 +905,24 @@ unsafe fn byte_call(
         };
         (bytes.len(), Some(reference), index, value)
     };
-    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
-        Ok(buffer) => buffer,
-        Err(_) => {
-            unsafe { collect_managed(context) }?;
-            unsafe { &*pointer }
+    let mut buffer = if !unsafe { &*pointer }.heap.has_free_slot() {
+        match unsafe { collect_managed_recycling(context, length) }? {
+            Some(recycled) => recycled,
+            None => unsafe { &*pointer }
                 .heap
                 .prepare_bytes(length)
-                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+        }
+    } else {
+        match unsafe { &*pointer }.heap.prepare_bytes(length) {
+            Ok(buffer) => buffer,
+            Err(_) => match unsafe { collect_managed_recycling(context, length) }? {
+                Some(recycled) => recycled,
+                None => unsafe { &*pointer }
+                    .heap
+                    .prepare_bytes(length)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+            },
         }
     };
     let mut start = 0;
@@ -1141,14 +1164,24 @@ unsafe fn string_call(
         .checked_add(lengths[1])
         .filter(|length| *length <= crate::heap::MAX_BYTES)
         .ok_or(STATUS_INVALID_STRING)?;
-    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
-        Ok(buffer) => buffer,
-        Err(_) => {
-            unsafe { collect_managed(context) }?;
-            unsafe { &*pointer }
+    let mut buffer = if !unsafe { &*pointer }.heap.has_free_slot() {
+        match unsafe { collect_managed_recycling(context, length) }? {
+            Some(recycled) => recycled,
+            None => unsafe { &*pointer }
                 .heap
                 .prepare_bytes(length)
-                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+        }
+    } else {
+        match unsafe { &*pointer }.heap.prepare_bytes(length) {
+            Ok(buffer) => buffer,
+            Err(_) => match unsafe { collect_managed_recycling(context, length) }? {
+                Some(recycled) => recycled,
+                None => unsafe { &*pointer }
+                    .heap
+                    .prepare_bytes(length)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+            },
         }
     };
     for (reference, (source_offset, length)) in sources.into_iter().zip(ranges) {
@@ -1202,14 +1235,24 @@ unsafe fn string_literal(context: &mut ScalarContext, arguments: [i64; 3]) -> Re
         return Err(wings_abi::STATUS_INVALID_STRING);
     }
     let pointer = context.heap_data.cast::<AotHeap>();
-    let mut buffer = match unsafe { &*pointer }.heap.prepare_bytes(length) {
-        Ok(buffer) => buffer,
-        Err(_) => {
-            unsafe { collect_managed(context) }?;
-            unsafe { &*pointer }
+    let mut buffer = if !unsafe { &*pointer }.heap.has_free_slot() {
+        match unsafe { collect_managed_recycling(context, length) }? {
+            Some(recycled) => recycled,
+            None => unsafe { &*pointer }
                 .heap
                 .prepare_bytes(length)
-                .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+        }
+    } else {
+        match unsafe { &*pointer }.heap.prepare_bytes(length) {
+            Ok(buffer) => buffer,
+            Err(_) => match unsafe { collect_managed_recycling(context, length) }? {
+                Some(recycled) => recycled,
+                None => unsafe { &*pointer }
+                    .heap
+                    .prepare_bytes(length)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+            },
         }
     };
     let mut offset = 0;

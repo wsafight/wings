@@ -483,6 +483,7 @@ pub(crate) fn module() -> ScalarModule {
             manifest,
             initializer: initialize,
             entries: handlers.into_iter().map(|(_, _, _, entry)| entry).collect(),
+            direct_meta: Box::new([]),
             _library: None,
             lease: None,
         }),
