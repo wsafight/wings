@@ -30,6 +30,7 @@ mod record_reply;
 mod resources;
 mod scheduler;
 mod stack_pool;
+mod startup_trace;
 mod string_reply;
 mod supervision;
 mod timer;

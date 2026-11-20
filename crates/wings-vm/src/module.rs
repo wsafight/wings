@@ -65,6 +65,8 @@ impl ScalarModule {
     }
 
     unsafe fn load(directory: &Path, vm: Option<&ResourceAccount>) -> Result<Self, String> {
+        let trace = crate::startup_trace::begin_load();
+        crate::startup_trace::mark(trace, "module_load_begin");
         let mut lease = vm
             .map(|vm| {
                 let charge = vm.reserve(Resources {
@@ -86,6 +88,7 @@ impl ScalarModule {
                 .canonicalize()
                 .map_err(|error| error.to_string())?
         };
+        crate::startup_trace::mark(trace, "module_path_ready");
         let library_path = directory.join(library_name());
         let metadata = library_path
             .symlink_metadata()
@@ -93,6 +96,7 @@ impl ScalarModule {
         if !metadata.is_file() || metadata.len() > MAX_LIBRARY_BYTES {
             return Err("artifact library must be a regular file of at most 64 MiB".into());
         }
+        crate::startup_trace::mark(trace, "module_metadata_ready");
         if let Some(lease) = lease.as_mut() {
             lease._library_charge = Some(lease.vm.reserve(Resources {
                 bytes: metadata.len().div_ceil(4096) * 4096,
@@ -100,15 +104,20 @@ impl ScalarModule {
             })?);
         }
         let manifest = Manifest::read(&directory)?;
+        crate::startup_trace::mark(trace, "module_manifest_ready");
         if let Some(lease) = lease.as_mut() {
+            crate::startup_trace::mark(trace, "module_image_begin");
             let file_bytes = metadata.len().div_ceil(4096) * 4096;
             let image_bytes = crate::module_image::read_image_bytes(&library_path, metadata.len())?;
             lease._image_charge = Some(lease.vm.reserve(Resources {
                 bytes: image_bytes.saturating_sub(file_bytes),
                 ..Resources::default()
             })?);
+            crate::startup_trace::mark(trace, "module_image_ready");
         }
+        crate::startup_trace::mark(trace, "module_dlopen_begin");
         let library = unsafe { Library::new(&library_path) }.map_err(|error| error.to_string())?;
+        crate::startup_trace::mark(trace, "module_dlopen_ready");
         let initializer = unsafe {
             *library
                 .get::<ScalarEntry>(INITIALIZER_SYMBOL.as_bytes())
@@ -125,6 +134,7 @@ impl ScalarModule {
                     .map_err(|error| error.to_string())?
             });
         }
+        crate::startup_trace::mark(trace, "module_symbols_ready");
         Ok(Self {
             inner: Arc::new(ModuleData {
                 manifest,

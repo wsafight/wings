@@ -1,5 +1,7 @@
 # 风险与里程碑
 
+[ADR-0148](adr/0148-bounded-startup-stage-tracing.md) 为第 2/5/6 项增加默认关闭的逐进程启动阶段轨迹：模块路径、元数据、清单、映像、`dlopen` 和符号解析以每进程最多 64 条、8192 B 文件保留，超限显式截断并与同 PID 原限超时栈关联。真实 AOT 和默认关闭对照见[记录](validation-startup-stage-tracing-2026-11-20.md)；诊断不延长原期限，历史启动根因、完整受管执行/账本及其余 MVP 门禁不变。
+
 [ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 在离线摘要有界保留逐拒绝的 planned/sent、迟发、阶段、actor 和前一到达间隔；冻结重放保持 211/56 次拒绝及尾候选不变。open-loop 符合数十毫秒迟发补发关联；fairness 56 次当前拒绝虽仅迟发 0.103–0.224ms，但前一同 actor burst 迟发约 9.72–9.86ms 且均未完成，前后实际仅隔约 0.38ms，保留迟发压缩候选而不宣称阈值或 OS/VM 根因。实测见[记录](validation-mailbox-full-attribution-summary-2026-11-19.md)，其余 MVP 门禁不变。
 
 [ADR-0146](adr/0146-measurement-artifact-schema-preflight.md) 在 open-loop/fairness 创建 actor 和业务 `t0` 前核对 state/handler schema；真实错误 Counter 产物以固定错误、0 B trace 和无开始事件拒绝，正确负载与期限不变。实测见[记录](validation-measurement-schema-preflight-2026-11-19.md)，其余 MVP 门禁不变。

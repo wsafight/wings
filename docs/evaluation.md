@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0148](adr/0148-bounded-startup-stage-tracing.md) 为原限超时补模块加载的有界历史：每进程独立最多 64 条、8192 B，显式截断，写失败不影响业务双流；阶段时间与同 PID 失败后原生栈联合解释。真实 AOT 九阶段、默认关闭与路径失败见[记录](validation-startup-stage-tracing-2026-11-20.md)。无轨迹不能单独归因 `_dyld_start`，本诊断不等于启动修复、完整账本或性能/MVP 门禁通过。
+
 [ADR-0144](adr/0144-command-timeout-stack-sampling.md) 为通用命令补原限超时后的直接子进程采样，默认仍走原 `subprocess.run`；采样器失败不覆盖超时或跳过清理，cargo 包装栈不冒充业务 example 栈。模型与真实采样见[记录](validation-command-timeout-sampling-2026-11-19.md)，不是启动/执行稳定性或性能门禁通过。
 
 [ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 为准入/清理加入实际 allocator null 注入，而不是只把账户填满。19 次拒绝只在 CPU 20s/墙钟 30s/core 0 子进程执行，覆盖模块路径结果、固定/AOT 堆、根、参数重试、GC 一次重试/耗尽、宿主消息和候选回复；失败点、三级账户与根基线、无注入重试、旧状态、健康进展及原启动诊断见[记录](validation-allocator-failures-2026-11-19.md)。它不注入系统全局 OOM，也不替代完整账本或 BEAM 双门禁。
