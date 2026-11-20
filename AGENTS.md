@@ -4,6 +4,8 @@
 
 ## 项目现状
 
+- ADR-0150 为 v6 开环离线摘要增加真实回复的 `observed-sent` 服务延迟，与原 `observed-planned` 和发生器迟发并列；原 40 B 事件、尾候选、扫描停止和资源限制不变。合成模型及十份冻结 hot-queue trace 重放通过，历史字段完全不变。当前五对中 Wings 5/5 尾候选通过、0 拒绝，BEAM 3/5 通过；Wings 服务 p99 35.916–46.167µs 仍高于 BEAM 5.333–10.041µs，Wings 同轮 RSS/物理占用较低但完整门禁未过，见 `docs/validation-open-loop-service-latency-2026-11-20.md`。
+
 - ADR-0149 将 `wings-ir` 的线性引用根集合计算替换为与 codegen 同构的内部 CFG、边 phi 输入和反向 liveness；`Loop`/`EndIf` 在检查点前定义，`EndLoop` 结果只在 after-loop 定义，`last_uses` 仅保留兼容诊断。连续/空分支、嵌套回边、零次循环与 state/reply 去重均有精确 IR 回归，两种构建各 108 harness/728 项、doctest、定向强制 GC 与原限完整 AOT、MSRV/Linux 交叉检查通过。不新增源码/IR phi、任意跳转或 ABI 变化，不完成动态调用根链、完整账本或 BEAM/MVP 门禁，见 `docs/validation-cfg-reference-root-plan-2026-11-20.md`。
 
 - ADR-0148 增加默认关闭的 `WINGS_STARTUP_TRACE_DIR`：每进程独立 `create_new` 文件，以 load ID 区分并发模块加载，记录路径、元数据、清单、映像、`dlopen` 和符号解析阶段；至多 64 条普通记录/8192 B，显式截断，写失败不影响业务双流。5 项有界/并发/失败自测与真实 AOT 九阶段、默认关闭和路径失败对照通过；轨迹须与同 PID 原生栈联合解释，多个未完成加载、部分末行和无文件均不能单独归因。原期限、ABI v22、额度和业务输出不变，历史启动超时根因未修复，完整受管执行/账本、公平/故障、原生双平台和 BEAM/MVP 门禁不变，见 `docs/validation-startup-stage-tracing-2026-11-20.md`。

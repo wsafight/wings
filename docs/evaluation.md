@@ -1,5 +1,7 @@
 # 评测与验收
 
+[ADR-0150](adr/0150-open-loop-service-latency.md) 为 v6 离线摘要并列 `observed-planned` 与真实回复的 `observed-sent`，后者仍含排队、唤醒、执行、发布和观察，不是 handler CPU。两个口径共用原事件和精确分位，新字段不改变尾候选、扫描停止或资源限制；不得用服务时间改善掩盖发生器迟发或端到端退化。
+
 [ADR-0148](adr/0148-bounded-startup-stage-tracing.md) 为原限超时补模块加载的有界历史：每进程独立最多 64 条、8192 B，显式截断，写失败不影响业务双流；阶段时间与同 PID 失败后原生栈联合解释。真实 AOT 九阶段、默认关闭与路径失败见[记录](validation-startup-stage-tracing-2026-11-20.md)。无轨迹不能单独归因 `_dyld_start`，本诊断不等于启动修复、完整账本或性能/MVP 门禁通过。
 
 [ADR-0144](adr/0144-command-timeout-stack-sampling.md) 为通用命令补原限超时后的直接子进程采样，默认仍走原 `subprocess.run`；采样器失败不覆盖超时或跳过清理，cargo 包装栈不冒充业务 example 栈。模型与真实采样见[记录](validation-command-timeout-sampling-2026-11-19.md)，不是启动/执行稳定性或性能门禁通过。

@@ -143,6 +143,8 @@ WINGS_PROFILE=release python3 scripts/verify_open_loop.py --compare-beam --outpu
 
 [ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 为 v6/v8 离线 summary 增加 `mailbox_full_attribution`：total 覆盖 warmup/sample 全部 kind 3，前 1024 条逐事件保留序号、actor、planned/sent、阶段、发生器迟发和与前一 admission 的间隔，之后显式 truncated。它只在验证 trace 时派生，完整原始事件仍是权威证据；字段不参与拒绝计数、延迟分位、尾候选或扫描停止判据，也不把观测关联称为因果。冻结重放见[记录](validation-mailbox-full-attribution-summary-2026-11-19.md)。
 
+[ADR-0150](adr/0150-open-loop-service-latency.md) 只为 v6 离线 summary 增加 `service_latency`：对真实回复计算 `observed-sent`，与原 `observed-planned` 端到端分位和发生器迟发并列。它仍包含 mailbox 等待、worker 唤醒、执行、结果发布与调用者观察，不是 handler CPU；新字段不删除迟发样本，不改变原事件、尾候选、扫描停止或资源限制。历史 trace 可重放但历史报告不回写。
+
 [ADR-0069](adr/0069-streamed-open-loop-measurement.md) 为同一业务新增 `--measure <case> <rate> <new-trace-file>`，Wings 前置 `--trusted <artifact>`；只允许下表四组非 fairness 的基准速率乘 `2^0..2^7`。固定连续 90 秒，前 30 秒预热、后 60 秒按计划时刻分组采样，边界不暂停/重置 state 或清 pending；结果仍 checked +1、完整 state、原路由/mailbox 和 256 实际 pending。外部 100ms deadline、迟发不重基准、超时保留至实际回复、拒绝不重试均不变。
 
 每条到达和真实回复按发生顺序写 40 B big-endian：`sequence:u64, sent_ns:u64, observed_ns:u64, value:i64, kind:u64`。kind 0=接受到达，1=按时真实回复，2=超时后的真实回复，3=mailbox_full，4=pending_full；非回复的 observed/value 为零。先有接受再有回复，拒绝无回复，目标/计划由 sequence 重算。固定 64 KiB 缓冲，独占新建文件不覆盖，写入成本计入业务运行；不随总请求数分配内存样本。stdout 只有 start、sampling 和最终结果三个控制 JSON，stderr 非空、缺事件/截断/重复/未闭合 pending 都判实验无效，不能当成功或预期业务失败。

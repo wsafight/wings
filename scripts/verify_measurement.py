@@ -27,6 +27,7 @@ def models(parent):
     trace = parent / "synthetic.bin"
     values = [0] * 10000
     latencies = []
+    service_latencies = []
     with trace.open("wb") as output:
         for sequence in range(1, 90001):
             planned = (sequence - 1) * 1_000_000
@@ -39,10 +40,13 @@ def models(parent):
             delay = sequence % 1000 * 1000
             if sequence == 90000:
                 delay = measure.DEADLINE_NS
-            output.write(measure.EVENT.pack(sequence, planned, 0, 0, 0))
-            output.write(measure.EVENT.pack(sequence, planned, planned + delay, values[actor], 2 if sequence == 90000 else 1))
+            lateness = 500 if sequence == 30001 else 0
+            sent = planned + lateness
+            output.write(measure.EVENT.pack(sequence, sent, 0, 0, 0))
+            output.write(measure.EVENT.pack(sequence, sent, sent + delay, values[actor], 2 if sequence == 90000 else 1))
             if planned >= measure.WARMUP_NS:
-                latencies.append(delay)
+                latencies.append(delay + lateness)
+                service_latencies.append(delay)
     result = {"version": 6, "status": "ok", "mode": "measure", "actors": 10000,
               "state_bytes": 256, "mailbox_capacity": 1, "rate": 1000,
               "deadline_ns": measure.DEADLINE_NS, "pending_capacity": 256, "message_bytes": 32,
@@ -50,10 +54,12 @@ def models(parent):
               "environment": {"runtime": "wings", "workers": 2}}
     summary = measure.validate_trace(trace, "sparse-256", 1000, result)
     ordered = sorted(latencies)
+    ordered_service = sorted(service_latencies)
     require(summary["arrivals"] == 60000 and summary["timed_out"] == 1 and summary["mailbox_full"] == 1, "phase totals")
     for field, numerator, denominator in (("p50_ns", 1, 2), ("p99_ns", 99, 100), ("p999_ns", 999, 1000)):
         rank = (len(ordered) * numerator + denominator - 1) // denominator
         require(summary[field] == ordered[rank - 1], "exact radix nearest-rank")
+        require(summary["service_latency"][field] == ordered_service[rank - 1], "post-send service nearest-rank")
     require(summary["max_ns"] == measure.DEADLINE_NS and not summary["tail_candidate_pass"], "late result retained")
     require(summary["generator_lateness"]["p999_ns"] == 0
             and summary["generator_lateness"]["max_ns"] == 123456, "lateness includes refusals without changing quantile semantics")
@@ -92,10 +98,13 @@ def models(parent):
                                for index, delay in enumerate((0, 2**16 - 1, 2**16, 2**32, 99_000_000_000))))
     latency = measure.statistics()
     lateness = measure.statistics()
+    service = measure.statistics()
     for delay in (0, 2**16 - 1, 2**16, 2**32, 99_000_000_000):
         measure.observe(latency, delay)
-    measure.percentiles(short, 1000, latency, lateness)
+        measure.observe(service, delay)
+    measure.percentiles(short, 1000, latency, lateness, service)
     require(latency["p50_ns"] == 2**16 and latency["p99_ns"] == 99_000_000_000 and latency["p999_ns"] is None, "multiword/small-sample quantile")
+    require(service["p50_ns"] == latency["p50_ns"] and service["p99_ns"] == latency["p99_ns"], "service multiword quantile")
     bounded = parent / "pending.bin"
     bounded_values = [0] * 10000
     with bounded.open("wb") as output:

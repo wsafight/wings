@@ -66,9 +66,9 @@ def observe(stats, value):
     stats["over_50ms"] += value > 50_000_000
 
 
-def percentiles(path, rate, latency, lateness):
+def percentiles(path, rate, latency, lateness, service):
     queries = []
-    for metric, stats in enumerate((latency, lateness)):
+    for metric, stats in enumerate((latency, lateness, service)):
         for field, numerator, denominator in (("p50_ns", 1, 2), ("p99_ns", 99, 100), ("p999_ns", 999, 1000)):
             stats[field] = None
             if stats["samples"] and (field != "p999_ns" or stats["samples"] >= 10000):
@@ -80,10 +80,12 @@ def percentiles(path, rate, latency, lateness):
             planned = (sequence - 1) * 1_000_000_000 // rate
             if planned < WARMUP_NS:
                 continue
-            metric, value = (0, observed - planned) if kind in (1, 2) else (1, sent - planned)
-            key = (metric, value >> (shift + 16))
-            if key in buckets:
-                buckets[key][value >> shift & 65535] += 1
+            values = (((0, observed - planned), (2, observed - sent))
+                      if kind in (1, 2) else ((1, sent - planned),))
+            for metric, value in values:
+                key = (metric, value >> (shift + 16))
+                if key in buckets:
+                    buckets[key][value >> shift & 65535] += 1
         for query in queries:
             counts = buckets[query["metric"], query["prefix"]]
             for bucket, count in enumerate(counts):
@@ -119,6 +121,7 @@ def validate_trace(path, name, rate, result):
     warmup = dict(counts)
     latency = statistics()
     lateness = statistics()
+    service = statistics()
     attribution = new_mailbox_full_attribution()
     next_sequence = 1
     previous_sent = 0
@@ -172,17 +175,19 @@ def validate_trace(path, name, rate, result):
                     group["reply" if kind == 1 else "timed_out"] += 1
                     if planned >= WARMUP_NS:
                         observe(latency, observed - planned)
+                        observe(service, observed - original_sent)
                 else:
                     raise ValueError("unknown event")
     require(next_sequence == rate * 90 + 1 and not pending, "missing arrival/result")
     require(result["committed"] == expected and all(type(value) is int for value in result["committed"]), "committed")
     require(sum(warmup.values()) == rate * 30 and sum(counts.values()) == rate * 60, "phase accounting")
-    percentiles(path, rate, latency, lateness)
+    percentiles(path, rate, latency, lateness, service)
     summary = {"arrivals": rate * 60, **counts, **latency,
                "timeout_ratio": counts["timed_out"] / (rate * 60),
                "refusal_ratio": (counts["mailbox_full"] + counts["pending_full"]) / (rate * 60),
                "on_time_replies_per_second": counts["reply"] / 60,
-               "generator_lateness": lateness, "mailbox_full_attribution": attribution}
+               "generator_lateness": lateness, "service_latency": service,
+               "mailbox_full_attribution": attribution}
     summary.update({"warmup": warmup, "events": events, "trace_bytes": path.stat().st_size,
                     "sha256": digest.hexdigest(), "drained": True})
     summary["tail_candidate_pass"] = (

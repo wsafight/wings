@@ -26,5 +26,6 @@ Debug 与 Release 分别由当前源码重建 `wings-compile`，生成独立产�
 - `cargo fmt --all -- --check`、`git diff --check` 通过；224 份 Markdown 的相对链接与代码围栏检查通过。两份全目标报告 SHA-256 分别为 `96355473f6e903ca4034180a6a4704033cfb25842ca3ed785156e4d6436e7298` 和 `9c6ca11ab1f309ad3b5dbabb73a732c09c6986e1ab79aa7c34a7d63f24b01e25`。
 - Rust 1.85.0 的 workspace all-targets check 与 Linux x86-64 的 `wings-vm` all-targets 交叉检查通过；交叉检查不算原生 Linux 执行。
 - Debug 与 Release 原限完整 AOT 均一次通过，日志分别为 `target/root-plan-validation-20261120/full-aot-{debug,release}.log`，两者 SHA-256 均为 `00bb2a652119e1e7902d15da09e5cad0604ce7d8fc6afa6a759db8ff12a6b5b5`。本轮未复现历史启动超时，不构成其根因修复。
-- ADR-0148 的既有 push CI `44721198246` 已全部通过：原生 macOS AArch64、Linux x86-64 及 MSRV 三job成功。该结果只关闭前一切片的 CI 查询，不覆盖本片未提交源码。
+- ADR-0148 的既有 push CI `44721198246` 已全部通过：原生 macOS AArch64、Linux x86-64 及 MSRV 三job成功。该结果只关闭前一切片的 CI 查询，不覆盖本片源码。
+- 本片提交为 `2705753e6f44e8d566ab6eeaaa42bcab9b6e8d56`。两次 `git push` 客户端均报告接收超时，但远端 tracking ref 随后已指向该提交；保留客户端失败，不写成两次命令成功。push CI [`44727811707`](https://github.com/wsafight/wings/actions/runs/44727811707) 与 PR CI [`44727818547`](https://github.com/wsafight/wings/actions/runs/44727818547) 均已成功。
 - 本片不开放递归、前向调用或动态派发，不完成动态调用根链。历史启动超时、完整资源账本、公平/过载/故障长测、最新原生双平台及 BEAM/MVP 门禁保持开放。
