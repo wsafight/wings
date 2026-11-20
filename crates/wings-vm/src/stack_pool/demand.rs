@@ -3,11 +3,33 @@ use super::*;
 pub(super) struct DemandState {
     pub(super) cached: Vec<CachedStack>,
     active: usize,
+    parked: usize,
 }
 
 pub(super) struct CachedStack {
     mapping: DefaultStack,
     charge: Reservation,
+}
+
+pub(crate) struct FiberStack {
+    mapping: DefaultStack,
+    page_bytes: usize,
+}
+
+impl FiberStack {
+    pub(crate) fn managed_limit(&self) -> usize {
+        self.mapping.limit().get() + self.page_bytes + SLOW_PATH_STACK_BYTES
+    }
+}
+
+unsafe impl Stack for FiberStack {
+    fn base(&self) -> StackPointer {
+        self.mapping.base()
+    }
+
+    fn limit(&self) -> StackPointer {
+        self.mapping.limit()
+    }
 }
 
 impl StackPool {
@@ -67,14 +89,126 @@ impl StackPool {
                     _metadata: metadata,
                     charged_bytes: metadata_bytes as u64,
                 }),
-                demand: Some(RefCell::new(DemandState { cached, active: 0 })),
+                demand: Some(RefCell::new(DemandState {
+                    cached,
+                    active: 0,
+                    parked: 0,
+                })),
             }),
             process: None,
         })
     }
 
+    pub(crate) fn max_cached_slots(&self) -> usize {
+        self.inner.max_cached
+    }
+
+    pub(crate) fn allocate_fiber_stack(
+        &self,
+        process: &ResourceAccount,
+    ) -> Result<(FiberStack, Reservation), String> {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        if state.active == self.inner.capacity {
+            return Err("execution stack pool exhausted".into());
+        }
+        let CachedStack { mapping, charge } = if let Some(cached) = state.cached.last_mut() {
+            cached.charge.transfer(process)?;
+            state.cached.pop().expect("cached stack")
+        } else {
+            let charge = process.reserve(Resources {
+                bytes: self.inner.slot_bytes as u64,
+                ..Resources::default()
+            })?;
+            let mapping = DefaultStack::new(EXECUTION_STACK_BYTES)
+                .map_err(|error| format!("allocate on-demand stack: {error}"))?;
+            if mapping.base().get() - mapping.limit().get() != self.inner.slot_bytes {
+                return Err("unexpected on-demand stack mapping size".into());
+            }
+            CachedStack { mapping, charge }
+        };
+        state.active += 1;
+        Ok((
+            FiberStack {
+                mapping,
+                page_bytes: self.inner.page_bytes,
+            },
+            charge,
+        ))
+    }
+
+    pub(crate) fn activate_parked_fiber(
+        &self,
+        charge: &mut Reservation,
+        process: &ResourceAccount,
+    ) -> Result<(), String> {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        if state.active == self.inner.capacity {
+            return Err("execution stack pool exhausted".into());
+        }
+        charge.transfer(process)?;
+        state.parked -= 1;
+        state.active += 1;
+        Ok(())
+    }
+
+    pub(crate) fn park_active_fiber(&self, charge: &mut Reservation) -> bool {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        state.active -= 1;
+        if state.cached.len() + state.parked < self.inner.max_cached {
+            let tenant = &self
+                .inner
+                .accounting
+                .as_ref()
+                .expect("demand accounting")
+                .tenant;
+            charge
+                .transfer(tenant)
+                .expect("return parked fiber stack charge");
+            state.parked += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn drop_parked_fiber(&self) {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        state.parked -= 1;
+    }
+
+    pub(crate) fn drop_active_fiber(&self) {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        state.active -= 1;
+    }
+
     pub(super) fn demand_stats(&self, state: &DemandState) -> StackPoolStats {
-        let mapped_bytes = (state.active + state.cached.len()) * self.inner.slot_bytes;
+        let mapped_bytes =
+            (state.active + state.cached.len() + state.parked) * self.inner.slot_bytes;
         StackPoolStats {
             capacity: self.inner.capacity,
             active: state.active,
@@ -147,7 +281,7 @@ impl PooledStack {
         let mut state = self.pool.demand.as_ref().expect("demand pool").borrow_mut();
         let mapping = self.mapping.take().expect("active demand stack");
         let mut charge = self.charge.take().expect("active demand charge");
-        if state.cached.len() < self.pool.max_cached {
+        if state.cached.len() + state.parked < self.pool.max_cached {
             charge
                 .transfer(
                     &self

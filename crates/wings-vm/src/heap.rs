@@ -417,14 +417,24 @@ impl RecordHeap {
             }
             CollectionPhase::Sweep => {
                 let end = (collection.cursor + WORK_CHUNK).min(self.slots.len());
+                let mut reclaimed_charge: Option<Reservation> = None;
                 for (index, slot) in self.slots[collection.cursor..end].iter_mut().enumerate() {
                     if slot.occupied && slot.marked {
                         collection.retained += 1;
                         slot.marked = false;
                     } else if slot.occupied {
                         if let Some(buffer) = self.buffers[collection.cursor + index].take() {
-                            self.buffer_bytes -= buffer._charge.amount().bytes;
-                            drop(buffer);
+                            let ByteBuffer {
+                                data,
+                                heap: _,
+                                _charge: charge,
+                            } = buffer;
+                            self.buffer_bytes -= charge.amount().bytes;
+                            drop(data);
+                            match &mut reclaimed_charge {
+                                Some(combined) => combined.merge(charge),
+                                None => reclaimed_charge = Some(charge),
+                            }
                         }
                         slot.occupied = false;
                         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
@@ -434,6 +444,7 @@ impl RecordHeap {
                         }
                     }
                 }
+                drop(reclaimed_charge);
                 collection.cursor = end;
                 if end == self.slots.len() {
                     self.collections = self.collections.saturating_add(1);

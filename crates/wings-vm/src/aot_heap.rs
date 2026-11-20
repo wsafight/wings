@@ -21,6 +21,7 @@ pub(crate) struct AotHeap {
     empty_list: RecordLayout,
     cons_list: RecordLayout,
     committed: Option<HeapRef>,
+    incoming_mask: u64,
     incoming: [Option<HeapRef>; 64],
     named: Box<[NamedLayout]>,
     _named_charge: Reservation,
@@ -317,6 +318,7 @@ impl AotHeap {
                 empty_list,
                 cons_list,
                 committed: None,
+                incoming_mask: 0,
                 incoming: [None; 64],
                 named: named.into_boxed_slice(),
                 _named_charge: named_charge,
@@ -441,10 +443,15 @@ impl AotHeap {
             references[count] = Some(committed);
             count += 1;
         }
-        for reference in self.incoming.iter().flatten() {
-            self.heap.import_reference(reference.encoded())?;
-            references[count] = Some(*reference);
-            count += 1;
+        let mut incoming_bits = self.incoming_mask;
+        while incoming_bits != 0 {
+            let slot = incoming_bits.trailing_zeros() as usize;
+            incoming_bits &= incoming_bits - 1;
+            if let Some(reference) = self.incoming[slot] {
+                self.heap.import_reference(reference.encoded())?;
+                references[count] = Some(reference);
+                count += 1;
+            }
         }
         self.roots.replace(&references[..count]);
         Ok(())
@@ -458,7 +465,15 @@ impl AotHeap {
     }
 
     pub(crate) fn clear_incoming(&mut self) {
-        self.incoming.fill(None);
+        let mut bits = self.incoming_mask;
+        if bits != 0 {
+            while bits != 0 {
+                let slot = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                self.incoming[slot] = None;
+            }
+            self.incoming_mask = 0;
+        }
     }
 
     pub(crate) fn record_value(&self, encoded: i64) -> Result<i64, u32> {
@@ -603,12 +618,18 @@ pub(crate) unsafe fn export_buffers(
         let is_string = string_mask & (1u64 << index) != 0;
         let length = message_buffer(unsafe { &*pointer }, reference, is_string)?.len();
         let start = payload.data.len();
-        for offset in (0..length).step_by(256) {
-            crate::execution::runtime_checkpoint(context, true)?;
+        let mut offset = 0;
+        while offset < length {
+            let batch_chunks = crate::execution::runtime_checkpoint_batch(
+                context,
+                (length - offset).div_ceil(256),
+            )?;
+            let end = offset
+                .saturating_add(batch_chunks.saturating_mul(256))
+                .min(length);
             let bytes = message_buffer(unsafe { &*pointer }, reference, is_string)?;
-            payload
-                .data
-                .extend_from_slice(&bytes[offset..(offset + 256).min(length)]);
+            payload.data.extend_from_slice(&bytes[offset..end]);
+            offset = end;
         }
         *argument = ListPayload::encode(start, length);
     }
@@ -636,9 +657,17 @@ unsafe fn import_bytes(context: &mut ScalarContext, data: &[u8]) -> Result<u64, 
                 .map_err(|_| STATUS_HEAP_EXHAUSTED)?
         }
     };
-    for chunk in data.chunks(256) {
-        crate::execution::runtime_checkpoint(context, true)?;
-        buffer.data.extend_from_slice(chunk);
+    let mut offset = 0;
+    while offset < data.len() {
+        let batch_chunks = crate::execution::runtime_checkpoint_batch(
+            context,
+            (data.len() - offset).div_ceil(256),
+        )?;
+        let end = offset
+            .saturating_add(batch_chunks.saturating_mul(256))
+            .min(data.len());
+        buffer.data.extend_from_slice(&data[offset..end]);
+        offset = end;
     }
     let mut buffer = Some(buffer);
     for attempt in 0..2 {
@@ -668,6 +697,13 @@ pub(crate) unsafe fn import_arguments(
     lists: &ListPayload,
     bytes: &BytePayload,
 ) -> Result<(), u32> {
+    if (mask | lists.mask | bytes.mask) == 0 && lists.count == 0 && bytes.is_trivially_empty() {
+        return if arguments.len() <= 64 {
+            Ok(())
+        } else {
+            Err(STATUS_INVALID_CONTROL)
+        };
+    }
     if !lists.valid(arguments, lists.mask)
         || !bytes.valid(arguments, bytes.mask)
         || mask & (lists.mask | bytes.mask) != 0
@@ -743,6 +779,7 @@ unsafe fn root_incoming(
         .import_reference(encoded)
         .map_err(|_| STATUS_INVALID_ROOT)?;
     heap.incoming[index] = Some(reference);
+    heap.incoming_mask |= 1u64 << index;
     Ok(())
 }
 unsafe fn collect_managed(context: &mut ScalarContext) -> Result<(), u32> {
@@ -865,9 +902,13 @@ unsafe fn byte_call(
                 .map_err(|_| STATUS_HEAP_EXHAUSTED)?
         }
     };
-    for start in (0..length).step_by(256) {
-        crate::execution::runtime_checkpoint(context, true)?;
-        let end = (start + 256).min(length);
+    let mut start = 0;
+    while start < length {
+        let batch_chunks =
+            crate::execution::runtime_checkpoint_batch(context, (length - start).div_ceil(256))?;
+        let end = start
+            .saturating_add(batch_chunks.saturating_mul(256))
+            .min(length);
         if let Some(source) = source {
             let heap = unsafe { &*pointer };
             let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
@@ -875,6 +916,7 @@ unsafe fn byte_call(
         } else {
             buffer.data.resize(end, value as u8);
         }
+        start = end;
     }
     if source.is_some() {
         if width == 8 {

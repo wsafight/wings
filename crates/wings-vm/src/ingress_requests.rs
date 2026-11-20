@@ -1,10 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::UnsafeCell;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use wings_abi::ValueType;
 
 use crate::{RequestOutcome, Reservation, ResourceAccount, Resources};
+
+const MAX_BITMAP_WORDS: usize = 4;
+const MAX_BITMAP_SLOTS: usize = MAX_BITMAP_WORDS * 64;
 
 pub struct IngressRequest {
     table: Arc<ReplyTable>,
@@ -22,16 +27,66 @@ pub(crate) struct ReplyPublisher {
 }
 
 pub(crate) struct ReplyTable {
-    slots: Mutex<Box<[ReplySlot]>>,
-    changed: Condvar,
+    slots: Box<[ReplySlot]>,
     ready: Box<[AtomicBool]>,
+    free: [AtomicU64; MAX_BITMAP_WORDS],
+    waiters: AtomicUsize,
+    wait_lock: Mutex<()>,
+    changed: Condvar,
     account: ResourceAccount,
     _charge: Reservation,
 }
 
 struct ReplySlot {
+    locked: AtomicBool,
+    state: UnsafeCell<SlotState>,
+}
+
+// Safety: `SlotState` is only accessed while `locked` is held with Acquire/Release ordering,
+// and `SlotState` (`u64` + `Option<Pending>`) is `Send`.
+unsafe impl Send for ReplySlot {}
+unsafe impl Sync for ReplySlot {}
+
+struct SlotState {
     generation: u64,
     pending: Option<Pending>,
+}
+
+struct SlotGuard<'slot> {
+    slot: &'slot ReplySlot,
+}
+
+impl Deref for SlotGuard<'_> {
+    type Target = SlotState;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.slot.state.get() }
+    }
+}
+
+impl DerefMut for SlotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.slot.state.get() }
+    }
+}
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        self.slot.locked.store(false, Ordering::Release);
+    }
+}
+
+impl ReplySlot {
+    fn lock(&self) -> SlotGuard<'_> {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+        SlotGuard { slot: self }
+    }
 }
 
 struct Pending {
@@ -44,6 +99,9 @@ struct Pending {
 
 impl ReplyTable {
     pub(crate) fn new(account: &ResourceAccount, capacity: usize) -> Result<Arc<Self>, String> {
+        if capacity > MAX_BITMAP_SLOTS {
+            return Err("ingress result capacity exceeds 256 slots".into());
+        }
         let charge = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
                 + capacity * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
@@ -55,21 +113,67 @@ impl ReplyTable {
             .try_reserve_exact(capacity)
             .map_err(|_| "ingress result storage allocation failed")?;
         slots.resize_with(capacity, || ReplySlot {
-            generation: 1,
-            pending: None,
+            locked: AtomicBool::new(false),
+            state: UnsafeCell::new(SlotState {
+                generation: 1,
+                pending: None,
+            }),
         });
         let mut ready = Vec::new();
         ready
             .try_reserve_exact(capacity)
             .map_err(|_| "ingress result readiness allocation failed")?;
         ready.resize_with(capacity, || AtomicBool::new(false));
+        let mut mask = [0u64; MAX_BITMAP_WORDS];
+        for index in 0..capacity {
+            mask[index / 64] |= 1u64 << (index % 64);
+        }
         Ok(Arc::new(Self {
-            slots: crate::native_sync::mutex(slots.into_boxed_slice()),
-            changed: crate::native_sync::condvar(),
+            slots: slots.into_boxed_slice(),
             ready: ready.into_boxed_slice(),
+            free: mask.map(AtomicU64::new),
+            waiters: AtomicUsize::new(0),
+            wait_lock: crate::native_sync::mutex(()),
+            changed: crate::native_sync::condvar(),
             account: account.clone(),
             _charge: charge,
         }))
+    }
+
+    fn claim_free_slot(&self) -> Option<usize> {
+        for (word_index, word) in self.free.iter().enumerate() {
+            let mut current = word.load(Ordering::Acquire);
+            while current != 0 {
+                let bit = current.trailing_zeros() as usize;
+                let mask = 1u64 << bit;
+                match word.compare_exchange_weak(
+                    current,
+                    current & !mask,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return Some(word_index * 64 + bit),
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+        None
+    }
+
+    fn release_free_slot(&self, index: usize) {
+        self.free[index / 64].fetch_or(1u64 << (index % 64), Ordering::Release);
+    }
+
+    fn notify_waiters(&self) {
+        if self.waiters.load(Ordering::SeqCst) != 0 {
+            let _guard = self
+                .wait_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.changed.notify_all();
+            return;
+        }
+        self.changed.notify_all();
     }
 
     pub(crate) fn start(
@@ -99,44 +203,44 @@ impl ReplyTable {
             requests: 1,
             ..Resources::default()
         })?;
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(index) = slots
-            .iter()
-            .position(|slot| slot.generation != 0 && slot.pending.is_none())
-        else {
-            drop(slots);
-            return Err("ingress_requests_full".into());
-        };
-        let slot = &mut slots[index];
-        let generation = slot.generation;
-        self.ready[index].store(false, Ordering::Release);
-        slot.pending = Some(Pending {
-            deadline,
-            outcome: None,
-            caller: true,
-            publisher: true,
-            charge,
-        });
-        Ok((
-            IngressRequest {
-                table: self.clone(),
-                reply_type,
-                slot: index,
-                generation,
-                active: true,
+        let mut charge = Some(charge);
+        while let Some(index) = self.claim_free_slot() {
+            let mut slot = self.slots[index].lock();
+            if slot.generation == 0 {
+                drop(slot);
+                continue;
+            }
+            let generation = slot.generation;
+            self.ready[index].store(false, Ordering::Release);
+            slot.pending = Some(Pending {
                 deadline,
-            },
-            ReplyPublisher {
-                table: self.clone(),
-                slot: index,
-                generation,
-            },
-        ))
+                outcome: None,
+                caller: true,
+                publisher: true,
+                charge: charge.take().expect("request admission charge"),
+            });
+            drop(slot);
+            return Ok((
+                IngressRequest {
+                    table: self.clone(),
+                    reply_type,
+                    slot: index,
+                    generation,
+                    active: true,
+                    deadline,
+                },
+                ReplyPublisher {
+                    table: self.clone(),
+                    slot: index,
+                    generation,
+                },
+            ));
+        }
+        Err("ingress_requests_full".into())
     }
 
     fn finish(&self, index: usize, generation: u64, outcome: RequestOutcome) {
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        let slot = &mut slots[index];
+        let mut slot = self.slots[index].lock();
         if slot.generation != generation {
             return;
         }
@@ -154,15 +258,18 @@ impl ReplyTable {
             });
         }
         pending.publisher = false;
-        self.ready[index].store(true, Ordering::Release);
-        let retired = retire(slot);
-        drop(slots);
+        self.ready[index].store(true, Ordering::SeqCst);
+        let (retired, reusable) = retire(&mut slot);
+        drop(slot);
+        if reusable {
+            self.release_free_slot(index);
+        }
         drop(retired);
-        self.changed.notify_all();
+        self.notify_waiters();
     }
 }
 
-fn retire(slot: &mut ReplySlot) -> Option<Reservation> {
+fn retire(slot: &mut SlotState) -> (Option<Reservation>, bool) {
     if slot
         .pending
         .as_ref()
@@ -170,9 +277,9 @@ fn retire(slot: &mut ReplySlot) -> Option<Reservation> {
     {
         let charge = slot.pending.take().map(|pending| pending.charge);
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
-        charge
+        (charge, slot.generation != 0)
     } else {
-        None
+        (None, false)
     }
 }
 
@@ -188,23 +295,25 @@ impl IngressRequest {
         if !self.table.ready[self.slot].load(Ordering::Acquire) && Instant::now() < self.deadline {
             return Ok(None);
         }
-        let mut slots = self
-            .table
-            .slots
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let slot = &mut slots[self.slot];
+        let mut slot = self.table.slots[self.slot].lock();
         let pending = slot.pending.as_mut().expect("live ingress request");
         if pending.outcome.is_none() && Instant::now() >= pending.deadline {
             pending.outcome = Some(RequestOutcome::TimedOut);
         }
-        let outcome = pending.outcome.clone();
+        let outcome = if !pending.publisher {
+            pending.outcome.take()
+        } else {
+            pending.outcome.clone()
+        };
         if outcome.is_some() {
             pending.caller = false;
             self.active = false;
         }
-        let retired = retire(slot);
-        drop(slots);
+        let (retired, reusable) = retire(&mut slot);
+        drop(slot);
+        if reusable {
+            self.table.release_free_slot(self.slot);
+        }
         drop(retired);
         Ok(outcome)
     }
@@ -216,29 +325,38 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        let mut slots = self
+        if self.table.ready[self.slot].load(Ordering::Acquire) || Instant::now() >= self.deadline {
+            return self.try_take();
+        }
+        struct WaiterCount<'table>(&'table AtomicUsize);
+        impl Drop for WaiterCount<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let mut guard = self
             .table
-            .slots
+            .wait_lock
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        self.table.waiters.fetch_add(1, Ordering::SeqCst);
+        let _waiter = WaiterCount(&self.table.waiters);
         loop {
-            let pending = slots[self.slot]
-                .pending
-                .as_ref()
-                .expect("live ingress request");
+            let ready = self.table.ready[self.slot].load(Ordering::SeqCst);
             let now = Instant::now();
-            if pending.outcome.is_some() || now >= pending.deadline {
-                drop(slots);
+            if ready || now >= self.deadline {
+                drop(_waiter);
+                drop(guard);
                 return self.try_take();
             }
             if now >= end {
                 return Ok(None);
             }
-            let duration = end.min(pending.deadline).saturating_duration_since(now);
-            (slots, _) = self
+            let duration = end.min(self.deadline).saturating_duration_since(now);
+            (guard, _) = self
                 .table
                 .changed
-                .wait_timeout(slots, duration)
+                .wait_timeout(guard, duration)
                 .unwrap_or_else(|error| error.into_inner());
         }
     }
@@ -247,15 +365,8 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        let mut slots = self
-            .table
-            .slots
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let pending = slots[self.slot]
-            .pending
-            .as_mut()
-            .expect("live ingress request");
+        let mut slot = self.table.slots[self.slot].lock();
+        let pending = slot.pending.as_mut().expect("live ingress request");
         if pending.outcome.is_none() {
             pending.outcome = Some(if Instant::now() >= pending.deadline {
                 RequestOutcome::TimedOut
@@ -263,9 +374,9 @@ impl IngressRequest {
                 RequestOutcome::Cancelled
             });
         }
-        self.table.ready[self.slot].store(true, Ordering::Release);
-        drop(slots);
-        self.table.changed.notify_all();
+        self.table.ready[self.slot].store(true, Ordering::SeqCst);
+        drop(slot);
+        self.table.notify_waiters();
         Ok(())
     }
 }
@@ -275,12 +386,7 @@ impl Drop for IngressRequest {
         if !self.active {
             return;
         }
-        let mut slots = self
-            .table
-            .slots
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let slot = &mut slots[self.slot];
+        let mut slot = self.table.slots[self.slot].lock();
         if slot.generation != self.generation {
             return;
         }
@@ -290,8 +396,11 @@ impl Drop for IngressRequest {
                 pending.outcome = Some(RequestOutcome::Cancelled);
             }
         }
-        let retired = retire(slot);
-        drop(slots);
+        let (retired, reusable) = retire(&mut slot);
+        drop(slot);
+        if reusable {
+            self.table.release_free_slot(self.slot);
+        }
         drop(retired);
     }
 }
@@ -354,8 +463,8 @@ mod tests {
             let (mut request, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
             assert!(!table.ready[0].load(Ordering::Acquire));
             {
-                let slots = table.slots.lock().unwrap();
-                assert!(slots[0].pending.as_ref().unwrap().outcome.is_none());
+                let slot = table.slots[0].lock();
+                assert!(slot.pending.as_ref().unwrap().outcome.is_none());
                 assert_eq!(request.try_take().unwrap(), None);
             }
             if cancel {
@@ -457,12 +566,12 @@ mod tests {
                     std::thread::yield_now();
                 }
             });
-            let slots = table.slots.lock().unwrap();
+            let guards: Vec<_> = table.slots.iter().map(ReplySlot::lock).collect();
             gate.wait();
             for request in &mut requests {
                 assert_eq!(request.try_take().unwrap(), None);
             }
-            drop(slots);
+            drop(guards);
             for (index, request) in requests.iter_mut().enumerate() {
                 loop {
                     assert!(Instant::now() < deadline);
@@ -816,7 +925,7 @@ mod tests {
         assert_eq!(second.try_take().unwrap(), None);
         publisher.complete(2);
         assert_eq!(second.try_take().unwrap(), Some(RequestOutcome::Reply(2)));
-        table.slots.lock().unwrap()[0].generation = u64::MAX;
+        table.slots[0].lock().generation = u64::MAX;
         let (mut last, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
         publisher.complete(3);
         assert_eq!(last.try_take().unwrap(), Some(RequestOutcome::Reply(3)));

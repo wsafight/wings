@@ -10,6 +10,7 @@ pub struct Resources {
 }
 
 impl Resources {
+    #[cfg(test)]
     fn checked_add(self, other: Self) -> Option<Self> {
         Some(Self {
             bytes: self.bytes.checked_add(other.bytes)?,
@@ -19,13 +20,32 @@ impl Resources {
         })
     }
 
-    fn fits(self, limit: Self) -> bool {
-        self.bytes <= limit.bytes
-            && self.processes <= limit.processes
-            && self.messages <= limit.messages
-            && self.requests <= limit.requests
+    fn is_zero(self) -> bool {
+        self.bytes == 0 && self.processes == 0 && self.messages == 0 && self.requests == 0
     }
 
+    fn is_multi_dimensional(self) -> bool {
+        let count = u8::from(self.bytes != 0)
+            + u8::from(self.processes != 0)
+            + u8::from(self.messages != 0)
+            + u8::from(self.requests != 0);
+        count > 1
+    }
+
+    fn add_unchecked(self, other: Self) -> Self {
+        Self {
+            bytes: self.bytes + other.bytes,
+            processes: self.processes + other.processes,
+            messages: self.messages + other.messages,
+            requests: self.requests + other.requests,
+        }
+    }
+
+    fn as_array(self) -> [u64; 4] {
+        [self.bytes, self.processes, self.messages, self.requests]
+    }
+
+    #[cfg(test)]
     fn subtract(self, other: Self) -> Self {
         Self {
             bytes: self.bytes - other.bytes,
@@ -108,15 +128,11 @@ impl ResourceAccount {
             .gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        self.read_used()
-    }
-
-    fn read_used(&self) -> Resources {
         let [bytes, processes, messages, requests] = self
             .node
             .used
             .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
+            .map(|value| value.load(Ordering::Acquire));
         Resources {
             bytes,
             processes,
@@ -125,10 +141,49 @@ impl ResourceAccount {
         }
     }
 
-    fn write_used(&self, value: Resources) {
-        let values = [value.bytes, value.processes, value.messages, value.requests];
-        for (counter, value) in self.node.used.iter().zip(values) {
-            counter.store(value, Ordering::Relaxed);
+    fn try_add_node(&self, amount: Resources) -> bool {
+        if amount.is_zero() {
+            return true;
+        }
+        let deltas = amount.as_array();
+        let limits = self.node.limit.as_array();
+        for index in 0..4 {
+            let delta = deltas[index];
+            if delta == 0 {
+                continue;
+            }
+            let counter = &self.node.used[index];
+            let limit = limits[index];
+            let mut current = counter.load(Ordering::Relaxed);
+            loop {
+                let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
+                    for (rollback, &added) in deltas[..index].iter().enumerate() {
+                        if added != 0 {
+                            self.node.used[rollback].fetch_sub(added, Ordering::AcqRel);
+                        }
+                    }
+                    return false;
+                };
+                match counter.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+        true
+    }
+
+    fn sub_node(&self, amount: Resources) {
+        let deltas = amount.as_array();
+        for (index, &delta) in deltas.iter().enumerate() {
+            if delta != 0 {
+                self.node.used[index].fetch_sub(delta, Ordering::AcqRel);
+            }
         }
     }
 
@@ -145,24 +200,33 @@ impl ResourceAccount {
     }
 
     pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
-        let guard = self
-            .node
-            .gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        for node in self.path().into_iter().flatten() {
-            if !node.admits(amount) {
-                let level = node.level();
-                drop(guard);
-                return Err(level);
-            }
+        if amount.is_zero() {
+            return Ok(Reservation {
+                account: self.clone(),
+                amount,
+            });
         }
-        for node in self.path().into_iter().flatten() {
-            node.write_used(
-                node.read_used()
-                    .checked_add(amount)
-                    .expect("admitted resources"),
-            );
+        let _guard = amount.is_multi_dimensional().then(|| {
+            self.node
+                .gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        if !self.try_add_node(amount) {
+            return Err(self.level());
+        }
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            if !parent.try_add_node(amount) {
+                self.sub_node(amount);
+                return Err(parent.level());
+            }
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                if !root.try_add_node(amount) {
+                    parent.sub_node(amount);
+                    self.sub_node(amount);
+                    return Err(root.level());
+                }
+            }
         }
         Ok(Reservation {
             account: self.clone(),
@@ -251,12 +315,6 @@ impl ResourceAccount {
             .expect("account root")
     }
 
-    fn admits(&self, amount: Resources) -> bool {
-        self.read_used()
-            .checked_add(amount)
-            .is_some_and(|used| used.fits(self.limit()))
-    }
-
     pub(crate) fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.node, &other.node)
     }
@@ -275,50 +333,94 @@ impl Reservation {
         self.amount
     }
 
+    pub(crate) fn merge(&mut self, mut other: Self) {
+        debug_assert!(self.account.same(&other.account));
+        self.amount = self.amount.add_unchecked(other.amount);
+        other.amount = Resources::default();
+    }
+
     pub fn transfer(&mut self, target: &ResourceAccount) -> Result<(), String> {
+        if self.account.same(target) {
+            return Ok(());
+        }
+        if target.is_child_of(&self.account) {
+            if self.amount.is_zero() {
+                self.account = target.clone();
+                return Ok(());
+            }
+            let guard = self.amount.is_multi_dimensional().then(|| {
+                target
+                    .node
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+            });
+            if !target.try_add_node(self.amount) {
+                return Err(format!(
+                    "resource_exhausted at {:?} account",
+                    target.level()
+                ));
+            }
+            drop(guard);
+            self.account = target.clone();
+            return Ok(());
+        }
+        if self.account.is_child_of(target) {
+            if !self.amount.is_zero() {
+                let guard = self.amount.is_multi_dimensional().then(|| {
+                    target
+                        .node
+                        .gate
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                });
+                self.account.sub_node(self.amount);
+                drop(guard);
+            }
+            self.account = target.clone();
+            return Ok(());
+        }
         if !self.account.root().same(target.root()) {
             return Err("resource transfer requires the same VM account".into());
         }
-        let guard = self
-            .account
-            .node
-            .gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        if self.amount.is_zero() {
+            self.account = target.clone();
+            return Ok(());
+        }
+        let guard = self.amount.is_multi_dimensional().then(|| {
+            target
+                .node
+                .gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
         let source_path = self.account.path();
         let target_path = target.path();
-        for node in target_path.into_iter().flatten() {
-            if !source_path
-                .into_iter()
-                .flatten()
-                .any(|source| node.same(source))
-                && !node.admits(self.amount)
-            {
-                let level = node.level();
-                drop(guard);
-                return Err(format!("resource_exhausted at {level:?} account"));
-            }
-        }
-        for node in target_path.into_iter().flatten() {
-            if !source_path
-                .into_iter()
-                .flatten()
-                .any(|source| node.same(source))
-            {
-                node.write_used(
-                    node.read_used()
-                        .checked_add(self.amount)
-                        .expect("admitted transfer"),
-                );
+        for (depth, node) in target_path.iter().enumerate() {
+            if let Some(node) = node {
+                let shared = source_path.iter().flatten().any(|source| node.same(source));
+                if !shared && !node.try_add_node(self.amount) {
+                    let level = node.level();
+                    for previous in target_path[..depth].iter().flatten() {
+                        if !source_path
+                            .iter()
+                            .flatten()
+                            .any(|source| previous.same(source))
+                        {
+                            previous.sub_node(self.amount);
+                        }
+                    }
+                    return Err(format!("resource_exhausted at {level:?} account"));
+                }
             }
         }
         for node in source_path.into_iter().flatten() {
             if !target_path
-                .into_iter()
+                .iter()
                 .flatten()
-                .any(|target| node.same(target))
+                .any(|target_node| node.same(target_node))
             {
-                node.write_used(node.read_used().subtract(self.amount));
+                node.sub_node(self.amount);
             }
         }
         drop(guard);
@@ -329,14 +431,27 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let _guard = self
-            .account
-            .node
-            .gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        for node in self.account.path().into_iter().flatten() {
-            node.write_used(node.read_used().subtract(self.amount));
+        if !self.amount.is_zero() {
+            let _guard = self.amount.is_multi_dimensional().then(|| {
+                self.account
+                    .node
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+            });
+            self.account.sub_node(self.amount);
+            if let Some(parent) = self
+                .account
+                .node
+                .parent
+                .as_ref()
+                .map(|parent| &parent.account)
+            {
+                parent.sub_node(self.amount);
+                if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                    root.sub_node(self.amount);
+                }
+            }
         }
     }
 }

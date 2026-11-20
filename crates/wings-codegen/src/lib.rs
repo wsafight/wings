@@ -413,7 +413,151 @@ fn compile_body(
         });
     let mut branches = Vec::new();
     let mut loops = Vec::new();
-    for (index, instruction) in function.instructions.iter().enumerate() {
+    let mut index = 0;
+    let mut tail_polled = false;
+    while index < function.instructions.len() {
+        if is_pure_scalar(&function.instructions[index].operation) {
+            let max_end = (index + 32).min(function.instructions.len());
+            let mut end = index + 1;
+            while end < max_end && is_pure_scalar(&function.instructions[end].operation) {
+                end += 1;
+            }
+            let is_tail = end == function.instructions.len() && (end - index) < 32;
+            let total_steps = (end - index) + usize::from(is_tail);
+            if total_steps >= 2 {
+                let cancellation = builder.ins().load(
+                    pointer_type,
+                    MemFlags::new(),
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, cancellation) as i32,
+                );
+                let cancelled =
+                    builder
+                        .ins()
+                        .atomic_load(types::I32, MemFlags::new(), cancellation);
+                let not_cancelled = builder.ins().icmp_imm(IntCC::Equal, cancelled, 0);
+                let yield_request = builder.ins().load(
+                    pointer_type,
+                    MemFlags::new(),
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, yield_request) as i32,
+                );
+                let yielded = builder
+                    .ins()
+                    .atomic_load(types::I32, MemFlags::new(), yield_request);
+                let not_yielded = builder.ins().icmp_imm(IntCC::Equal, yielded, 0);
+                let remaining = builder.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+                );
+                let enough_remaining = builder.ins().icmp_imm(
+                    IntCC::UnsignedGreaterThanOrEqual,
+                    remaining,
+                    total_steps as i64,
+                );
+                let slice = builder.ins().load(
+                    types::I64,
+                    MemFlags::new(),
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
+                );
+                let enough_slice = builder.ins().icmp_imm(
+                    IntCC::UnsignedGreaterThanOrEqual,
+                    slice,
+                    total_steps as i64,
+                );
+                let clean_flags = builder.ins().band(not_cancelled, not_yielded);
+                let enough_budget = builder.ins().band(enough_remaining, enough_slice);
+                let can_fast = builder.ins().band(clean_flags, enough_budget);
+                let fast_block = builder.create_block();
+                let slow_block = builder.create_block();
+                let join_block = builder.create_block();
+                for _ in index..end {
+                    builder.append_block_param(join_block, types::I64);
+                }
+                builder
+                    .ins()
+                    .brif(can_fast, fast_block, &[], slow_block, &[]);
+
+                builder.switch_to_block(fast_block);
+                registers.truncate(index);
+                for offset in 0..(end - index) {
+                    let value = emit_pure_scalar(
+                        &mut builder,
+                        &function.instructions[index + offset].operation,
+                        &parameters,
+                        &registers,
+                        exit,
+                        Some((parameters[3], remaining, slice, (offset + 1) as i64)),
+                    );
+                    registers.push(value);
+                }
+                let next_remaining = builder.ins().iadd_imm(remaining, -(total_steps as i64));
+                builder.ins().store(
+                    MemFlags::new(),
+                    next_remaining,
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+                );
+                let next_slice = builder.ins().iadd_imm(slice, -(total_steps as i64));
+                builder.ins().store(
+                    MemFlags::new(),
+                    next_slice,
+                    parameters[3],
+                    std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
+                );
+                builder.ins().jump(join_block, &registers[index..end]);
+
+                builder.switch_to_block(slow_block);
+                registers.truncate(index);
+                for current in index..end {
+                    poll_control(
+                        &mut builder,
+                        pointer_type,
+                        parameters[3],
+                        slow_signature,
+                        exit,
+                        roots,
+                        &plan.at[current],
+                        &registers,
+                    );
+                    let value = emit_pure_scalar(
+                        &mut builder,
+                        &function.instructions[current].operation,
+                        &parameters,
+                        &registers,
+                        exit,
+                        None,
+                    );
+                    registers.push(value);
+                }
+                if is_tail {
+                    poll_control(
+                        &mut builder,
+                        pointer_type,
+                        parameters[3],
+                        slow_signature,
+                        exit,
+                        roots,
+                        &plan.at[function.instructions.len()],
+                        &registers,
+                    );
+                }
+                builder.ins().jump(join_block, &registers[index..end]);
+
+                builder.switch_to_block(join_block);
+                registers.truncate(index);
+                registers.extend_from_slice(builder.block_params(join_block));
+                index = end;
+                if is_tail {
+                    tail_polled = true;
+                }
+                continue;
+            }
+        }
+        let instruction = &function.instructions[index];
         let loop_header = if let Operation::Loop(initial) = instruction.operation {
             let header = builder.create_block();
             let after = builder.create_block();
@@ -438,20 +582,25 @@ fn compile_body(
         if let Some(value) = early_value {
             registers.push(value);
         }
-        publish_roots(
-            &mut builder,
-            pointer_type,
-            roots,
-            &plan.at[index],
-            &registers,
-        );
         poll_control(
             &mut builder,
             pointer_type,
             parameters[3],
             slow_signature,
             exit,
+            roots,
+            &plan.at[index],
+            &registers,
         );
+        if needs_inline_roots(&instruction.operation) {
+            publish_roots(
+                &mut builder,
+                pointer_type,
+                roots,
+                &plan.at[index],
+                &registers,
+            );
+        }
         let value = match instruction.operation {
             Operation::Call {
                 function,
@@ -997,21 +1146,20 @@ fn compile_body(
         if early_value.is_none() {
             registers.push(value);
         }
+        index += 1;
     }
-    publish_roots(
-        &mut builder,
-        pointer_type,
-        roots,
-        &plan.at[function.instructions.len()],
-        &registers,
-    );
-    poll_control(
-        &mut builder,
-        pointer_type,
-        parameters[3],
-        slow_signature,
-        exit,
-    );
+    if !tail_polled {
+        poll_control(
+            &mut builder,
+            pointer_type,
+            parameters[3],
+            slow_signature,
+            exit,
+            roots,
+            &plan.at[function.instructions.len()],
+            &registers,
+        );
+    }
     builder
         .ins()
         .store(MemFlags::new(), registers[function.state], parameters[2], 0);
@@ -1049,12 +1197,143 @@ fn compile_body(
     Ok((identifier, frame_bytes))
 }
 
+fn is_pure_scalar(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::Constant(_)
+            | Operation::State
+            | Operation::Argument(_)
+            | Operation::Negate(_)
+            | Operation::Compare(_, _, _)
+            | Operation::Binary(_, _, _)
+    )
+}
+
+fn needs_inline_roots(operation: &Operation) -> bool {
+    !is_pure_scalar(operation)
+        && !matches!(
+            operation,
+            Operation::Loop(_)
+                | Operation::While(_)
+                | Operation::EndLoop(_)
+                | Operation::If(_)
+                | Operation::Else(_)
+                | Operation::EndIf(_)
+        )
+}
+
+fn emit_pure_scalar(
+    builder: &mut FunctionBuilder<'_>,
+    operation: &Operation,
+    parameters: &[Value],
+    registers: &[Value],
+    exit: Block,
+    fast_step: Option<(Value, Value, Value, i64)>,
+) -> Value {
+    match *operation {
+        Operation::Constant(value) => builder.ins().iconst(types::I64, value),
+        Operation::State => parameters[0],
+        Operation::Argument(index) => builder.ins().load(
+            types::I64,
+            MemFlags::new(),
+            parameters[1],
+            (index * 8) as i32,
+        ),
+        Operation::Negate(value) => {
+            let zero = builder.ins().iconst(types::I64, 0);
+            let (result, overflow) = builder.ins().ssub_overflow(zero, registers[value]);
+            fail_scalar_if(builder, overflow, STATUS_OVERFLOW, exit, fast_step);
+            result
+        }
+        Operation::Compare(comparison, left, right) => {
+            let condition = match comparison {
+                Comparison::Equal => IntCC::Equal,
+                Comparison::NotEqual => IntCC::NotEqual,
+                Comparison::Less => IntCC::SignedLessThan,
+                Comparison::LessEqual => IntCC::SignedLessThanOrEqual,
+                Comparison::Greater => IntCC::SignedGreaterThan,
+                Comparison::GreaterEqual => IntCC::SignedGreaterThanOrEqual,
+            };
+            let result = builder
+                .ins()
+                .icmp(condition, registers[left], registers[right]);
+            builder.ins().uextend(types::I64, result)
+        }
+        Operation::Binary(operator, left, right) => {
+            let left = registers[left];
+            let right = registers[right];
+            match operator {
+                Operator::Divide => {
+                    let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
+                    fail_scalar_if(builder, zero, STATUS_DIVISION_BY_ZERO, exit, fast_step);
+                    let minimum = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
+                    let negative_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
+                    let overflow = builder.ins().band(minimum, negative_one);
+                    fail_scalar_if(builder, overflow, STATUS_OVERFLOW, exit, fast_step);
+                    builder.ins().sdiv(left, right)
+                }
+                _ => {
+                    let (result, overflow) = match operator {
+                        Operator::Add => builder.ins().sadd_overflow(left, right),
+                        Operator::Subtract => builder.ins().ssub_overflow(left, right),
+                        Operator::Multiply => builder.ins().smul_overflow(left, right),
+                        Operator::Divide => unreachable!(),
+                    };
+                    fail_scalar_if(builder, overflow, STATUS_OVERFLOW, exit, fast_step);
+                    result
+                }
+            }
+        }
+        _ => unreachable!("expected pure scalar operation"),
+    }
+}
+
+fn fail_scalar_if(
+    builder: &mut FunctionBuilder<'_>,
+    condition: Value,
+    status: u32,
+    exit: Block,
+    fast_step: Option<(Value, Value, Value, i64)>,
+) {
+    if let Some((context, remaining, slice, consumed)) = fast_step {
+        let failure = builder.create_block();
+        let continuation = builder.create_block();
+        builder
+            .ins()
+            .brif(condition, failure, &[], continuation, &[]);
+        builder.switch_to_block(failure);
+        let next_remaining = builder.ins().iadd_imm(remaining, -consumed);
+        builder.ins().store(
+            MemFlags::new(),
+            next_remaining,
+            context,
+            std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+        );
+        let next_slice = builder.ins().iadd_imm(slice, -consumed);
+        builder.ins().store(
+            MemFlags::new(),
+            next_slice,
+            context,
+            std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
+        );
+        let status = builder.ins().iconst(types::I32, i64::from(status));
+        builder.ins().jump(exit, &[status]);
+        builder.switch_to_block(continuation);
+    } else {
+        fail_if_to(builder, condition, status, exit);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn poll_control(
     builder: &mut FunctionBuilder<'_>,
     pointer_type: types::Type,
     context: Value,
     slow_signature: SigRef,
     exit: Block,
+    roots: Option<(Value, Value, Value)>,
+    live: &[usize],
+    registers: &[Value],
 ) {
     let poll = builder.create_block();
     builder.ins().jump(poll, &[]);
@@ -1102,6 +1381,7 @@ fn poll_control(
         .ins()
         .brif(should_yield, slow_path, &[], continuation, &[]);
     builder.switch_to_block(slow_path);
+    publish_roots(builder, pointer_type, roots, live, registers);
     let callback = builder.ins().load(
         pointer_type,
         MemFlags::new(),

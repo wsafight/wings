@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -125,6 +125,7 @@ pub struct SchedulerHandle {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    ready_mask: AtomicU32,
     tenant: ResourceAccount,
     replies: Arc<ReplyTable>,
     config: SchedulerConfig,
@@ -137,9 +138,11 @@ struct Shared {
 
 struct State {
     closed: bool,
+    parked_mask: u32,
+    ready_bits: u32,
     last_exit: Option<SchedulerExitSnapshot>,
     slots: Box<[Slot]>,
-    requests: Box<[RequestSlot]>,
+    requests: state::RequestTable,
     ready: Box<[ready::ReadyQueue]>,
     free: Option<usize>,
 }
@@ -164,7 +167,6 @@ struct Actor {
     migrations: u64,
     execution: Option<ExecutionSnapshot>,
     committed_state: Option<i64>,
-    byte_state: Option<crate::ByteStateSnapshot>,
     stopping: bool,
     cancellation: CancellationToken,
     capability: i64,
@@ -188,9 +190,9 @@ struct Envelope {
     record_mask: u64,
     lists: ListPayload,
     bytes: BytePayload,
-    system: bool,
     reply: Reply,
     _charge: Reservation,
+    _message_charge: Option<Reservation>,
 }
 
 enum Reply {
@@ -316,6 +318,8 @@ impl Scheduler {
         let shared = Arc::new(Shared {
             state: crate::native_sync::mutex(State {
                 closed: false,
+                parked_mask: 0,
+                ready_bits: 0,
                 last_exit: None,
                 slots: storage(config.capacity, || {
                     next_slot += 1;
@@ -329,14 +333,15 @@ impl Scheduler {
                         ready_worker: None,
                     }
                 })?,
-                requests: storage(config.requests, || RequestSlot {
+                requests: state::RequestTable::new(storage(config.requests, || RequestSlot {
                     generation: 1,
                     pending: None,
-                })?,
+                })?),
                 ready: storage(config.workers, ready::ReadyQueue::default)?,
                 free: Some(0),
             }),
             changed: crate::native_sync::condvar(),
+            ready_mask: AtomicU32::new(0),
             tenant: tenant.clone(),
             replies: ReplyTable::new(tenant, config.requests)?,
             config,
@@ -414,9 +419,7 @@ impl Drop for Scheduler {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
         }
-        for request in &mut state.requests {
-            request.pending.take();
-        }
+        state.requests.clear_all();
     }
 }
 
@@ -560,7 +563,6 @@ impl SchedulerHandle {
             let committed_state =
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
-            let byte_state = image.byte_state_snapshot();
             let cancellation = CancellationToken::new_accounted(&account)?;
             Ok::<_, String>(Actor {
                 module: module.clone(),
@@ -572,7 +574,6 @@ impl SchedulerHandle {
                 migrations: 0,
                 execution: None,
                 committed_state,
-                byte_state,
                 stopping: false,
                 cancellation,
                 capability: next_identity(&NEXT_CAPABILITY)? as i64,
@@ -592,7 +593,6 @@ impl SchedulerHandle {
             Ok(actor) if !state.closed => {
                 state.slots[pid.slot as usize].actor = Some(actor);
                 drop(state);
-                self.shared.changed.notify_all();
                 Ok(pid)
             }
             Ok(actor) => {
@@ -615,36 +615,30 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
+        let mut owned = [0; 64];
+        if arguments.len() <= 64 {
+            owned[..arguments.len()].copy_from_slice(arguments);
+        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
-        validate(
-            actor,
-            handler,
-            arguments,
-            false,
-            0,
-            &ListPayload::default(),
-            &BytePayload::default(),
-        )?;
+        validate_scalar(actor, handler, arguments)?;
         if handler.schema().reply.is_some() {
             return Err("send requires a one-way handler".into());
         }
-        let message = envelope(
+        let message = envelope_precopied(
             actor,
             handler,
-            arguments,
+            owned,
+            arguments.len(),
             max_steps,
-            0,
-            ListPayload::default(),
-            BytePayload::default(),
-            false,
             Reply::None,
         )?;
         actor.mailbox.push(message)?;
-        state.enqueue(pid);
+        let wake = state.enqueue(pid);
+        self.shared.publish_signal(&state);
         drop(state);
-        self.shared.changed.notify_all();
+        wake.fire(&self.shared.changed);
         Ok(())
     }
 
@@ -659,18 +653,14 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
+        let mut owned = [0; 64];
+        if arguments.len() <= 64 {
+            owned[..arguments.len()].copy_from_slice(arguments);
+        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
-        validate(
-            actor,
-            handler,
-            arguments,
-            false,
-            0,
-            &ListPayload::default(),
-            &BytePayload::default(),
-        )?;
+        validate_scalar(actor, handler, arguments)?;
         let reply = match handler.schema().reply {
             Some(
                 ty @ (wings_abi::ValueType::Int
@@ -687,23 +677,21 @@ impl SchedulerHandle {
                 );
             }
         };
-        let mut message = envelope(
+        let mut message = envelope_precopied(
             actor,
             handler,
-            arguments,
+            owned,
+            arguments.len(),
             max_steps,
-            0,
-            ListPayload::default(),
-            BytePayload::default(),
-            false,
             Reply::None,
         )?;
         let (request, publisher) = self.shared.replies.start(deadline, &actor.account, reply)?;
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
-        state.enqueue(pid);
+        let wake = state.enqueue(pid);
+        self.shared.publish_signal(&state);
         drop(state);
-        self.shared.changed.notify_all();
+        wake.fire(&self.shared.changed);
         Ok(request)
     }
 
@@ -718,9 +706,11 @@ impl SchedulerHandle {
         } else {
             None
         };
+        let wake = state.wake_all_parked();
+        self.shared.publish_signal(&state);
         drop(state);
         drop(retired);
-        self.shared.changed.notify_all();
+        wake.fire(&self.shared.changed);
         Ok(())
     }
 
@@ -826,9 +816,10 @@ impl SchedulerHandle {
             None
         };
         actor.mailbox.push(envelope)?;
-        state.enqueue(pid);
+        let wake = state.enqueue(pid);
+        self.shared.publish_signal(&state);
         drop(state);
-        self.shared.changed.notify_all();
+        wake.fire(&self.shared.changed);
         Ok(request)
     }
 
@@ -862,7 +853,10 @@ impl SchedulerHandle {
         if actor.owner.is_some() {
             return Err("byte state snapshot requires an idle actor".into());
         }
-        Ok(actor.byte_state)
+        Ok(actor
+            .image
+            .as_ref()
+            .and_then(DetachedProcess::byte_state_snapshot))
     }
 }
 
@@ -871,14 +865,21 @@ impl Shared {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    pub(super) fn publish_signal(&self, state: &State) {
+        self.ready_mask
+            .store(state.signal_bits(), Ordering::Release);
+    }
+
     fn close(&self) {
         let mut state = self.lock();
         state.closed = true;
         for actor in state.slots.iter().filter_map(|slot| slot.actor.as_ref()) {
             actor.cancellation.cancel();
         }
+        let wake = state.wake_all_parked();
+        self.publish_signal(&state);
         drop(state);
-        self.changed.notify_all();
+        wake.fire(&self.changed);
     }
 }
 
@@ -931,11 +932,43 @@ impl Mailbox {
         self.count -= 1;
         message
     }
+    fn front_is_fast(&self) -> bool {
+        self.count > 0
+            && self.slots[self.head].as_ref().is_some_and(|message| {
+                crate::execution::WorkerFibers::can_run_fast(
+                    &message.handler,
+                    message.record_mask,
+                    &message.lists,
+                    &message.bytes,
+                )
+            })
+    }
     fn restore(&mut self, message: Envelope) {
         self.head = (self.head + self.slots.len() - 1) % self.slots.len();
         self.slots[self.head] = Some(message);
         self.count += 1;
     }
+}
+
+fn validate_scalar(actor: &Actor, handler: &HandlerId, arguments: &[i64]) -> Result<(), String> {
+    let schema = handler.schema();
+    if actor.stopping
+        || !Arc::ptr_eq(&actor.module.inner, &handler.module.inner)
+        || schema.is_completion()
+        || arguments.len() != schema.parameters.len()
+        || arguments.len() > 64
+    {
+        return Err("scheduler handler identity, phase or arguments mismatch".into());
+    }
+    for (value, (_, ty)) in arguments.iter().zip(&schema.parameters) {
+        if ty.is_reference() {
+            return Err("scheduler reference payload mismatch".into());
+        }
+        if !ty.accepts(*value) {
+            return Err("scheduler scalar argument mismatch".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate(
@@ -984,6 +1017,39 @@ fn validate(
     Ok(())
 }
 
+fn envelope_precopied(
+    actor: &Actor,
+    handler: &HandlerId,
+    arguments: [i64; 64],
+    count: usize,
+    max_steps: u64,
+    reply: Reply,
+) -> Result<Envelope, String> {
+    if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
+        return Err("mailbox_full".into());
+    }
+    let charge = actor.account.reserve(Resources {
+        bytes: std::mem::size_of::<Envelope>() as u64,
+        ..Resources::default()
+    })?;
+    let message_charge = actor.account.reserve(Resources {
+        messages: 1,
+        ..Resources::default()
+    })?;
+    Ok(Envelope {
+        handler: handler.clone(),
+        arguments,
+        count,
+        max_steps,
+        record_mask: 0,
+        lists: ListPayload::default(),
+        bytes: BytePayload::default(),
+        reply,
+        _charge: charge,
+        _message_charge: Some(message_charge),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn envelope(
     actor: &Actor,
@@ -993,7 +1059,7 @@ fn envelope(
     record_mask: u64,
     lists: ListPayload,
     mut bytes: BytePayload,
-    system: bool,
+    _system: bool,
     reply: Reply,
 ) -> Result<Envelope, String> {
     if actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len() {
@@ -1001,8 +1067,11 @@ fn envelope(
     }
     bytes.transfer(&actor.account)?;
     let charge = actor.account.reserve(Resources {
-        messages: 1,
         bytes: std::mem::size_of::<Envelope>() as u64,
+        ..Resources::default()
+    })?;
+    let message_charge = actor.account.reserve(Resources {
+        messages: 1,
         ..Resources::default()
     })?;
     let mut owned = [0; 64];
@@ -1015,8 +1084,8 @@ fn envelope(
         record_mask,
         lists,
         bytes,
-        system,
         reply,
         _charge: charge,
+        _message_charge: Some(message_charge),
     })
 }

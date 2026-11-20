@@ -118,6 +118,7 @@ struct Measurement<'observer> {
 }
 
 pub(super) struct WorkerStateGuard<'state> {
+    shared: &'state Shared,
     state: Option<MutexGuard<'state, State>>,
     measurement: Option<Measurement<'state>>,
 }
@@ -130,6 +131,7 @@ impl Shared {
                 let state = self.lock();
                 let acquired = Instant::now();
                 WorkerStateGuard {
+                    shared: self,
                     state: Some(state),
                     measurement: Some(Measurement {
                         counters: &observer.phases[phase as usize],
@@ -139,6 +141,7 @@ impl Shared {
                 }
             }
             None => WorkerStateGuard {
+                shared: self,
                 state: Some(self.lock()),
                 measurement: None,
             },
@@ -162,6 +165,9 @@ impl DerefMut for WorkerStateGuard<'_> {
 
 impl Drop for WorkerStateGuard<'_> {
     fn drop(&mut self) {
+        if let Some(state) = self.state.as_deref() {
+            self.shared.publish_signal(state);
+        }
         let measured = self.measurement.as_ref().map(|measurement| {
             (
                 measurement.counters,

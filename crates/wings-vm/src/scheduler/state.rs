@@ -1,5 +1,98 @@
+use super::ready::WakeSignal;
 use super::*;
 use crate::RequestOutcome;
+use std::ops::{Deref, Index, IndexMut};
+
+pub(super) struct RequestTable {
+    slots: Box<[RequestSlot]>,
+    maybe_active: [u64; 4],
+}
+
+impl RequestTable {
+    pub(super) fn new(slots: Box<[RequestSlot]>) -> Self {
+        Self {
+            slots,
+            maybe_active: [0; 4],
+        }
+    }
+
+    pub(super) fn clear_all(&mut self) {
+        for slot in &mut self.slots {
+            slot.pending.take();
+        }
+        self.maybe_active = [0; 4];
+    }
+
+    pub(super) fn is_empty_fast(&self) -> bool {
+        self.maybe_active == [0; 4]
+    }
+
+    fn get_active_mut(&mut self, index: usize) -> Option<&mut RequestSlot> {
+        let slot = self.slots.get_mut(index)?;
+        self.maybe_active[index / 64] |= 1u64 << (index % 64);
+        Some(slot)
+    }
+
+    fn retire_index(&mut self, index: usize) {
+        retire_request(&mut self.slots[index]);
+        if self.slots[index].pending.is_none() {
+            self.maybe_active[index / 64] &= !(1u64 << (index % 64));
+        }
+    }
+
+    fn find_active_mut(
+        &mut self,
+        mut predicate: impl FnMut(&Pending) -> bool,
+    ) -> Option<&mut Pending> {
+        for word_index in 0..4 {
+            let mut bits = self.maybe_active[word_index];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let index = word_index * 64 + bit;
+                if index >= self.slots.len() {
+                    self.maybe_active[word_index] &= !(1u64 << bit);
+                    continue;
+                }
+                if self.slots[index].pending.is_none() {
+                    self.maybe_active[word_index] &= !(1u64 << bit);
+                    continue;
+                }
+                if self.slots[index]
+                    .pending
+                    .as_ref()
+                    .is_some_and(&mut predicate)
+                {
+                    return self.slots[index].pending.as_mut();
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Deref for RequestTable {
+    type Target = [RequestSlot];
+
+    fn deref(&self) -> &Self::Target {
+        &self.slots
+    }
+}
+
+impl Index<usize> for RequestTable {
+    type Output = RequestSlot;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.slots[index]
+    }
+}
+
+impl IndexMut<usize> for RequestTable {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.maybe_active[index / 64] |= 1u64 << (index % 64);
+        &mut self.slots[index]
+    }
+}
 
 impl State {
     pub(super) fn open(&self) -> Result<(), String> {
@@ -53,23 +146,35 @@ impl State {
         let actor = slot.actor.take();
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
         self.release_slot(pid.slot as usize);
-        for request in &mut self.requests {
-            if let Some(pending) = &mut request.pending {
-                if pending.owner == pid {
-                    pending.completion.take();
-                }
-                if pending.target == pid {
-                    pending.publisher = false;
-                    if pending.outcome.is_none() {
-                        pending.outcome = Some(if Instant::now() >= pending.deadline {
-                            RequestOutcome::TimedOut
-                        } else {
-                            RequestOutcome::Failed
-                        });
+        if !self.requests.is_empty_fast() {
+            for word_index in 0..4 {
+                let mut bits = self.requests.maybe_active[word_index];
+                while bits != 0 {
+                    let bit = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let index = word_index * 64 + bit;
+                    if index >= self.requests.slots.len() {
+                        self.requests.maybe_active[word_index] &= !(1u64 << bit);
+                        continue;
                     }
+                    if let Some(pending) = &mut self.requests.slots[index].pending {
+                        if pending.owner == pid {
+                            pending.completion.take();
+                        }
+                        if pending.target == pid {
+                            pending.publisher = false;
+                            if pending.outcome.is_none() {
+                                pending.outcome = Some(if Instant::now() >= pending.deadline {
+                                    RequestOutcome::TimedOut
+                                } else {
+                                    RequestOutcome::Failed
+                                });
+                            }
+                        }
+                    }
+                    self.requests.retire_index(index);
                 }
             }
-            retire_request(request);
         }
         actor
     }
@@ -77,7 +182,7 @@ impl State {
     pub(super) fn finish(&mut self, key: RequestKey, outcome: RequestOutcome) {
         let Some(slot) = self
             .requests
-            .get_mut(key.slot)
+            .get_active_mut(key.slot)
             .filter(|slot| slot.generation == key.generation)
         else {
             return;
@@ -92,15 +197,13 @@ impl State {
             }
             pending.publisher = false;
         }
-        retire_request(slot);
+        self.requests.retire_index(key.slot);
     }
 
     pub(super) fn cancel(&mut self, owner: SchedulerPid, capability: i64) -> Result<(), String> {
         let pending = self
             .requests
-            .iter_mut()
-            .filter_map(|slot| slot.pending.as_mut())
-            .find(|pending| {
+            .find_active_mut(|pending| {
                 pending.owner == owner
                     && pending.capability == capability
                     && pending.completion.is_some()
@@ -116,139 +219,172 @@ impl State {
         Ok(())
     }
 
-    pub(super) fn maintain(&mut self, identity: u64) {
+    pub(super) fn maintain(&mut self, identity: u64) -> WakeSignal {
+        if self.requests.is_empty_fast() {
+            return WakeSignal::NONE;
+        }
+        let mut wake = WakeSignal::NONE;
         let now = Instant::now();
-        for request in &mut self.requests {
-            if let Some(pending) = &mut request.pending {
-                if pending.outcome.is_none() && now >= pending.deadline {
-                    pending.outcome = Some(RequestOutcome::TimedOut);
+        for word_index in 0..4 {
+            let mut bits = self.requests.maybe_active[word_index];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let index = word_index * 64 + bit;
+                if index >= self.requests.slots.len() {
+                    self.requests.maybe_active[word_index] &= !(1u64 << bit);
+                    continue;
+                }
+                match &mut self.requests.slots[index].pending {
+                    Some(pending) => {
+                        if pending.outcome.is_none() && now >= pending.deadline {
+                            pending.outcome = Some(RequestOutcome::TimedOut);
+                        }
+                    }
+                    None => {
+                        self.requests.maybe_active[word_index] &= !(1u64 << bit);
+                    }
                 }
             }
         }
-        for index in 0..self.requests.len() {
-            let Some(pending) = self.requests[index].pending.as_ref() else {
-                continue;
-            };
-            if pending.completion.is_none() {
-                continue;
-            }
-            let Ok(actor) = self.actor(identity, pending.owner) else {
-                self.requests[index]
+        for word_index in 0..4 {
+            let mut bits = self.requests.maybe_active[word_index];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let index = word_index * 64 + bit;
+                if index >= self.requests.slots.len() {
+                    continue;
+                }
+                let Some(pending) = self.requests.slots[index].pending.as_ref() else {
+                    self.requests.maybe_active[word_index] &= !(1u64 << bit);
+                    continue;
+                };
+                if pending.completion.is_none() {
+                    continue;
+                }
+                let Ok(actor) = self.actor(identity, pending.owner) else {
+                    self.requests.slots[index]
+                        .pending
+                        .as_mut()
+                        .expect("pending completion")
+                        .completion
+                        .take();
+                    self.requests.retire_index(index);
+                    continue;
+                };
+                if pending.outcome.is_none()
+                    || actor.stopping
+                    || actor.mailbox.count + usize::from(actor.starting)
+                        == actor.mailbox.slots.len()
+                {
+                    continue;
+                }
+                let pending = self.requests.slots[index]
                     .pending
                     .as_mut()
-                    .expect("pending completion")
-                    .completion
-                    .take();
-                retire_request(&mut self.requests[index]);
-                continue;
-            };
-            if pending.outcome.is_none()
-                || actor.stopping
-                || actor.mailbox.count + usize::from(actor.starting) == actor.mailbox.slots.len()
-            {
-                continue;
-            }
-            let pending = self.requests[index]
-                .pending
-                .as_mut()
-                .expect("ready completion");
-            let completion = pending.completion.take().expect("completion route");
-            let outcome = pending.outcome.clone().expect("terminal completion");
-            let mut lists = ListPayload::default();
-            let mut bytes = BytePayload::default();
-            let mut arguments = [0; 64];
-            let mut count = 3;
-            let mut record_mask = u64::from(
-                completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
-            ) << 2;
-            if let Some(wings_abi::ValueType::RecordRef(schema)) =
-                completion.handler.schema().completion_reply()
-            {
-                let (reply, status) = match &outcome {
-                    RequestOutcome::ReplyRecord(reply) => (Some(reply), 0),
-                    RequestOutcome::TimedOut => (None, 1),
-                    RequestOutcome::Cancelled => (None, 2),
-                    _ => (None, 3),
+                    .expect("ready completion");
+                let completion = pending.completion.take().expect("completion route");
+                let outcome = pending.outcome.clone().expect("terminal completion");
+                let mut lists = ListPayload::default();
+                let mut bytes = BytePayload::default();
+                let mut arguments = [0; 64];
+                let mut count = 3;
+                let mut record_mask = u64::from(
+                    completion.handler.schema().completion_reply()
+                        == Some(wings_abi::ValueType::Ref),
+                ) << 2;
+                if let Some(wings_abi::ValueType::RecordRef(schema)) =
+                    completion.handler.schema().completion_reply()
+                {
+                    let (reply, status) = match &outcome {
+                        RequestOutcome::ReplyRecord(reply) => (Some(reply), 0),
+                        RequestOutcome::TimedOut => (None, 1),
+                        RequestOutcome::Cancelled => (None, 2),
+                        _ => (None, 3),
+                    };
+                    let records = &completion.handler.module.manifest().records;
+                    let response = crate::RecordReply::completion(
+                        reply,
+                        schema,
+                        records,
+                        pending.capability,
+                        status,
+                    )
+                    .or_else(|_| {
+                        crate::RecordReply::completion(None, schema, records, pending.capability, 3)
+                    })
+                    .expect("validated named record completion");
+                    arguments = response.arguments;
+                    count = response.count;
+                    record_mask = response.record_mask;
+                    lists = response.lists;
+                    bytes = response.bytes;
+                } else {
+                    let (status, value) = match outcome {
+                        RequestOutcome::Reply(value) => (0, value),
+                        RequestOutcome::ReplyList(value) => {
+                            lists.count = value.as_slice().len();
+                            lists.values[..lists.count].copy_from_slice(value.as_slice());
+                            (0, ListPayload::encode(0, lists.count))
+                        }
+                        RequestOutcome::ReplyBytes(value) => {
+                            let length = value.as_slice().len();
+                            bytes = BytePayload::completion(Some(value));
+                            (0, ListPayload::encode(0, length))
+                        }
+                        RequestOutcome::ReplyString(value) => {
+                            let length = value.as_str().len();
+                            bytes = BytePayload::string_completion(Some(value));
+                            (0, ListPayload::encode(0, length))
+                        }
+                        RequestOutcome::ReplyRecord(_) => (3, 0),
+                        RequestOutcome::TimedOut => (1, 0),
+                        RequestOutcome::Cancelled => (2, 0),
+                        RequestOutcome::Failed => (3, 0),
+                    };
+                    arguments[..3].copy_from_slice(&[pending.capability, status, value]);
+                }
+                let owner = pending.owner;
+                self.requests.retire_index(index);
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::ListRef)
+                {
+                    lists.mask = 4;
+                }
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::BytesRef)
+                    && bytes.mask == 0
+                {
+                    bytes = BytePayload::completion(None);
+                }
+                if completion.handler.schema().completion_reply()
+                    == Some(wings_abi::ValueType::StringRef)
+                    && bytes.mask == 0
+                {
+                    bytes = BytePayload::string_completion(None);
+                }
+                let message = Envelope {
+                    handler: completion.handler,
+                    arguments,
+                    count,
+                    max_steps: completion.max_steps,
+                    record_mask,
+                    lists,
+                    bytes,
+                    reply: Reply::None,
+                    _charge: completion.charge,
+                    _message_charge: None,
                 };
-                let records = &completion.handler.module.manifest().records;
-                let response = crate::RecordReply::completion(
-                    reply,
-                    schema,
-                    records,
-                    pending.capability,
-                    status,
-                )
-                .or_else(|_| {
-                    crate::RecordReply::completion(None, schema, records, pending.capability, 3)
-                })
-                .expect("validated named record completion");
-                arguments = response.arguments;
-                count = response.count;
-                record_mask = response.record_mask;
-                lists = response.lists;
-                bytes = response.bytes;
-            } else {
-                let (status, value) = match outcome {
-                    RequestOutcome::Reply(value) => (0, value),
-                    RequestOutcome::ReplyList(value) => {
-                        lists.count = value.as_slice().len();
-                        lists.values[..lists.count].copy_from_slice(value.as_slice());
-                        (0, ListPayload::encode(0, lists.count))
-                    }
-                    RequestOutcome::ReplyBytes(value) => {
-                        let length = value.as_slice().len();
-                        bytes = BytePayload::completion(Some(value));
-                        (0, ListPayload::encode(0, length))
-                    }
-                    RequestOutcome::ReplyString(value) => {
-                        let length = value.as_str().len();
-                        bytes = BytePayload::string_completion(Some(value));
-                        (0, ListPayload::encode(0, length))
-                    }
-                    RequestOutcome::ReplyRecord(_) => (3, 0),
-                    RequestOutcome::TimedOut => (1, 0),
-                    RequestOutcome::Cancelled => (2, 0),
-                    RequestOutcome::Failed => (3, 0),
-                };
-                arguments[..3].copy_from_slice(&[pending.capability, status, value]);
+                self.actor_mut(identity, owner)
+                    .expect("completion owner")
+                    .mailbox
+                    .push(message)
+                    .expect("reserved completion slot");
+                wake = wake.combine(self.enqueue(owner));
             }
-            let owner = pending.owner;
-            retire_request(&mut self.requests[index]);
-            if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
-            {
-                lists.mask = 4;
-            }
-            if completion.handler.schema().completion_reply()
-                == Some(wings_abi::ValueType::BytesRef)
-                && bytes.mask == 0
-            {
-                bytes = BytePayload::completion(None);
-            }
-            if completion.handler.schema().completion_reply()
-                == Some(wings_abi::ValueType::StringRef)
-                && bytes.mask == 0
-            {
-                bytes = BytePayload::string_completion(None);
-            }
-            let message = Envelope {
-                handler: completion.handler,
-                arguments,
-                count,
-                max_steps: completion.max_steps,
-                record_mask,
-                lists,
-                bytes,
-                system: true,
-                reply: Reply::None,
-                _charge: completion.charge,
-            };
-            self.actor_mut(identity, owner)
-                .expect("completion owner")
-                .mailbox
-                .push(message)
-                .expect("reserved completion slot");
-            self.enqueue(owner);
         }
+        wake
     }
 
     pub(super) fn target(&self, identity: u64, capability: i64) -> Result<SchedulerPid, String> {
@@ -325,6 +461,7 @@ impl Shared {
         if state.closed || state.actor(self.identity, pid).is_err() {
             return (wings_abi::STATUS_CANCELLED, 0);
         }
+        let mut wake = WakeSignal::NONE;
         let result: Result<i64, String> = (|| {
             let actor = state.actor(self.identity, pid)?;
             if actor.stopping {
@@ -335,6 +472,7 @@ impl Shared {
                 wings_abi::EFFECT_SELF_PID if effect.count == 0 => Ok(actor.capability),
                 wings_abi::EFFECT_CANCEL_REQUEST => {
                     state.cancel(pid, effect.target)?;
+                    wake = state.wake_all_parked();
                     Ok(0)
                 }
                 wings_abi::EFFECT_SEND
@@ -381,7 +519,7 @@ impl Shared {
                             .actor_mut(self.identity, target)?
                             .mailbox
                             .push(message)?;
-                        state.enqueue(target);
+                        wake = state.enqueue(target);
                         return Ok(0);
                     }
                     if !matches!(
@@ -459,14 +597,15 @@ impl Shared {
                         .mailbox
                         .push(message)?;
                     state.requests[index].pending = Some(pending);
-                    state.enqueue(target);
+                    wake = state.enqueue(target);
                     Ok(capability)
                 }
                 _ => Err("unsupported scheduler effect".into()),
             }
         })();
+        self.publish_signal(&state);
         drop(state);
-        self.changed.notify_all();
+        wake.fire(&self.changed);
         match result {
             Ok(value) => (wings_abi::STATUS_OK, value),
             Err(_) => (

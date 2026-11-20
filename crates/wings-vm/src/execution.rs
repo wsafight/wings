@@ -6,11 +6,11 @@ use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarO
 
 use crate::aot_heap::AotHeap;
 use crate::message_values::{BytePayload, ListPayload};
-use crate::stack_pool::PooledStack;
+use crate::stack_pool::{FiberStack, PooledStack};
 use crate::string_reply::BufferReply;
 use crate::{
     BytesReply, CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken,
-    Reservation, ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
+    Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
 };
 
 thread_local! {
@@ -29,6 +29,117 @@ type InvocationResult = (
     Option<crate::RecordReply>,
 );
 type ExecutionCoroutine = Coroutine<ResumeCommand, Checkpoint, InvocationResult, PooledStack>;
+type ReusableCoroutine = Coroutine<FiberCommand, FiberEvent, (), FiberStack>;
+
+struct FiberStart {
+    entry: ScalarEntry,
+    state: i64,
+    arguments: *const i64,
+    argument_count: usize,
+    max_steps: u64,
+    slice_remaining: Option<u64>,
+    cancellation: *const std::sync::atomic::AtomicU32,
+    heap: Option<Box<AotHeap>>,
+    effects_enabled: bool,
+}
+
+enum FiberCommand {
+    Start(FiberStart),
+    Run(u64),
+    Effect(u32, i64, u64),
+    Cancel,
+    Shutdown,
+}
+
+enum FiberEvent {
+    Primed,
+    Suspended(Checkpoint),
+    Complete {
+        status: u32,
+        output: ScalarOutput,
+        heap: Option<Box<AotHeap>>,
+        checkpoint: Checkpoint,
+    },
+}
+
+struct ReusableControl<'scope> {
+    yielder: &'scope Yielder<FiberCommand, FiberEvent>,
+    preemption: &'scope PreemptionToken,
+}
+
+struct ParkedFiber {
+    coroutine: Option<ReusableCoroutine>,
+    stack_charge: Option<Reservation>,
+    pool: StackPool,
+}
+
+impl Drop for ParkedFiber {
+    fn drop(&mut self) {
+        if let Some(mut coroutine) = self.coroutine.take() {
+            if coroutine.started()
+                && !coroutine.done()
+                && !matches!(
+                    coroutine.resume(FiberCommand::Shutdown),
+                    CoroutineResult::Return(())
+                )
+            {
+                std::process::abort();
+            }
+            self.pool.drop_parked_fiber();
+        }
+    }
+}
+
+struct ActiveReusableFiber {
+    coroutine: Option<ReusableCoroutine>,
+    stack_charge: Option<Reservation>,
+    pool: StackPool,
+    _cancellation: Option<CancellationToken>,
+}
+
+impl Drop for ActiveReusableFiber {
+    fn drop(&mut self) {
+        if let Some(mut coroutine) = self.coroutine.take() {
+            if self._cancellation.take().is_some()
+                && coroutine.started()
+                && !coroutine.done()
+                && !matches!(
+                    coroutine.resume(FiberCommand::Cancel),
+                    CoroutineResult::Yield(FiberEvent::Complete { .. })
+                )
+            {
+                std::process::abort();
+            }
+            if coroutine.started()
+                && !coroutine.done()
+                && !matches!(
+                    coroutine.resume(FiberCommand::Shutdown),
+                    CoroutineResult::Return(())
+                )
+            {
+                std::process::abort();
+            }
+            self.pool.drop_active_fiber();
+        }
+    }
+}
+
+pub(crate) struct WorkerFibers {
+    pool: StackPool,
+    preemption: PreemptionToken,
+    slots: [Option<ParkedFiber>; 2],
+    limit: usize,
+}
+
+pub(crate) struct PreparedFiber {
+    active: ActiveReusableFiber,
+    control_charge: Reservation,
+}
+
+enum InvocationBackend {
+    OneShot(ExecutionCoroutine),
+    Reusable(ActiveReusableFiber),
+}
 
 struct Checkpoint {
     remaining_steps: u64,
@@ -144,7 +255,7 @@ pub(crate) fn initialize(
     let mut coroutine = new_coroutine(
         entry,
         0,
-        &[],
+        InvocationArgs::from_slice(&[], false)?,
         wings_abi::DEFAULT_MAX_STEPS,
         &CancellationToken::default(),
         &PreemptionToken::default(),
@@ -202,7 +313,7 @@ pub struct ScalarTask {
 
 struct Invocation {
     handler: usize,
-    coroutine: Option<ExecutionCoroutine>,
+    backend: Option<InvocationBackend>,
     snapshot: ExecutionSnapshot,
     effect: Option<ProcessEffect>,
     acknowledgement: Option<(u32, i64)>,
@@ -240,6 +351,7 @@ impl ScalarProcess {
             self,
             handler,
             arguments,
+            false,
             max_steps,
             controls,
             &pool,
@@ -269,6 +381,7 @@ impl ScalarProcess {
             self,
             handler,
             arguments,
+            false,
             max_steps,
             || (cancellation.clone(), preemption.clone()),
             pool,
@@ -395,6 +508,44 @@ impl ScalarTask {
             &mut self.process,
             handler,
             arguments,
+            false,
+            max_steps,
+            controls,
+            pool,
+            self.effects_enabled,
+            record_mask,
+            lists,
+            bytes,
+        )?);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_scheduled(
+        &mut self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
+        pool: &StackPool,
+        record_mask: u64,
+        lists: &ListPayload,
+        bytes: &mut BytePayload,
+    ) -> Result<(), String> {
+        if self.is_active() {
+            return Err("scalar task already has an active invocation".into());
+        }
+        if self.process.failed {
+            return Err("scalar process has failed and must be restarted".into());
+        }
+        if !std::sync::Arc::ptr_eq(&self.process.module.inner, &handler.module.inner) {
+            return Err("handler belongs to a different module".into());
+        }
+        self.invocation = Some(Invocation::new(
+            &mut self.process,
+            handler.index,
+            arguments,
+            true,
             max_steps,
             controls,
             pool,
@@ -412,6 +563,21 @@ impl ScalarTask {
             &mut self.invocation,
             &mut self.last,
             max_slice_steps,
+            None,
+        )
+    }
+
+    pub(crate) fn resume_with_fibers(
+        &mut self,
+        max_slice_steps: u64,
+        fibers: &mut WorkerFibers,
+    ) -> Result<ExecutionStatus, String> {
+        resume_invocation(
+            &mut self.process,
+            &mut self.invocation,
+            &mut self.last,
+            max_slice_steps,
+            Some(fibers),
         )
     }
 
@@ -424,12 +590,48 @@ impl ScalarTask {
     }
 }
 
+enum InvocationArgs {
+    Inline([i64; 8], u8),
+    Heap(Vec<i64>),
+}
+
+impl InvocationArgs {
+    fn from_slice(arguments: &[i64], inline_small: bool) -> Result<Self, String> {
+        if inline_small && arguments.len() <= 8 {
+            let mut inline = [0i64; 8];
+            inline[..arguments.len()].copy_from_slice(arguments);
+            return Ok(Self::Inline(inline, arguments.len() as u8));
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(arguments.len())
+            .map_err(|error| error.to_string())?;
+        owned.extend_from_slice(arguments);
+        Ok(Self::Heap(owned))
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [i64] {
+        match self {
+            Self::Inline(values, len) => &mut values[..usize::from(*len)],
+            Self::Heap(values) => values.as_mut_slice(),
+        }
+    }
+
+    fn as_ptr(&self) -> *const i64 {
+        match self {
+            Self::Inline(values, _) => values.as_ptr(),
+            Self::Heap(values) => values.as_ptr(),
+        }
+    }
+}
+
 impl Invocation {
     #[allow(clippy::too_many_arguments)]
     fn new(
         process: &mut ScalarProcess,
         handler: usize,
         arguments: &[i64],
+        inline_small: bool,
         max_steps: u64,
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
@@ -465,11 +667,12 @@ impl Invocation {
             heap: process.heap_stats(),
         };
         let stack = pool.acquire()?;
+        let owned_arguments = InvocationArgs::from_slice(arguments, inline_small)?;
         let (cancellation, preemption) = controls();
         let coroutine = new_coroutine(
             process.module.inner.entries[handler],
             process.state,
-            arguments,
+            owned_arguments,
             max_steps,
             &cancellation,
             &preemption,
@@ -489,7 +692,7 @@ impl Invocation {
         )?;
         Ok(Self {
             handler,
-            coroutine: Some(coroutine),
+            backend: Some(InvocationBackend::OneShot(coroutine)),
             snapshot,
             effect: None,
             acknowledgement: None,
@@ -497,6 +700,381 @@ impl Invocation {
             _charge: charge,
         })
     }
+}
+
+impl WorkerFibers {
+    pub(crate) fn new(pool: &StackPool, preemption: &PreemptionToken) -> Self {
+        Self {
+            pool: pool.clone(),
+            preemption: preemption.clone(),
+            slots: [None, None],
+            limit: pool.max_cached_slots().min(2),
+        }
+    }
+
+    pub(crate) fn can_run_fast(
+        handler: &HandlerId,
+        record_mask: u64,
+        lists: &ListPayload,
+        bytes: &BytePayload,
+    ) -> bool {
+        record_mask == 0
+            && lists.mask == 0
+            && lists.count == 0
+            && bytes.is_trivially_empty()
+            && !matches!(
+                handler.schema().reply,
+                Some(
+                    wings_abi::ValueType::ListRef
+                        | wings_abi::ValueType::BytesRef
+                        | wings_abi::ValueType::StringRef
+                        | wings_abi::ValueType::RecordRef(_)
+                )
+            )
+    }
+
+    pub(crate) fn prepare(
+        &mut self,
+        process: &ScalarProcess,
+        process_account: &ResourceAccount,
+    ) -> Result<PreparedFiber, String> {
+        if process.failed {
+            return Err("scalar process has failed and must be restarted".into());
+        }
+        if process_account.level() != ResourceLevel::Process {
+            return Err("accounted stack pool must be bound to a process".into());
+        }
+        let control_charge = process_account.reserve(Resources {
+            bytes: INVOCATION_OVERHEAD,
+            ..Resources::default()
+        })?;
+        for slot in &mut self.slots[..self.limit] {
+            if let Some(mut parked) = slot.take() {
+                let charge_ref = parked
+                    .stack_charge
+                    .as_mut()
+                    .expect("parked fiber stack charge");
+                match self.pool.activate_parked_fiber(charge_ref, process_account) {
+                    Ok(()) => {
+                        let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
+                        let stack_charge =
+                            parked.stack_charge.take().expect("activated stack charge");
+                        return Ok(PreparedFiber {
+                            active: ActiveReusableFiber {
+                                coroutine: Some(coroutine),
+                                stack_charge: Some(stack_charge),
+                                pool: self.pool.clone(),
+                                _cancellation: None,
+                            },
+                            control_charge,
+                        });
+                    }
+                    Err(error) => {
+                        *slot = Some(parked);
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        let (stack, stack_charge) = self.pool.allocate_fiber_stack(process_account)?;
+        let coroutine = new_reusable_coroutine(stack, self.preemption.clone());
+        Ok(PreparedFiber {
+            active: ActiveReusableFiber {
+                coroutine: Some(coroutine),
+                stack_charge: Some(stack_charge),
+                pool: self.pool.clone(),
+                _cancellation: None,
+            },
+            control_charge,
+        })
+    }
+
+    fn recycle(
+        &mut self,
+        mut coroutine: ReusableCoroutine,
+        mut stack_charge: Reservation,
+        pool: StackPool,
+    ) {
+        if self.limit > 0 && pool.park_active_fiber(&mut stack_charge) {
+            for slot in &mut self.slots[..self.limit] {
+                if slot.is_none() {
+                    *slot = Some(ParkedFiber {
+                        coroutine: Some(coroutine),
+                        stack_charge: Some(stack_charge),
+                        pool,
+                    });
+                    return;
+                }
+            }
+            drop(ParkedFiber {
+                coroutine: Some(coroutine),
+                stack_charge: Some(stack_charge),
+                pool,
+            });
+            return;
+        }
+        if coroutine.started()
+            && !coroutine.done()
+            && !matches!(
+                coroutine.resume(FiberCommand::Shutdown),
+                CoroutineResult::Return(())
+            )
+        {
+            std::process::abort();
+        }
+    }
+}
+
+impl PreparedFiber {
+    pub(crate) fn into_ready_task(
+        mut self,
+        fibers: &WorkerFibers,
+        mut process: ScalarProcess,
+        handler: usize,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<ScalarTask, (ScalarProcess, String)> {
+        let snapshot = ExecutionSnapshot {
+            phase: ExecutionPhase::Ready,
+            fault: None,
+            max_steps,
+            remaining_steps: max_steps,
+            heap: process.heap_stats(),
+        };
+        let entry = process.module.inner.entries[handler];
+        let start = FiberStart {
+            entry,
+            state: process.state,
+            arguments: arguments.as_ptr(),
+            argument_count: arguments.len(),
+            max_steps,
+            slice_remaining: None,
+            cancellation: &*cancellation.flag,
+            heap: process.heap.take(),
+            effects_enabled: true,
+        };
+        self.active._cancellation = Some(cancellation.clone());
+        let primed = self
+            .active
+            .coroutine
+            .as_mut()
+            .expect("prepared reusable coroutine")
+            .resume(FiberCommand::Start(start));
+        if !matches!(primed, CoroutineResult::Yield(FiberEvent::Primed)) {
+            std::process::abort();
+        }
+        let invocation = Invocation {
+            handler,
+            backend: Some(InvocationBackend::Reusable(self.active)),
+            snapshot,
+            effect: None,
+            acknowledgement: None,
+            preemption: fibers.preemption.clone(),
+            _charge: Some(self.control_charge),
+        };
+        Ok(ScalarTask {
+            invocation: Some(invocation),
+            process,
+            last: None,
+            effects_enabled: true,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_first_slice(
+        mut self,
+        fibers: &mut WorkerFibers,
+        mut process: ScalarProcess,
+        handler: usize,
+        arguments: &[i64],
+        max_steps: u64,
+        slice_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            ScalarProcess,
+            ExecutionSnapshot,
+            Result<ExecutionStatus, String>,
+        ),
+        Box<ScalarTask>,
+    > {
+        let initial_heap = process.heap_stats();
+        let entry = process.module.inner.entries[handler];
+        let start = FiberStart {
+            entry,
+            state: process.state,
+            arguments: arguments.as_ptr(),
+            argument_count: arguments.len(),
+            max_steps,
+            slice_remaining: Some(slice_steps),
+            cancellation: &*cancellation.flag,
+            heap: process.heap.take(),
+            effects_enabled: true,
+        };
+        let step = self
+            .active
+            .coroutine
+            .as_mut()
+            .expect("prepared reusable coroutine")
+            .resume(FiberCommand::Start(start));
+        match step {
+            CoroutineResult::Yield(FiberEvent::Complete {
+                status,
+                output,
+                heap,
+                checkpoint,
+            }) => {
+                let coroutine = self.active.coroutine.take().expect("completed coroutine");
+                let stack_charge = self
+                    .active
+                    .stack_charge
+                    .take()
+                    .expect("completed stack charge");
+                let pool = self.active.pool.clone();
+                fibers.recycle(coroutine, stack_charge, pool);
+                drop(self.control_charge);
+                process.heap = heap;
+                let result = process.finish_invocation(handler, status, output, None, None, None);
+                let snapshot = ExecutionSnapshot {
+                    phase: if result.is_ok() {
+                        ExecutionPhase::Complete
+                    } else {
+                        ExecutionPhase::Failed
+                    },
+                    fault: if result.is_err() {
+                        Some(
+                            ExecutionFault::from_status(status)
+                                .unwrap_or(ExecutionFault::InvalidOutput),
+                        )
+                    } else {
+                        None
+                    },
+                    max_steps,
+                    remaining_steps: checkpoint.remaining_steps,
+                    heap: checkpoint.heap,
+                };
+                Ok((process, snapshot, result))
+            }
+            CoroutineResult::Yield(FiberEvent::Suspended(checkpoint)) => {
+                if let Some(requested_at) = checkpoint.yield_requested {
+                    fibers.preemption.confirm_yield(requested_at);
+                }
+                self.active._cancellation = Some(cancellation.clone());
+                let snapshot = ExecutionSnapshot {
+                    phase: ExecutionPhase::Suspended,
+                    fault: None,
+                    max_steps,
+                    remaining_steps: checkpoint.remaining_steps,
+                    heap: checkpoint.heap.or(initial_heap),
+                };
+                let invocation = Invocation {
+                    handler,
+                    backend: Some(InvocationBackend::Reusable(self.active)),
+                    snapshot,
+                    effect: checkpoint.effect,
+                    acknowledgement: None,
+                    preemption: fibers.preemption.clone(),
+                    _charge: Some(self.control_charge),
+                };
+                Err(Box::new(ScalarTask {
+                    invocation: Some(invocation),
+                    process,
+                    last: None,
+                    effects_enabled: true,
+                }))
+            }
+            CoroutineResult::Yield(FiberEvent::Primed) | CoroutineResult::Return(()) => {
+                std::process::abort()
+            }
+        }
+    }
+}
+
+fn new_reusable_coroutine(stack: FiberStack, preemption: PreemptionToken) -> ReusableCoroutine {
+    let stack_limit = stack.managed_limit();
+    Coroutine::with_stack(stack, move |yielder, mut command| {
+        let mut arguments = [0i64; 64];
+        loop {
+            let FiberCommand::Start(mut start) = command else {
+                return;
+            };
+            if start.argument_count != 0 {
+                arguments[..start.argument_count].copy_from_slice(unsafe {
+                    std::slice::from_raw_parts(start.arguments, start.argument_count)
+                });
+            }
+            let mut output = ScalarOutput::default();
+            let slice_remaining = match start.slice_remaining {
+                Some(steps) => steps,
+                None => match yielder.suspend(FiberEvent::Primed) {
+                    FiberCommand::Run(steps) => steps,
+                    _ => {
+                        let checkpoint = Checkpoint {
+                            remaining_steps: start.max_steps,
+                            heap: start.heap.as_deref().map(AotHeap::stats),
+                            effect: None,
+                            yield_requested: None,
+                        };
+                        command = yielder.suspend(FiberEvent::Complete {
+                            status: STATUS_CANCELLED,
+                            output,
+                            heap: start.heap,
+                            checkpoint,
+                        });
+                        continue;
+                    }
+                },
+            };
+            let mut control = ReusableControl {
+                yielder,
+                preemption: &preemption,
+            };
+            let mut context = ScalarContext {
+                cancellation: start.cancellation,
+                remaining_steps: start.max_steps,
+                yield_request: &*preemption.flag,
+                slice_remaining,
+                slow_path: Some(suspend_reusable),
+                data: std::ptr::from_mut(&mut control).cast(),
+                stack_limit,
+                roots: std::ptr::null(),
+                heap_call: start
+                    .heap
+                    .as_ref()
+                    .map(|_| crate::aot_heap::heap_call as wings_abi::HeapCall),
+                heap_data: start.heap.as_mut().map_or(std::ptr::null_mut(), |heap| {
+                    std::ptr::from_mut(&mut **heap).cast()
+                }),
+                effect_call: start
+                    .effects_enabled
+                    .then_some(send_self_reusable as wings_abi::EffectCall),
+            };
+            let raw_status = unsafe {
+                (start.entry)(start.state, arguments.as_ptr(), &mut output, &mut context)
+            };
+            let status = if context.roots.is_null() {
+                raw_status
+            } else {
+                wings_abi::STATUS_INVALID_ROOT
+            };
+            let checkpoint = Checkpoint {
+                remaining_steps: context.remaining_steps,
+                heap: start.heap.as_deref().map(AotHeap::stats),
+                effect: None,
+                yield_requested: None,
+            };
+            if let Some(heap) = &mut start.heap {
+                heap.clear_incoming();
+            }
+            command = yielder.suspend(FiberEvent::Complete {
+                status,
+                output,
+                heap: start.heap,
+                checkpoint,
+            });
+        }
+    })
 }
 
 fn reserve_control(pool: &StackPool) -> Result<Option<Reservation>, String> {
@@ -517,7 +1095,7 @@ fn reserve_control(pool: &StackPool) -> Result<Option<Reservation>, String> {
 fn new_coroutine(
     entry: ScalarEntry,
     state: i64,
-    arguments: &[i64],
+    mut owned_arguments: InvocationArgs,
     max_steps: u64,
     cancellation: &CancellationToken,
     preemption: &PreemptionToken,
@@ -531,11 +1109,6 @@ fn new_coroutine(
     output_types: [wings_abi::ValueType; 2],
 ) -> Result<ExecutionCoroutine, String> {
     let stack_limit = stack.managed_limit();
-    let mut owned_arguments = Vec::new();
-    owned_arguments
-        .try_reserve_exact(arguments.len())
-        .map_err(|error| error.to_string())?;
-    owned_arguments.extend_from_slice(arguments);
     let cancellation = cancellation.clone();
     let preemption = preemption.clone();
     let mut heap = heap.take();
@@ -575,7 +1148,7 @@ fn new_coroutine(
         let imported = unsafe {
             crate::aot_heap::import_arguments(
                 &mut context,
-                &mut owned_arguments,
+                owned_arguments.as_mut_slice(),
                 record_mask,
                 &lists,
                 &bytes,
@@ -729,6 +1302,7 @@ impl ScalarExecution<'_> {
             &mut self.invocation,
             &mut self.last,
             max_slice_steps,
+            None,
         )
     }
 }
@@ -746,6 +1320,7 @@ fn resume_invocation(
     invocation: &mut Option<Invocation>,
     last: &mut Option<ExecutionSnapshot>,
     max_slice_steps: u64,
+    fibers: Option<&mut WorkerFibers>,
 ) -> Result<ExecutionStatus, String> {
     let active = invocation
         .as_mut()
@@ -753,60 +1328,176 @@ fn resume_invocation(
     if max_slice_steps == 0 {
         return Err("execution time slice must contain at least one step".into());
     }
-    let coroutine = active.coroutine.as_mut().expect("active coroutine");
-    let command = match active.acknowledgement.take() {
-        Some((status, value)) => ResumeCommand::Effect(status, value, max_slice_steps),
-        None => ResumeCommand::Run(max_slice_steps),
-    };
-    match coroutine.resume(command) {
-        CoroutineResult::Yield(checkpoint) => {
-            if let Some(requested_at) = checkpoint.yield_requested {
-                active.preemption.confirm_yield(requested_at);
+    let acknowledgement = active.acknowledgement.take();
+    match active.backend.as_mut().expect("active invocation backend") {
+        InvocationBackend::OneShot(coroutine) => {
+            let command = match acknowledgement {
+                Some((status, value)) => ResumeCommand::Effect(status, value, max_slice_steps),
+                None => ResumeCommand::Run(max_slice_steps),
+            };
+            match coroutine.resume(command) {
+                CoroutineResult::Yield(checkpoint) => {
+                    if let Some(requested_at) = checkpoint.yield_requested {
+                        active.preemption.confirm_yield(requested_at);
+                    }
+                    active.snapshot.phase = ExecutionPhase::Suspended;
+                    active.snapshot.remaining_steps = checkpoint.remaining_steps;
+                    active.snapshot.heap = checkpoint.heap;
+                    active.effect = checkpoint.effect;
+                    Ok(ExecutionStatus::Suspended)
+                }
+                CoroutineResult::Return((
+                    status,
+                    output,
+                    heap,
+                    checkpoint,
+                    list,
+                    bytes,
+                    record,
+                )) => {
+                    let handler = active.handler;
+                    let mut snapshot = active.snapshot;
+                    snapshot.remaining_steps = checkpoint.remaining_steps;
+                    snapshot.heap = checkpoint.heap;
+                    active.backend.take();
+                    invocation.take();
+                    process.heap = heap;
+                    let result =
+                        process.finish_invocation(handler, status, output, list, bytes, record);
+                    snapshot.phase = if result.is_ok() {
+                        ExecutionPhase::Complete
+                    } else {
+                        ExecutionPhase::Failed
+                    };
+                    snapshot.fault = if result.is_err() {
+                        Some(
+                            ExecutionFault::from_status(status)
+                                .unwrap_or(ExecutionFault::InvalidOutput),
+                        )
+                    } else {
+                        None
+                    };
+                    *last = Some(snapshot);
+                    result
+                }
             }
-            active.snapshot.phase = ExecutionPhase::Suspended;
-            active.snapshot.remaining_steps = checkpoint.remaining_steps;
-            active.snapshot.heap = checkpoint.heap;
-            active.effect = checkpoint.effect;
-            Ok(ExecutionStatus::Suspended)
         }
-        CoroutineResult::Return((status, output, heap, checkpoint, list, bytes, record)) => {
-            let handler = active.handler;
-            let mut snapshot = active.snapshot;
-            snapshot.remaining_steps = checkpoint.remaining_steps;
-            snapshot.heap = checkpoint.heap;
-            active.coroutine.take();
-            invocation.take();
-            process.heap = heap;
-            let result = process.finish_invocation(handler, status, output, list, bytes, record);
-            snapshot.phase = if result.is_ok() {
-                ExecutionPhase::Complete
-            } else {
-                ExecutionPhase::Failed
+        InvocationBackend::Reusable(reusable) => {
+            let command = match acknowledgement {
+                Some((status, value)) => FiberCommand::Effect(status, value, max_slice_steps),
+                None => FiberCommand::Run(max_slice_steps),
             };
-            snapshot.fault = if result.is_err() {
-                Some(ExecutionFault::from_status(status).unwrap_or(ExecutionFault::InvalidOutput))
-            } else {
-                None
-            };
-            *last = Some(snapshot);
-            result
+            let step = reusable
+                .coroutine
+                .as_mut()
+                .expect("active reusable coroutine")
+                .resume(command);
+            match step {
+                CoroutineResult::Yield(FiberEvent::Suspended(checkpoint)) => {
+                    if let Some(requested_at) = checkpoint.yield_requested {
+                        active.preemption.confirm_yield(requested_at);
+                    }
+                    active.snapshot.phase = ExecutionPhase::Suspended;
+                    active.snapshot.remaining_steps = checkpoint.remaining_steps;
+                    active.snapshot.heap = checkpoint.heap;
+                    active.effect = checkpoint.effect;
+                    Ok(ExecutionStatus::Suspended)
+                }
+                CoroutineResult::Yield(FiberEvent::Complete {
+                    status,
+                    output,
+                    heap,
+                    checkpoint,
+                }) => {
+                    let coroutine = reusable.coroutine.take().expect("completed coroutine");
+                    let stack_charge = reusable
+                        .stack_charge
+                        .take()
+                        .expect("completed stack charge");
+                    let pool = reusable.pool.clone();
+                    if let Some(fibers) = fibers {
+                        fibers.recycle(coroutine, stack_charge, pool);
+                    } else {
+                        let mut shutdown = coroutine;
+                        if shutdown.started()
+                            && !shutdown.done()
+                            && !matches!(
+                                shutdown.resume(FiberCommand::Shutdown),
+                                CoroutineResult::Return(())
+                            )
+                        {
+                            std::process::abort();
+                        }
+                        pool.drop_active_fiber();
+                        drop(stack_charge);
+                    }
+                    let handler = active.handler;
+                    let mut snapshot = active.snapshot;
+                    snapshot.remaining_steps = checkpoint.remaining_steps;
+                    snapshot.heap = checkpoint.heap;
+                    active.backend.take();
+                    invocation.take();
+                    process.heap = heap;
+                    let result =
+                        process.finish_invocation(handler, status, output, None, None, None);
+                    snapshot.phase = if result.is_ok() {
+                        ExecutionPhase::Complete
+                    } else {
+                        ExecutionPhase::Failed
+                    };
+                    snapshot.fault = if result.is_err() {
+                        Some(
+                            ExecutionFault::from_status(status)
+                                .unwrap_or(ExecutionFault::InvalidOutput),
+                        )
+                    } else {
+                        None
+                    };
+                    *last = Some(snapshot);
+                    result
+                }
+                CoroutineResult::Yield(FiberEvent::Primed) | CoroutineResult::Return(()) => {
+                    std::process::abort()
+                }
+            }
         }
     }
 }
 
 impl Drop for Invocation {
     fn drop(&mut self) {
-        let Some(coroutine) = self.coroutine.as_mut() else {
+        let Some(backend) = self.backend.as_mut() else {
             return;
         };
-        if coroutine.started()
-            && !matches!(
-                coroutine.resume(ResumeCommand::Cancel),
-                CoroutineResult::Return(_)
-            )
-        {
-            std::process::abort();
+        if let InvocationBackend::OneShot(coroutine) = backend {
+            if coroutine.started()
+                && !matches!(
+                    coroutine.resume(ResumeCommand::Cancel),
+                    CoroutineResult::Return(_)
+                )
+            {
+                std::process::abort();
+            }
         }
+    }
+}
+
+unsafe extern "C" fn suspend_reusable(context: *mut ScalarContext) -> u32 {
+    let context = unsafe { &mut *context };
+    let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
+    let yield_requested = control.preemption.take_request();
+    let checkpoint = Checkpoint {
+        remaining_steps: context.remaining_steps,
+        heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
+        effect: None,
+        yield_requested,
+    };
+    match control.yielder.suspend(FiberEvent::Suspended(checkpoint)) {
+        FiberCommand::Run(steps) => {
+            context.slice_remaining = steps;
+            STATUS_OK
+        }
+        _ => STATUS_CANCELLED,
     }
 }
 
@@ -858,13 +1549,37 @@ pub(crate) fn runtime_checkpoint(context: &mut ScalarContext, consume: bool) -> 
     }
 }
 
-unsafe extern "C" fn send_self(
+pub(crate) fn runtime_checkpoint_batch(
+    context: &mut ScalarContext,
+    max_steps: usize,
+) -> Result<usize, u32> {
+    if context.cancellation.is_null() || context.yield_request.is_null() {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    }
+    if unsafe { &*context.cancellation }.load(Ordering::SeqCst) == 0
+        && unsafe { &*context.yield_request }.load(Ordering::SeqCst) == 0
+        && context.remaining_steps > 0
+        && context.slice_remaining > 0
+    {
+        let steps = max_steps
+            .max(1)
+            .min(usize::try_from(context.remaining_steps).unwrap_or(usize::MAX))
+            .min(usize::try_from(context.slice_remaining).unwrap_or(usize::MAX));
+        context.remaining_steps -= steps as u64;
+        context.slice_remaining -= steps as u64;
+        return Ok(steps);
+    }
+    runtime_checkpoint(context, true)?;
+    Ok(1)
+}
+
+unsafe fn prepare_effect_checkpoint(
     context: *mut ScalarContext,
     request: *const wings_abi::EffectRequest,
     output: *mut i64,
-) -> u32 {
+) -> Result<Checkpoint, u32> {
     let Some(request) = (unsafe { request.as_ref() }) else {
-        return wings_abi::STATUS_INVALID_CONTROL;
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
     };
     let count = request.count;
     let arguments = request.arguments;
@@ -878,7 +1593,7 @@ unsafe extern "C" fn send_self(
                 wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
             ))
     {
-        return wings_abi::STATUS_INVALID_CONTROL;
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
     let context = unsafe { &mut *context };
     let mut copied = [0; 64];
@@ -891,39 +1606,29 @@ unsafe extern "C" fn send_self(
         || request.list_mask & buffer_mask != 0
         || (count < 64 && (request.record_mask | request.list_mask | buffer_mask) >> count != 0)
     {
-        return wings_abi::STATUS_INVALID_CONTROL;
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
     if request.record_mask != 0 {
         let Some(heap) = (unsafe { context.heap_data.cast::<AotHeap>().as_ref() }) else {
-            return wings_abi::STATUS_INVALID_ROOT;
+            return Err(wings_abi::STATUS_INVALID_ROOT);
         };
         for (index, argument) in copied[..count].iter_mut().enumerate() {
             if request.record_mask & (1u64 << index) != 0 {
-                match heap.record_value(*argument) {
-                    Ok(value) => *argument = value,
-                    Err(status) => return status,
-                }
+                *argument = heap.record_value(*argument)?;
             }
         }
     }
-    let lists = match unsafe {
-        crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask)
-    } {
-        Ok(lists) => lists,
-        Err(status) => return status,
-    };
-    let bytes = match unsafe {
+    let lists =
+        unsafe { crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask) }?;
+    let bytes = unsafe {
         crate::aot_heap::export_buffers(
             context,
             &mut copied[..count],
             request.bytes_mask,
             request.string_mask,
         )
-    } {
-        Ok(bytes) => bytes,
-        Err(status) => return status,
-    };
-    let checkpoint = Checkpoint {
+    }?;
+    Ok(Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
         effect: Some(ProcessEffect {
@@ -939,10 +1644,47 @@ unsafe extern "C" fn send_self(
             bytes,
         }),
         yield_requested: None,
+    })
+}
+
+unsafe extern "C" fn send_self(
+    context: *mut ScalarContext,
+    request: *const wings_abi::EffectRequest,
+    output: *mut i64,
+) -> u32 {
+    let checkpoint = match unsafe { prepare_effect_checkpoint(context, request, output) } {
+        Ok(checkpoint) => checkpoint,
+        Err(status) => return status,
     };
+    let context = unsafe { &mut *context };
     let control = unsafe { &*context.data.cast::<InvocationControl<'_>>() };
     match control.yielder.suspend(checkpoint) {
         ResumeCommand::Effect(status, value, steps) => {
+            context.slice_remaining = steps;
+            if status == STATUS_OK {
+                unsafe {
+                    output.write(value);
+                }
+            }
+            status
+        }
+        _ => STATUS_CANCELLED,
+    }
+}
+
+unsafe extern "C" fn send_self_reusable(
+    context: *mut ScalarContext,
+    request: *const wings_abi::EffectRequest,
+    output: *mut i64,
+) -> u32 {
+    let checkpoint = match unsafe { prepare_effect_checkpoint(context, request, output) } {
+        Ok(checkpoint) => checkpoint,
+        Err(status) => return status,
+    };
+    let context = unsafe { &mut *context };
+    let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
+    match control.yielder.suspend(FiberEvent::Suspended(checkpoint)) {
+        FiberCommand::Effect(status, value, steps) => {
             context.slice_remaining = steps;
             if status == STATUS_OK {
                 unsafe {

@@ -90,6 +90,17 @@ impl BytePayload {
         self.charge.take()
     }
 
+    pub(crate) fn is_trivially_empty(&self) -> bool {
+        self.mask == 0
+            && self.string_mask == 0
+            && self.data.is_empty()
+            && self.data.capacity() == 0
+            && self.charge.is_none()
+            && self.reply.is_none()
+            && self.record_reply.is_none()
+            && !self.completion
+    }
+
     pub(crate) fn valid(&self, arguments: &[i64], expected_mask: u64) -> bool {
         if arguments.len() > 64
             || self.mask != expected_mask

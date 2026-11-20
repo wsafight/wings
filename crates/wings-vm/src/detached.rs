@@ -78,6 +78,52 @@ impl DetachedProcess {
             pool: Some(pool.clone()),
         })
     }
+
+    pub(crate) fn attach_scheduled(
+        &mut self,
+        pool: &StackPool,
+        process_account: &ResourceAccount,
+    ) -> Result<ScalarProcess, String> {
+        let image = self
+            .image
+            .as_ref()
+            .ok_or("process image has already been attached")?;
+        if let Some(tenant) = pool.account() {
+            image.module.validate_vm(tenant)?;
+        }
+        if image.module.inner.lease.is_some()
+            && process_account.level() != crate::ResourceLevel::Process
+        {
+            return Err("accounted module requires a process-accounted stack pool".into());
+        }
+        if image
+            .account
+            .as_ref()
+            .is_some_and(|account| !account.same(process_account))
+        {
+            return Err(
+                "process image requires its original process-accounted stack pool binding".into(),
+            );
+        }
+        if image
+            .heap
+            .as_ref()
+            .is_some_and(|heap| !heap.account.same(process_account))
+        {
+            return Err(
+                "process image requires its original process-accounted stack pool binding".into(),
+            );
+        }
+        let image = self.image.take().expect("validated process image");
+        Ok(ScalarProcess {
+            module: image.module,
+            account: image.account,
+            state: image.state,
+            failed: image.failed,
+            heap: image.heap,
+            pool: None,
+        })
+    }
 }
 
 #[cfg(test)]

@@ -1,12 +1,44 @@
 use super::*;
 
+pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
+
 #[derive(Default)]
 pub(super) struct ReadyQueue {
-    head: Option<usize>,
+    pub(super) head: Option<usize>,
     tail: Option<usize>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct WakeSignal(bool);
+
+impl WakeSignal {
+    pub(super) const NONE: Self = Self(false);
+
+    pub(super) fn combine(self, other: Self) -> Self {
+        Self(self.0 || other.0)
+    }
+
+    pub(super) fn fire(self, condvar: &Condvar) {
+        if self.0 {
+            condvar.notify_all();
+        }
+    }
+}
+
 impl State {
+    pub(super) fn signal_bits(&self) -> u32 {
+        let global = if self.closed || !self.requests.is_empty_fast() {
+            WAKE_GLOBAL_BIT
+        } else {
+            0
+        };
+        self.ready_bits | global
+    }
+
+    pub(super) fn wake_all_parked(&self) -> WakeSignal {
+        WakeSignal(true)
+    }
+
     pub(super) fn should_park(&self, worker: usize, progress: bool, attempted: bool) -> bool {
         !progress && (attempted || self.ready[worker].head.is_none())
     }
@@ -30,17 +62,17 @@ impl State {
         }
     }
 
-    pub(super) fn enqueue(&mut self, pid: SchedulerPid) {
+    pub(super) fn enqueue(&mut self, pid: SchedulerPid) -> WakeSignal {
         let index = pid.slot as usize;
         let slot = &self.slots[index];
         if self.closed || slot.generation != pid.generation || slot.ready_worker.is_some() {
-            return;
+            return WakeSignal::NONE;
         }
         let Some(actor) = slot.actor.as_ref() else {
-            return;
+            return WakeSignal::NONE;
         };
         if actor.owner.is_some() || actor.stopping || actor.mailbox.count == 0 {
-            return;
+            return WakeSignal::NONE;
         }
         let worker = actor
             .last_worker
@@ -58,6 +90,9 @@ impl State {
         slot.ready_previous = previous;
         slot.ready_next = None;
         slot.ready_worker = Some(worker);
+        let bit = 1u32 << worker;
+        self.ready_bits |= bit;
+        WakeSignal(true)
     }
 
     pub(super) fn remove_ready(&mut self, index: usize) {
@@ -71,6 +106,9 @@ impl State {
             self.slots[previous].ready_next = next;
         } else {
             self.ready[worker].head = next;
+            if next.is_none() {
+                self.ready_bits &= !(1u32 << worker);
+            }
         }
         if let Some(next) = next {
             self.slots[next].ready_previous = previous;

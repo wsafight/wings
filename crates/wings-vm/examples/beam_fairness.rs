@@ -109,19 +109,19 @@ fn collect(
     pending: &mut Vec<Pending>,
     samples: &mut [Sample],
     start: Instant,
-    cursor: &mut usize,
     trace: &mut Option<BufWriter<File>>,
 ) -> Result<(), String> {
-    for _ in 0..pending.len().min(32) {
-        if *cursor >= pending.len() {
-            *cursor = 0;
+    let mut index = 0;
+    for _ in 0..pending.len().min(64) {
+        if index >= pending.len() {
+            break;
         }
-        let Some(outcome) = pending[*cursor].request.try_take()? else {
-            *cursor += 1;
+        let Some(outcome) = pending[index].request.try_take()? else {
+            index += 1;
             continue;
         };
         let observed = elapsed(start);
-        let entry = pending.remove(*cursor);
+        let entry = pending.remove(index);
         let RequestOutcome::Reply(value) = outcome else {
             return Err(format!("fairness incomplete pulse {outcome:?}"));
         };
@@ -347,7 +347,6 @@ fn execute(
     let mut hot_count = 0;
     let mut hot_request = None;
     let mut hot_sent = 0;
-    let mut cursor = 0;
     let mut next = 0;
     let start = Instant::now();
     let observation_offset = start.duration_since(observation_start).as_nanos() as u64;
@@ -395,7 +394,7 @@ fn execute(
                 .map_err(|error| error.to_string())?;
             sampling = true;
         }
-        collect(&mut pending, &mut samples, start, &mut cursor, &mut trace)?;
+        collect(&mut pending, &mut samples, start, &mut trace)?;
         if let Some(request) = hot_request.as_mut() {
             let request: &mut IngressRequest = request;
             if let Some(outcome) = request.try_take()? {
