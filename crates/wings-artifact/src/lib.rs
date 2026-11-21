@@ -99,7 +99,6 @@ impl Handler {
                             ty @ (ValueType::Int
                             | ValueType::Bool
                             | ValueType::Unit
-                            | ValueType::Ref
                             | ValueType::ListRef
                             | ValueType::BytesRef
                             | ValueType::StringRef

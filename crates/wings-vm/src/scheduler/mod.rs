@@ -364,7 +364,6 @@ struct Envelope {
     arguments: [i64; 64],
     count: usize,
     max_steps: u64,
-    record_mask: u64,
     lists: ListPayload,
     bytes: BytePayload,
     reply: Reply,
@@ -869,7 +868,6 @@ impl SchedulerHandle {
                     arguments: owned,
                     count: arguments.len(),
                     max_steps,
-                    record_mask: 0,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::None,
@@ -942,14 +940,15 @@ impl SchedulerHandle {
                     ty @ (wings_abi::ValueType::Int
                     | wings_abi::ValueType::Bool
                     | wings_abi::ValueType::Unit
-                    | wings_abi::ValueType::Ref
+                    | wings_abi::ValueType::Pid
                     | wings_abi::ValueType::ListRef
                     | wings_abi::ValueType::BytesRef
-                    | wings_abi::ValueType::StringRef),
+                    | wings_abi::ValueType::StringRef
+                    | wings_abi::ValueType::RecordRef(_)),
                 ) => ty,
                 _ => {
                     return Err(
-                        "request requires a scalar, RecordInt, IntList, Bytes or String reply"
+                        "request requires a scalar, Pid, IntList, Bytes, String or Record reply"
                             .into(),
                     );
                 }
@@ -974,7 +973,6 @@ impl SchedulerHandle {
                     arguments: owned,
                     count: arguments.len(),
                     max_steps,
-                    record_mask: 0,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::External(publisher),
@@ -1011,14 +1009,15 @@ impl SchedulerHandle {
                 ty @ (wings_abi::ValueType::Int
                 | wings_abi::ValueType::Bool
                 | wings_abi::ValueType::Unit
-                | wings_abi::ValueType::Ref
+                | wings_abi::ValueType::Pid
                 | wings_abi::ValueType::ListRef
                 | wings_abi::ValueType::BytesRef
-                | wings_abi::ValueType::StringRef),
+                | wings_abi::ValueType::StringRef
+                | wings_abi::ValueType::RecordRef(_)),
             ) => ty,
             _ => {
                 return Err(
-                    "request requires a scalar, RecordInt, IntList, Bytes or String reply".into(),
+                    "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
                 );
             }
         };
@@ -1142,7 +1141,6 @@ impl SchedulerHandle {
             handler,
             arguments,
             false,
-            message.record_mask,
             &message.lists,
             &message.bytes,
         )?;
@@ -1151,7 +1149,6 @@ impl SchedulerHandle {
             handler,
             arguments,
             max_steps,
-            message.record_mask,
             message.lists,
             message.bytes,
             false,
@@ -1478,7 +1475,6 @@ impl SharedMailbox {
             && guard.slots[guard.head].as_ref().is_some_and(|message| {
                 crate::execution::WorkerFibers::can_run_fast(
                     &message.handler,
-                    message.record_mask,
                     &message.lists,
                     &message.bytes,
                 )
@@ -1497,7 +1493,6 @@ impl SharedMailbox {
             && guard.slots[guard.head].as_ref().is_some_and(|message| {
                 crate::execution::WorkerFibers::can_run_fast(
                     &message.handler,
-                    message.record_mask,
                     &message.lists,
                     &message.bytes,
                 ) && fibers.can_run_direct_image(
@@ -1518,7 +1513,6 @@ impl SharedMailbox {
         let is_fast = guard.slots[guard.head].as_ref().is_some_and(|message| {
             crate::execution::WorkerFibers::can_run_fast(
                 &message.handler,
-                message.record_mask,
                 &message.lists,
                 &message.bytes,
             )
@@ -1558,20 +1552,11 @@ fn validate_scalar_module(
     if stopping
         || !Arc::ptr_eq(&module.inner, &handler.module.inner)
         || schema.is_completion()
-        || arguments.len() != schema.parameters.len()
-        || arguments.len() > 64
     {
         return Err("scheduler handler identity, phase or arguments mismatch".into());
     }
-    for (value, (_, ty)) in arguments.iter().zip(&schema.parameters) {
-        if ty.is_reference() {
-            return Err("scheduler reference payload mismatch".into());
-        }
-        if !ty.accepts(*value) {
-            return Err("scheduler scalar argument mismatch".into());
-        }
-    }
-    Ok(())
+    crate::message_values::validate_scalar_arguments(&schema.parameters, arguments)
+        .map_err(|err| format!("scheduler {err}"))
 }
 
 fn validate_scalar(actor: &Actor, handler: &HandlerId, arguments: &[i64]) -> Result<(), String> {
@@ -1583,7 +1568,6 @@ fn validate(
     handler: &HandlerId,
     arguments: &[i64],
     system: bool,
-    record_mask: u64,
     lists: &ListPayload,
     bytes: &BytePayload,
 ) -> Result<(), String> {
@@ -1591,38 +1575,18 @@ fn validate(
     if actor.stopping
         || !Arc::ptr_eq(&actor.module.inner, &handler.module.inner)
         || schema.is_completion() != system
-        || arguments.len() != schema.parameters.len()
-        || arguments.len() > 64
     {
         return Err("scheduler handler identity, phase or arguments mismatch".into());
     }
-    let mut expected_record = 0;
-    let mut expected_list = 0;
-    let mut expected_bytes = 0;
-    let mut expected_strings = 0;
-    for (index, (value, (_, ty))) in arguments.iter().zip(&schema.parameters).enumerate() {
-        match ty {
-            wings_abi::ValueType::Ref => expected_record |= 1 << index,
-            wings_abi::ValueType::ListRef => expected_list |= 1 << index,
-            wings_abi::ValueType::BytesRef => expected_bytes |= 1 << index,
-            wings_abi::ValueType::StringRef => {
-                expected_bytes |= 1 << index;
-                expected_strings |= 1 << index;
-            }
-            wings_abi::ValueType::RequestId if system && *value > 0 => {}
-            wings_abi::ValueType::Pid if *value >= 0 => {}
-            _ if ty.accepts(*value) => {}
-            _ => return Err("scheduler scalar argument mismatch".into()),
-        }
-    }
-    if record_mask != expected_record
-        || !lists.valid(arguments, expected_list)
-        || !bytes.valid(arguments, expected_bytes)
-        || bytes.string_mask != expected_strings
-    {
-        return Err("scheduler reference payload mismatch".into());
-    }
-    Ok(())
+    crate::message_values::validate_message_payload(
+        &schema.parameters,
+        arguments,
+        system,
+        true,
+        lists,
+        bytes,
+    )
+    .map_err(|err| format!("scheduler {err}"))
 }
 
 fn envelope_precopied(
@@ -1651,7 +1615,6 @@ fn envelope_precopied(
         arguments,
         count,
         max_steps,
-        record_mask: 0,
         lists: ListPayload::default(),
         bytes: BytePayload::default(),
         reply,
@@ -1666,7 +1629,6 @@ fn envelope(
     handler: &HandlerId,
     arguments: &[i64],
     max_steps: u64,
-    record_mask: u64,
     lists: ListPayload,
     bytes: BytePayload,
     _system: bool,
@@ -1677,25 +1639,14 @@ fn envelope(
     {
         return Err("mailbox_full".into());
     }
-    delayed_envelope(
-        actor,
-        handler,
-        arguments,
-        max_steps,
-        record_mask,
-        lists,
-        bytes,
-        reply,
-    )
+    delayed_envelope(actor, handler, arguments, max_steps, lists, bytes, reply)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn delayed_envelope(
     actor: &Actor,
     handler: &HandlerId,
     arguments: &[i64],
     max_steps: u64,
-    record_mask: u64,
     lists: ListPayload,
     mut bytes: BytePayload,
     reply: Reply,
@@ -1716,7 +1667,6 @@ fn delayed_envelope(
         arguments: owned,
         count: arguments.len(),
         max_steps,
-        record_mask,
         lists,
         bytes,
         reply,

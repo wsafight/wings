@@ -1,12 +1,13 @@
 actor Profiles {
+  struct Boxed { value: int }
   struct Label { text: str, code: int }
-  struct Profile { label: Label, enabled: bool, values: [int], data: bytes, saved: box<int>, nothing: () }
+  struct Profile { label: Label, enabled: bool, values: [int], data: bytes, saved: Boxed, nothing: () }
   struct Empty {}
   struct Wide { empty: Empty, minimum: int, maximum: int, flag: bool, unit: (), text: str, data: bytes, values: [int] }
-  state profile: Profile = Profile(Label("初始😀", 7), true, [3], bytes::fill(1, 9), box(11), ())
+  state profile: Profile = Profile(Label("初始😀", 7), true, [3], bytes::fill(1, 9), Boxed(11), ())
   fn label(value: Label) -> Label { Label { text: value.text + "!", code: value.code + 1 } }
   fn update(value: Profile) -> Profile { Profile { label: label(value.label), ..value } }
-  on read -> int { gc(); profile.label.code + profile.label.text.len() + profile.values.head() + profile.data.at(0) + profile.saved.get() }
+  on read -> int { gc(); profile.label.code + profile.label.text.len() + profile.values.head() + profile.data.at(0) + profile.saved.value }
   on advance -> int { profile = update(profile); gc(); profile.label.code }
   on select(flag: bool) -> int { let selected = if flag { profile } else { update(profile) }; gc(); selected.label.code }
   on count(limit: int) -> int { while profile.label.code < limit { profile = update(profile) }; profile.label.code }

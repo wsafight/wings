@@ -8,7 +8,7 @@ pub enum MessageValue<'value> {
     Int(i64),
     Bool(bool),
     Unit,
-    RecordInt(i64),
+    Pid(i64),
     IntList(&'value [i64]),
     Bytes(&'value [u8]),
     String(&'value str),
@@ -17,7 +17,6 @@ pub enum MessageValue<'value> {
 pub(crate) struct HostMessage {
     pub(crate) arguments: [i64; 64],
     pub(crate) count: usize,
-    pub(crate) record_mask: u64,
     pub(crate) lists: ListPayload,
     pub(crate) bytes: BytePayload,
 }
@@ -48,7 +47,12 @@ impl HostMessage {
                 MessageValue::Int(_) => ValueType::Int,
                 MessageValue::Bool(_) => ValueType::Bool,
                 MessageValue::Unit => ValueType::Unit,
-                MessageValue::RecordInt(_) => ValueType::Ref,
+                MessageValue::Pid(pid) => {
+                    if *pid < 0 {
+                        return Err("host message Pid value cannot be negative".into());
+                    }
+                    ValueType::Pid
+                }
                 MessageValue::IntList(values) => {
                     if values.len() > MAX_LIST_ELEMENTS - list_count {
                         return Err("host message lists exceed 64 total integers".into());
@@ -108,7 +112,6 @@ impl HostMessage {
         let mut message = Self {
             arguments: [0; 64],
             count: values.len(),
-            record_mask: 0,
             lists: ListPayload::default(),
             bytes,
         };
@@ -117,10 +120,7 @@ impl HostMessage {
                 MessageValue::Int(value) => *value,
                 MessageValue::Bool(value) => i64::from(*value),
                 MessageValue::Unit => 0,
-                MessageValue::RecordInt(value) => {
-                    message.record_mask |= 1u64 << index;
-                    *value
-                }
+                MessageValue::Pid(value) => *value,
                 MessageValue::IntList(values) => {
                     let start = message.lists.count;
                     message.lists.values[start..start + values.len()].copy_from_slice(values);
@@ -230,7 +230,7 @@ mod tests {
             ValueType::Int,
             ValueType::Bool,
             ValueType::Unit,
-            ValueType::Ref,
+            ValueType::Pid,
             ValueType::ListRef,
             ValueType::BytesRef,
             ValueType::BytesRef,
@@ -244,7 +244,7 @@ mod tests {
                 MessageValue::Int(i64::MIN),
                 MessageValue::Bool(true),
                 MessageValue::Unit,
-                MessageValue::RecordInt(i64::MAX),
+                MessageValue::Pid(i64::MAX),
                 MessageValue::IntList(&integers),
                 MessageValue::Bytes(&bytes),
                 MessageValue::Bytes(&[]),
@@ -256,7 +256,6 @@ mod tests {
         integers.fill(0);
         bytes.fill(0);
         assert_eq!(&payload.arguments[..4], &[i64::MIN, 1, 0, i64::MAX]);
-        assert_eq!(payload.record_mask, 1 << 3);
         assert_eq!(payload.lists.mask, (1 << 4) | (1 << 7));
         assert_eq!(&payload.lists.values[..3], &[i64::MIN, 17, i64::MAX]);
         assert!(
@@ -282,7 +281,6 @@ mod tests {
             ValueType::Int,
             ValueType::Bool,
             ValueType::Unit,
-            ValueType::Ref,
             ValueType::ListRef,
             ValueType::BytesRef,
             ValueType::StringRef,
@@ -294,7 +292,7 @@ mod tests {
                 MessageValue::Int(1),
                 MessageValue::Bool(true),
                 MessageValue::Unit,
-                MessageValue::RecordInt(1),
+                MessageValue::Pid(1),
                 MessageValue::IntList(&[]),
                 MessageValue::Bytes(&[]),
                 MessageValue::String(""),
@@ -303,7 +301,7 @@ mod tests {
                     MessageValue::Int(_) => ValueType::Int,
                     MessageValue::Bool(_) => ValueType::Bool,
                     MessageValue::Unit => ValueType::Unit,
-                    MessageValue::RecordInt(_) => ValueType::Ref,
+                    MessageValue::Pid(_) => ValueType::Pid,
                     MessageValue::IntList(_) => ValueType::ListRef,
                     MessageValue::Bytes(_) => ValueType::BytesRef,
                     MessageValue::String(_) => ValueType::StringRef,
@@ -374,19 +372,16 @@ mod tests {
             );
             assert_eq!(vm.used(), Resources::default());
         }
-        for ty in [ValueType::Ref, ValueType::ListRef, ValueType::BytesRef] {
+        for ty in [ValueType::ListRef, ValueType::BytesRef, ValueType::StringRef] {
             let handler = handler(&[ty; 64]);
             let value = match ty {
-                ValueType::Ref => MessageValue::RecordInt(i64::MIN),
                 ValueType::ListRef => MessageValue::IntList(&[17]),
-                _ => MessageValue::Bytes(&[255]),
+                ValueType::BytesRef => MessageValue::Bytes(&[255]),
+                _ => MessageValue::String("a"),
             };
             let payload = HostMessage::copy(&handler, &[value; 64], &vm).unwrap();
             assert_eq!(payload.count, 64);
-            assert_eq!(
-                payload.record_mask | payload.lists.mask | payload.bytes.mask,
-                u64::MAX
-            );
+            assert_eq!(payload.lists.mask | payload.bytes.mask, u64::MAX);
             assert!(HostMessage::copy(&handler, &[value; 65], &vm).is_err());
             drop(payload);
         }

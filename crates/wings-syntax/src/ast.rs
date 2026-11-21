@@ -17,7 +17,6 @@ pub enum TypeKind {
     Named(Name),
     Unit,
     List(Box<TypeExpr>),
-    Boxed(Box<TypeExpr>),
     ActorPid(Name),
     Error,
 }

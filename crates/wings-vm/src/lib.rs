@@ -10,7 +10,6 @@ use wings_abi::{
 use wings_artifact::Manifest;
 
 mod aot_heap;
-mod bytes_reply;
 mod control_flag;
 mod detached;
 mod execution;
@@ -18,7 +17,6 @@ mod heap;
 mod host_values;
 mod ingress;
 mod ingress_requests;
-mod list_reply;
 mod message_values;
 mod module;
 mod module_image;
@@ -27,11 +25,11 @@ mod native_stack;
 mod native_sync;
 mod preemption;
 mod record_reply;
+mod reply;
 mod resources;
 mod scheduler;
 mod stack_pool;
 mod startup_trace;
-mod string_reply;
 mod supervision;
 mod timer;
 mod wakeup;
@@ -40,7 +38,6 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
-pub use bytes_reply::BytesReply;
 pub use detached::DetachedProcess;
 pub use execution::{
     ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, ScalarExecution, ScalarTask,
@@ -52,12 +49,12 @@ pub use heap::{
 pub use host_values::MessageValue;
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
-pub use list_reply::IntListReply;
 pub use module::{HandlerId, ScalarModule};
 pub use preemption::{
     PreemptionCounters, PreemptionObservation, PreemptionToken, YieldObservation,
 };
 pub use record_reply::{RecordReply, RecordReplyValues};
+pub use reply::{BytesReply, IntListReply, ReplyValue, StringReply};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
     Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
@@ -67,7 +64,6 @@ pub use scheduler::{
     SchedulerWorkerCpu, SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
-pub use string_reply::StringReply;
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};
 pub use wakeup::{WorkerNotifier, WorkerParker};
 pub use worker::{
@@ -200,6 +196,29 @@ impl ScalarProcess {
         }
     }
 
+    pub fn invoke_value(
+        &mut self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ReplyValue>, String> {
+        let index = self.validate_handler(handler, arguments)?;
+        let reply_type = self.module.manifest().handlers[index].reply;
+        if reply_type == Some(ValueType::Pid) {
+            return Err("Pid reply requires an actor worker or scheduler".into());
+        }
+        let mut execution = self.start_index(index, arguments, max_steps, || {
+            (cancellation.clone(), PreemptionToken::default())
+        })?;
+        loop {
+            match execution.resume(u64::MAX)? {
+                ExecutionStatus::Suspended => {}
+                done => return done.into_reply_value(reply_type).map_err(Into::into),
+            }
+        }
+    }
+
     pub fn invoke_list(
         &mut self,
         name: &str,
@@ -207,22 +226,14 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<IntListReply, String> {
-        let index = self.validate_invocation(name, arguments)?;
-        if self.module.manifest().handlers[index].reply != Some(ValueType::ListRef) {
+        let handler = self.module.handler(name)?;
+        if handler.schema().reply != Some(ValueType::ListRef) {
+            let _ = self.validate_handler(&handler, arguments)?;
             return Err("invoke_list requires an IntList reply".into());
         }
-        let mut execution = self.start_index(index, arguments, max_steps, || {
-            (cancellation.clone(), PreemptionToken::default())
-        })?;
-        loop {
-            match execution.resume(u64::MAX)? {
-                ExecutionStatus::CompleteList(reply) => return Ok(reply),
-                ExecutionStatus::Suspended => {}
-                ExecutionStatus::Complete(_) => unreachable!("validated list reply"),
-                ExecutionStatus::CompleteBytes(_) => unreachable!("validated list reply"),
-                ExecutionStatus::CompleteString(_) => unreachable!("validated list reply"),
-                ExecutionStatus::CompleteRecord(_) => unreachable!("validated list reply"),
-            }
+        match self.invoke_value(&handler, arguments, max_steps, cancellation)? {
+            Some(ReplyValue::IntList(reply)) => Ok(reply),
+            _ => unreachable!("validated list reply"),
         }
     }
 
@@ -233,19 +244,14 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<BytesReply, String> {
-        let index = self.validate_invocation(name, arguments)?;
-        if self.module.manifest().handlers[index].reply != Some(ValueType::BytesRef) {
+        let handler = self.module.handler(name)?;
+        if handler.schema().reply != Some(ValueType::BytesRef) {
+            let _ = self.validate_handler(&handler, arguments)?;
             return Err("invoke_bytes requires a Bytes reply".into());
         }
-        let mut execution = self.start_index(index, arguments, max_steps, || {
-            (cancellation.clone(), PreemptionToken::default())
-        })?;
-        loop {
-            match execution.resume(u64::MAX)? {
-                ExecutionStatus::CompleteBytes(reply) => return Ok(reply),
-                ExecutionStatus::Suspended => {}
-                _ => unreachable!("validated byte reply"),
-            }
+        match self.invoke_value(&handler, arguments, max_steps, cancellation)? {
+            Some(ReplyValue::Bytes(reply)) => Ok(reply),
+            _ => unreachable!("validated byte reply"),
         }
     }
 
@@ -256,19 +262,14 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<StringReply, String> {
-        let index = self.validate_invocation(name, arguments)?;
-        if self.module.manifest().handlers[index].reply != Some(ValueType::StringRef) {
+        let handler = self.module.handler(name)?;
+        if handler.schema().reply != Some(ValueType::StringRef) {
+            let _ = self.validate_handler(&handler, arguments)?;
             return Err("invoke_string requires a String reply".into());
         }
-        let mut execution = self.start_index(index, arguments, max_steps, || {
-            (cancellation.clone(), PreemptionToken::default())
-        })?;
-        loop {
-            match execution.resume(u64::MAX)? {
-                ExecutionStatus::CompleteString(reply) => return Ok(reply),
-                ExecutionStatus::Suspended => {}
-                _ => unreachable!("validated string reply"),
-            }
+        match self.invoke_value(&handler, arguments, max_steps, cancellation)? {
+            Some(ReplyValue::String(reply)) => Ok(reply),
+            _ => unreachable!("validated string reply"),
         }
     }
 
@@ -279,22 +280,14 @@ impl ScalarProcess {
         max_steps: u64,
         cancellation: &CancellationToken,
     ) -> Result<RecordReply, String> {
-        let index = self.validate_invocation(name, arguments)?;
-        if !matches!(
-            self.module.manifest().handlers[index].reply,
-            Some(ValueType::RecordRef(_))
-        ) {
+        let handler = self.module.handler(name)?;
+        if !matches!(handler.schema().reply, Some(ValueType::RecordRef(_))) {
+            let _ = self.validate_handler(&handler, arguments)?;
             return Err("invoke_record requires a named record reply".into());
         }
-        let mut execution = self.start_index(index, arguments, max_steps, || {
-            (cancellation.clone(), PreemptionToken::default())
-        })?;
-        loop {
-            match execution.resume(u64::MAX)? {
-                ExecutionStatus::CompleteRecord(reply) => return Ok(reply),
-                ExecutionStatus::Suspended => {}
-                _ => unreachable!("validated named record reply"),
-            }
+        match self.invoke_value(&handler, arguments, max_steps, cancellation)? {
+            Some(ReplyValue::Record(reply)) => Ok(reply),
+            _ => unreachable!("validated named record reply"),
         }
     }
 
@@ -316,44 +309,22 @@ impl ScalarProcess {
         arguments: &[i64],
         system: bool,
     ) -> Result<usize, String> {
-        self.validate_handler_payload(
-            handler,
-            arguments,
-            system,
-            0,
-            &message_values::ListPayload::default(),
-            &message_values::BytePayload::default(),
-        )
-    }
-
-    fn validate_handler_payload(
-        &self,
-        handler: &HandlerId,
-        arguments: &[i64],
-        system: bool,
-        record_mask: u64,
-        lists: &message_values::ListPayload,
-        bytes: &message_values::BytePayload,
-    ) -> Result<usize, String> {
         self.validate_handler_payload_internal(
             handler,
             arguments,
             system,
             false,
-            record_mask,
-            lists,
-            bytes,
+            &message_values::ListPayload::default(),
+            &message_values::BytePayload::default(),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn validate_handler_payload_internal(
         &self,
         handler: &HandlerId,
         arguments: &[i64],
         system: bool,
         allow_pid: bool,
-        record_mask: u64,
         lists: &message_values::ListPayload,
         bytes: &message_values::BytePayload,
     ) -> Result<usize, String> {
@@ -367,53 +338,15 @@ impl ScalarProcess {
         if schema.is_completion() != system {
             return Err("completion events require the worker system path".into());
         }
-        let expected_mask = schema
-            .parameters
-            .iter()
-            .enumerate()
-            .fold(0u64, |mask, (index, (_, ty))| {
-                mask | (u64::from(*ty == ValueType::Ref) << index)
-            });
-        let list_mask = schema
-            .parameters
-            .iter()
-            .enumerate()
-            .fold(0u64, |mask, (index, (_, ty))| {
-                mask | (u64::from(*ty == ValueType::ListRef) << index)
-            });
-        let bytes_mask =
-            schema
-                .parameters
-                .iter()
-                .enumerate()
-                .fold(0u64, |mask, (index, (_, ty))| {
-                    mask | (u64::from(matches!(ty, ValueType::BytesRef | ValueType::StringRef))
-                        << index)
-                });
-        if record_mask != expected_mask
-            || !lists.valid(arguments, list_mask)
-            || !bytes.valid(arguments, bytes_mask)
-            || bytes.string_mask
-                != schema
-                    .parameters
-                    .iter()
-                    .enumerate()
-                    .fold(0u64, |mask, (index, (_, ty))| {
-                        mask | (u64::from(*ty == wings_abi::ValueType::StringRef) << index)
-                    })
-            || arguments.len() != schema.parameters.len()
-            || arguments
-                .iter()
-                .zip(&schema.parameters)
-                .any(|(value, (_, ty))| {
-                    !ty.accepts(*value)
-                        && !ty.is_reference()
-                        && !(allow_pid && *ty == ValueType::Pid && *value >= 0)
-                        && !(system && *ty == ValueType::RequestId && *value > 0)
-                })
-        {
-            return Err("handler argument count or scalar type mismatch".into());
-        }
+        message_values::validate_message_payload(
+            &schema.parameters,
+            arguments,
+            system,
+            allow_pid,
+            lists,
+            bytes,
+        )
+        .map_err(|_| String::from("handler argument count or scalar type mismatch"))?;
         Ok(handler.index)
     }
 
@@ -423,7 +356,7 @@ impl ScalarProcess {
         status: u32,
         output: ScalarOutput,
         list: Option<IntListReply>,
-        bytes: Option<string_reply::BufferReply>,
+        bytes: Option<reply::BufferReply>,
         record: Option<RecordReply>,
     ) -> Result<ExecutionStatus, String> {
         if let Err(error) = check_status(status) {
@@ -431,29 +364,12 @@ impl ScalarProcess {
             return Err(error);
         }
         let handler = &self.module.inner.manifest.handlers[index];
-        let reply = if handler.reply == Some(ValueType::Ref) {
-            match self
-                .heap
-                .as_deref()
-                .and_then(|heap| heap.record_value(output.reply).ok())
-            {
-                Some(value) => value,
-                None => {
-                    self.failed = true;
-                    return Err("entry returned an invalid record reply".into());
-                }
-            }
-        } else if (handler.reply == Some(ValueType::ListRef) && list.is_some())
+        let reply = if (handler.reply == Some(ValueType::ListRef) && list.is_some())
             || (matches!(handler.reply, Some(ValueType::RecordRef(_))) && record.is_some())
             || matches!(
                 (handler.reply, &bytes),
-                (
-                    Some(ValueType::BytesRef),
-                    Some(string_reply::BufferReply::Bytes(_))
-                ) | (
-                    Some(ValueType::StringRef),
-                    Some(string_reply::BufferReply::String(_))
-                )
+                (Some(ValueType::BytesRef), Some(reply::BufferReply::Bytes(_)))
+                    | (Some(ValueType::StringRef), Some(reply::BufferReply::String(_)))
             )
         {
             0
@@ -479,8 +395,8 @@ impl ScalarProcess {
         self.state = output.state;
         if let Some(bytes) = bytes {
             return Ok(match bytes {
-                string_reply::BufferReply::Bytes(value) => ExecutionStatus::CompleteBytes(value),
-                string_reply::BufferReply::String(value) => ExecutionStatus::CompleteString(value),
+                reply::BufferReply::Bytes(value) => ExecutionStatus::CompleteBytes(value),
+                reply::BufferReply::String(value) => ExecutionStatus::CompleteString(value),
             });
         }
         if let Some(record) = record {

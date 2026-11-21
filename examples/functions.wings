@@ -1,33 +1,34 @@
 actor Functions {
+  struct Boxed { value: int }
   fn twice(value: int) -> int { value + value }
-  fn fresh(value: int) -> box<int> { box(value) }
-  fn next(value: box<int>) -> box<int> {
+  fn fresh(value: int) -> Boxed { Boxed(value) }
+  fn next(value: Boxed) -> Boxed {
     gc()
-    fresh(value.get() + 1)
+    fresh(value.value + 1)
   }
-  fn choose(flag: bool, value: box<int>) -> box<int> {
+  fn choose(flag: bool, value: Boxed) -> Boxed {
     if flag { next(value) } else { value }
   }
-  fn count_value(first: box<int>, second: box<int>) -> int {
+  fn count_value(first: Boxed, second: Boxed) -> int {
     gc()
-    first.get() * 10 + second.get()
+    first.value * 10 + second.value
   }
-  fn unchanged(value: box<int>) -> box<int> { value }
-  fn fail(value: box<int>) -> int {
+  fn unchanged(value: Boxed) -> Boxed { value }
+  fn fail(value: Boxed) -> int {
     gc()
-    value.get() / 0
+    value.value / 0
   }
   state value = fresh(twice(0))
-  on get -> int { value.get() }
+  on get -> int { value.value }
   on count(limit: int) -> int {
-    while value.get() < limit {
+    while value.value < limit {
       value = next(value)
     }
-    value.get()
+    value.value
   }
   on choose(flag: bool) -> int {
     value = choose(flag, value)
-    value.get()
+    value.value
   }
   on order -> int { count_value(fresh(1), fresh(2)) }
   on once -> int { count_value(unchanged(fresh(3)), unchanged(value)) }

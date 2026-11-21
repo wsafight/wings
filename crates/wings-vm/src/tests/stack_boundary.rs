@@ -118,7 +118,6 @@ fn scalar_account_binding_rejects_other_process_and_tool_pools_before_admission(
             || panic!("foreign pool called token factory"),
             &foreign,
             false,
-            0,
             &ListPayload::default(),
             &mut payload,
         )
@@ -355,7 +354,6 @@ fn direct_initialization_and_calls_reject_each_control_quota_before_borrowing_a_
                 controls,
                 &bound,
                 false,
-                0,
                 &ListPayload::default(),
                 &mut BytePayload::default(),
             )
@@ -376,7 +374,6 @@ fn direct_initialization_and_calls_reject_each_control_quota_before_borrowing_a_
                 controls,
                 &bound,
                 false,
-                0,
                 &ListPayload::default(),
                 &mut BytePayload::default(),
             )
@@ -393,7 +390,6 @@ fn direct_initialization_and_calls_reject_each_control_quota_before_borrowing_a_
             controls,
             &bound,
             false,
-            0,
             &ListPayload::default(),
             &mut BytePayload::default(),
         )

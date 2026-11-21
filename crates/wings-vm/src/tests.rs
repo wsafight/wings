@@ -24,7 +24,6 @@ mod persistent_state;
 mod preemption;
 mod primitives;
 mod process_effects;
-mod record_replies;
 mod request_events;
 mod scheduler;
 mod stack_boundary;
@@ -178,29 +177,6 @@ unsafe extern "C" fn invalid_output(
     _context: *mut ScalarContext,
 ) -> u32 {
     unsafe { *output = ScalarOutput { state: 2, reply: 2 } };
-    STATUS_OK
-}
-
-pub(crate) unsafe extern "C" fn record_reply(
-    state: i64,
-    _arguments: *const i64,
-    output: *mut ScalarOutput,
-    context: *mut ScalarContext,
-) -> u32 {
-    unsafe {
-        let Some(heap_call) = (*context).heap_call else {
-            return STATUS_INVALID_CONTROL;
-        };
-        let mut encoded = 0;
-        let status = heap_call(context, wings_abi::HEAP_RECORD_INT, 0, &mut encoded);
-        if status != STATUS_OK {
-            return status;
-        }
-        *output = ScalarOutput {
-            state,
-            reply: encoded as i64,
-        };
-    }
     STATUS_OK
 }
 
@@ -394,34 +370,6 @@ pub(crate) unsafe extern "C" fn bytes_completion(
         };
     }
     status
-}
-
-pub(crate) unsafe extern "C" fn record_completion(
-    _state: i64,
-    arguments: *const i64,
-    output: *mut ScalarOutput,
-    context: *mut ScalarContext,
-) -> u32 {
-    unsafe {
-        let Some(heap_call) = (*context).heap_call else {
-            return STATUS_INVALID_CONTROL;
-        };
-        let mut value = 0;
-        let status = heap_call(
-            context,
-            wings_abi::HEAP_READ_INT,
-            *arguments.add(2) as u64,
-            &mut value,
-        );
-        if status != STATUS_OK {
-            return status;
-        }
-        *output = ScalarOutput {
-            state: *arguments.add(1) * 100 + value as i64,
-            reply: 0,
-        };
-    }
-    STATUS_OK
 }
 
 pub(crate) fn module() -> ScalarModule {
@@ -683,67 +631,12 @@ fn detached_heap_rejects_other_accounts_without_losing_ownership_or_budget() {
 }
 
 #[test]
-fn record_message_masks_must_match_schema_without_poisoning_the_process() {
-    let mut module = module();
-    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[0].parameters = vec![
-        ("first".into(), ValueType::Ref),
-        ("flag".into(), ValueType::Bool),
-        ("second".into(), ValueType::Ref),
-    ];
-    module.manifest().validate().unwrap();
-    let process = module.instantiate().unwrap();
-    let handler = module.handler("Add").unwrap();
-    for mask in [0, 1, 2, 3, 4, 6, 7, 8, u64::MAX] {
-        assert!(
-            process
-                .validate_handler_payload(
-                    &handler,
-                    &[i64::MIN, 1, i64::MAX],
-                    false,
-                    mask,
-                    &crate::message_values::ListPayload::default(),
-                    &crate::message_values::BytePayload::default()
-                )
-                .is_err()
-        );
-    }
-    assert!(
-        process
-            .validate_handler_payload(
-                &handler,
-                &[i64::MIN, 1, i64::MAX],
-                false,
-                5,
-                &crate::message_values::ListPayload::default(),
-                &crate::message_values::BytePayload::default()
-            )
-            .is_ok()
-    );
-    for arguments in [&[7, 2, 9][..], &[7, 1][..], &[7, 1, 9, 0][..]] {
-        assert!(
-            process
-                .validate_handler_payload(
-                    &handler,
-                    arguments,
-                    false,
-                    5,
-                    &crate::message_values::ListPayload::default(),
-                    &crate::message_values::BytePayload::default()
-                )
-                .is_err()
-        );
-    }
-    assert!(!process.failed);
-    assert_eq!(process.state, 0);
-}
-
-#[test]
 fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     use crate::message_values::ListPayload;
     let mut module = module();
     Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[0].parameters = vec![
         ("list".into(), ValueType::ListRef),
-        ("record".into(), ValueType::Ref),
+        ("scalar".into(), ValueType::Int),
         ("flag".into(), ValueType::Bool),
     ];
     module.manifest().validate().unwrap();
@@ -757,28 +650,25 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     let arguments = [ListPayload::encode(0, 2), 9, 1];
     assert!(
         process
-            .validate_handler_payload(
+            .validate_handler_payload_internal(
                 &handler,
                 &arguments,
                 false,
-                2,
+                false,
                 &payload,
                 &crate::message_values::BytePayload::default()
             )
             .is_ok()
     );
-    for mask in [0, 1, 2, 3, 4, u64::MAX] {
-        if mask == 1 {
-            continue;
-        }
+    for mask in [0, 2, 3, 4, u64::MAX] {
         let invalid = ListPayload { mask, ..payload };
         assert!(
             process
-                .validate_handler_payload(
+                .validate_handler_payload_internal(
                     &handler,
                     &arguments,
                     false,
-                    2,
+                    false,
                     &invalid,
                     &crate::message_values::BytePayload::default()
                 )
@@ -793,11 +683,11 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     ] {
         assert!(
             process
-                .validate_handler_payload(
+                .validate_handler_payload_internal(
                     &handler,
                     &[encoded, 9, 1],
                     false,
-                    2,
+                    false,
                     &payload,
                     &crate::message_values::BytePayload::default()
                 )
@@ -806,23 +696,11 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     }
     assert!(
         process
-            .validate_handler_payload(
+            .validate_handler_payload_internal(
                 &handler,
                 &arguments,
                 false,
-                3,
-                &payload,
-                &crate::message_values::BytePayload::default()
-            )
-            .is_err()
-    );
-    assert!(
-        process
-            .validate_handler_payload(
-                &handler,
-                &arguments,
                 false,
-                2,
                 &ListPayload::default(),
                 &crate::message_values::BytePayload::default()
             )

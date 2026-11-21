@@ -1,4 +1,5 @@
 actor ByteMessages {
+  struct Boxed { value: int }
   state saved = bytes::fill(8, 0)
 
   fn score(value: bytes) -> int {
@@ -35,7 +36,7 @@ actor ByteMessages {
     let child = spawn()
     let first = bytes::fill(length, value)
     let second = bytes::fill(65536 - length, value + 1)
-    child ! store_mixed(first, box(7), [3, 5], second, true, bytes::fill(0, 0))
+    child ! store_mixed(first, Boxed(7), [3, 5], second, true, bytes::fill(0, 0))
     gc()
     score(first)
   }
@@ -62,9 +63,9 @@ actor ByteMessages {
     gc()
   }
 
-  on store_mixed(first: bytes, record: box<int>, values: [int], second: bytes, flag: bool, empty: bytes) {
+  on store_mixed(first: bytes, record: Boxed, values: [int], second: bytes, flag: bool, empty: bytes) {
     gc()
-    saved = bytes::fill(8, 0).set_i64(0, score(first) + score(second) + record.get()
+    saved = bytes::fill(8, 0).set_i64(0, score(first) + score(second) + record.value
       + values.head() + values.tail().head() + if flag { 1 } else { 0 } + empty.len())
     gc()
   }

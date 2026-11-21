@@ -1,7 +1,65 @@
+use wings_abi::ValueType;
+
 use crate::{Reservation, ResourceAccount, Resources};
 
+pub(crate) const MAX_ARGUMENTS: usize = 64;
 pub(crate) const MAX_LIST_ELEMENTS: usize = 64;
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65536;
+
+pub(crate) fn validate_scalar_arguments(
+    parameters: &[(String, ValueType)],
+    arguments: &[i64],
+) -> Result<(), &'static str> {
+    if arguments.len() != parameters.len() || arguments.len() > MAX_ARGUMENTS {
+        return Err("handler argument count mismatch");
+    }
+    for (value, (_, ty)) in arguments.iter().zip(parameters) {
+        if ty.is_reference() {
+            return Err("reference payload mismatch");
+        }
+        if !ty.accepts(*value) {
+            return Err("scalar argument mismatch");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_message_payload(
+    parameters: &[(String, ValueType)],
+    arguments: &[i64],
+    system: bool,
+    allow_pid: bool,
+    lists: &ListPayload,
+    bytes: &BytePayload,
+) -> Result<(), &'static str> {
+    if arguments.len() != parameters.len() || arguments.len() > MAX_ARGUMENTS {
+        return Err("handler argument count mismatch");
+    }
+    let mut expected_list = 0u64;
+    let mut expected_bytes = 0u64;
+    let mut expected_strings = 0u64;
+    for (index, (value, (_, ty))) in arguments.iter().zip(parameters).enumerate() {
+        match ty {
+            ValueType::ListRef => expected_list |= 1u64 << index,
+            ValueType::BytesRef => expected_bytes |= 1u64 << index,
+            ValueType::StringRef => {
+                expected_bytes |= 1u64 << index;
+                expected_strings |= 1u64 << index;
+            }
+            ValueType::RequestId if system && *value > 0 => {}
+            ValueType::Pid if allow_pid && *value >= 0 => {}
+            _ if ty.accepts(*value) => {}
+            _ => return Err("scalar argument mismatch"),
+        }
+    }
+    if !lists.valid(arguments, expected_list)
+        || !bytes.valid(arguments, expected_bytes)
+        || bytes.string_mask != expected_strings
+    {
+        return Err("reference payload mismatch");
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 pub(crate) struct BytePayload {

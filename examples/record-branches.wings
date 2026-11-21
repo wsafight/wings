@@ -1,32 +1,33 @@
 actor RecordBranches {
-  state value = if true { box(7) } else { box(1 / 0) }
-  on get -> int { value.get() }
+  struct Boxed { value: int }
+  state value = if true { Boxed(7) } else { Boxed(1 / 0) }
+  on get -> int { value.value }
   on replace(flag: bool, next: int) -> int {
-    value = if flag { box(next) } else { value }
+    value = if flag { Boxed(next) } else { value }
     gc()
-    value.get()
+    value.value
   }
   on nested(first: bool, second: bool, next: int) -> int {
     value = if first {
-      if second { box(next) } else { value }
+      if second { Boxed(next) } else { value }
     } else {
-      if second { value } else { box(next + 1) }
+      if second { value } else { Boxed(next + 1) }
     }
     gc()
-    value.get()
+    value.value
   }
   on local(flag: bool, next: int) -> int {
-    let saved = if flag { box(next) } else { box(next + 1) }
+    let saved = if flag { Boxed(next) } else { Boxed(next + 1) }
     gc()
-    saved.get() + value.get()
+    saved.value + value.value
   }
   on discard(flag: bool) -> int {
-    if flag { box(11) } else { box(13) };
+    if flag { Boxed(11) } else { Boxed(13) };
     gc()
-    value.get()
+    value.value
   }
   on fail(flag: bool) -> int {
-    value = if flag { box(99) } else { value }
+    value = if flag { Boxed(99) } else { value }
     gc()
     1 / 0
   }

@@ -365,7 +365,6 @@ impl State {
                     arguments,
                     count: 2,
                     max_steps: entry.max_steps,
-                    record_mask: 0,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::None,
@@ -450,10 +449,6 @@ impl State {
                 let mut bytes = BytePayload::default();
                 let mut arguments = [0; 64];
                 let mut count = 3;
-                let mut record_mask = u64::from(
-                    completion.handler.schema().completion_reply()
-                        == Some(wings_abi::ValueType::Ref),
-                ) << 2;
                 if let Some(wings_abi::ValueType::RecordRef(schema)) =
                     completion.handler.schema().completion_reply()
                 {
@@ -477,7 +472,6 @@ impl State {
                     .expect("validated named record completion");
                     arguments = response.arguments;
                     count = response.count;
-                    record_mask = response.record_mask;
                     lists = response.lists;
                     bytes = response.bytes;
                 } else {
@@ -529,7 +523,6 @@ impl State {
                     arguments,
                     count,
                     max_steps: completion.max_steps,
-                    record_mask,
                     lists,
                     bytes,
                     reply: Reply::None,
@@ -769,7 +762,6 @@ impl Shared {
                         &handler,
                         arguments,
                         false,
-                        effect.record_mask,
                         &effect.lists,
                         &effect.bytes,
                     )?;
@@ -794,7 +786,6 @@ impl Shared {
                             &handler,
                             arguments,
                             budget,
-                            effect.record_mask,
                             effect.lists,
                             effect.bytes,
                             Reply::None,
@@ -833,7 +824,6 @@ impl Shared {
                             &handler,
                             arguments,
                             budget,
-                            effect.record_mask,
                             effect.lists,
                             effect.bytes,
                             false,
@@ -852,7 +842,6 @@ impl Shared {
                             wings_abi::ValueType::Int
                                 | wings_abi::ValueType::Bool
                                 | wings_abi::ValueType::Unit
-                                | wings_abi::ValueType::Ref
                                 | wings_abi::ValueType::ListRef
                                 | wings_abi::ValueType::BytesRef
                                 | wings_abi::ValueType::StringRef
@@ -905,7 +894,6 @@ impl Shared {
                         &handler,
                         arguments,
                         budget,
-                        effect.record_mask,
                         effect.lists,
                         effect.bytes,
                         false,

@@ -6,10 +6,10 @@ use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarO
 
 use crate::aot_heap::AotHeap;
 use crate::message_values::{BytePayload, ListPayload};
+use crate::reply::BufferReply;
 use crate::stack_pool::{FiberStack, PooledStack};
-use crate::string_reply::BufferReply;
 use crate::{
-    BytesReply, CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken,
+    BytesReply, CancellationToken, HandlerId, HeapStats, IntListReply, PreemptionToken, ReplyValue,
     Reservation, ResourceAccount, ResourceLevel, Resources, ScalarModule, ScalarProcess, StackPool,
 };
 
@@ -176,7 +176,6 @@ pub(crate) struct ProcessEffect {
     pub count: usize,
     pub callback: usize,
     pub timeout_ms: i64,
-    pub record_mask: u64,
     pub lists: ListPayload,
     pub bytes: BytePayload,
 }
@@ -301,7 +300,6 @@ pub(crate) fn initialize(
         pool.acquire()?,
         &mut heap,
         false,
-        0,
         ListPayload::default(),
         &mut BytePayload::default(),
         None,
@@ -329,6 +327,32 @@ pub enum ExecutionStatus {
     CompleteBytes(BytesReply),
     CompleteString(crate::StringReply),
     CompleteRecord(crate::RecordReply),
+}
+
+impl ExecutionStatus {
+    pub fn into_reply_value(
+        self,
+        reply_type: Option<wings_abi::ValueType>,
+    ) -> Result<Option<ReplyValue>, &'static str> {
+        match (self, reply_type) {
+            (Self::Suspended, _) => Err("execution is still suspended"),
+            (Self::Complete(None), None) => Ok(None),
+            (Self::Complete(Some(raw)), Some(ty)) => ReplyValue::from_scalar(ty, raw).map(Some),
+            (Self::CompleteList(v), Some(wings_abi::ValueType::ListRef)) => {
+                Ok(Some(ReplyValue::IntList(v)))
+            }
+            (Self::CompleteBytes(v), Some(wings_abi::ValueType::BytesRef)) => {
+                Ok(Some(ReplyValue::Bytes(v)))
+            }
+            (Self::CompleteString(v), Some(wings_abi::ValueType::StringRef)) => {
+                Ok(Some(ReplyValue::String(v)))
+            }
+            (Self::CompleteRecord(v), Some(wings_abi::ValueType::RecordRef(_))) => {
+                Ok(Some(ReplyValue::Record(v)))
+            }
+            _ => Err("execution reply does not match handler schema"),
+        }
+    }
 }
 
 enum ResumeCommand {
@@ -398,7 +422,6 @@ impl ScalarProcess {
             controls,
             &pool,
             false,
-            0,
             &ListPayload::default(),
             &mut BytePayload::default(),
         )?;
@@ -431,7 +454,6 @@ impl ScalarProcess {
             || (cancellation.clone(), preemption.clone()),
             pool,
             false,
-            0,
             &ListPayload::default(),
             &mut BytePayload::default(),
         )?;
@@ -519,7 +541,6 @@ impl ScalarTask {
             || (cancellation.clone(), preemption.clone()),
             pool,
             false,
-            0,
             &ListPayload::default(),
             &mut BytePayload::default(),
         )
@@ -534,7 +555,6 @@ impl ScalarTask {
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
         system: bool,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: &mut BytePayload,
     ) -> Result<(), String> {
@@ -546,7 +566,6 @@ impl ScalarTask {
             arguments,
             system,
             self.effects_enabled,
-            record_mask,
             lists,
             bytes,
         )?;
@@ -559,7 +578,6 @@ impl ScalarTask {
             controls,
             pool,
             self.effects_enabled,
-            record_mask,
             lists,
             bytes,
         )?);
@@ -574,7 +592,6 @@ impl ScalarTask {
         max_steps: u64,
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: &mut BytePayload,
     ) -> Result<(), String> {
@@ -596,7 +613,6 @@ impl ScalarTask {
             controls,
             pool,
             self.effects_enabled,
-            record_mask,
             lists,
             bytes,
         )?);
@@ -682,7 +698,6 @@ impl Invocation {
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
         pool: &StackPool,
         effects_enabled: bool,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: &mut BytePayload,
     ) -> Result<Self, String> {
@@ -725,7 +740,6 @@ impl Invocation {
             stack,
             &mut process.heap,
             effects_enabled,
-            record_mask,
             *lists,
             bytes,
             Some(process.module.clone()),
@@ -853,12 +867,10 @@ impl WorkerFibers {
 
     pub(crate) fn can_run_fast(
         handler: &HandlerId,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: &BytePayload,
     ) -> bool {
-        record_mask == 0
-            && lists.mask == 0
+        lists.mask == 0
             && lists.count == 0
             && bytes.is_trivially_empty()
             && !matches!(
@@ -1365,7 +1377,6 @@ fn new_coroutine(
     stack: PooledStack,
     heap: &mut Option<Box<AotHeap>>,
     effects_enabled: bool,
-    record_mask: u64,
     lists: ListPayload,
     bytes: &mut BytePayload,
     module: Option<ScalarModule>,
@@ -1412,7 +1423,6 @@ fn new_coroutine(
             crate::aot_heap::import_arguments(
                 &mut context,
                 owned_arguments.as_mut_slice(),
-                record_mask,
                 &lists,
                 &bytes,
             )
@@ -1849,8 +1859,7 @@ unsafe fn prepare_effect_checkpoint(
     if output.is_null()
         || count > 64
         || (count != 0 && arguments.is_null())
-        || ((request.record_mask | request.list_mask | request.bytes_mask | request.string_mask)
-            != 0
+        || ((request.list_mask | request.bytes_mask | request.string_mask) != 0
             && !matches!(
                 request.operation,
                 wings_abi::EFFECT_SEND_SELF
@@ -1872,21 +1881,10 @@ unsafe fn prepare_effect_checkpoint(
     }
     let buffer_mask = request.bytes_mask | request.string_mask;
     if request.bytes_mask & request.string_mask != 0
-        || request.record_mask & (request.list_mask | buffer_mask) != 0
         || request.list_mask & buffer_mask != 0
-        || (count < 64 && (request.record_mask | request.list_mask | buffer_mask) >> count != 0)
+        || (count < 64 && (request.list_mask | buffer_mask) >> count != 0)
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
-    }
-    if request.record_mask != 0 {
-        let Some(heap) = (unsafe { context.heap_data.cast::<AotHeap>().as_ref() }) else {
-            return Err(wings_abi::STATUS_INVALID_ROOT);
-        };
-        for (index, argument) in copied[..count].iter_mut().enumerate() {
-            if request.record_mask & (1u64 << index) != 0 {
-                *argument = heap.record_value(*argument)?;
-            }
-        }
     }
     let lists =
         unsafe { crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask) }?;
@@ -1909,7 +1907,6 @@ unsafe fn prepare_effect_checkpoint(
             count,
             callback: request.callback as usize,
             timeout_ms: request.timeout_ms,
-            record_mask: request.record_mask,
             lists,
             bytes,
         }),
@@ -2015,8 +2012,7 @@ mod tests {
             count: 1,
             callback: 0,
             timeout_ms: 0,
-            record_mask: 2,
-            list_mask: 0,
+            list_mask: 2,
             bytes_mask: 0,
             string_mask: 0,
         };
@@ -2025,18 +2021,6 @@ mod tests {
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_CONTROL
         );
-        request.record_mask = 1;
-        assert_eq!(
-            unsafe { send_self(&mut context, &request, &mut output) },
-            wings_abi::STATUS_INVALID_ROOT
-        );
-        request.record_mask = 0;
-        request.list_mask = 2;
-        assert_eq!(
-            unsafe { send_self(&mut context, &request, &mut output) },
-            wings_abi::STATUS_INVALID_CONTROL
-        );
-        request.record_mask = 0;
         request.list_mask = 0;
         request.bytes_mask = 2;
         assert_eq!(
@@ -2048,16 +2032,12 @@ mod tests {
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_ROOT
         );
-        for (record, list) in [(1, 0), (0, 1), (1, 1)] {
-            request.record_mask = record;
-            request.list_mask = list;
-            assert_eq!(
-                unsafe { send_self(&mut context, &request, &mut output) },
-                wings_abi::STATUS_INVALID_CONTROL
-            );
-        }
+        request.list_mask = 1;
+        assert_eq!(
+            unsafe { send_self(&mut context, &request, &mut output) },
+            wings_abi::STATUS_INVALID_CONTROL
+        );
         request.bytes_mask = 0;
-        request.record_mask = 0;
         request.list_mask = 0;
         context.remaining_steps = 8;
         context.slice_remaining = 8;
@@ -2085,16 +2065,10 @@ mod tests {
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_ROOT
         );
-        request.record_mask = 1;
-        assert_eq!(
-            unsafe { send_self(&mut context, &request, &mut output) },
-            wings_abi::STATUS_INVALID_CONTROL
-        );
-        request.list_mask = 0;
         let all_arguments = [1; 64];
         request.arguments = all_arguments.as_ptr();
         request.count = 64;
-        request.record_mask = u64::MAX;
+        request.list_mask = u64::MAX;
         assert_eq!(
             unsafe { send_self(&mut context, &request, &mut output) },
             wings_abi::STATUS_INVALID_ROOT
@@ -2106,11 +2080,6 @@ mod tests {
             u32::MAX,
         ] {
             request.operation = operation;
-            assert_eq!(
-                unsafe { send_self(&mut context, &request, &mut output) },
-                wings_abi::STATUS_INVALID_CONTROL
-            );
-            request.record_mask = 0;
             request.list_mask = u64::MAX;
             assert_eq!(
                 unsafe { send_self(&mut context, &request, &mut output) },

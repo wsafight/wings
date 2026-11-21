@@ -221,17 +221,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             }
             TokenKind::Identifier => {
                 let ident = self.name();
-                if ident.text == "box" && self.at(TokenKind::Less) {
-                    self.bump();
-                    let inner = self.parse_type();
-                    let end = self
-                        .expect(TokenKind::Greater, "expected '>' after boxed type")
-                        .end;
-                    TypeExpr {
-                        kind: TypeKind::Boxed(Box::new(inner)),
-                        span: Span::new(start, end),
-                    }
-                } else if ident.text == "pid" && self.at(TokenKind::Less) {
+                if ident.text == "pid" && self.at(TokenKind::Less) {
                     self.bump();
                     let actor = self.name();
                     let end = self
@@ -768,28 +758,6 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                     } else if name.text == "monitor" {
                         let start = left.span.start;
                         left = self.monitor_call(left, start);
-                    } else if name.text == "tell" {
-                        self.bump(); // '('
-                        let message = self.name();
-                        let arguments = if self.at(TokenKind::LeftParen) && !self.line_break() {
-                            self.arguments().0
-                        } else {
-                            Vec::new()
-                        };
-                        if self.at(TokenKind::Comma) {
-                            self.bump();
-                        }
-                        let close =
-                            self.expect(TokenKind::RightParen, "expected ')' after tell arguments");
-                        let span = Span::new(left.span.start, close.end);
-                        left = Expr {
-                            kind: ExprKind::Send {
-                                target: Box::new(left),
-                                message,
-                                arguments,
-                            },
-                            span,
-                        };
                     } else {
                         let (arguments, close) = self.arguments();
                         let span = Span::new(left.span.start, close.end);

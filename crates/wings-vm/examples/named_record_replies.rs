@@ -31,7 +31,7 @@ fn check_reply(reply: &RecordReply, value: i64) {
             MessageValue::Bool(true),
             MessageValue::IntList(&[value]),
             MessageValue::Bytes(&[255, 255]),
-            MessageValue::RecordInt(value + 1),
+            MessageValue::Int(value + 1),
             MessageValue::Unit,
         ]
     );

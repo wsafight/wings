@@ -1174,7 +1174,8 @@ fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserve
     let handle = scheduler.handle();
     let mut module = spinning_module();
     let data = Arc::get_mut(&mut module.inner).unwrap();
-    data.manifest.state = ValueType::Ref;
+    data.manifest.records = super::persistent_state::box_schema();
+    data.manifest.state = ValueType::RecordRef(0);
     data.initializer = super::persistent_state::record_initializer;
     let pid = handle.spawn_with_heap(&module, quota(), 4, 8).unwrap();
     assert_eq!(handle.byte_state_snapshot(pid).unwrap(), None);
@@ -1189,7 +1190,7 @@ fn scheduler_reference_exit_does_not_expose_heap_handle_and_active_stop_preserve
         .unwrap();
     assert_eq!(reply(failed), RequestOutcome::Failed);
     let diagnostic = handle.last_exit().unwrap();
-    assert_eq!(diagnostic.state_type, ValueType::Ref);
+    assert_eq!(diagnostic.state_type, ValueType::RecordRef(0));
     assert_eq!(diagnostic.committed_state, None);
     assert_eq!(diagnostic.byte_state, None);
     assert!(diagnostic.execution.unwrap().heap.is_some());

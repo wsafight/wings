@@ -1,12 +1,13 @@
 actor SelfSendRoots {
-  state n = box(0)
+  struct Boxed { value: int }
+  state n = Boxed(0)
   on start -> int {
     let old = n;
-    n = box(9);
+    n = Boxed(9);
     self ! add(3);
     gc();
-    old.get() + n.get()
+    old.value + n.value
   }
-  on add(value: int) { n = box(n.get() + value) }
-  on read -> int { n.get() }
+  on add(value: int) { n = Boxed(n.value + value) }
+  on read -> int { n.value }
 }

@@ -186,7 +186,7 @@ impl ReplyTable {
                 ValueType::Int
                     | ValueType::Bool
                     | ValueType::Unit
-                    | ValueType::Ref
+                    | ValueType::Pid
                     | ValueType::ListRef
                     | ValueType::BytesRef
                     | ValueType::StringRef
@@ -841,7 +841,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         let baseline = vm.used();
         assert!(table.start(deadline, &foreign, ValueType::Int).is_err());
-        assert!(table.start(deadline, &first, ValueType::Pid).is_err());
+        assert!(table.start(deadline, &first, ValueType::RequestId).is_err());
         assert_eq!(vm.used(), baseline);
         let (mut one, publisher_one) = table.start(deadline, &first, ValueType::Bool).unwrap();
         let (mut two, publisher_two) = table.start(deadline, &second, ValueType::Int).unwrap();

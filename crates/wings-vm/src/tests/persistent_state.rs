@@ -1,5 +1,5 @@
 use super::*;
-use wings_abi::{HEAP_COLLECT, HEAP_READ_INT, HEAP_RECORD_INT};
+use wings_abi::{HEAP_COLLECT, HEAP_RECORD_FIELD, HEAP_RECORD_NEW};
 
 pub(super) unsafe extern "C" fn record_initializer(
     _state: i64,
@@ -7,9 +7,16 @@ pub(super) unsafe extern "C" fn record_initializer(
     output: *mut ScalarOutput,
     context: *mut ScalarContext,
 ) -> u32 {
+    let arguments = [0u64, 7];
     let mut reference = 0;
-    let status =
-        unsafe { ((*context).heap_call.unwrap())(context, HEAP_RECORD_INT, 7, &mut reference) };
+    let status = unsafe {
+        ((*context).heap_call.unwrap())(
+            context,
+            HEAP_RECORD_NEW,
+            arguments.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
     if status == STATUS_OK {
         unsafe { (*output).state = reference as i64 };
     }
@@ -32,9 +39,16 @@ unsafe extern "C" fn candidate(
     output: *mut ScalarOutput,
     context: *mut ScalarContext,
 ) -> u32 {
+    let values = [0u64, 99];
     let mut reference = 0;
-    let status =
-        unsafe { ((*context).heap_call.unwrap())(context, HEAP_RECORD_INT, 99, &mut reference) };
+    let status = unsafe {
+        ((*context).heap_call.unwrap())(
+            context,
+            HEAP_RECORD_NEW,
+            values.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
     if status == STATUS_OK {
         unsafe {
             *output = ScalarOutput {
@@ -74,10 +88,18 @@ unsafe extern "C" fn failed_candidate(
     }
 }
 
+pub(super) fn box_schema() -> Vec<wings_abi::RecordSchema> {
+    vec![wings_abi::RecordSchema {
+        name: "Box".into(),
+        fields: vec![("value".into(), ValueType::Int)],
+    }]
+}
+
 fn record_module(entry: ScalarEntry) -> ScalarModule {
     let mut module = module();
     let data = Arc::get_mut(&mut module.inner).unwrap();
-    data.manifest.state = ValueType::Ref;
+    data.manifest.records = box_schema();
+    data.manifest.state = ValueType::RecordRef(0);
     data.manifest.handlers[1].reply = Some(ValueType::Bool);
     data.initializer = record_initializer;
     data.entries[1] = entry;
@@ -124,7 +146,7 @@ fn invalid_initializer_record_releases_heap_and_stack_reservations() {
             .instantiate_with_heap(&bound, &account, 2)
             .err()
             .unwrap()
-            .contains("invalid record state")
+            .contains("invalid named record state")
     );
     assert_eq!(vm.used(), baseline);
     assert_eq!(pool.stats().active, 0);
@@ -140,7 +162,11 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
     let baseline = vm.used();
     for (entry, reply, expected) in [
         (candidate as ScalarEntry, 2, "invalid scalar state or reply"),
-        (stale_candidate as ScalarEntry, 0, "invalid record state"),
+        (
+            stale_candidate as ScalarEntry,
+            0,
+            "invalid named record state",
+        ),
         (failed_candidate as ScalarEntry, 0, "division by zero"),
     ] {
         let module = record_module(entry);
@@ -169,6 +195,7 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
             heap_call: Some(crate::aot_heap::heap_call),
             heap_data: std::ptr::from_mut(&mut **heap).cast(),
         };
+        let arguments = [0u64, committed as u64, 0];
         let mut ignored = 0;
         assert_eq!(
             unsafe { crate::aot_heap::heap_call(&mut context, HEAP_COLLECT, 0, &mut ignored) },
@@ -179,8 +206,8 @@ fn invalid_reply_stale_state_and_managed_failures_never_replace_committed_root()
             unsafe {
                 crate::aot_heap::heap_call(
                     &mut context,
-                    HEAP_READ_INT,
-                    committed as u64,
+                    HEAP_RECORD_FIELD,
+                    arguments.as_ptr() as usize as u64,
                     &mut ignored,
                 )
             },

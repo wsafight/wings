@@ -12,7 +12,7 @@ fn schemas() -> Vec<wings_abi::RecordSchema> {
                 ("count".into(), ValueType::Int),
                 ("accepted".into(), ValueType::Bool),
                 ("unit".into(), ValueType::Unit),
-                ("saved".into(), ValueType::Ref),
+                ("peer".into(), ValueType::Pid),
                 ("values".into(), ValueType::ListRef),
                 ("bytes".into(), ValueType::BytesRef),
                 ("text".into(), ValueType::StringRef),
@@ -27,7 +27,7 @@ fn values() -> [MessageValue<'static>; 7] {
         MessageValue::Int(-7),
         MessageValue::Bool(true),
         MessageValue::Unit,
-        MessageValue::RecordInt(i64::MIN),
+        MessageValue::Pid(42),
         MessageValue::IntList(&[1, 2, 3]),
         MessageValue::Bytes(&[255, 0, 17]),
         MessageValue::String("中😀\0"),
@@ -137,7 +137,7 @@ fn named_reply_completion_matches_names_and_rebuilds_all_failed_leaf_defaults() 
     let success = RecordReply::completion(Some(&reply), 1, &records, 17, 0).unwrap();
     assert_eq!(&success.arguments[..2], &[17, 0]);
     assert_eq!(success.count, 9);
-    assert_eq!(success.record_mask, 1 << 5);
+    assert_eq!(success.arguments[5], 42);
     assert_eq!(success.lists.mask, 1 << 6);
     assert!(
         success
@@ -150,7 +150,6 @@ fn named_reply_completion_matches_names_and_rebuilds_all_failed_leaf_defaults() 
         let failure = RecordReply::completion(None, 1, &records, 17, status).unwrap();
         assert_eq!(&failure.arguments[..2], &[17, status]);
         assert!(failure.arguments[2..].iter().all(|value| *value == 0));
-        assert_eq!(failure.record_mask, 1 << 5);
         assert_eq!(failure.lists.mask, 1 << 6);
         assert_eq!(failure.lists.count, 0);
         assert!(
@@ -188,7 +187,7 @@ fn named_reply_rejects_mismatched_scalar_and_buffer_leaves_and_releases_leases()
 
 #[test]
 fn named_reply_rejects_invalid_handles_and_other_layouts_before_state_commit() {
-    for entry in [invalid_output as ScalarEntry, record_reply] {
+    for entry in [invalid_output as ScalarEntry, list_reply] {
         for heap_enabled in [false, true] {
             let [vm, tenant, account] = accounts();
             let pool = StackPool::new_accounted(&tenant, 1, 0)

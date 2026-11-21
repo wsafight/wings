@@ -379,7 +379,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
                 &[
                     MessageValue::String(&text),
                     MessageValue::Bytes(&data),
-                    MessageValue::RecordInt(7),
+                    MessageValue::Int(7),
                     MessageValue::IntList(&[3]),
                     MessageValue::String(""),
                 ],

@@ -784,15 +784,6 @@ fn execute_rpc(
                 let (start, len) = segments[idx];
                 MessageValue::Bytes(&byte_storage[start..start + len])
             }
-            ValueType::Ref => {
-                let n = val
-                    .as_object()
-                    .filter(|obj| obj.len() == 1)
-                    .and_then(|obj| obj.get("record_int"))
-                    .and_then(Value::as_i64)
-                    .ok_or("expected {\"record_int\": <i64>} argument")?;
-                MessageValue::RecordInt(n)
-            }
             ValueType::RecordRef(_) => unreachable!("records expanded to leaves"),
             ValueType::Pid | ValueType::RequestId => {
                 return Err("process capabilities are not JSON arguments".into());
@@ -803,7 +794,7 @@ fn execute_rpc(
     let values = &message_values[..leaf_count];
     if reply_type.is_none() {
         handle.send_values(entry_pid, &handler, values, max_steps)?;
-        adapter.write_reply(out, None, None)?;
+        adapter.write_reply_value(out, None)?;
         return Ok(());
     }
     let mut pending = handle.request_values(
@@ -814,14 +805,13 @@ fn execute_rpc(
         Duration::from_secs(30),
     )?;
     match pending.wait(Duration::from_secs(30))? {
-        Some(RequestOutcome::Reply(val)) => adapter.write_reply(out, reply_type, Some(val)),
-        Some(RequestOutcome::ReplyString(val)) => adapter.write_string_reply(out, &val),
-        Some(RequestOutcome::ReplyBytes(val)) => adapter.write_bytes_reply(out, &val),
-        Some(RequestOutcome::ReplyList(val)) => adapter.write_list_reply(out, &val),
-        Some(RequestOutcome::ReplyRecord(val)) => adapter.write_record_reply(out, &val),
-        Some(RequestOutcome::TimedOut) | None => Err("request timed out".into()),
-        Some(RequestOutcome::Cancelled) => Err("request cancelled".into()),
-        Some(RequestOutcome::Failed) => Err("managed actor handler failed".into()),
+        Some(outcome) => match outcome.into_reply_value(reply_type) {
+            Ok(reply) => adapter.write_reply_value(out, Some(&reply)),
+            Err(RequestOutcome::TimedOut) => Err("request timed out".into()),
+            Err(RequestOutcome::Cancelled) => Err("request cancelled".into()),
+            Err(_) => Err("managed actor handler failed".into()),
+        },
+        None => Err("request timed out".into()),
     }
 }
 
@@ -844,7 +834,6 @@ fn is_struct_object_for_flat_leaf(expected: ValueType, val: &Value) -> bool {
     };
     match expected {
         ValueType::RecordRef(_) => false,
-        ValueType::Ref => !(obj.len() == 1 && obj.contains_key("record_int")),
         ValueType::BytesRef => !(obj.len() == 1 && obj.contains_key("bytes")),
         _ => true,
     }

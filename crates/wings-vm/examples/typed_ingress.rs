@@ -24,7 +24,7 @@ fn values<'value>(
         MessageValue::String(text),
         MessageValue::Bytes(blob),
         MessageValue::IntList(numbers),
-        MessageValue::RecordInt(7),
+        MessageValue::Int(7),
         MessageValue::Bool(true),
         MessageValue::Unit,
     ]

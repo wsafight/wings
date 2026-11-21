@@ -1,4 +1,5 @@
 actor Branches {
+  struct Boxed { value: int }
   state count = if true { 7 } else { 1 / 0 }
   on select(flag: bool, value: int) -> int {
     count = if flag { value } else { count }
@@ -11,13 +12,13 @@ actor Branches {
     if flag { 17 } else { 1 / 0 }
   }
   on heap(flag: bool) -> int {
-    let saved = box(count)
-    let selected = if flag { box(11).get() } else { box(22).get() }
+    let saved = Boxed(count)
+    let selected = if flag { Boxed(11).value } else { Boxed(22).value }
     gc()
-    saved.get() + selected
+    saved.value + selected
   }
   on optional_heap(flag: bool) -> int {
-    if flag { 9 } else { box(4).get() }
+    if flag { 9 } else { Boxed(4).value }
   }
   on unit(flag: bool) -> () {
     if flag { () } else { gc() }

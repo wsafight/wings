@@ -174,55 +174,14 @@ fn run(
     while let Some(request) = adapter.read_request(reader)? {
         let handler = process.module().handler(request.message.as_str())?;
         let schema = handler.schema();
-        let reply_type = schema.reply;
         let arguments = request.arguments.scalars(&schema.parameters)?;
-        if matches!(reply_type, Some(wings_abi::ValueType::RecordRef(_))) {
-            let reply = process.invoke_record(
-                &schema.name,
-                &arguments[..schema.parameters.len()],
-                max_steps,
-                adapter.cancellation(),
-            )?;
-            adapter.write_record_reply(writer, &reply)?;
-            continue;
-        }
-        if reply_type == Some(wings_abi::ValueType::StringRef) {
-            let reply = process.invoke_string(
-                &schema.name,
-                &arguments[..schema.parameters.len()],
-                max_steps,
-                adapter.cancellation(),
-            )?;
-            adapter.write_string_reply(writer, &reply)?;
-            continue;
-        }
-        if reply_type == Some(wings_abi::ValueType::BytesRef) {
-            let reply = process.invoke_bytes(
-                &schema.name,
-                &arguments[..schema.parameters.len()],
-                max_steps,
-                adapter.cancellation(),
-            )?;
-            adapter.write_bytes_reply(writer, &reply)?;
-            continue;
-        }
-        if reply_type == Some(wings_abi::ValueType::ListRef) {
-            let reply = process.invoke_list(
-                &schema.name,
-                &arguments[..schema.parameters.len()],
-                max_steps,
-                adapter.cancellation(),
-            )?;
-            adapter.write_list_reply(writer, &reply)?;
-            continue;
-        }
-        let reply = process.invoke_handler(
+        let reply = process.invoke_value(
             &handler,
             &arguments[..schema.parameters.len()],
             max_steps,
             adapter.cancellation(),
         )?;
-        adapter.write_reply(writer, reply_type, reply)?;
+        adapter.write_reply_value(writer, reply.as_ref())?;
     }
     Ok(())
 }

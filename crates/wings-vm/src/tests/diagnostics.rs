@@ -399,6 +399,7 @@ fn wrong_record_shape_cannot_commit_as_list_state() {
     let [vm, tenant, account] = accounts();
     let mut module = module();
     let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.records = super::persistent_state::box_schema();
     data.manifest.state = ValueType::ListRef;
     data.initializer = super::persistent_state::record_initializer;
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
@@ -474,7 +475,8 @@ fn supervised_record_snapshot_hides_reference_and_resets_on_restart() {
     let [vm, tenant, _] = accounts();
     let mut module = module();
     let data = Arc::get_mut(&mut module.inner).unwrap();
-    data.manifest.state = ValueType::Ref;
+    data.manifest.records = super::persistent_state::box_schema();
+    data.manifest.state = ValueType::RecordRef(0);
     data.initializer = super::persistent_state::record_initializer;
     let mut supervisor = ScalarSupervisor::new(&tenant, 1, 1).unwrap();
     let child = supervisor
@@ -491,7 +493,7 @@ fn supervised_record_snapshot_hides_reference_and_resets_on_restart() {
         .unwrap();
     let pid = supervisor.current_pid(child).unwrap();
     let snapshot = supervisor.snapshot(pid).unwrap();
-    assert_eq!(snapshot.state_type, ValueType::Ref);
+    assert_eq!(snapshot.state_type, ValueType::RecordRef(0));
     assert_eq!(snapshot.committed_state, None);
     assert_eq!(snapshot.heap.unwrap().capacity, 2);
     assert_eq!(snapshot.heap.unwrap().allocated, 1);
@@ -515,7 +517,7 @@ fn supervised_record_snapshot_hides_reference_and_resets_on_restart() {
     assert_eq!(exit.handler(), "Fail");
     assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
     assert_eq!(exit.committed_state, None);
-    assert_eq!(exit.state_type, ValueType::Ref);
+    assert_eq!(exit.state_type, ValueType::RecordRef(0));
     assert_eq!(exit.execution.heap, initial_heap);
     let replacement = supervisor.current_pid(child).unwrap();
     assert_eq!(supervisor.snapshot(replacement).unwrap().execution, None);

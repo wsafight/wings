@@ -48,6 +48,32 @@ pub enum RequestOutcome {
     Failed,
 }
 
+impl RequestOutcome {
+    pub fn into_reply_value(
+        self,
+        reply_type: Option<wings_abi::ValueType>,
+    ) -> Result<crate::ReplyValue, Self> {
+        match (self, reply_type) {
+            (Self::Reply(raw), Some(ty)) => {
+                crate::ReplyValue::from_scalar(ty, raw).map_err(|_| Self::Failed)
+            }
+            (Self::ReplyList(v), Some(wings_abi::ValueType::ListRef)) => {
+                Ok(crate::ReplyValue::IntList(v))
+            }
+            (Self::ReplyBytes(v), Some(wings_abi::ValueType::BytesRef)) => {
+                Ok(crate::ReplyValue::Bytes(v))
+            }
+            (Self::ReplyString(v), Some(wings_abi::ValueType::StringRef)) => {
+                Ok(crate::ReplyValue::String(v))
+            }
+            (Self::ReplyRecord(v), Some(wings_abi::ValueType::RecordRef(_))) => {
+                Ok(crate::ReplyValue::Record(v))
+            }
+            (other, _) => Err(other),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum WorkerEvent {
     Idle,
@@ -209,7 +235,6 @@ struct Message {
     request: Option<RequestId>,
     system: bool,
     external: Option<ReplyPublisher>,
-    record_mask: u64,
     lists: ListPayload,
     bytes: BytePayload,
     _charge: Reservation,
@@ -619,7 +644,6 @@ impl ScalarWorker {
             &message.arguments[..message.count],
             max_steps,
             None,
-            message.record_mask,
             &message.lists,
             message.bytes,
         )
@@ -657,7 +681,6 @@ impl ScalarWorker {
             &message.arguments[..message.count],
             max_steps,
             Some(request),
-            message.record_mask,
             &message.lists,
             message.bytes,
         )?;
@@ -740,7 +763,6 @@ impl ScalarWorker {
             arguments,
             max_steps,
             request,
-            0,
             &ListPayload::default(),
             BytePayload::default(),
         )
@@ -754,7 +776,6 @@ impl ScalarWorker {
         arguments: &[i64],
         max_steps: u64,
         request: Option<RequestId>,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: BytePayload,
     ) -> Result<(), String> {
@@ -765,7 +786,6 @@ impl ScalarWorker {
             max_steps,
             request,
             false,
-            record_mask,
             lists,
             bytes,
         )
@@ -781,7 +801,6 @@ impl ScalarWorker {
         request: Option<RequestId>,
         allow_pid: bool,
         require_mailbox_slot: bool,
-        record_mask: u64,
         lists: &ListPayload,
         mut bytes: BytePayload,
     ) -> Result<Message, String> {
@@ -796,56 +815,15 @@ impl ScalarWorker {
         if schema.reply.is_some() != request.is_some() {
             return Err("send requires a one-way handler; request requires a reply handler".into());
         }
-        let expected_mask = schema
-            .parameters
-            .iter()
-            .enumerate()
-            .fold(0u64, |mask, (index, (_, ty))| {
-                mask | (u64::from(*ty == wings_abi::ValueType::Ref) << index)
-            });
-        let list_mask =
-            schema
-                .parameters
-                .iter()
-                .enumerate()
-                .fold(0u64, |mask, (index, (_, ty))| {
-                    mask | (u64::from(*ty == wings_abi::ValueType::ListRef) << index)
-                });
-        let bytes_mask =
-            schema
-                .parameters
-                .iter()
-                .enumerate()
-                .fold(0u64, |mask, (index, (_, ty))| {
-                    mask | (u64::from(matches!(
-                        ty,
-                        wings_abi::ValueType::BytesRef | wings_abi::ValueType::StringRef
-                    )) << index)
-                });
-        if record_mask != expected_mask
-            || !lists.valid(arguments, list_mask)
-            || !bytes.valid(arguments, bytes_mask)
-            || bytes.string_mask
-                != schema
-                    .parameters
-                    .iter()
-                    .enumerate()
-                    .fold(0u64, |mask, (index, (_, ty))| {
-                        mask | (u64::from(*ty == wings_abi::ValueType::StringRef) << index)
-                    })
-            || arguments.len() != schema.parameters.len()
-            || arguments.len() > MAX_ARGUMENTS
-            || arguments
-                .iter()
-                .zip(&schema.parameters)
-                .any(|(value, (_, ty))| {
-                    !ty.is_reference()
-                        && !ty.accepts(*value)
-                        && !(allow_pid && *ty == wings_abi::ValueType::Pid && *value >= 0)
-                })
-        {
-            return Err("handler argument count or scalar type mismatch".into());
-        }
+        crate::message_values::validate_message_payload(
+            &schema.parameters,
+            arguments,
+            false,
+            allow_pid,
+            lists,
+            &bytes,
+        )
+        .map_err(|_| String::from("handler argument count or scalar type mismatch"))?;
         if require_mailbox_slot && actor.mailbox.count == actor.mailbox.slots.len() {
             return Err("mailbox_full".into());
         }
@@ -865,7 +843,6 @@ impl ScalarWorker {
             request,
             system: false,
             external: None,
-            record_mask,
             lists: *lists,
             bytes,
             _charge: charge,
@@ -881,7 +858,6 @@ impl ScalarWorker {
         max_steps: u64,
         request: Option<RequestId>,
         allow_pid: bool,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: BytePayload,
     ) -> Result<(), String> {
@@ -893,7 +869,6 @@ impl ScalarWorker {
             request,
             allow_pid,
             true,
-            record_mask,
             lists,
             bytes,
         )?;
@@ -932,7 +907,6 @@ impl ScalarWorker {
                             request: None,
                             system: false,
                             external: envelope.reply,
-                            record_mask: envelope.record_mask,
                             lists: envelope.lists,
                             bytes: envelope.bytes,
                             _charge: envelope.charge,
@@ -955,7 +929,6 @@ impl ScalarWorker {
                     || (CancellationToken::default(), self.preemption.clone()),
                     &actor.pool,
                     message.system,
-                    message.record_mask,
                     &message.lists,
                     &mut message.bytes,
                 )?;
@@ -1385,7 +1358,6 @@ impl ScalarWorker {
                             effect.timeout_ms,
                             &effect.arguments[..effect.count],
                             budget,
-                            effect.record_mask,
                             &effect.lists,
                             effect.bytes,
                         )
@@ -1400,7 +1372,6 @@ impl ScalarWorker {
                             budget,
                             None,
                             true,
-                            effect.record_mask,
                             &effect.lists,
                             effect.bytes,
                         )
@@ -1428,7 +1399,6 @@ impl ScalarWorker {
         delay_ms: i64,
         arguments: &[i64],
         budget: u64,
-        record_mask: u64,
         lists: &ListPayload,
         bytes: BytePayload,
     ) -> Result<(), String> {
@@ -1452,7 +1422,6 @@ impl ScalarWorker {
             None,
             true,
             false,
-            record_mask,
             lists,
             bytes,
         )?;
@@ -1679,7 +1648,6 @@ impl ScalarWorker {
                 wings_abi::ValueType::Int
                     | wings_abi::ValueType::Bool
                     | wings_abi::ValueType::Unit
-                    | wings_abi::ValueType::Ref
                     | wings_abi::ValueType::ListRef
                     | wings_abi::ValueType::BytesRef
                     | wings_abi::ValueType::StringRef
@@ -1757,7 +1725,6 @@ impl ScalarWorker {
             budget,
             Some(request),
             true,
-            effect.record_mask,
             &effect.lists,
             effect.bytes,
         )?;
@@ -1853,7 +1820,6 @@ impl ScalarWorker {
                 request: None,
                 system: false,
                 external: None,
-                record_mask: 0,
                 lists: ListPayload::default(),
                 bytes: BytePayload::default(),
                 _charge: entry.message_charge,
@@ -1895,9 +1861,6 @@ impl ScalarWorker {
             let mut lists = ListPayload::default();
             let mut bytes = BytePayload::default();
             let mut count = 3;
-            let mut record_mask = u64::from(
-                completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::Ref),
-            ) << 2;
             if let Some(wings_abi::ValueType::RecordRef(schema)) =
                 completion.handler.schema().completion_reply()
             {
@@ -1921,7 +1884,6 @@ impl ScalarWorker {
                 .expect("validated named record completion");
                 arguments = response.arguments;
                 count = response.count;
-                record_mask = response.record_mask;
                 lists = response.lists;
                 bytes = response.bytes;
             } else {
@@ -1974,7 +1936,6 @@ impl ScalarWorker {
                 request: None,
                 system: true,
                 external: None,
-                record_mask,
                 lists,
                 bytes,
                 _charge: completion.charge,
@@ -2215,7 +2176,7 @@ mod payload_tests {
             ValueType::Int,
             ValueType::Bool,
             ValueType::Unit,
-            ValueType::Ref,
+            ValueType::Pid,
             ValueType::ListRef,
             ValueType::BytesRef,
             ValueType::StringRef,
@@ -2224,13 +2185,15 @@ mod payload_tests {
                 ValueType::Int,
                 ValueType::Bool,
                 ValueType::Unit,
-                ValueType::Ref,
+                ValueType::Pid,
                 ValueType::ListRef,
                 ValueType::BytesRef,
                 ValueType::StringRef,
             ] {
                 for corrupt in [false, true] {
-                    if corrupt && (reply == ValueType::Int || callback != reply) {
+                    if corrupt
+                        && (matches!(reply, ValueType::Int | ValueType::Pid) || callback != reply)
+                    {
                         continue;
                     }
                     let limits = Resources {
@@ -2257,8 +2220,6 @@ mod payload_tests {
                     let mut entries = data.entries.to_vec();
                     if corrupt {
                         entries[2] = invalid_scalar_reply;
-                    } else if reply == ValueType::Ref {
-                        entries[2] = crate::tests::record_reply;
                     } else if reply == ValueType::ListRef {
                         entries[2] = crate::tests::list_reply;
                     } else if reply == ValueType::StringRef {
@@ -2266,9 +2227,7 @@ mod payload_tests {
                     } else if reply == ValueType::BytesRef {
                         entries[2] = crate::tests::bytes_reply;
                     }
-                    entries.push(if callback == ValueType::Ref {
-                        crate::tests::record_completion
-                    } else if callback == ValueType::ListRef {
+                    entries.push(if callback == ValueType::ListRef {
                         crate::tests::list_completion
                     } else if callback == ValueType::StringRef {
                         crate::tests::string_completion
@@ -2298,7 +2257,6 @@ mod payload_tests {
                         count: 0,
                         callback: 8,
                         timeout_ms: 60000,
-                        record_mask: 0,
                         lists: ListPayload::default(),
                         bytes: BytePayload::default(),
                     };
@@ -2549,7 +2507,6 @@ mod payload_tests {
                 &[ListPayload::encode(0, 8)],
                 4096,
                 None,
-                0,
                 &ListPayload::default(),
                 bytes,
             )
@@ -2574,7 +2531,6 @@ mod payload_tests {
                     &[ListPayload::encode(0, 1)],
                     4096,
                     None,
-                    0,
                     &ListPayload::default(),
                     rejected
                 )
@@ -2621,7 +2577,6 @@ mod payload_tests {
                     &[ListPayload::encode(0, 8)],
                     4096,
                     None,
-                    0,
                     &ListPayload::default(),
                     rejected
                 )
@@ -2647,7 +2602,6 @@ mod payload_tests {
                     || (CancellationToken::default(), PreemptionToken::default()),
                     &bound,
                     false,
-                    0,
                     &ListPayload::default(),
                     &mut retained
                 )
@@ -2666,7 +2620,6 @@ mod payload_tests {
                 || (CancellationToken::default(), PreemptionToken::default()),
                 &bound,
                 false,
-                0,
                 &ListPayload::default(),
                 &mut retained,
             )

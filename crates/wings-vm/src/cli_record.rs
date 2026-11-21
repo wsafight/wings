@@ -22,7 +22,6 @@ enum Leaf<'value> {
     Int(i64),
     Bool(bool),
     Unit(()),
-    RecordInt { record_int: i64 },
     IntList { int_list: &'value [i64] },
     Bytes { bytes: &'value [u8] },
     String { string: &'value str },
@@ -95,7 +94,7 @@ impl<'value> From<MessageValue<'value>> for Leaf<'value> {
             MessageValue::Int(value) => Self::Int(value),
             MessageValue::Bool(value) => Self::Bool(value),
             MessageValue::Unit => Self::Unit(()),
-            MessageValue::RecordInt(record_int) => Self::RecordInt { record_int },
+            MessageValue::Pid(pid) => Self::Int(pid),
             MessageValue::IntList(int_list) => Self::IntList { int_list },
             MessageValue::Bytes(bytes) => Self::Bytes { bytes },
             MessageValue::String(string) => Self::String { string },
@@ -126,7 +125,7 @@ mod tests {
                 "Nested",
                 &[
                     ("empty", ValueType::RecordRef(0)),
-                    ("record", ValueType::Ref),
+                    ("record", ValueType::Int),
                     ("list", ValueType::ListRef),
                     ("bytes", ValueType::BytesRef),
                     ("text", ValueType::StringRef),
@@ -146,7 +145,7 @@ mod tests {
         let values = [
             MessageValue::Int(i64::MIN),
             MessageValue::Int(i64::MAX),
-            MessageValue::RecordInt(-9),
+            MessageValue::Int(-9),
             MessageValue::IntList(&[1, -2]),
             MessageValue::Bytes(&[0, 255]),
             MessageValue::String("中文😀\n\"\\"),
@@ -157,7 +156,7 @@ mod tests {
         write_record(&mut output, &records[2], &records, values.into_iter()).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "{\"reply\":{\"min\":-9223372036854775808,\"max\":9223372036854775807,\"nested\":{\"empty\":{},\"record\":{\"record_int\":-9},\"list\":{\"int_list\":[1,-2]},\"bytes\":{\"bytes\":[0,255]},\"text\":{\"string\":\"中文😀\\n\\\"\\\\\"}},\"accepted\":false,\"unit\":null}}\n"
+            "{\"reply\":{\"min\":-9223372036854775808,\"max\":9223372036854775807,\"nested\":{\"empty\":{},\"record\":-9,\"list\":{\"int_list\":[1,-2]},\"bytes\":{\"bytes\":[0,255]},\"text\":{\"string\":\"中文😀\\n\\\"\\\\\"}},\"accepted\":false,\"unit\":null}}\n"
         );
         let mut output = Vec::new();
         write_record(&mut output, &records[0], &records, [].into_iter()).unwrap();

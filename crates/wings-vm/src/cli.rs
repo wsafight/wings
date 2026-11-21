@@ -54,10 +54,35 @@ enum Reply {
     Int(i64),
     Bool(bool),
     Unit(()),
-    RecordInt { record_int: i64 },
 }
 
 impl Adapter {
+    pub fn write_reply_value(
+        &self,
+        writer: &mut impl Write,
+        value: Option<&wings_vm::ReplyValue>,
+    ) -> Result<(), String> {
+        match value {
+            None => self.write_reply(writer, None, None),
+            Some(wings_vm::ReplyValue::Int(v)) => {
+                self.write_reply(writer, Some(ValueType::Int), Some(*v))
+            }
+            Some(wings_vm::ReplyValue::Bool(v)) => {
+                self.write_reply(writer, Some(ValueType::Bool), Some(i64::from(*v)))
+            }
+            Some(wings_vm::ReplyValue::Unit) => {
+                self.write_reply(writer, Some(ValueType::Unit), Some(0))
+            }
+            Some(wings_vm::ReplyValue::Pid(_)) => {
+                Err("Pid capabilities cannot cross the CLI JSON boundary".into())
+            }
+            Some(wings_vm::ReplyValue::IntList(v)) => self.write_list_reply(writer, v),
+            Some(wings_vm::ReplyValue::Bytes(v)) => self.write_bytes_reply(writer, v),
+            Some(wings_vm::ReplyValue::String(v)) => self.write_string_reply(writer, v),
+            Some(wings_vm::ReplyValue::Record(v)) => self.write_record_reply(writer, v),
+        }
+    }
+
     pub fn write_record_reply(
         &self,
         writer: &mut impl Write,
@@ -200,7 +225,6 @@ impl Adapter {
                 reply: match reply_type {
                     Some(ValueType::Int) => Reply::Int(value),
                     Some(ValueType::Bool) => Reply::Bool(value != 0),
-                    Some(ValueType::Ref) => Reply::RecordInt { record_int: value },
                     _ => Reply::Unit(()),
                 },
             },
@@ -632,7 +656,6 @@ mod tests {
             ("true", ValueType::Int, "expected an i64 argument"),
             ("1", ValueType::Bool, "expected a Bool argument"),
             ("false", ValueType::Unit, "expected null for Unit"),
-            ("0", ValueType::Ref, "not JSON arguments"),
             ("0", ValueType::ListRef, "not JSON arguments"),
             ("0", ValueType::BytesRef, "not JSON arguments"),
             ("0", ValueType::Pid, "not JSON arguments"),
@@ -744,16 +767,6 @@ mod tests {
             (Some(ValueType::Bool), Some(0), "{\"reply\":false}\n"),
             (Some(ValueType::Bool), Some(1), "{\"reply\":true}\n"),
             (Some(ValueType::Unit), Some(0), "{\"reply\":null}\n"),
-            (
-                Some(ValueType::Ref),
-                Some(i64::MIN),
-                "{\"reply\":{\"record_int\":-9223372036854775808}}\n",
-            ),
-            (
-                Some(ValueType::Ref),
-                Some(i64::MAX),
-                "{\"reply\":{\"record_int\":9223372036854775807}}\n",
-            ),
             (None, None, "{\"accepted\":true}\n"),
         ] {
             output.clear();

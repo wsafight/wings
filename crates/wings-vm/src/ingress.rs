@@ -51,7 +51,6 @@ struct Ring {
 pub(crate) struct Envelope {
     pub(crate) arguments: [i64; MAX_ARGUMENTS],
     pub(crate) count: usize,
-    pub(crate) record_mask: u64,
     pub(crate) lists: ListPayload,
     pub(crate) bytes: BytePayload,
     pub(crate) charge: Reservation,
@@ -154,7 +153,6 @@ impl IngressSender {
             HostMessage {
                 arguments: owned,
                 count: arguments.len(),
-                record_mask: 0,
                 lists: ListPayload::default(),
                 bytes: BytePayload::default(),
             },
@@ -177,7 +175,6 @@ impl IngressSender {
         let message = Envelope {
             arguments: payload.arguments,
             count: payload.count,
-            record_mask: payload.record_mask,
             lists: payload.lists,
             bytes: payload.bytes,
             charge,
@@ -234,7 +231,7 @@ impl IngressReceiver {
                     ValueType::Int
                         | ValueType::Bool
                         | ValueType::Unit
-                        | ValueType::Ref
+                        | ValueType::Pid
                         | ValueType::ListRef
                         | ValueType::BytesRef
                         | ValueType::StringRef
@@ -247,7 +244,7 @@ impl IngressReceiver {
                     ValueType::Int
                         | ValueType::Bool
                         | ValueType::Unit
-                        | ValueType::Ref
+                        | ValueType::Pid
                         | ValueType::ListRef
                         | ValueType::BytesRef
                         | ValueType::StringRef
@@ -392,7 +389,7 @@ mod tests {
     #[test]
     fn typed_ingress_copies_mixed_values_and_preserves_scalar_rejection() {
         let types = [
-            ValueType::Ref,
+            ValueType::Int,
             ValueType::ListRef,
             ValueType::StringRef,
             ValueType::BytesRef,
@@ -401,13 +398,13 @@ mod tests {
         ];
         let (vm, tenant, account, parker, receiver, sender) = typed_fixture(&types, None, 1);
         let baseline = vm.used();
-        assert!(sender.send(&[0; 6]).is_err());
+        assert!(sender.send(&[0, 0, 0, 0, 0, 0]).is_err());
         let mut text = String::from("中😀\0");
         let mut bytes = vec![17; 65536 - text.len()];
         let mut integers = [i64::MIN; 64];
         sender
             .send_values(&[
-                MessageValue::RecordInt(7),
+                MessageValue::Int(7),
                 MessageValue::IntList(&integers),
                 MessageValue::String(&text),
                 MessageValue::Bytes(&bytes),
@@ -421,7 +418,7 @@ mod tests {
         assert!(
             sender
                 .send_values(&[
-                    MessageValue::RecordInt(7),
+                    MessageValue::Int(7),
                     MessageValue::IntList(&integers),
                     MessageValue::String(&text),
                     MessageValue::Bytes(&bytes),
@@ -435,7 +432,7 @@ mod tests {
         bytes.fill(99);
         integers.fill(99);
         let envelope = receiver.take().unwrap();
-        assert_eq!(envelope.record_mask, 1);
+        assert_eq!(envelope.arguments[0], 7);
         assert_eq!(envelope.lists.mask, 2);
         assert_eq!(envelope.lists.values, [i64::MIN; 64]);
         assert_eq!(envelope.bytes.mask, 12);

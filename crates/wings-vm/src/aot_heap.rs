@@ -2,9 +2,9 @@ use std::alloc::{Layout, alloc};
 
 use wings_abi::{
     HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
-    HEAP_READ_INT, HEAP_RECORD_INT, HEAP_TAIL_INTS, MAX_SHADOW_ROOTS, STATUS_EMPTY_LIST,
-    STATUS_HEAP_EXHAUSTED, STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK,
-    STATUS_REPLY_REJECTED, ScalarContext, ShadowFrame,
+    HEAP_TAIL_INTS, MAX_SHADOW_ROOTS, STATUS_EMPTY_LIST, STATUS_HEAP_EXHAUSTED,
+    STATUS_INVALID_CONTROL, STATUS_INVALID_ROOT, STATUS_OK, STATUS_REPLY_REJECTED, ScalarContext,
+    ShadowFrame,
 };
 
 use crate::message_values::{BytePayload, ListPayload, MAX_LIST_ELEMENTS, MAX_MESSAGE_BYTES};
@@ -17,7 +17,6 @@ pub(crate) struct AotHeap {
     pub(crate) account: ResourceAccount,
     heap: RecordHeap,
     roots: ShadowRoots,
-    layout: RecordLayout,
     empty_list: RecordLayout,
     cons_list: RecordLayout,
     committed: Option<HeapRef>,
@@ -43,7 +42,6 @@ pub(crate) unsafe fn export_record_reply(
         wings_abi::expand_record_schema(records, root).map_err(|_| STATUS_REPLY_REJECTED)?;
     let mut arguments = [0; 64];
     let mut references = [0; 64];
-    let mut record_mask = 0;
     let mut lists = ListPayload::default();
     let mut count = 0;
     collect_record_fields(
@@ -53,7 +51,6 @@ pub(crate) unsafe fn export_record_reply(
         records,
         &mut arguments,
         &mut references,
-        &mut record_mask,
         &mut count,
     )?;
     if count != expansion.count {
@@ -138,7 +135,6 @@ pub(crate) unsafe fn export_record_reply(
     let payload = crate::host_values::HostMessage {
         arguments,
         count,
-        record_mask,
         lists,
         bytes,
     };
@@ -153,7 +149,6 @@ fn collect_record_fields(
     records: &[wings_abi::RecordSchema],
     arguments: &mut [i64; 64],
     references: &mut [u64; 64],
-    record_mask: &mut u64,
     count: &mut usize,
 ) -> Result<(), u32> {
     crate::execution::runtime_checkpoint(context, true)?;
@@ -185,7 +180,6 @@ fn collect_record_fields(
                 records,
                 arguments,
                 references,
-                record_mask,
                 count,
             )?;
             continue;
@@ -194,7 +188,6 @@ fn collect_record_fields(
             return Err(STATUS_REPLY_REJECTED);
         }
         let index = *count;
-        let bit = 1u64 << index;
         match (*ty, value) {
             (wings_abi::ValueType::Int, RecordValue::Int(value)) => arguments[index] = value,
             (wings_abi::ValueType::Pid, RecordValue::Int(value)) if value >= 0 => {
@@ -204,12 +197,6 @@ fn collect_record_fields(
                 arguments[index] = i64::from(value)
             }
             (wings_abi::ValueType::Unit, RecordValue::Unit) => arguments[index] = 0,
-            (wings_abi::ValueType::Ref, RecordValue::Ref(value)) => {
-                *record_mask |= bit;
-                arguments[index] = unsafe { pointer.as_ref() }
-                    .ok_or(STATUS_INVALID_ROOT)?
-                    .record_value(value.encoded() as i64)?;
-            }
             (
                 ty @ (wings_abi::ValueType::ListRef
                 | wings_abi::ValueType::BytesRef
@@ -266,7 +253,7 @@ impl AotHeap {
         if records.len() > 32 {
             return Err("record schema count exceeds 32".into());
         }
-        let mut heap = RecordHeap::new(account, capacity, 3 + records.len())?;
+        let mut heap = RecordHeap::new(account, capacity, 2 + records.len())?;
         let metadata = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
                 - std::mem::size_of::<RecordHeap>()
@@ -277,7 +264,6 @@ impl AotHeap {
             bytes: (records.len() * std::mem::size_of::<NamedLayout>()) as u64,
             ..Resources::default()
         })?;
-        let layout = heap.register_layout(&[FieldType::Int])?;
         let empty_list = heap.register_layout(&[FieldType::Unit])?;
         let cons_list = heap.register_layout(&[FieldType::Int, FieldType::Ref])?;
         let mut named = Vec::new();
@@ -327,7 +313,6 @@ impl AotHeap {
                 account: account.clone(),
                 heap,
                 roots,
-                layout,
                 empty_list,
                 cons_list,
                 committed: None,
@@ -348,15 +333,6 @@ impl AotHeap {
     pub(crate) fn committed_bytes_len(&self) -> Option<usize> {
         let reference = self.committed?;
         self.heap.bytes(reference).ok().map(<[u8]>::len)
-    }
-
-    pub(crate) fn commit(&mut self, encoded: i64) -> Result<(), String> {
-        let reference = self.heap.import_reference(encoded as u64)?;
-        if !self.heap.has_layout(reference, self.layout)? {
-            return Err("record state requires an Int field".into());
-        }
-        self.committed = Some(reference);
-        Ok(())
     }
 
     pub(crate) fn commit_list(&mut self, encoded: i64) -> Result<(), String> {
@@ -389,7 +365,7 @@ impl AotHeap {
         } else if ty == wings_abi::ValueType::ListRef {
             self.commit_list(encoded)
         } else {
-            self.commit(encoded)
+            Err("invalid heap state type".into())
         }
     }
 
@@ -399,7 +375,6 @@ impl AotHeap {
             .import_reference(encoded as u64)
             .map_err(|_| STATUS_INVALID_ROOT)?;
         let valid = match ty {
-            wings_abi::ValueType::Ref => self.heap.has_layout(reference, self.layout),
             wings_abi::ValueType::ListRef => {
                 return self
                     .list_reference(encoded as u64)
@@ -523,28 +498,6 @@ impl AotHeap {
                 self.incoming[slot] = None;
             }
             self.incoming_mask = 0;
-        }
-    }
-
-    pub(crate) fn record_value(&self, encoded: i64) -> Result<i64, u32> {
-        let reference = self
-            .heap
-            .import_reference(encoded as u64)
-            .map_err(|_| STATUS_INVALID_ROOT)?;
-        if !self
-            .heap
-            .has_layout(reference, self.layout)
-            .map_err(|_| STATUS_INVALID_ROOT)?
-        {
-            return Err(STATUS_INVALID_ROOT);
-        }
-        match self
-            .heap
-            .get(reference, 0)
-            .map_err(|_| STATUS_INVALID_ROOT)?
-        {
-            RecordValue::Int(value) => Ok(value),
-            _ => Err(STATUS_INVALID_ROOT),
         }
     }
 
@@ -743,11 +696,10 @@ unsafe fn import_bytes(context: &mut ScalarContext, data: &[u8]) -> Result<u64, 
 pub(crate) unsafe fn import_arguments(
     context: &mut ScalarContext,
     arguments: &mut [i64],
-    mask: u64,
     lists: &ListPayload,
     bytes: &BytePayload,
 ) -> Result<(), u32> {
-    if (mask | lists.mask | bytes.mask) == 0 && lists.count == 0 && bytes.is_trivially_empty() {
+    if (lists.mask | bytes.mask) == 0 && lists.count == 0 && bytes.is_trivially_empty() {
         return if arguments.len() <= 64 {
             Ok(())
         } else {
@@ -756,15 +708,13 @@ pub(crate) unsafe fn import_arguments(
     }
     if !lists.valid(arguments, lists.mask)
         || !bytes.valid(arguments, bytes.mask)
-        || mask & (lists.mask | bytes.mask) != 0
         || lists.mask & bytes.mask != 0
-        || (arguments.len() < 64 && mask >> arguments.len() != 0)
     {
         return Err(STATUS_INVALID_CONTROL);
     }
     for (index, argument) in arguments.iter_mut().enumerate() {
         let bit = 1u64 << index;
-        if (mask | lists.mask | bytes.mask) & bit == 0 {
+        if (lists.mask | bytes.mask) & bit == 0 {
             continue;
         }
         if context.heap_data.is_null() {
@@ -785,33 +735,26 @@ pub(crate) unsafe fn import_arguments(
             *argument = encoded as i64;
             continue;
         }
-        let mut encoded = if mask & bit != 0 {
-            let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.layout;
-            unsafe { allocate_managed(context, layout, &[RecordValue::Int(*argument)]) }?
-        } else {
-            let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.empty_list;
-            unsafe { allocate_managed(context, layout, &[RecordValue::Unit]) }?
-        };
+        let layout = unsafe { &*context.heap_data.cast::<AotHeap>() }.empty_list;
+        let mut encoded = unsafe { allocate_managed(context, layout, &[RecordValue::Unit]) }?;
         unsafe { root_incoming(context, index, encoded) }?;
-        if lists.mask & bit != 0 {
-            let (start, length) = ListPayload::segment(*argument);
-            for value in lists.values[start..start + length].iter().rev() {
-                crate::execution::runtime_checkpoint(context, true)?;
-                let heap = unsafe { &*context.heap_data.cast::<AotHeap>() };
-                let tail = heap
-                    .heap
-                    .import_reference(encoded)
-                    .map_err(|_| STATUS_INVALID_ROOT)?;
-                let layout = heap.cons_list;
-                encoded = unsafe {
-                    allocate_managed(
-                        context,
-                        layout,
-                        &[RecordValue::Int(*value), RecordValue::Ref(tail)],
-                    )
-                }?;
-                unsafe { root_incoming(context, index, encoded) }?;
-            }
+        let (start, length) = ListPayload::segment(*argument);
+        for value in lists.values[start..start + length].iter().rev() {
+            crate::execution::runtime_checkpoint(context, true)?;
+            let heap = unsafe { &*context.heap_data.cast::<AotHeap>() };
+            let tail = heap
+                .heap
+                .import_reference(encoded)
+                .map_err(|_| STATUS_INVALID_ROOT)?;
+            let layout = heap.cons_list;
+            encoded = unsafe {
+                allocate_managed(
+                    context,
+                    layout,
+                    &[RecordValue::Int(*value), RecordValue::Ref(tail)],
+                )
+            }?;
+            unsafe { root_incoming(context, index, encoded) }?;
         }
         *argument = encoded as i64;
     }
@@ -1673,18 +1616,10 @@ pub(crate) unsafe extern "C" fn heap_call(
         }
         return STATUS_OK;
     }
-    if matches!(
-        operation,
-        HEAP_RECORD_INT | HEAP_EMPTY_INTS | HEAP_PREPEND_INT
-    ) {
+    if matches!(operation, HEAP_EMPTY_INTS | HEAP_PREPEND_INT) {
         let (layout, values, count) = {
             let heap = unsafe { &*pointer };
             match operation {
-                HEAP_RECORD_INT => (
-                    heap.layout,
-                    [RecordValue::Int(argument as i64), RecordValue::Unit],
-                    1,
-                ),
                 HEAP_EMPTY_INTS => (heap.empty_list, [RecordValue::Unit; 2], 1),
                 _ => {
                     let Ok(tail) = heap.list_reference(unsafe { *output }) else {
@@ -1733,22 +1668,6 @@ pub(crate) unsafe extern "C" fn heap_call(
                 };
                 tail.encoded()
             }
-        }
-        HEAP_READ_INT => {
-            let Ok(reference) = heap.heap.import_reference(argument) else {
-                return STATUS_INVALID_ROOT;
-            };
-            if !heap
-                .heap
-                .has_layout(reference, heap.layout)
-                .unwrap_or(false)
-            {
-                return STATUS_INVALID_ROOT;
-            }
-            let Ok(RecordValue::Int(value)) = heap.heap.get(reference, 0) else {
-                return STATUS_INVALID_ROOT;
-            };
-            value as u64
         }
         _ => return STATUS_INVALID_CONTROL,
     };
@@ -1805,13 +1724,13 @@ mod tests {
             .unwrap();
         let scalar = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .allocate(heap.empty_list, &[RecordValue::Unit])
             .unwrap();
         heap.commit_typed(ValueType::RecordRef(0), first.encoded() as i64)
             .unwrap();
         for ty in [
             ValueType::RecordRef(1),
-            ValueType::Ref,
+            ValueType::ListRef,
             ValueType::StringRef,
             ValueType::RecordRef(32),
         ] {
@@ -2384,7 +2303,14 @@ mod tests {
         let vm = ResourceAccount::vm(limits);
         let tenant = vm.tenant(limits).unwrap();
         let account = tenant.process(limits).unwrap();
-        (vm, AotHeap::new(&account, capacity).unwrap())
+        let records = [wings_abi::RecordSchema {
+            name: "Box".into(),
+            fields: vec![("value".into(), wings_abi::ValueType::Int)],
+        }];
+        (
+            vm,
+            AotHeap::new_with_records(&account, capacity, &records).unwrap(),
+        )
     }
 
     fn context(heap: &mut AotHeap, flag: &std::sync::atomic::AtomicU32) -> ScalarContext {
@@ -2772,7 +2698,7 @@ mod tests {
         let (vm, mut heap) = fixture(4);
         for _ in 0..4 {
             heap.heap
-                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .allocate(heap.named[0].layout, &[RecordValue::Int(0)])
                 .unwrap();
         }
         let flag = std::sync::atomic::AtomicU32::new(0);
@@ -2791,7 +2717,6 @@ mod tests {
             import_arguments(
                 &mut context,
                 &mut arguments,
-                0,
                 &ListPayload::default(),
                 &payload,
             )
@@ -2820,7 +2745,6 @@ mod tests {
                 import_arguments(
                     &mut context,
                     &mut invalid,
-                    0,
                     &ListPayload::default(),
                     &payload,
                 )
@@ -2867,7 +2791,6 @@ mod tests {
                     import_arguments(
                         &mut context,
                         &mut [encoded],
-                        0,
                         &ListPayload::default(),
                         &payload,
                     )
@@ -2884,7 +2807,6 @@ mod tests {
                         import_arguments(
                             &mut context,
                             &mut [encoded],
-                            0,
                             &ListPayload::default(),
                             &payload,
                         )
@@ -2900,7 +2822,6 @@ mod tests {
                     import_arguments(
                         &mut context,
                         &mut [encoded],
-                        0,
                         &ListPayload::default(),
                         &payload,
                     )
@@ -2913,7 +2834,6 @@ mod tests {
                 import_arguments(
                     &mut context,
                     &mut [encoded],
-                    0,
                     &ListPayload::default(),
                     &payload,
                 )
@@ -2977,10 +2897,10 @@ mod tests {
 
     #[test]
     fn byte_imports_root_mixed_arguments_at_every_copy_and_collection_checkpoint() {
-        let (vm, mut heap) = fixture(7);
-        for _ in 0..7 {
+        let (vm, mut heap) = fixture(6);
+        for _ in 0..6 {
             heap.heap
-                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .allocate(heap.named[0].layout, &[RecordValue::Int(0)])
                 .unwrap();
         }
         let flag = std::sync::atomic::AtomicU32::new(0);
@@ -3001,10 +2921,10 @@ mod tests {
             ListPayload::encode(32768, 32768),
             ListPayload::encode(65536, 0),
         ];
-        unsafe { import_arguments(&mut context, &mut arguments, 2, &lists, &bytes) }.unwrap();
+        unsafe { import_arguments(&mut context, &mut arguments, &lists, &bytes) }.unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
-        assert_eq!(heap.stats().allocated, 7);
-        assert_eq!(heap.record_value(arguments[1]), Ok(17));
+        assert_eq!(heap.stats().allocated, 6);
+        assert_eq!(arguments[1], 17);
         for (index, expected) in [
             (0, &bytes.data[..32768]),
             (3, &bytes.data[32768..]),
@@ -3095,11 +3015,14 @@ mod tests {
             );
             assert_eq!(vm.used(), baseline);
         }
-        assert!(heap.commit(original as i64).is_err());
+        assert!(
+            heap.commit_typed(wings_abi::ValueType::RecordRef(0), original as i64)
+                .is_err()
+        );
         assert!(heap.commit_list(original as i64).is_err());
         let record = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(3)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(3)])
             .unwrap();
         assert_eq!(
             unsafe {
@@ -3368,7 +3291,7 @@ mod tests {
         context.remaining_steps = 4096;
         let record = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(9)])
             .unwrap();
         let mut arguments = [record.encoded() as i64];
         context.slice_remaining = 1;
@@ -3389,10 +3312,10 @@ mod tests {
 
     #[test]
     fn list_imports_root_each_tail_and_prior_mixed_arguments_at_every_checkpoint() {
-        let (vm, mut heap) = fixture(9);
-        for _ in 0..9 {
+        let (vm, mut heap) = fixture(8);
+        for _ in 0..8 {
             heap.heap
-                .allocate(heap.layout, &[RecordValue::Int(0)])
+                .allocate(heap.named[0].layout, &[RecordValue::Int(0)])
                 .unwrap();
         }
         let flag = std::sync::atomic::AtomicU32::new(0);
@@ -3414,15 +3337,14 @@ mod tests {
             import_arguments(
                 &mut context,
                 &mut arguments,
-                2,
                 &payload,
                 &BytePayload::default(),
             )
         }
         .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
-        assert_eq!(heap.record_value(arguments[1]), Ok(17));
-        assert_eq!(heap.stats().allocated, 8);
+        assert_eq!(arguments[1], 17);
+        assert_eq!(heap.stats().allocated, 7);
         for (index, expected) in [(0, vec![i64::MIN, i64::MAX]), (2, vec![-7, 9]), (4, vec![])] {
             let mut current = arguments[index];
             for value in expected {
@@ -3449,14 +3371,13 @@ mod tests {
                 import_arguments(
                     &mut context,
                     &mut arguments,
-                    0,
                     &empty_payload,
                     &BytePayload::default(),
                 )
             },
             Err(STATUS_HEAP_EXHAUSTED)
         );
-        assert_eq!(heap.stats().allocated, 9);
+        assert_eq!(heap.stats().allocated, 8);
         heap.clear_incoming();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         drop(heap);
@@ -3477,7 +3398,6 @@ mod tests {
             import_arguments(
                 &mut context,
                 &mut arguments,
-                0,
                 &payload,
                 &BytePayload::default(),
             )
@@ -3496,59 +3416,19 @@ mod tests {
     }
 
     #[test]
-    fn imports_all_64_record_parameters_including_the_highest_mask_bit() {
-        let (vm, mut heap) = fixture(64);
-        let cancellation = std::sync::atomic::AtomicU32::new(0);
-        let mut context = ScalarContext {
-            cancellation: &cancellation,
-            remaining_steps: 256,
-            yield_request: &cancellation,
-            slice_remaining: 256,
-            slow_path: None,
-            data: std::ptr::null_mut(),
-            stack_limit: 0,
-            roots: std::ptr::null(),
-            heap_call: None,
-            heap_data: std::ptr::from_mut(&mut *heap).cast(),
-            effect_call: None,
-        };
-        let mut arguments = std::array::from_fn::<_, 64, _>(|index| index as i64 - 32);
-        unsafe {
-            import_arguments(
-                &mut context,
-                &mut arguments,
-                u64::MAX,
-                &ListPayload::default(),
-                &BytePayload::default(),
-            )
-        }
-        .unwrap();
-        unsafe { heap.collect(std::ptr::null()) }.unwrap();
-        assert_eq!(heap.stats().allocated, 64);
-        assert_eq!(context.remaining_steps, 192);
-        for (index, argument) in arguments.iter().enumerate() {
-            assert_eq!(heap.record_value(*argument), Ok(index as i64 - 32));
-        }
-        heap.clear_incoming();
-        unsafe { heap.collect(std::ptr::null()) }.unwrap();
-        assert_eq!(heap.stats().allocated, 0);
-        drop(heap);
-        assert_eq!(vm.used(), Resources::default());
-    }
-
-    #[test]
     fn incoming_parameters_survive_gc_before_entry_and_later_parameter_allocation() {
         let (vm, mut heap) = fixture(3);
         let committed = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(7)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(7)])
             .unwrap();
-        heap.commit(committed.encoded() as i64).unwrap();
-        heap.heap
-            .allocate(heap.layout, &[RecordValue::Int(8)])
+        heap.commit_typed(wings_abi::ValueType::RecordRef(0), committed.encoded() as i64)
             .unwrap();
         heap.heap
-            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(8)])
+            .unwrap();
+        heap.heap
+            .allocate(heap.named[0].layout, &[RecordValue::Int(9)])
             .unwrap();
         let cancellation = std::sync::atomic::AtomicU32::new(0);
         let yielding = std::sync::atomic::AtomicU32::new(0);
@@ -3565,19 +3445,22 @@ mod tests {
             heap_data: std::ptr::from_mut(&mut *heap).cast(),
             effect_call: None,
         };
-        let mut arguments = [11, 22];
+        let mut arguments = [0, 0];
+        let lists = ListPayload {
+            mask: 3,
+            ..ListPayload::default()
+        };
         unsafe {
             import_arguments(
                 &mut context,
                 &mut arguments,
-                3,
-                &ListPayload::default(),
+                &lists,
                 &BytePayload::default(),
             )
         }
         .unwrap();
-        assert_eq!(heap.record_value(arguments[0]), Ok(11));
-        assert_eq!(heap.record_value(arguments[1]), Ok(22));
+        assert_eq!(heap.list_node(arguments[0]), Ok(None));
+        assert_eq!(heap.list_node(arguments[1]), Ok(None));
         let first = heap.heap.import_reference(arguments[0] as u64).unwrap();
         let second = heap.heap.import_reference(arguments[1] as u64).unwrap();
         heap.incoming =
@@ -3590,19 +3473,11 @@ mod tests {
         };
         unsafe { heap.collect(&frame) }.unwrap();
         assert_eq!(heap.stats().allocated, 3);
-        assert_eq!(heap.record_value(arguments[0]), Ok(11));
+        assert_eq!(heap.list_node(arguments[0]), Ok(None));
         heap.clear_incoming();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.stats().allocated, 1);
-        assert_eq!(heap.record_value(arguments[0]), Err(STATUS_INVALID_ROOT));
-        let list = heap
-            .heap
-            .allocate(heap.empty_list, &[RecordValue::Unit])
-            .unwrap();
-        assert_eq!(
-            heap.record_value(list.encoded() as i64),
-            Err(STATUS_INVALID_ROOT)
-        );
+        assert_eq!(heap.list_node(arguments[0]), Err(STATUS_INVALID_ROOT));
         drop(heap);
         assert_eq!(vm.used(), Resources::default());
     }
@@ -3630,10 +3505,13 @@ mod tests {
             .unwrap();
         let record = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(99)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(99)])
             .unwrap();
         assert!(heap.commit_list(record.encoded() as i64).is_err());
-        assert!(heap.commit(head.encoded() as i64).is_err());
+        assert!(
+            heap.commit_typed(wings_abi::ValueType::RecordRef(0), head.encoded() as i64)
+                .is_err()
+        );
         heap.commit_list(head.encoded() as i64).unwrap();
         let used = vm.used();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
@@ -3654,13 +3532,17 @@ mod tests {
         let (vm, mut heap) = fixture(2);
         let committed = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(7)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(7)])
             .unwrap();
         let candidate = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(9)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(9)])
             .unwrap();
-        heap.commit(committed.encoded() as i64).unwrap();
+        heap.commit_typed(
+            wings_abi::ValueType::RecordRef(0),
+            committed.encoded() as i64,
+        )
+        .unwrap();
         let slots = [candidate.encoded(); MAX_SHADOW_ROOTS];
         let frame = ShadowFrame {
             previous: std::ptr::null(),
@@ -3679,13 +3561,26 @@ mod tests {
         assert!(unsafe { heap.collect(&invalid) }.is_err());
         assert_eq!(heap.stats(), before);
         assert_eq!(heap.heap.get(committed, 0).unwrap(), RecordValue::Int(7));
-        heap.commit(candidate.encoded() as i64).unwrap();
+        heap.commit_typed(
+            wings_abi::ValueType::RecordRef(0),
+            candidate.encoded() as i64,
+        )
+        .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.stats().allocated, 1);
         assert!(heap.heap.get(committed, 0).is_err());
-        assert!(heap.commit(committed.encoded() as i64).is_err());
+        assert!(
+            heap.commit_typed(
+                wings_abi::ValueType::RecordRef(0),
+                committed.encoded() as i64
+            )
+            .is_err()
+        );
         assert_eq!(heap.committed, Some(candidate));
-        assert!(heap.commit(0).is_err());
+        assert!(
+            heap.commit_typed(wings_abi::ValueType::RecordRef(0), 0)
+                .is_err()
+        );
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         assert_eq!(heap.heap.get(candidate, 0).unwrap(), RecordValue::Int(9));
         drop(heap);
@@ -3697,15 +3592,15 @@ mod tests {
         let (vm, mut heap) = fixture(3);
         let first = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(11)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(11)])
             .unwrap();
         let second = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(22)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(22)])
             .unwrap();
         let dead = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(33)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(33)])
             .unwrap();
         let parent_slots = [first.encoded()];
         let parent = ShadowFrame {
@@ -3739,7 +3634,7 @@ mod tests {
         let (_, mut heap) = fixture(2);
         let live = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(1)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(1)])
             .unwrap();
         let slots = [live.encoded(), 0];
         let invalid_handle = ShadowFrame {
@@ -3792,12 +3687,12 @@ mod tests {
         let (_, mut heap) = fixture(1);
         let stale = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(1)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(1)])
             .unwrap();
         unsafe { heap.collect(std::ptr::null()) }.unwrap();
         let current = heap
             .heap
-            .allocate(heap.layout, &[RecordValue::Int(2)])
+            .allocate(heap.named[0].layout, &[RecordValue::Int(2)])
             .unwrap();
         let slots = [stale.encoded()];
         let frame = ShadowFrame {

@@ -34,8 +34,6 @@ pub const EFFECT_SEND_AFTER_SELF: u32 = 9;
 pub const EFFECT_SEND_AFTER: u32 = 10;
 pub const EFFECT_SEND_AFTER_ACTOR: u32 = 11;
 pub const EFFECT_MONITOR: u32 = 12;
-pub const HEAP_RECORD_INT: u32 = 0;
-pub const HEAP_READ_INT: u32 = 1;
 pub const HEAP_COLLECT: u32 = 2;
 pub const HEAP_EMPTY_INTS: u32 = 3;
 pub const HEAP_PREPEND_INT: u32 = 4;
@@ -70,7 +68,6 @@ pub enum ValueType {
     Int,
     Bool,
     Unit,
-    Ref,
     ListRef,
     BytesRef,
     StringRef,
@@ -85,8 +82,7 @@ impl ValueType {
             Self::Int => true,
             Self::Bool => matches!(value, 0 | 1),
             Self::Unit => value == 0,
-            Self::Ref
-            | Self::ListRef
+            Self::ListRef
             | Self::BytesRef
             | Self::StringRef
             | Self::RecordRef(_)
@@ -98,7 +94,7 @@ impl ValueType {
     pub fn is_reference(self) -> bool {
         matches!(
             self,
-            Self::Ref | Self::ListRef | Self::BytesRef | Self::StringRef | Self::RecordRef(_)
+            Self::ListRef | Self::BytesRef | Self::StringRef | Self::RecordRef(_)
         )
     }
 
@@ -280,7 +276,6 @@ pub struct EffectRequest {
     pub count: usize,
     pub callback: u32,
     pub timeout_ms: i64,
-    pub record_mask: u64,
     pub list_mask: u64,
     pub bytes_mask: u64,
     pub string_mask: u64,

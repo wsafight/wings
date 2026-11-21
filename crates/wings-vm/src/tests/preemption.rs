@@ -219,7 +219,6 @@ unsafe extern "C" fn effect_without_checkpoint(
         operation: wings_abi::EFFECT_SELF_PID,
         callback: 0,
         timeout_ms: 0,
-        record_mask: 0,
         list_mask: 0,
         bytes_mask: 0,
         string_mask: 0,

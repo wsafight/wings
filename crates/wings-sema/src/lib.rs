@@ -12,7 +12,6 @@ pub enum Type {
     Int,
     Bool,
     Unit,
-    BoxInt,
     IntList,
     Bytes,
     String,
@@ -48,7 +47,6 @@ impl std::fmt::Display for Type {
             Self::Int => formatter.write_str("int"),
             Self::Bool => formatter.write_str("bool"),
             Self::Unit => formatter.write_str("()"),
-            Self::BoxInt => formatter.write_str("box<int>"),
             Self::IntList => formatter.write_str("[int]"),
             Self::Bytes => formatter.write_str("bytes"),
             Self::String => formatter.write_str("str"),
@@ -332,7 +330,6 @@ pub fn analyze(text: &str) -> Analysis {
                         Type::Int
                             | Type::Bool
                             | Type::Unit
-                            | Type::BoxInt
                             | Type::IntList
                             | Type::Bytes
                             | Type::String
@@ -815,13 +812,6 @@ impl Checker {
                 }
                 Type::IntList
             }
-            TypeKind::Boxed(inner) => {
-                let elem = self.resolve_type(inner);
-                if !matches!(elem, Type::Int | Type::Unknown) {
-                    self.error("T002", "only box<int> is supported", ty_expr.span);
-                }
-                Type::BoxInt
-            }
             TypeKind::ActorPid(actor_name) => {
                 if actor_name.text.is_empty() {
                     Type::Unknown
@@ -864,7 +854,7 @@ impl Checker {
                     self.error(
                         "T002",
                         format!(
-                            "unknown type '{}'; built-in types are int, bool, (), str, bytes, [int], box<int>, pid and req",
+                            "unknown type '{}'; built-in types are int, bool, (), str, bytes, [int], pid and req",
                             name.text
                         ),
                         name.span,
@@ -1464,9 +1454,7 @@ impl Checker {
                 }
                 let signature: Option<(&[Type], Type)> = match (&recv_ty, method.text.as_str()) {
                     (Type::Int, "to_str") => Some((&[], Type::String)),
-                    (Type::Int, "box") => Some((&[], Type::BoxInt)),
                     (Type::Bool, "to_str") => Some((&[], Type::String)),
-                    (Type::BoxInt, "get") => Some((&[], Type::Int)),
                     (Type::IntList, "is_empty") => Some((&[], Type::Bool)),
                     (Type::IntList, "head") => Some((&[], Type::Int)),
                     (Type::IntList, "tail") => Some((&[], Type::IntList)),
@@ -1964,19 +1952,6 @@ impl Checker {
                         }
                         Type::Unit
                     }
-                    "box" => {
-                        if arguments.len() != 1 {
-                            self.error(
-                                "T013",
-                                format!("box(value) expects 1 argument, found {}", arguments.len()),
-                                expression.span,
-                            );
-                        }
-                        if let Some((actual, arg)) = arg_types.first().zip(arguments.first()) {
-                            self.require(actual, &Type::Int, arg.span);
-                        }
-                        Type::BoxInt
-                    }
                     _ => {
                         self.error(
                             "T012",
@@ -2046,15 +2021,13 @@ impl Checker {
                         }
                         if matches!(
                             left_type,
-                            Type::BoxInt
-                                | Type::Struct(_)
+                            Type::Struct(_)
                                 | Type::IntList
                                 | Type::Bytes
                                 | Type::RequestId
                         ) || matches!(
                             right_type,
-                            Type::BoxInt
-                                | Type::Struct(_)
+                            Type::Struct(_)
                                 | Type::IntList
                                 | Type::Bytes
                                 | Type::RequestId

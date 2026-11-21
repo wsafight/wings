@@ -1,18 +1,19 @@
 actor SchedulerDemo {
+  struct Boxed { value: int }
   state saved: [int] = []
 
   on begin(value: int) -> int {
     let child = spawn()
     let items = [value + 1, value + 2]
-    child ! store(items, box(value))
+    child ! store(items, Boxed(value))
     gc()
     let id = child.ask(compute([3]), timeout: 60000, then: completed)
     value
   }
 
-  on store(items: [int], record: box<int>) {
+  on store(items: [int], record: Boxed) {
     gc()
-    saved = [items.head() + items.tail().head() + record.get()]
+    saved = [items.head() + items.tail().head() + record.value]
     gc()
   }
 

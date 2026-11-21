@@ -1,31 +1,32 @@
 actor RecordState {
-  state current = box(7)
+  struct Boxed { value: int }
+  state current = Boxed(7)
 
   on get -> int {
     gc()
-    current.get()
+    current.value
   }
 
   on set(value: int) -> int {
-    current = box(value)
+    current = Boxed(value)
     gc()
-    current.get()
+    current.value
   }
 
   on replace(value: int) {
-    current = box(value)
+    current = Boxed(value)
     gc()
   }
 
   on fail -> int {
-    current = box(99)
+    current = Boxed(99)
     gc()
     1 / 0
   }
 
   on conditional(flag: bool) -> int {
-    let selected = if flag { box(11).get() } else { current.get() }
+    let selected = if flag { Boxed(11).value } else { current.value }
     gc()
-    current.get() + selected
+    current.value + selected
   }
 }

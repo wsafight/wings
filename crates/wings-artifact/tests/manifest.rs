@@ -280,8 +280,8 @@ fn rejects_unknown_format_and_old_or_future_scalar_abi_versions() {
 }
 
 #[test]
-fn accepts_copied_record_and_list_replies_and_parameters() {
-    for ty in [ValueType::Ref, ValueType::ListRef] {
+fn accepts_copied_list_replies_and_parameters() {
+    for ty in [ValueType::ListRef] {
         let mut with_state = manifest();
         with_state.state = ty;
         with_state.validate().unwrap();
@@ -343,7 +343,6 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
         ValueType::Int,
         ValueType::Bool,
         ValueType::Unit,
-        ValueType::Ref,
         ValueType::ListRef,
         ValueType::BytesRef,
         ValueType::Pid,
@@ -363,7 +362,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
         for wrong in [
             ValueType::Bool,
             ValueType::Unit,
-            ValueType::Ref,
+            ValueType::ListRef,
             ValueType::RequestId,
         ] {
             let mut invalid = manifest.clone();

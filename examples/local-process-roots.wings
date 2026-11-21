@@ -1,13 +1,14 @@
 actor LocalProcessRoots {
-  state count = box(0)
+  struct Boxed { value: int }
+  state count = Boxed(0)
   on start(value: int, fail: bool) -> int {
     let old = count;
-    count = box(9);
+    count = Boxed(9);
     let child = spawn();
     child ! add(value);
     gc();
-    (old.get() + count.get()) / if fail { 0 } else { 1 }
+    (old.value + count.value) / if fail { 0 } else { 1 }
   }
-  on add(value: int) { count = box(count.get() + value) }
-  on read -> int { count.get() }
+  on add(value: int) { count = Boxed(count.value + value) }
+  on read -> int { count.value }
 }

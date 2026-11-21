@@ -189,8 +189,6 @@ fn lower_actor(
         let mut lowerer = Lowerer {
             functions: functions.clone(),
             records: &records,
-            in_function: true,
-            state_name: None,
             ..Lowerer::default()
         };
         let state = lowerer.push(ValueType::Unit, Operation::Constant(0))?;
@@ -238,8 +236,6 @@ fn lower_actor(
         functions: functions.clone(),
         records: &records,
         handlers: handler_ids.clone(),
-        in_function: false,
-        state_name: None,
         ..Lowerer::default()
     };
     let initial_state = match (actor.states.as_slice(), multi_state_schema) {
@@ -278,11 +274,6 @@ fn lower_actor(
         if handler.parameters.len() > 64 {
             return Err("too many parameters: message exceeds 64 source parameters".into());
         }
-        let single_state_name = if state_fields.len() == 1 {
-            Some(state_fields[0].0.clone())
-        } else {
-            None
-        };
         let mut lowerer = Lowerer {
             actor_name: actor.name.text.as_str(),
             external_actors,
@@ -290,8 +281,6 @@ fn lower_actor(
             functions: functions.clone(),
             records: &records,
             handlers: handler_ids.clone(),
-            in_function: false,
-            state_name: single_state_name,
             ..Lowerer::default()
         };
         let raw_state = lowerer.push(state_type, Operation::State)?;
@@ -423,8 +412,6 @@ struct Lowerer<'program> {
     functions: HashMap<&'program str, (usize, ValueType)>,
     expression_depth: usize,
     handlers: HashMap<&'program str, usize>,
-    in_function: bool,
-    state_name: Option<String>,
     temp_counter: usize,
 }
 
@@ -540,32 +527,13 @@ impl Lowerer<'_> {
         FBody: FnMut(&mut Self) -> Result<(), String>,
     {
         let outer = self.bindings.clone();
-        if !self.in_function
-            && let Some(ref single_state) = self.state_name.clone()
-            && (carried_keys.is_empty()
-                || (carried_keys.len() == 1 && &carried_keys[0] == single_state))
-        {
-            let init = self.bindings[single_state];
-            let state_ty = self.instructions[init].ty;
-            let header = self.push(state_ty, Operation::Loop(init))?;
-            self.bindings.insert(single_state.clone(), header);
-            let cond = emit_cond(self)?;
-            self.push(ValueType::Unit, Operation::While(cond))?;
-            emit_body(self)?;
-            let next = self.bindings[single_state];
-            let after = self.push(state_ty, Operation::EndLoop(next))?;
-            self.bindings = outer;
-            self.bindings.insert(single_state.clone(), after);
-            return Ok(());
-        }
-
         if carried_keys.is_empty() {
             let dummy = self.push(ValueType::Unit, Operation::Constant(0))?;
-            let header = self.push(ValueType::Unit, Operation::LoopValues(vec![dummy]))?;
+            let header = self.push(ValueType::Unit, Operation::Loop(vec![dummy]))?;
             let cond = emit_cond(self)?;
             self.push(ValueType::Unit, Operation::While(cond))?;
             emit_body(self)?;
-            self.push(ValueType::Unit, Operation::EndLoopValues(vec![header]))?;
+            self.push(ValueType::Unit, Operation::EndLoop(vec![header]))?;
             self.bindings = outer;
             return Ok(());
         }
@@ -575,7 +543,7 @@ impl Lowerer<'_> {
             .iter()
             .map(|&reg| self.instructions[reg].ty)
             .collect();
-        let header = self.push(phi_types[0], Operation::LoopValues(initials))?;
+        let header = self.push(phi_types[0], Operation::Loop(initials))?;
         for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
             self.push(ty, Operation::PhiValue(idx))?;
         }
@@ -588,7 +556,7 @@ impl Lowerer<'_> {
         emit_body(self)?;
 
         let next_vals: Vec<Register> = carried_keys.iter().map(|k| self.bindings[k]).collect();
-        let after = self.push(phi_types[0], Operation::EndLoopValues(next_vals))?;
+        let after = self.push(phi_types[0], Operation::EndLoop(next_vals))?;
         for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
             self.push(ty, Operation::PhiValue(idx))?;
         }
@@ -616,29 +584,6 @@ impl Lowerer<'_> {
         self.bindings = outer.clone();
         let then_val = emit_then(self)?;
         let then_bindings = self.bindings.clone();
-        let result_ty = self.instructions[then_val].ty;
-
-        if mutated_keys.is_empty() {
-            self.push(ValueType::Unit, Operation::Else(then_val))?;
-            self.bindings = outer.clone();
-            let else_val = emit_else(self)?;
-            self.bindings = outer;
-            return self.push(result_ty, Operation::EndIf(else_val));
-        }
-
-        if mutated_keys.len() == 1 && result_ty == ValueType::Unit {
-            let k0 = &mutated_keys[0];
-            let then_k0 = then_bindings[k0];
-            let k0_ty = self.instructions[then_k0].ty;
-            self.push(ValueType::Unit, Operation::Else(then_k0))?;
-            self.bindings = outer.clone();
-            let _else_val = emit_else(self)?;
-            let else_k0 = self.bindings[k0];
-            let merged_k0 = self.push(k0_ty, Operation::EndIf(else_k0))?;
-            self.bindings = outer;
-            self.bindings.insert(k0.clone(), merged_k0);
-            return self.push(ValueType::Unit, Operation::Constant(0));
-        }
 
         let mut then_vec = Vec::with_capacity(1 + mutated_keys.len());
         then_vec.push(then_val);
@@ -649,7 +594,7 @@ impl Lowerer<'_> {
             .iter()
             .map(|&reg| self.instructions[reg].ty)
             .collect();
-        self.push(ValueType::Unit, Operation::ElseValues(then_vec))?;
+        self.push(ValueType::Unit, Operation::Else(then_vec))?;
 
         self.bindings = outer.clone();
         let else_val = emit_else(self)?;
@@ -659,7 +604,7 @@ impl Lowerer<'_> {
             else_vec.push(self.bindings[key]);
         }
 
-        let merged_base = self.push(phi_types[0], Operation::EndIfValues(else_vec))?;
+        let merged_base = self.push(phi_types[0], Operation::EndIf(else_vec))?;
         for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
             self.push(ty, Operation::PhiValue(idx))?;
         }
@@ -1273,13 +1218,9 @@ impl Lowerer<'_> {
                     (ValueType::Int, "to_str") => {
                         self.push(ValueType::StringRef, Operation::IntToString(recv))
                     }
-                    (ValueType::Int, "box") => {
-                        self.push(ValueType::Ref, Operation::RecordInt(recv))
-                    }
                     (ValueType::Bool, "to_str") => {
                         self.push(ValueType::StringRef, Operation::BoolToString(recv))
                     }
-                    (ValueType::Ref, "get") => self.push(ValueType::Int, Operation::ReadInt(recv)),
                     (ValueType::ListRef, "is_empty") => {
                         self.push(ValueType::Bool, Operation::IsEmptyInts(recv))
                     }
@@ -1618,10 +1559,6 @@ impl Lowerer<'_> {
                 }
                 match callee.text.as_str() {
                     "gc" => self.push(ValueType::Unit, Operation::Collect),
-                    "box" => {
-                        let val = self.expression(&arguments[0])?;
-                        self.push(ValueType::Ref, Operation::RecordInt(val))
-                    }
                     _ => Err(format!("unsupported builtin call '{}'", callee.text)),
                 }
             }
@@ -1897,7 +1834,6 @@ fn sema_type_to_value_type(
         Type::Int => Ok(ValueType::Int),
         Type::Bool => Ok(ValueType::Bool),
         Type::Unit => Ok(ValueType::Unit),
-        Type::BoxInt => Ok(ValueType::Ref),
         Type::IntList => Ok(ValueType::ListRef),
         Type::Bytes => Ok(ValueType::BytesRef),
         Type::String => Ok(ValueType::StringRef),
@@ -1919,7 +1855,6 @@ fn resolve_value_type(
     match &ty_expr.kind {
         TypeKind::Unit => Ok(ValueType::Unit),
         TypeKind::List(_) => Ok(ValueType::ListRef),
-        TypeKind::Boxed(_) => Ok(ValueType::Ref),
         TypeKind::ActorPid(_) => Ok(ValueType::Pid),
         TypeKind::Named(name) => match name.text.as_str() {
             "int" => Ok(ValueType::Int),
@@ -1949,20 +1884,21 @@ mod tests {
             r#"
             actor P {
                 struct Empty {}
+                struct Saved { value: int }
                 struct A { text: str, values: [int] }
-                struct B { a: A, empty: Empty, saved: box<int>, data: bytes, flag: bool, unit: () }
+                struct B { a: A, empty: Empty, saved: Saved, data: bytes, flag: bool, unit: () }
                 state n = 0
                 fn make() -> B => B {
                     a: A { text: "中", values: [] },
                     empty: Empty {},
-                    saved: box(7),
+                    saved: Saved { value: 7 },
                     data: b"",
                     flag: true,
                     unit: (),
                 }
                 on store(value: B) { gc(); n = value.a.text.len() }
                 on start { self ! store(make()) }
-                on query(value: B) -> int { value.saved; 1 }
+                on query(value: B) -> int { value.saved.value; 1 }
                 on reply done(id: req, status: int, result: int) {}
                 on ask_it { let _ = self.ask(query(make()), timeout: 1_000, then: done) }
             }
@@ -1979,7 +1915,7 @@ mod tests {
                 vec![
                     ValueType::StringRef,
                     ValueType::ListRef,
-                    ValueType::Ref,
+                    ValueType::Int,
                     ValueType::BytesRef,
                     ValueType::Bool,
                     ValueType::Unit
@@ -1995,7 +1931,7 @@ mod tests {
                         Operation::RecordNew { .. }
                     ))
                     .count(),
-                3
+                4
             );
         }
         let start = &program.handlers[1].function;

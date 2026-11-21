@@ -451,7 +451,6 @@ mod tests {
                         &store,
                         &arguments,
                         false,
-                        0,
                         &ListPayload::default(),
                         &bytes,
                     )
@@ -461,7 +460,6 @@ mod tests {
                         &store,
                         &arguments,
                         32,
-                        0,
                         ListPayload::default(),
                         bytes,
                         false,
@@ -501,7 +499,6 @@ mod tests {
                         &module.handler("Read").unwrap(),
                         &[],
                         32,
-                        0,
                         ListPayload::default(),
                         BytePayload::default(),
                         false,

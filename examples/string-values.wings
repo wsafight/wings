@@ -1,4 +1,5 @@
 actor Text {
+  struct Boxed { value: int }
   state text = "";
 
   fn copy(value: str) -> str {
@@ -20,11 +21,11 @@ actor Text {
 
   on echo(value: str) -> bytes { gc(); text = value; value.bytes() }
 
-  on mixed(value: str, data: bytes, record: box<int>, values: [int], empty: str) -> int {
+  on mixed(value: str, data: bytes, record: Boxed, values: [int], empty: str) -> int {
     gc();
     text = value;
     value.len() * 1000000 + value.bytes().len() * 1000 + data.len() +
-      record.get() + values.head() + empty.len()
+      record.value + values.head() + empty.len()
   }
 
   on send_text(length: int) -> int {

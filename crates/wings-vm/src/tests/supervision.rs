@@ -49,7 +49,8 @@ fn failure(supervisor: &mut ScalarSupervisor, module: &ScalarModule, pid: Pid) -
 fn supervised_heap_initialization_rejections_roll_back_every_reservation() {
     let (vm, tenant, mut supervisor, mut module) = fixture(1);
     let data = Arc::get_mut(&mut module.inner).unwrap();
-    data.manifest.state = ValueType::Ref;
+    data.manifest.records = super::persistent_state::box_schema();
+    data.manifest.state = ValueType::RecordRef(0);
     data.initializer = super::persistent_state::record_initializer;
     let baseline = vm.used();
     assert!(
@@ -134,7 +135,8 @@ fn supervised_heap_restart_initializer_failure_releases_old_and_partial_new_heap
     }
     let (vm, _, mut supervisor, mut module) = fixture(1);
     let data = Arc::get_mut(&mut module.inner).unwrap();
-    data.manifest.state = ValueType::Ref;
+    data.manifest.records = super::persistent_state::box_schema();
+    data.manifest.state = ValueType::RecordRef(0);
     data.initializer = initializer;
     let baseline = vm.used();
     let child = supervisor

@@ -81,7 +81,6 @@ fn string_and_list_values_share_hover_completion_and_diagnostics() {
         "for",
         "str",
         "[int]",
-        "box<int>",
         "bytes::fill",
         "slice",
         "ask",
@@ -109,7 +108,6 @@ fn request_and_reply_handlers_share_definitions_and_hover() {
     for (ty, literal) in [
         ("bool", "false"),
         ("()", "()"),
-        ("box<int>", "box(7)"),
         ("[int]", "[1, 2]"),
         ("bytes", "b\"a\""),
         ("str", "\"ok\""),

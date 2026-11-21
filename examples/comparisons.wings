@@ -1,4 +1,5 @@
 actor Comparisons {
+  struct Boxed { value: int }
   state count = 0
   on eq(left: int, right: int) -> bool { left == right }
   on ne(left: int, right: int) -> bool { left != right }
@@ -10,8 +11,8 @@ actor Comparisons {
   on unit_eq(left: (), right: ()) -> bool { left == right }
   on max(left: int, right: int) -> int { if left >= right { left } else { right } }
   on heap(value: int) -> bool {
-    let record = box(value)
+    let record = Boxed(value)
     gc()
-    record.get() == value
+    record.value == value
   }
 }

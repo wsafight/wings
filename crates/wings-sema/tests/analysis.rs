@@ -350,7 +350,6 @@ fn naming_conventions_and_type_display_are_consistent() {
         (Type::Int, "int"),
         (Type::Bool, "bool"),
         (Type::Unit, "()"),
-        (Type::BoxInt, "box<int>"),
         (Type::IntList, "[int]"),
         (Type::Bytes, "bytes"),
         (Type::String, "str"),

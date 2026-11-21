@@ -134,9 +134,9 @@ fn malformed_branch_scope_is_rejected_before_writing_artifact() {
         instruction(ValueType::Bool, Operation::Constant(1)),
         instruction(ValueType::Unit, Operation::If(0)),
         instruction(ValueType::Int, Operation::Constant(7)),
-        instruction(ValueType::Unit, Operation::Else(2)),
+        instruction(ValueType::Unit, Operation::Else(vec![2])),
         instruction(ValueType::Int, Operation::Negate(2)),
-        instruction(ValueType::Int, Operation::EndIf(4)),
+        instruction(ValueType::Int, Operation::EndIf(vec![4])),
         instruction(ValueType::Unit, Operation::Constant(0)),
     ];
     function.state = 5;
@@ -158,12 +158,12 @@ fn roots_exceeding_capacity_are_rejected_before_creating_output() {
     for _ in 0..65 {
         function
             .instructions
-            .push(instruction(ValueType::Ref, Operation::RecordInt(0)));
+            .push(instruction(ValueType::ListRef, Operation::EmptyInts));
     }
     for reference in 1..=65 {
         function
             .instructions
-            .push(instruction(ValueType::Int, Operation::ReadInt(reference)));
+            .push(instruction(ValueType::Int, Operation::HeadInt(reference)));
     }
     function.state = 0;
     function.reply = 0;

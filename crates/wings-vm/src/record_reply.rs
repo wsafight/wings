@@ -38,7 +38,6 @@ pub(crate) struct RecordReplyLease {
 pub(crate) struct RecordCompletion {
     pub(crate) arguments: [i64; 64],
     pub(crate) count: usize,
-    pub(crate) record_mask: u64,
     pub(crate) lists: ListPayload,
     pub(crate) bytes: BytePayload,
 }
@@ -155,7 +154,6 @@ impl RecordReply {
         let mut result = RecordCompletion {
             arguments: [0; 64],
             count: expansion.count + 2,
-            record_mask: 0,
             lists: ListPayload::default(),
             bytes: BytePayload::default(),
         };
@@ -175,7 +173,6 @@ impl RecordReply {
             let payload = &reply.inner.payload;
             result.arguments[offset..result.count]
                 .copy_from_slice(&payload.arguments[..payload.count]);
-            result.record_mask = payload.record_mask << offset;
             result.lists = payload.lists;
             result.lists.mask <<= offset;
             result.bytes = BytePayload::record_completion(
@@ -187,7 +184,6 @@ impl RecordReply {
             for (index, ty) in expansion.fields[..expansion.count].iter().enumerate() {
                 let bit = 1u64 << (index + offset);
                 match ty {
-                    ValueType::Ref => result.record_mask |= bit,
                     ValueType::ListRef => {
                         result.lists.mask |= bit;
                         result.arguments[index + offset] = ListPayload::encode(0, 0);
@@ -228,7 +224,7 @@ impl<'reply> Iterator for RecordReplyValues<'reply> {
             ValueType::Int => MessageValue::Int(encoded),
             ValueType::Bool => MessageValue::Bool(encoded == 1),
             ValueType::Unit => MessageValue::Unit,
-            ValueType::Ref => MessageValue::RecordInt(encoded),
+            ValueType::Pid => MessageValue::Pid(encoded),
             ValueType::ListRef => {
                 let (start, length) = ListPayload::segment(encoded);
                 let values = &self.reply.inner.payload.lists.values[start..start + length];
@@ -245,7 +241,7 @@ impl<'reply> Iterator for RecordReplyValues<'reply> {
                 let text = std::str::from_utf8(values).expect("validated record reply string");
                 return Some(MessageValue::String(text));
             }
-            ValueType::RecordRef(_) | ValueType::Pid | ValueType::RequestId => {
+            ValueType::RecordRef(_) | ValueType::RequestId => {
                 return None;
             }
         };
@@ -268,7 +264,6 @@ impl PartialEq for RecordReply {
                     ValueType::Int
                     | ValueType::Bool
                     | ValueType::Unit
-                    | ValueType::Ref
                     | ValueType::Pid => left == right,
                     ValueType::ListRef => {
                         let (ls, ll) = ListPayload::segment(left);
@@ -304,14 +299,12 @@ fn validate_payload(expansion: &RecordExpansion, payload: &HostMessage) -> Resul
     if payload.count != expansion.count {
         return Err("record reply leaf count does not match schema".into());
     }
-    let mut record_mask = 0;
     let mut list_mask = 0;
     let mut bytes_mask = 0;
     let mut string_mask = 0;
     for (index, ty) in expansion.fields[..expansion.count].iter().enumerate() {
         let bit = 1u64 << index;
         match ty {
-            ValueType::Ref => record_mask |= bit,
             ValueType::ListRef => list_mask |= bit,
             ValueType::BytesRef => bytes_mask |= bit,
             ValueType::StringRef => {
@@ -333,10 +326,9 @@ fn validate_payload(expansion: &RecordExpansion, payload: &HostMessage) -> Resul
             }
         }
     }
-    if payload.record_mask != record_mask
-        || !payload
-            .lists
-            .valid(&payload.arguments[..payload.count], list_mask)
+    if !payload
+        .lists
+        .valid(&payload.arguments[..payload.count], list_mask)
         || !payload
             .bytes
             .valid(&payload.arguments[..payload.count], bytes_mask)

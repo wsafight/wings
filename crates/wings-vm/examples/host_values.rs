@@ -28,7 +28,7 @@ fn values<'value>(
 ) -> [MessageValue<'value>; 6] {
     [
         MessageValue::Bytes(first),
-        MessageValue::RecordInt(7),
+        MessageValue::Int(7),
         MessageValue::IntList(integers),
         MessageValue::Bytes(second),
         MessageValue::Bool(true),

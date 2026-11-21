@@ -12,7 +12,7 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
     HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
-    HEAP_READ_INT, HEAP_RECORD_INT, HEAP_TAIL_INTS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
+    HEAP_TAIL_INTS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
     STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
     STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, host_target,
 };
@@ -282,7 +282,8 @@ fn summarize_direct_function(
             | Operation::Binary(_, _, _)
             | Operation::If(_)
             | Operation::Else(_)
-            | Operation::EndIf(_) => {
+            | Operation::EndIf(_)
+            | Operation::PhiValue(_) => {
                 let Some(next) = base_steps.checked_add(1) else {
                     return DirectSummary::default();
                 };
@@ -316,7 +317,6 @@ fn summarize_direct_function(
             | Operation::IsEmptyInts(_)
             | Operation::HeadInt(_)
             | Operation::TailInts(_)
-            | Operation::ReadInt(_)
             | Operation::RecordField { .. } => {
                 uses_heap = true;
                 let Some(next) = base_steps.checked_add(2) else {
@@ -326,7 +326,6 @@ fn summarize_direct_function(
             }
             Operation::EmptyInts
             | Operation::PrependInt(_, _)
-            | Operation::RecordInt(_)
             | Operation::RecordNew { .. } => {
                 uses_heap = true;
                 let Some(next) = base_steps.checked_add(2) else {
@@ -515,10 +514,8 @@ fn compile_body(
     let uses_heap = function.instructions.iter().any(|instruction| {
         matches!(
             instruction.operation,
-            Operation::RecordInt(_)
-                | Operation::RecordNew { .. }
+            Operation::RecordNew { .. }
                 | Operation::RecordField { .. }
-                | Operation::ReadInt(_)
                 | Operation::Collect
                 | Operation::EmptyInts
                 | Operation::PrependInt(_, _)
@@ -814,18 +811,7 @@ fn compile_body(
         }
         let instruction = &function.instructions[index];
         let early_count = match instruction.operation {
-            Operation::Loop(initial) => {
-                let header = builder.create_block();
-                let after = builder.create_block();
-                builder.append_block_param(header, types::I64);
-                builder.append_block_param(after, types::I64);
-                builder.ins().jump(header, &[registers[initial]]);
-                builder.switch_to_block(header);
-                loops.push((header, after, index, 1usize));
-                registers.push(builder.block_params(header)[0]);
-                1usize
-            }
-            Operation::LoopValues(ref initials) => {
+            Operation::Loop(ref initials) => {
                 let header = builder.create_block();
                 let after = builder.create_block();
                 let arity = initials.len();
@@ -840,14 +826,7 @@ fn compile_body(
                 registers.extend_from_slice(builder.block_params(header));
                 arity
             }
-            Operation::EndIf(value) => {
-                let (_, merge_block) = branches.pop().expect("validated branch");
-                builder.ins().jump(merge_block, &[registers[value]]);
-                builder.switch_to_block(merge_block);
-                registers.push(builder.block_params(merge_block)[0]);
-                1usize
-            }
-            Operation::EndIfValues(ref values) => {
+            Operation::EndIf(ref values) => {
                 let (_, merge_block) = branches.pop().expect("validated branch");
                 let args: Vec<Value> = values.iter().map(|&reg| registers[reg]).collect();
                 builder.ins().jump(merge_block, &args);
@@ -975,22 +954,6 @@ fn compile_body(
                     _ => unreachable!(),
                 };
                 let request = effect_arguments.expect("effect argument storage");
-                let record_mask =
-                    arguments
-                        .iter()
-                        .enumerate()
-                        .fold(0u64, |mask, (index, register)| {
-                            mask | (u64::from(
-                                function.instructions[*register].ty == wings_abi::ValueType::Ref,
-                            ) << index)
-                        });
-                let record_mask = builder.ins().iconst(types::I64, record_mask as i64);
-                builder.ins().store(
-                    MemFlags::new(),
-                    record_mask,
-                    request,
-                    std::mem::offset_of!(wings_abi::EffectRequest, record_mask) as i32,
-                );
                 let list_mask =
                     arguments
                         .iter()
@@ -1145,7 +1108,7 @@ fn compile_body(
                 builder.switch_to_block(continued);
                 builder.ins().load(types::I64, MemFlags::new(), output, 0)
             }
-            Operation::Loop(_) | Operation::LoopValues(_) => builder.ins().iconst(types::I64, 0),
+            Operation::Loop(_) => builder.ins().iconst(types::I64, 0),
             Operation::While(condition) => {
                 let (_, after, header_index, arity) = *loops.last().expect("validated loop");
                 let body = builder.create_block();
@@ -1159,13 +1122,7 @@ fn compile_body(
                 builder.switch_to_block(body);
                 builder.ins().iconst(types::I64, 0)
             }
-            Operation::EndLoop(value) => {
-                let (header, after, _, _) = loops.pop().expect("validated loop");
-                builder.ins().jump(header, &[registers[value]]);
-                builder.switch_to_block(after);
-                builder.block_params(after)[0]
-            }
-            Operation::EndLoopValues(ref values) => {
+            Operation::EndLoop(ref values) => {
                 let (header, after, _, _) = loops.pop().expect("validated loop");
                 let args: Vec<Value> = values.iter().map(|&reg| registers[reg]).collect();
                 builder.ins().jump(header, &args);
@@ -1185,14 +1142,7 @@ fn compile_body(
                 branches.push((else_block, merge_block));
                 builder.ins().iconst(types::I64, 0)
             }
-            Operation::Else(value) => {
-                let (else_block, merge_block) = *branches.last().expect("validated branch");
-                builder.append_block_param(merge_block, types::I64);
-                builder.ins().jump(merge_block, &[registers[value]]);
-                builder.switch_to_block(else_block);
-                builder.ins().iconst(types::I64, 0)
-            }
-            Operation::ElseValues(ref values) => {
+            Operation::Else(ref values) => {
                 let (else_block, merge_block) = *branches.last().expect("validated branch");
                 for _ in 0..values.len() {
                     builder.append_block_param(merge_block, types::I64);
@@ -1202,7 +1152,7 @@ fn compile_body(
                 builder.switch_to_block(else_block);
                 builder.ins().iconst(types::I64, 0)
             }
-            Operation::EndIf(_) | Operation::EndIfValues(_) => builder.ins().iconst(types::I64, 0),
+            Operation::EndIf(_) => builder.ins().iconst(types::I64, 0),
             Operation::PhiValue(_) => unreachable!("phi values are consumed with owner op"),
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
             Operation::NullPid => builder.ins().iconst(types::I64, 0),
@@ -1468,23 +1418,6 @@ fn compile_body(
                     exit,
                 )
             }
-            Operation::RecordInt(operand) | Operation::ReadInt(operand) => {
-                let operation = if matches!(instruction.operation, Operation::RecordInt(_)) {
-                    HEAP_RECORD_INT
-                } else {
-                    HEAP_READ_INT
-                };
-                call_heap(
-                    &mut builder,
-                    pointer_type,
-                    parameters[3],
-                    heap_signature,
-                    operation,
-                    registers[operand],
-                    heap_output.expect("heap operation scratch"),
-                    exit,
-                )
-            }
             Operation::PrependInt(value, tail) => {
                 let output = heap_output.expect("heap operation scratch");
                 builder
@@ -1612,15 +1545,11 @@ fn needs_inline_roots(operation: &Operation) -> bool {
         && !matches!(
             operation,
             Operation::Loop(_)
-                | Operation::LoopValues(_)
                 | Operation::While(_)
                 | Operation::EndLoop(_)
-                | Operation::EndLoopValues(_)
                 | Operation::If(_)
                 | Operation::Else(_)
-                | Operation::ElseValues(_)
                 | Operation::EndIf(_)
-                | Operation::EndIfValues(_)
                 | Operation::PhiValue(_)
         )
 }

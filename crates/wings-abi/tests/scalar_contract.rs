@@ -230,11 +230,10 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
     assert_eq!(offset_of!(EffectRequest, count), 24);
     assert_eq!(offset_of!(EffectRequest, callback), 32);
     assert_eq!(offset_of!(EffectRequest, timeout_ms), 40);
-    assert_eq!(offset_of!(EffectRequest, record_mask), 48);
-    assert_eq!(offset_of!(EffectRequest, list_mask), 56);
-    assert_eq!(offset_of!(EffectRequest, bytes_mask), 64);
-    assert_eq!(offset_of!(EffectRequest, string_mask), 72);
-    assert_eq!(size_of::<EffectRequest>(), 80);
+    assert_eq!(offset_of!(EffectRequest, list_mask), 48);
+    assert_eq!(offset_of!(EffectRequest, bytes_mask), 56);
+    assert_eq!(offset_of!(EffectRequest, string_mask), 64);
+    assert_eq!(size_of::<EffectRequest>(), 72);
 }
 
 #[test]
@@ -300,7 +299,6 @@ fn bytes_have_no_scalar_encoding_and_operations_extend_without_layout_changes() 
 #[test]
 fn references_have_no_scalar_encoding_and_shadow_frames_are_native_c_layout() {
     for value in [0, 1, -1, i64::MIN, i64::MAX] {
-        assert!(!ValueType::Ref.accepts(value));
         assert!(!ValueType::ListRef.accepts(value));
         assert!(!ValueType::Pid.accepts(value));
         assert!(!ValueType::RequestId.accepts(value));

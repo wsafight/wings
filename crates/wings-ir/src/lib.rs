@@ -50,8 +50,6 @@ pub enum Operation {
     Negate(Register),
     Binary(Operator, Register, Register),
     Compare(Comparison, Register, Register),
-    RecordInt(Register),
-    ReadInt(Register),
     Collect,
     EmptyInts,
     PrependInt(Register, Register),
@@ -133,15 +131,11 @@ pub enum Operation {
         arguments: Vec<Register>,
     },
     If(Register),
-    Else(Register),
-    EndIf(Register),
-    ElseValues(Vec<Register>),
-    EndIfValues(Vec<Register>),
-    Loop(Register),
-    LoopValues(Vec<Register>),
+    Else(Vec<Register>),
+    EndIf(Vec<Register>),
+    Loop(Vec<Register>),
     While(Register),
-    EndLoop(Register),
-    EndLoopValues(Vec<Register>),
+    EndLoop(Vec<Register>),
     PhiValue(usize),
 }
 
@@ -185,7 +179,6 @@ impl Handler {
                             ty @ (ValueType::Int
                             | ValueType::Bool
                             | ValueType::Unit
-                            | ValueType::Ref
                             | ValueType::ListRef
                             | ValueType::BytesRef
                             | ValueType::StringRef
@@ -231,16 +224,9 @@ pub struct Procedure {
     pub function: Function,
 }
 
-#[derive(Clone, Debug)]
-enum ElseArm {
-    Single(ValueType),
-    Many(Vec<ValueType>),
-}
-
 enum Region {
-    Branch(usize, Option<ElseArm>),
-    Loop(usize, ValueType, bool),
-    LoopValues(usize, Vec<ValueType>, bool),
+    Branch(usize, Option<Vec<ValueType>>),
+    Loop(usize, Vec<ValueType>, bool),
 }
 
 impl Program {
@@ -530,7 +516,6 @@ impl Program {
                             ValueType::Int
                                 | ValueType::Bool
                                 | ValueType::Unit
-                                | ValueType::Ref
                                 | ValueType::ListRef
                                 | ValueType::BytesRef
                                 | ValueType::StringRef
@@ -575,7 +560,6 @@ impl Program {
                             ValueType::Int
                                 | ValueType::Bool
                                 | ValueType::Unit
-                                | ValueType::Ref
                                 | ValueType::ListRef
                                 | ValueType::BytesRef
                                 | ValueType::StringRef
@@ -840,12 +824,6 @@ impl Function {
                             _ => types.get(left) == Some(&ValueType::Int),
                         }
                 }
-                Operation::RecordInt(value) => {
-                    instruction.ty == ValueType::Ref && types.get(value) == Some(&ValueType::Int)
-                }
-                Operation::ReadInt(value) => {
-                    instruction.ty == ValueType::Int && types.get(value) == Some(&ValueType::Ref)
-                }
                 Operation::Collect => instruction.ty == ValueType::Unit,
                 Operation::EmptyInts => instruction.ty == ValueType::ListRef,
                 Operation::PrependInt(value, tail) => {
@@ -929,7 +907,6 @@ impl Function {
                                     ValueType::Int
                                         | ValueType::Bool
                                         | ValueType::Unit
-                                        | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
@@ -953,7 +930,6 @@ impl Function {
                                     ValueType::Int
                                         | ValueType::Bool
                                         | ValueType::Unit
-                                        | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
@@ -992,7 +968,6 @@ impl Function {
                                     ValueType::Int
                                         | ValueType::Bool
                                         | ValueType::Unit
-                                        | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
@@ -1026,7 +1001,6 @@ impl Function {
                                     ValueType::Int
                                         | ValueType::Bool
                                         | ValueType::Unit
-                                        | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
@@ -1058,7 +1032,6 @@ impl Function {
                                     ValueType::Int
                                         | ValueType::Bool
                                         | ValueType::Unit
-                                        | ValueType::Ref
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
@@ -1075,21 +1048,7 @@ impl Function {
                     instruction.ty == ValueType::Unit
                         && types.get(condition) == Some(&ValueType::Bool)
                 }
-                Operation::Else(value) => {
-                    let Some(Region::Branch(start, arm)) = branches.last_mut() else {
-                        return Err("else without matching if".into());
-                    };
-                    if arm.is_some() {
-                        return Err("duplicate else in conditional".into());
-                    }
-                    let Some(&ty) = types.get(value) else {
-                        return Err("invalid scalar IR operand, type or forward reference".into());
-                    };
-                    *arm = Some(ElseArm::Single(ty));
-                    available[start.saturating_add(1)..].fill(false);
-                    instruction.ty == ValueType::Unit
-                }
-                Operation::ElseValues(ref values) => {
+                Operation::Else(ref values) => {
                     let Some(Region::Branch(start, arm)) = branches.last_mut() else {
                         return Err("else without matching if".into());
                     };
@@ -1097,27 +1056,16 @@ impl Function {
                         return Err("duplicate else in conditional".into());
                     }
                     if values.is_empty() || values.len() > MAX_PARAMETERS {
-                        return Err("invalid multi-value branch arity".into());
+                        return Err("invalid branch arity".into());
                     }
                     let then_types: Vec<ValueType> = values.iter().map(|&reg| types[reg]).collect();
-                    *arm = Some(ElseArm::Many(then_types));
+                    *arm = Some(then_types);
                     available[start.saturating_add(1)..].fill(false);
                     instruction.ty == ValueType::Unit
                 }
-                Operation::EndIf(value) => {
-                    let Some(Region::Branch(start, Some(ElseArm::Single(then_type)))) =
-                        branches.pop()
-                    else {
+                Operation::EndIf(ref values) => {
+                    let Some(Region::Branch(start, Some(then_types))) = branches.pop() else {
                         return Err("end-if without matching if/else".into());
-                    };
-                    available[start.saturating_add(1)..].fill(false);
-                    instruction.ty == then_type && types.get(value) == Some(&then_type)
-                }
-                Operation::EndIfValues(ref values) => {
-                    let Some(Region::Branch(start, Some(ElseArm::Many(then_types)))) =
-                        branches.pop()
-                    else {
-                        return Err("end-if without matching multi-value if/else".into());
                     };
                     available[start.saturating_add(1)..].fill(false);
                     let valid = values.len() == then_types.len()
@@ -1131,17 +1079,7 @@ impl Function {
                     }
                     valid
                 }
-                Operation::Loop(initial) => {
-                    if branches.len() == 64 {
-                        return Err("control nesting exceeds 64 regions".into());
-                    }
-                    branches.push(Region::Loop(types.len(), instruction.ty, false));
-                    allow_loops
-                        && allow_state
-                        && instruction.ty == state
-                        && types.get(initial) == Some(&state)
-                }
-                Operation::LoopValues(ref initials) => {
+                Operation::Loop(ref initials) => {
                     if branches.len() == 64 {
                         return Err("control nesting exceeds 64 regions".into());
                     }
@@ -1154,16 +1092,13 @@ impl Function {
                         for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
                             expected_phis.push_back((idx, ty));
                         }
-                        branches.push(Region::LoopValues(types.len(), phi_types, false));
+                        branches.push(Region::Loop(types.len(), phi_types, false));
                         valid
                     }
                 }
                 Operation::While(condition) => {
-                    let tested = match branches.last_mut() {
-                        Some(Region::Loop(_, _, tested) | Region::LoopValues(_, _, tested)) => {
-                            tested
-                        }
-                        _ => return Err("while without matching loop".into()),
+                    let Some(Region::Loop(_, _, tested)) = branches.last_mut() else {
+                        return Err("while without matching loop".into());
                     };
                     if *tested {
                         return Err("duplicate while in loop".into());
@@ -1172,15 +1107,8 @@ impl Function {
                     instruction.ty == ValueType::Unit
                         && types.get(condition) == Some(&ValueType::Bool)
                 }
-                Operation::EndLoop(value) => {
-                    let Some(Region::Loop(start, state_type, true)) = branches.pop() else {
-                        return Err("end-loop without matching loop/while".into());
-                    };
-                    available[start..].fill(false);
-                    instruction.ty == state_type && types.get(value) == Some(&state_type)
-                }
-                Operation::EndLoopValues(ref values) => {
-                    let Some(Region::LoopValues(start, phi_types, true)) = branches.pop() else {
+                Operation::EndLoop(ref values) => {
+                    let Some(Region::Loop(start, phi_types, true)) = branches.pop() else {
                         return Err("end-loop without matching loop/while".into());
                     };
                     available[start..].fill(false);
@@ -1203,10 +1131,7 @@ impl Function {
             types.push(instruction.ty);
             available.push(!matches!(
                 instruction.operation,
-                Operation::If(_)
-                    | Operation::Else(_)
-                    | Operation::ElseValues(_)
-                    | Operation::While(_)
+                Operation::If(_) | Operation::Else(_) | Operation::While(_)
             ));
         }
         if !expected_phis.is_empty() {
@@ -1236,11 +1161,8 @@ impl Function {
 fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
     let (fixed, extra): (_, &[Register]) = match *operation {
         Operation::Negate(value)
-        | Operation::RecordInt(value)
-        | Operation::ReadInt(value)
         | Operation::If(value)
-        | Operation::Else(value)
-        | Operation::EndIf(value) => ([Some(value), None], &[]),
+        | Operation::While(value) => ([Some(value), None], &[]),
         Operation::HeadInt(value)
         | Operation::TailInts(value)
         | Operation::IsEmptyInts(value)
@@ -1251,13 +1173,10 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::IntToString(value)
         | Operation::BoolToString(value) => ([Some(value), None], &[]),
         Operation::StringAt(value, index) => ([Some(value), Some(index)], &[]),
-        Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
-            ([Some(value), None], &[])
-        }
-        Operation::ElseValues(ref values)
-        | Operation::EndIfValues(ref values)
-        | Operation::LoopValues(ref values)
-        | Operation::EndLoopValues(ref values) => ([None, None], values.as_slice()),
+        Operation::Else(ref values)
+        | Operation::EndIf(ref values)
+        | Operation::Loop(ref values)
+        | Operation::EndLoop(ref values) => ([None, None], values.as_slice()),
         Operation::Binary(_, left, right)
         | Operation::Compare(_, left, right)
         | Operation::FillBytes(left, right)
@@ -1321,7 +1240,6 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
 }
 
 pub struct RootPlan {
-    pub last_uses: Vec<usize>,
     pub capacity: usize,
     pub at: Vec<Vec<Register>>,
 }

@@ -178,7 +178,6 @@ pub(super) fn worker(
                 claim.fused_direct.is_some()
                     || WorkerFibers::can_run_fast(
                         &claim.message.handler,
-                        claim.message.record_mask,
                         &claim.message.lists,
                         &claim.message.bytes,
                     )
@@ -683,7 +682,6 @@ fn start(
     claim.fused_direct.take();
     if WorkerFibers::can_run_fast(
         &claim.message.handler,
-        claim.message.record_mask,
         &claim.message.lists,
         &claim.message.bytes,
     ) {
@@ -750,7 +748,6 @@ fn start(
             claim.message.max_steps,
             || (claim.cancellation.clone(), preemption.clone()),
             &bound,
-            claim.message.record_mask,
             &claim.message.lists,
             &mut claim.message.bytes,
         ) {

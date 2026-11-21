@@ -1,18 +1,19 @@
 actor NamedMessages {
   struct Empty {}
+  struct Boxed { value: int }
   struct Label { text: str, enabled: bool }
-  struct Payload { label: Label, values: [int], data: bytes, saved: box<int>, empty: Empty, unit: () }
+  struct Payload { label: Label, values: [int], data: bytes, saved: Boxed, empty: Empty, unit: () }
   struct Lists { first: [int], second: [int] }
   state count = 0;
 
   fn make(length: int) -> Payload {
-    Payload(Label(bytes::fill(length, 97).to_str(), true), [3], bytes::fill(1, 9), box(7), Empty(), ())
+    Payload(Label(bytes::fill(length, 97).to_str(), true), [3], bytes::fill(1, 9), Boxed(7), Empty(), ())
   }
 
   fn score(value: Payload) -> int {
     gc();
     if value.label.enabled {
-      value.label.text.len() + value.values.head() + value.data.at(0) + value.saved.get()
+      value.label.text.len() + value.values.head() + value.data.at(0) + value.saved.value
     } else { 0 }
   }
 

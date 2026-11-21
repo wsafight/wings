@@ -173,7 +173,6 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                     &module.handler("Drop").unwrap(),
                     &[],
                     128,
-                    0,
                     ListPayload::default(),
                     BytePayload::default(),
                     false,
@@ -330,7 +329,7 @@ pub(super) fn module() -> ScalarModule {
                     Handler {
                         name: "Store".into(),
                         parameters: vec![
-                            ("record".into(), ValueType::Ref),
+                            ("record".into(), ValueType::Int),
                             ("list".into(), ValueType::ListRef),
                         ],
                         reply: None,
@@ -396,7 +395,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
             ValueType::Int,
             ValueType::Bool,
             ValueType::Unit,
-            ValueType::Ref,
+            ValueType::Pid,
             ValueType::ListRef,
             ValueType::BytesRef,
             ValueType::StringRef,
@@ -405,13 +404,15 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                 ValueType::Int,
                 ValueType::Bool,
                 ValueType::Unit,
-                ValueType::Ref,
+                ValueType::Pid,
                 ValueType::ListRef,
                 ValueType::BytesRef,
                 ValueType::StringRef,
             ] {
                 for corrupt in [false, true] {
-                    if corrupt && (reply == ValueType::Int || callback != reply) {
+                    if corrupt
+                        && (matches!(reply, ValueType::Int | ValueType::Pid) || callback != reply)
+                    {
                         continue;
                     }
                     let limits = Resources {
@@ -438,9 +439,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                     let data = Arc::get_mut(&mut module.inner).unwrap();
                     data.manifest.handlers[0].parameters[2].1 = callback;
                     data.manifest.handlers[3].reply = Some(reply);
-                    data.entries[0] = if callback == ValueType::Ref {
-                        crate::tests::record_completion
-                    } else if callback == ValueType::ListRef {
+                    data.entries[0] = if callback == ValueType::ListRef {
                         crate::tests::list_completion
                     } else if callback == ValueType::StringRef {
                         crate::tests::string_completion
@@ -451,8 +450,6 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                     };
                     if corrupt {
                         data.entries[3] = invalid_scalar_reply;
-                    } else if reply == ValueType::Ref {
-                        data.entries[3] = crate::tests::record_reply;
                     } else if reply == ValueType::ListRef {
                         data.entries[3] = crate::tests::list_reply;
                     } else if reply == ValueType::StringRef {
@@ -478,7 +475,6 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         count: 0,
                         callback: 0,
                         timeout_ms: 60000,
-                        record_mask: 0,
                         lists: ListPayload::default(),
                         bytes: BytePayload::default(),
                     };
@@ -653,7 +649,6 @@ fn typed_host_preparation_cannot_publish_to_stopped_reused_or_closed_targets() {
                 &module.handler("Drop").unwrap(),
                 &[],
                 32,
-                0,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -756,7 +751,6 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
         &handler,
         &[],
         32,
-        0,
         ListPayload::default(),
         BytePayload::default(),
         false,
@@ -814,7 +808,6 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 &handler,
                 &[],
                 sequence as u64,
-                0,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -832,7 +825,6 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 &handler,
                 &[],
                 999,
-                0,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -852,7 +844,6 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
                 &handler,
                 &[],
                 sequence as u64,
-                0,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -926,7 +917,6 @@ fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
                     count: 0,
                     callback: 0,
                     timeout_ms: if cancel { 60000 } else { 0 },
-                    record_mask: 0,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                 };
@@ -1143,7 +1133,6 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         &module.handler("Drop").unwrap(),
         &[],
         32,
-        0,
         ListPayload::default(),
         BytePayload::default(),
         false,
@@ -1270,7 +1259,6 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
             &module.handler("Drop").unwrap(),
             &[],
             32,
-            0,
             ListPayload::default(),
             BytePayload::default(),
             false,
@@ -1463,21 +1451,20 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &store,
             &arguments,
             false,
-            1,
             &lists,
             &BytePayload::default()
         )
         .is_ok()
     );
-    for mask in [0, 2, 3, u64::MAX] {
+    for mask in [0, 1, 3, u64::MAX] {
+        let invalid = ListPayload { mask, ..lists };
         assert!(
             validate(
                 actor,
                 &store,
                 &arguments,
                 false,
-                mask,
-                &lists,
+                &invalid,
                 &BytePayload::default()
             )
             .is_err()
@@ -1489,7 +1476,6 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &store,
             &[7, -1],
             false,
-            1,
             &lists,
             &BytePayload::default()
         )
@@ -1501,7 +1487,6 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &module.handler("Done").unwrap(),
             &[1, 0, 2],
             false,
-            0,
             &ListPayload::default(),
             &BytePayload::default()
         )
@@ -1513,7 +1498,6 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
             &module.handler("Done").unwrap(),
             &[1, 0, 2],
             true,
-            0,
             &ListPayload::default(),
             &BytePayload::default()
         )
@@ -1550,7 +1534,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[1].parameters = vec![
         ("first".into(), ValueType::BytesRef),
         ("flag".into(), ValueType::Bool),
-        ("record".into(), ValueType::Ref),
+        ("scalar".into(), ValueType::Int),
         ("list".into(), ValueType::ListRef),
         ("last".into(), ValueType::BytesRef),
     ];
@@ -1575,9 +1559,10 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
     bytes.data.extend_from_slice(b"abcdefgh");
-    assert!(validate(actor, &store, &arguments, false, 4, &lists, &bytes).is_ok());
-    for mask in [0, 1, 5, 17] {
-        assert!(validate(actor, &store, &arguments, false, mask, &lists, &bytes).is_err());
+    assert!(validate(actor, &store, &arguments, false, &lists, &bytes).is_ok());
+    for mask in [0, 1, 9, 17] {
+        let invalid = ListPayload { mask, ..lists };
+        assert!(validate(actor, &store, &arguments, false, &invalid, &bytes).is_err());
     }
     let filler = actor
         .account
@@ -1593,7 +1578,6 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
             &store,
             &arguments,
             4096,
-            4,
             lists,
             bytes,
             false,
@@ -1613,7 +1597,6 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         &store,
         &arguments,
         4096,
-        4,
         lists,
         bytes,
         false,
@@ -1635,7 +1618,6 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
             &store,
             &arguments,
             4096,
-            4,
             lists,
             bytes,
             false,

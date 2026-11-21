@@ -119,12 +119,11 @@ impl Server {
                         for keyword in ["actor", "struct", "state", "on", "reply", "fn", "let", "if", "else", "while", "for", "in", "match", "self", "spawn", "null", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
-                        for ty in ["int", "bool", "str", "bytes", "pid", "req", "[int]", "box<int>"] {
+                        for ty in ["int", "bool", "str", "bytes", "pid", "req", "[int]"] {
                             labels.insert(ty.to_owned(), json!({ "label": ty, "kind": 7 }));
                         }
                         for (name, detail) in [
                             ("gc", "() -> ()"),
-                            ("box", "(int) -> box<int>"),
                             ("spawn", "([Actor]) -> pid<Actor>"),
                             ("send_after", "(int, msg) -> ()"),
                             ("monitor", "(pid, handler) -> ()"),
@@ -139,7 +138,6 @@ impl Server {
                             ("head", "[int] -> int"),
                             ("tail", "[int] -> [int]"),
                             ("push", "[int].push(int) -> [int]"),
-                            ("get", "box<int>.get() -> int"),
                             ("at", "str/bytes.at(int) -> int"),
                             ("slice", "str.slice(int, int) -> str"),
                             ("bytes", "str.bytes() -> bytes"),
@@ -147,7 +145,6 @@ impl Server {
                             ("i64_at", "bytes.i64_at(int) -> int"),
                             ("set_i64", "bytes.set_i64(int, int) -> bytes"),
                             ("to_str", "int/bool/bytes.to_str() -> str"),
-                            ("tell", "pid.tell(msg) -> ()"),
                             ("send_after", "pid.send_after(int, msg) -> ()"),
                             ("monitor", "pid.monitor(handler) -> ()"),
                             ("ask", "pid.ask(msg, timeout: int, then: handler) -> req"),
