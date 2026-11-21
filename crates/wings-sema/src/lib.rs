@@ -19,6 +19,7 @@ pub enum Type {
     Struct(String),
     Pid,
     ActorPid(String),
+    NullPid,
     RequestId,
     Function {
         parameters: Vec<(String, Type)>,
@@ -34,7 +35,10 @@ pub enum Type {
 
 impl Type {
     pub fn is_capability(&self) -> bool {
-        matches!(self, Self::Pid | Self::ActorPid(_) | Self::RequestId)
+        matches!(
+            self,
+            Self::Pid | Self::ActorPid(_) | Self::NullPid | Self::RequestId
+        )
     }
 }
 
@@ -51,6 +55,7 @@ impl std::fmt::Display for Type {
             Self::Struct(name) => formatter.write_str(name),
             Self::Pid => formatter.write_str("pid"),
             Self::ActorPid(name) => write!(formatter, "pid<{name}>"),
+            Self::NullPid => formatter.write_str("null"),
             Self::RequestId => formatter.write_str("req"),
             Self::Function { parameters, result } => {
                 formatter.write_str("(")?;
@@ -332,6 +337,8 @@ pub fn analyze(text: &str) -> Analysis {
                             | Type::Bytes
                             | Type::String
                             | Type::Struct(_)
+                            | Type::Pid
+                            | Type::ActorPid(_)
                     );
                 if !valid_sig {
                     checker.error(
@@ -350,7 +357,7 @@ pub fn analyze(text: &str) -> Analysis {
                 }
             } else {
                 for (_, ty, span) in &parameters {
-                    if ty.is_capability() {
+                    if *ty == Type::RequestId {
                         checker.error(
                             "T011",
                             format!(
@@ -385,7 +392,7 @@ pub fn analyze(text: &str) -> Analysis {
                             span,
                         );
                     }
-                } else if ty.is_capability() {
+                } else if *ty == Type::RequestId {
                     checker.error(
                         "T011",
                         format!("{ty} is not supported as a message reply"),
@@ -558,20 +565,22 @@ pub fn analyze(text: &str) -> Analysis {
                     decl
                 }
                 None => {
-                    if matches!(actual, Type::Unknown) {
+                    if matches!(actual, Type::Unknown | Type::NullPid) {
                         checker.error(
                             "T002",
-                            "cannot infer state type; add an explicit ': type' annotation",
+                            "cannot infer state type; add an explicit ': type' annotation (e.g. ': pid<Actor>')",
                             state.name.span,
                         );
+                        Type::Unknown
+                    } else {
+                        actual
                     }
-                    actual
                 }
             };
-            if declared.is_capability() {
+            if declared == Type::RequestId {
                 checker.error(
                     "T018",
-                    "pid/req capabilities cannot be stored in actor state",
+                    "req capabilities cannot be stored in actor state",
                     state.ty.as_ref().map_or(state.default.span, |ty| ty.span),
                 );
             }
@@ -621,7 +630,20 @@ pub fn analyze(text: &str) -> Analysis {
 fn is_reserved_name(name: &str) -> bool {
     matches!(
         name,
-        "int" | "bool" | "str" | "bytes" | "pid" | "req" | "unit" | "box" | "gc" | "self" | "spawn"
+        "int"
+            | "bool"
+            | "str"
+            | "bytes"
+            | "pid"
+            | "req"
+            | "unit"
+            | "box"
+            | "gc"
+            | "self"
+            | "spawn"
+            | "null"
+            | "send_after"
+            | "monitor"
     )
 }
 
@@ -683,10 +705,10 @@ impl Checker {
                 self.error("T004", "duplicate struct field", field.name.span);
             }
             let ty = self.resolve_type(&field.ty);
-            if ty.is_capability() {
+            if ty == Type::RequestId {
                 self.error(
                     "T019",
-                    "actor capabilities (pid/req) cannot be stored in struct fields",
+                    "request capabilities (req) cannot be stored in struct fields",
                     field.ty.span,
                 );
             }
@@ -899,11 +921,14 @@ impl Checker {
         if actual == expected {
             return true;
         }
-        matches!(
-            (actual, expected),
-            (Type::Pid, Type::ActorPid(name)) | (Type::ActorPid(name), Type::Pid)
-                if !self.current_actor.is_empty() && name == &self.current_actor
-        )
+        match (actual, expected) {
+            (Type::NullPid, Type::Pid | Type::ActorPid(_)) => true,
+            (Type::ActorPid(_), Type::Pid) => true,
+            (Type::Pid, Type::ActorPid(name)) => {
+                !self.current_actor.is_empty() && name == &self.current_actor
+            }
+            _ => false,
+        }
     }
 
     fn require(&mut self, actual: &Type, expected: &Type, span: Span) {
@@ -1058,13 +1083,23 @@ impl Checker {
                     }
                     let actual = self.expression(value, scope);
                     let declared = ty.as_ref().map(|ty_expr| self.resolve_type(ty_expr));
-                    if let Some(declared) = &declared {
-                        self.require(&actual, declared, value.span);
-                    }
+                    let bound_ty = if let Some(declared) = declared {
+                        self.require(&actual, &declared, value.span);
+                        declared
+                    } else if actual == Type::NullPid {
+                        self.error(
+                            "T002",
+                            "cannot infer pid type from 'null'; add ': pid' or ': pid<Actor>'",
+                            name.span,
+                        );
+                        Type::Unknown
+                    } else {
+                        actual
+                    };
                     self.bind(
                         name,
                         SymbolKind::Local,
-                        declared.unwrap_or(actual),
+                        bound_ty,
                         Span::new(value.span.end, block.span.end),
                         scope,
                     );
@@ -1090,11 +1125,17 @@ impl Checker {
         let scrutinee_ty = self.expression(scrutinee, scope);
         if !matches!(
             scrutinee_ty,
-            Type::Int | Type::Bool | Type::String | Type::IntList | Type::Unknown
+            Type::Int
+                | Type::Bool
+                | Type::String
+                | Type::IntList
+                | Type::Pid
+                | Type::ActorPid(_)
+                | Type::Unknown
         ) {
             self.error(
                 "T005",
-                format!("match supports int, bool, str and [int], found {scrutinee_ty}"),
+                format!("match supports int, bool, str, [int] and pid, found {scrutinee_ty}"),
                 scrutinee.span,
             );
         }
@@ -1117,6 +1158,15 @@ impl Checker {
             match &arm.pattern {
                 MatchPattern::Wildcard(_) => {
                     has_wildcard = true;
+                }
+                MatchPattern::Null(pat_span) => {
+                    if !matches!(scrutinee_ty, Type::Pid | Type::ActorPid(_) | Type::Unknown) {
+                        self.error(
+                            "T005",
+                            format!("expected pid for 'null' pattern, found {scrutinee_ty}"),
+                            *pat_span,
+                        );
+                    }
                 }
                 MatchPattern::Integer(_, pat_span) => {
                     self.require(&Type::Int, &scrutinee_ty, *pat_span);
@@ -1176,8 +1226,13 @@ impl Checker {
                 }
             }
             let arm_ty = self.block(&arm.body, &mut arm_scope);
-            if let Some(expected) = &expected_result {
-                self.require(&arm_ty, expected, arm.body.span);
+            if let Some(expected) = &mut expected_result {
+                if *expected == Type::NullPid && matches!(arm_ty, Type::Pid | Type::ActorPid(_)) {
+                    *expected = arm_ty;
+                } else {
+                    let target = expected.clone();
+                    self.require(&arm_ty, &target, arm.body.span);
+                }
             } else {
                 expected_result = Some(arm_ty);
             }
@@ -1224,6 +1279,7 @@ impl Checker {
             ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Boolean(_) => Type::Bool,
             ExprKind::Unit => Type::Unit,
+            ExprKind::Null => Type::NullPid,
             ExprKind::SelfPid => {
                 if !self.effects_allowed {
                     self.error(
@@ -1427,6 +1483,9 @@ impl Checker {
                     (Type::String, "at") => Some((&[Type::Int], Type::Int)),
                     (Type::String, "slice") => Some((&[Type::Int, Type::Int], Type::String)),
                     (Type::String, "bytes") => Some((&[], Type::Bytes)),
+                    (Type::Pid | Type::ActorPid(_) | Type::NullPid, "is_null") => {
+                        Some((&[], Type::Bool))
+                    }
                     (Type::RequestId, "cancel") => {
                         if !self.effects_allowed {
                             self.error(
@@ -1554,6 +1613,150 @@ impl Checker {
                             message.span,
                         );
                     }
+                }
+                Type::Unit
+            }
+            ExprKind::SendAfter {
+                target,
+                delay,
+                message,
+                arguments,
+            } => {
+                if !self.effects_allowed {
+                    self.error(
+                        "T018",
+                        "'send_after(...)' is only supported in handlers",
+                        expression.span,
+                    );
+                }
+                let target_ty = self.expression(target, scope);
+                let resolved_target = match &target_ty {
+                    Type::Pid => Some(self.current_actor.clone()),
+                    Type::ActorPid(name) => Some(name.clone()),
+                    Type::Unknown => None,
+                    other => {
+                        self.error("T005", format!("expected pid, found {other}"), target.span);
+                        None
+                    }
+                };
+                let delay_ty = self.expression(delay, scope);
+                self.require(&delay_ty, &Type::Int, delay.span);
+                let arg_types: Vec<Type> = arguments
+                    .iter()
+                    .map(|arg| self.expression(arg, scope))
+                    .collect();
+                if let Some(target_actor) = resolved_target {
+                    self.target_actors.insert(
+                        (expression.span.start, expression.span.end),
+                        target_actor.clone(),
+                    );
+                    let msg_sym = if target_actor == self.current_actor {
+                        self.handlers.get(&message.text).copied()
+                    } else {
+                        self.actor_handlers
+                            .get(&target_actor)
+                            .and_then(|m| m.get(&message.text))
+                            .copied()
+                    };
+                    if let Some(sym) = msg_sym {
+                        self.references.push(Reference {
+                            span: message.span,
+                            symbol: sym,
+                        });
+                        if let Type::Message {
+                            parameters,
+                            reply,
+                            is_reply,
+                        } = self.symbols[sym].ty.clone()
+                        {
+                            if is_reply {
+                                self.error(
+                                    "T018",
+                                    "'on reply' completion handlers cannot be scheduled with send_after",
+                                    message.span,
+                                );
+                            } else if reply.is_some() {
+                                self.error(
+                                    "T018",
+                                    "'send_after' requires a one-way handler",
+                                    message.span,
+                                );
+                            }
+                            if arguments.len() != parameters.len() {
+                                self.error(
+                                    "T013",
+                                    format!(
+                                        "message '{}' expects {} argument(s), found {}",
+                                        message.text,
+                                        parameters.len(),
+                                        arguments.len()
+                                    ),
+                                    expression.span,
+                                );
+                            }
+                            for ((actual, (_, expected)), arg) in
+                                arg_types.iter().zip(&parameters).zip(arguments)
+                            {
+                                self.require(actual, expected, arg.span);
+                                self.check_cross_actor_struct(&target_actor, expected, arg.span);
+                            }
+                        }
+                    } else if !message.text.is_empty() {
+                        self.error(
+                            "T018",
+                            format!("unknown message handler '{}'", message.text),
+                            message.span,
+                        );
+                    }
+                }
+                Type::Unit
+            }
+            ExprKind::Monitor { target, handler } => {
+                if !self.effects_allowed {
+                    self.error(
+                        "T018",
+                        "'monitor(...)' is only supported in handlers",
+                        expression.span,
+                    );
+                }
+                let target_ty = self.expression(target, scope);
+                if !matches!(target_ty, Type::Pid | Type::ActorPid(_) | Type::Unknown) {
+                    self.error(
+                        "T005",
+                        format!("expected pid, found {target_ty}"),
+                        target.span,
+                    );
+                }
+                if let Some(&sym) = self.handlers.get(&handler.text) {
+                    self.references.push(Reference {
+                        span: handler.span,
+                        symbol: sym,
+                    });
+                    if let Type::Message {
+                        parameters,
+                        reply,
+                        is_reply,
+                    } = self.symbols[sym].ty.clone()
+                    {
+                        if is_reply || reply.is_some() || parameters.len() != 2 {
+                            self.error(
+                                "T018",
+                                "monitor handler must be a one-way 'on <name>(dead: pid, reason: int)' handler",
+                                handler.span,
+                            );
+                        } else {
+                            if !matches!(target_ty, Type::Unknown) {
+                                self.require(&target_ty, &parameters[0].1, handler.span);
+                            }
+                            self.require(&parameters[1].1, &Type::Int, handler.span);
+                        }
+                    }
+                } else if !handler.text.is_empty() {
+                    self.error(
+                        "T018",
+                        format!("unknown monitor handler '{}'", handler.text),
+                        handler.span,
+                    );
                 }
                 Type::Unit
             }
@@ -1794,8 +1997,14 @@ impl Checker {
                 let then_type = self.block(then_branch, &mut scope.clone());
                 if let Some(else_block) = else_branch {
                     let else_type = self.block(else_block, &mut scope.clone());
-                    self.require(&else_type, &then_type, else_block.span);
-                    then_type
+                    if then_type == Type::NullPid
+                        && matches!(else_type, Type::Pid | Type::ActorPid(_))
+                    {
+                        else_type
+                    } else {
+                        self.require(&else_type, &then_type, else_block.span);
+                        then_type
+                    }
                 } else {
                     self.require(&then_type, &Type::Unit, then_branch.span);
                     Type::Unit
@@ -1828,15 +2037,19 @@ impl Checker {
                         Type::Bool
                     }
                     BinaryOperator::Equal | BinaryOperator::NotEqual => {
-                        self.require(&right_type, &left_type, right.span);
+                        if left_type == Type::NullPid
+                            && matches!(right_type, Type::Pid | Type::ActorPid(_))
+                        {
+                            // null == pid is valid
+                        } else {
+                            self.require(&right_type, &left_type, right.span);
+                        }
                         if matches!(
                             left_type,
                             Type::BoxInt
                                 | Type::Struct(_)
                                 | Type::IntList
                                 | Type::Bytes
-                                | Type::Pid
-                                | Type::ActorPid(_)
                                 | Type::RequestId
                         ) || matches!(
                             right_type,
@@ -1844,13 +2057,11 @@ impl Checker {
                                 | Type::Struct(_)
                                 | Type::IntList
                                 | Type::Bytes
-                                | Type::Pid
-                                | Type::ActorPid(_)
                                 | Type::RequestId
                         ) {
                             self.error(
                                 "T015",
-                                "heap references and actor capabilities cannot be compared with == or !=",
+                                "heap references and request capabilities cannot be compared with == or !=",
                                 expression.span,
                             );
                         }

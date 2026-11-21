@@ -137,13 +137,41 @@ impl State {
             .ok_or_else(|| "stale scheduler Pid".into())
     }
 
-    pub(super) fn retire(&mut self, identity: u64, pid: SchedulerPid) -> Option<Actor> {
-        if self.actor(identity, pid).is_err() {
-            return None;
+    pub(super) fn record_exit(&mut self, capability: i64, reason: i64) {
+        let idx = self.recent_exit_cursor % self.recent_exits.len();
+        self.recent_exits[idx] = (capability, reason);
+        self.recent_exit_cursor = self.recent_exit_cursor.wrapping_add(1);
+    }
+
+    pub(super) fn lookup_recent_exit(&self, capability: i64) -> Option<i64> {
+        let len = self.recent_exits.len();
+        for offset in 0..len {
+            let idx = self.recent_exit_cursor.wrapping_add(len - 1 - offset) % len;
+            let (cap, reason) = self.recent_exits[idx];
+            if cap == capability && cap > 0 {
+                return Some(reason);
+            }
         }
+        None
+    }
+
+    #[cfg(test)]
+    pub(super) fn retire(&mut self, identity: u64, pid: SchedulerPid) -> Option<Actor> {
+        self.retire_with_reason(identity, pid, 0)
+            .map(RetiredActor::into_actor)
+    }
+
+    pub(super) fn retire_with_reason(
+        &mut self,
+        identity: u64,
+        pid: SchedulerPid,
+        exit_reason: i64,
+    ) -> Option<RetiredActor> {
+        let dead_capability = self.actor(identity, pid).ok()?.capability;
+        self.record_exit(dead_capability, exit_reason);
         self.remove_ready(pid.slot as usize);
         let slot = &mut self.slots[pid.slot as usize];
-        let actor = slot.actor.take();
+        let actor = slot.actor.take()?;
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
         self.release_slot(pid.slot as usize);
         if !self.requests.is_empty_fast() {
@@ -176,7 +204,41 @@ impl State {
                 }
             }
         }
-        actor
+        let mut retired_timers: Option<Box<ScheduledTimer>> = None;
+        let mut timer_cursor = &mut self.timers;
+        while timer_cursor.is_some() {
+            if timer_cursor.as_ref().expect("timer node").target == pid {
+                let mut removed = timer_cursor.take().expect("removed timer");
+                *timer_cursor = removed.next.take();
+                self.timer_count -= 1;
+                removed.next = retired_timers;
+                retired_timers = Some(removed);
+            } else {
+                timer_cursor = &mut timer_cursor.as_mut().expect("timer node").next;
+            }
+        }
+        let mut retired_monitors: Option<Box<MonitorEntry>> = None;
+        let mut mon_cursor = &mut self.monitors;
+        while mon_cursor.is_some() {
+            if mon_cursor.as_ref().expect("monitor node").owner == pid {
+                let mut removed = mon_cursor.take().expect("removed monitor");
+                *mon_cursor = removed.next.take();
+                self.monitor_count -= 1;
+                removed.next = retired_monitors;
+                retired_monitors = Some(removed);
+            } else {
+                let entry = mon_cursor.as_mut().expect("monitor node");
+                if entry.target_capability == dead_capability && entry.reason.is_none() {
+                    entry.reason = Some(exit_reason);
+                }
+                mon_cursor = &mut entry.next;
+            }
+        }
+        Some(RetiredActor {
+            actor,
+            timers: retired_timers,
+            monitors: retired_monitors,
+        })
     }
 
     pub(super) fn finish(&mut self, key: RequestKey, outcome: RequestOutcome) {
@@ -220,11 +282,108 @@ impl State {
     }
 
     pub(super) fn maintain(&mut self, identity: u64) -> WakeSignal {
-        if self.requests.is_empty_fast() {
+        if self.requests.is_empty_fast() && self.timers.is_none() && self.monitors.is_none() {
             return WakeSignal::NONE;
         }
         let mut wake = WakeSignal::NONE;
         let now = Instant::now();
+        {
+            let mut pending = self.timers.take();
+            let mut kept_head: Option<Box<ScheduledTimer>> = None;
+            let mut kept_tail = &mut kept_head;
+            while let Some(mut node) = pending {
+                if node.deadline > now {
+                    *kept_tail = Some(node);
+                    break;
+                }
+                pending = node.next.take();
+                let target = node.target;
+                let can_deliver = match self.actor(identity, target) {
+                    Ok(actor) => {
+                        !actor.stopping
+                            && actor.mailbox.count()
+                                + usize::from(actor.starting || actor.mailbox.is_starting())
+                                < actor.mailbox.capacity()
+                    }
+                    Err(_) => {
+                        self.timer_count -= 1;
+                        drop(node);
+                        continue;
+                    }
+                };
+                if !can_deliver {
+                    let slot = kept_tail.insert(node);
+                    kept_tail = &mut slot.next;
+                    continue;
+                }
+                self.timer_count -= 1;
+                self.actor_mut(identity, target)
+                    .expect("timer target")
+                    .mailbox
+                    .push(node.envelope)
+                    .expect("checked timer mailbox capacity");
+                wake = wake.combine(self.enqueue(target));
+            }
+            self.timers = kept_head;
+        }
+        {
+            let mut pending = self.monitors.take();
+            let mut kept_head: Option<Box<MonitorEntry>> = None;
+            let mut kept_tail = &mut kept_head;
+            while let Some(mut entry) = pending {
+                pending = entry.next.take();
+                let Some(reason) = entry.reason else {
+                    let slot = kept_tail.insert(entry);
+                    kept_tail = &mut slot.next;
+                    continue;
+                };
+                let owner = entry.owner;
+                let can_deliver = match self.actor(identity, owner) {
+                    Ok(actor) => {
+                        !actor.stopping
+                            && actor.mailbox.count()
+                                + usize::from(actor.starting || actor.mailbox.is_starting())
+                                < actor.mailbox.capacity()
+                    }
+                    Err(_) => {
+                        self.monitor_count -= 1;
+                        drop(entry);
+                        continue;
+                    }
+                };
+                if !can_deliver {
+                    let slot = kept_tail.insert(entry);
+                    kept_tail = &mut slot.next;
+                    continue;
+                }
+                self.monitor_count -= 1;
+                let mut arguments = [0; 64];
+                arguments[0] = entry.target_capability;
+                arguments[1] = reason;
+                let message = Envelope {
+                    handler: entry.handler,
+                    arguments,
+                    count: 2,
+                    max_steps: entry.max_steps,
+                    record_mask: 0,
+                    lists: ListPayload::default(),
+                    bytes: BytePayload::default(),
+                    reply: Reply::None,
+                    _charge: entry.envelope_charge,
+                    _message_charge: Some(entry.envelope_msg_charge),
+                };
+                self.actor_mut(identity, owner)
+                    .expect("monitor owner")
+                    .mailbox
+                    .push(message)
+                    .expect("checked monitor mailbox capacity");
+                wake = wake.combine(self.enqueue(owner));
+            }
+            self.monitors = kept_head;
+        }
+        if self.requests.is_empty_fast() {
+            return wake;
+        }
         for word_index in 0..4 {
             let mut bits = self.requests.maybe_active[word_index];
             while bits != 0 {
@@ -492,20 +651,95 @@ impl Shared {
                     wake = state.wake_all_parked();
                     Ok(0)
                 }
+                wings_abi::EFFECT_MONITOR => {
+                    if effect.count != 0
+                        || effect.target <= 0
+                        || state.monitor_count >= MAX_MONITORS
+                    {
+                        return Err("invalid monitor target or capacity".into());
+                    }
+                    let schema = module
+                        .manifest()
+                        .handlers
+                        .get(effect.handler)
+                        .ok_or("invalid monitor handler")?;
+                    if schema.is_completion()
+                        || schema.reply.is_some()
+                        || schema.parameters.len() != 2
+                        || schema.parameters[0].1 != wings_abi::ValueType::Pid
+                        || schema.parameters[1].1 != wings_abi::ValueType::Int
+                    {
+                        return Err("monitor requires a one-way (Pid, Int) handler".into());
+                    }
+                    let handler = module.handler(&schema.name)?;
+                    let owner = state.actor(self.identity, pid)?;
+                    let envelope_charge = owner.account.reserve(Resources {
+                        bytes: std::mem::size_of::<Envelope>() as u64,
+                        ..Resources::default()
+                    })?;
+                    let envelope_msg_charge = owner.account.reserve(Resources {
+                        messages: 1,
+                        ..Resources::default()
+                    })?;
+                    let node_charge = owner.account.reserve(Resources {
+                        bytes: std::mem::size_of::<MonitorEntry>() as u64,
+                        ..Resources::default()
+                    })?;
+                    let reason = if state.target(self.identity, effect.target).is_ok() {
+                        None
+                    } else {
+                        Some(state.lookup_recent_exit(effect.target).unwrap_or(-1))
+                    };
+                    let entry = Box::new(MonitorEntry {
+                        owner: pid,
+                        target_capability: effect.target,
+                        handler,
+                        max_steps: budget,
+                        reason,
+                        envelope_charge,
+                        envelope_msg_charge,
+                        _node_charge: node_charge,
+                        next: None,
+                    });
+                    let mut tail = &mut state.monitors;
+                    while let Some(node) = tail {
+                        tail = &mut node.next;
+                    }
+                    *tail = Some(entry);
+                    state.monitor_count += 1;
+                    if reason.is_some() {
+                        wake = state.maintain(self.identity);
+                    }
+                    Ok(0)
+                }
                 wings_abi::EFFECT_SEND
                 | wings_abi::EFFECT_SEND_SELF
                 | wings_abi::EFFECT_SEND_ACTOR
+                | wings_abi::EFFECT_SEND_AFTER_SELF
+                | wings_abi::EFFECT_SEND_AFTER
+                | wings_abi::EFFECT_SEND_AFTER_ACTOR
                 | wings_abi::EFFECT_REQUEST
                 | wings_abi::EFFECT_REQUEST_ACTOR => {
                     let is_request = matches!(
                         effect.operation,
                         wings_abi::EFFECT_REQUEST | wings_abi::EFFECT_REQUEST_ACTOR
                     );
+                    let is_after = matches!(
+                        effect.operation,
+                        wings_abi::EFFECT_SEND_AFTER_SELF
+                            | wings_abi::EFFECT_SEND_AFTER
+                            | wings_abi::EFFECT_SEND_AFTER_ACTOR
+                    );
                     let is_cross_actor = matches!(
                         effect.operation,
-                        wings_abi::EFFECT_SEND_ACTOR | wings_abi::EFFECT_REQUEST_ACTOR
+                        wings_abi::EFFECT_SEND_ACTOR
+                            | wings_abi::EFFECT_SEND_AFTER_ACTOR
+                            | wings_abi::EFFECT_REQUEST_ACTOR
                     );
-                    let target = if effect.operation == wings_abi::EFFECT_SEND_SELF {
+                    let target = if matches!(
+                        effect.operation,
+                        wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND_AFTER_SELF
+                    ) {
                         pid
                     } else {
                         state.target(self.identity, effect.target)?
@@ -539,6 +773,57 @@ impl Shared {
                         &effect.lists,
                         &effect.bytes,
                     )?;
+                    if is_after {
+                        if schema.reply.is_some()
+                            || !(0..=86_400_000).contains(&effect.timeout_ms)
+                            || state.timer_count >= MAX_TIMERS
+                        {
+                            return Err("invalid send_after parameters or timer capacity".into());
+                        }
+                        let deadline = Instant::now()
+                            .checked_add(Duration::from_millis(effect.timeout_ms as u64))
+                            .ok_or("timer deadline overflow")?;
+                        let node_bytes = std::mem::size_of::<ScheduledTimer>()
+                            .saturating_sub(std::mem::size_of::<Envelope>());
+                        let node_charge = target_actor.account.reserve(Resources {
+                            bytes: node_bytes as u64,
+                            ..Resources::default()
+                        })?;
+                        let message = delayed_envelope(
+                            target_actor,
+                            &handler,
+                            arguments,
+                            budget,
+                            effect.record_mask,
+                            effect.lists,
+                            effect.bytes,
+                            Reply::None,
+                        )?;
+                        let mut cursor = &mut state.timers;
+                        let mut inserted_at_head = true;
+                        while cursor
+                            .as_ref()
+                            .is_some_and(|existing| existing.deadline <= deadline)
+                        {
+                            inserted_at_head = false;
+                            cursor = &mut cursor.as_mut().expect("timer node").next;
+                        }
+                        let next = cursor.take();
+                        *cursor = Some(Box::new(ScheduledTimer {
+                            target,
+                            deadline,
+                            envelope: message,
+                            _node_charge: node_charge,
+                            next,
+                        }));
+                        state.timer_count += 1;
+                        if effect.timeout_ms == 0 {
+                            wake = state.maintain(self.identity);
+                        } else if inserted_at_head && effect.timeout_ms <= 1 {
+                            wake = state.wake_all_parked();
+                        }
+                        return Ok(0);
+                    }
                     if !is_request {
                         if schema.reply.is_some() {
                             return Err("send requires one-way entry".into());
@@ -572,6 +857,7 @@ impl Shared {
                                 | wings_abi::ValueType::BytesRef
                                 | wings_abi::ValueType::StringRef
                                 | wings_abi::ValueType::RecordRef(_)
+                                | wings_abi::ValueType::Pid
                         )
                     ) || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {
@@ -661,10 +947,14 @@ impl Shared {
                 match effect.operation {
                     wings_abi::EFFECT_REQUEST
                     | wings_abi::EFFECT_REQUEST_ACTOR
-                    | wings_abi::EFFECT_CANCEL_REQUEST => wings_abi::STATUS_REQUEST_REJECTED,
+                    | wings_abi::EFFECT_CANCEL_REQUEST
+                    | wings_abi::EFFECT_MONITOR => wings_abi::STATUS_REQUEST_REJECTED,
                     wings_abi::EFFECT_SEND
                     | wings_abi::EFFECT_SEND_ACTOR
-                    | wings_abi::EFFECT_SEND_SELF => wings_abi::STATUS_SEND_REJECTED,
+                    | wings_abi::EFFECT_SEND_SELF
+                    | wings_abi::EFFECT_SEND_AFTER_SELF
+                    | wings_abi::EFFECT_SEND_AFTER
+                    | wings_abi::EFFECT_SEND_AFTER_ACTOR => wings_abi::STATUS_SEND_REJECTED,
                     _ => wings_abi::STATUS_INVALID_CONTROL,
                 },
                 0,

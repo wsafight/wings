@@ -215,7 +215,7 @@ def verify_cli_arguments(directory, parent):
         assert not result.stderr
     for arguments in ([], ["run"], ["--help", "extra"], ["run", "--trusted", directory, "--max-steps"],
                       ["run", "--trusted", directory, "--max-steps", "1", "--heap-records", "2", "extra"],
-                      [b"x" * 20000] * 8):
+                      [b"x" * 20000] * 12):
         result = run(arguments, 2)
         assert not result.stdout and result.stderr.startswith(b"Usage: wings-vm run --trusted ")
     for options in ([], ["--heap-records", "2"]):

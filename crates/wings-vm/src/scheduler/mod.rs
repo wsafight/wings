@@ -36,6 +36,8 @@ mod tests;
 const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
 const MAX_MAILBOX: usize = 256;
+const MAX_TIMERS: usize = 1024;
+const MAX_MONITORS: usize = 1024;
 const THREAD_STACK: usize = 2 << 20;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
 static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
@@ -147,8 +149,61 @@ struct State {
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
     requests: state::RequestTable,
+    timers: Option<Box<ScheduledTimer>>,
+    timer_count: usize,
+    monitors: Option<Box<MonitorEntry>>,
+    monitor_count: usize,
+    recent_exits: [(i64, i64); 32],
+    recent_exit_cursor: usize,
     ready: Box<[ready::ReadyQueue]>,
     free: Option<usize>,
+}
+
+struct ScheduledTimer {
+    target: SchedulerPid,
+    deadline: Instant,
+    envelope: Envelope,
+    _node_charge: Reservation,
+    next: Option<Box<ScheduledTimer>>,
+}
+
+struct MonitorEntry {
+    owner: SchedulerPid,
+    target_capability: i64,
+    handler: HandlerId,
+    max_steps: u64,
+    reason: Option<i64>,
+    envelope_charge: Reservation,
+    envelope_msg_charge: Reservation,
+    _node_charge: Reservation,
+    next: Option<Box<MonitorEntry>>,
+}
+
+struct RetiredActor {
+    actor: Actor,
+    timers: Option<Box<ScheduledTimer>>,
+    monitors: Option<Box<MonitorEntry>>,
+}
+
+#[cfg(test)]
+impl RetiredActor {
+    fn into_actor(mut self) -> Actor {
+        clear_timers(&mut self.timers);
+        clear_monitors(&mut self.monitors);
+        self.actor
+    }
+}
+
+fn clear_timers(head: &mut Option<Box<ScheduledTimer>>) {
+    while let Some(mut node) = head.take() {
+        *head = node.next.take();
+    }
+}
+
+fn clear_monitors(head: &mut Option<Box<MonitorEntry>>) {
+    while let Some(mut node) = head.take() {
+        *head = node.next.take();
+    }
 }
 
 struct Slot {
@@ -459,6 +514,12 @@ impl Scheduler {
                     generation: 1,
                     pending: None,
                 })?),
+                timers: None,
+                timer_count: 0,
+                monitors: None,
+                monitor_count: 0,
+                recent_exits: [(0, 0); 32],
+                recent_exit_cursor: 0,
                 ready: storage(config.workers, ready::ReadyQueue::default)?,
                 free: Some(0),
             }),
@@ -547,7 +608,20 @@ impl Drop for Scheduler {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
         }
+        let mut timers = state.timers.take();
+        state.timer_count = 0;
+        let mut monitors = state.monitors.take();
+        state.monitor_count = 0;
         state.requests.clear_all();
+        drop(state);
+        clear_timers(&mut timers);
+        clear_monitors(&mut monitors);
+        let mut state = self
+            .handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state.modules = None;
     }
 }
@@ -975,17 +1049,21 @@ impl SchedulerHandle {
         actor.cancellation.cancel();
         self.shared.fast_slots[pid.slot as usize].clear();
         let retired = if actor.owner.is_none() {
-            state.retire(self.shared.identity, pid)
+            state.retire_with_reason(self.shared.identity, pid, 0)
         } else {
             None
         };
-        let wake = state.wake_all_parked();
+        let wake = state
+            .maintain(self.shared.identity)
+            .combine(state.wake_all_parked());
         self.shared.publish_signal(&state);
         drop(state);
-        if let Some(actor_ref) = retired.as_ref() {
-            actor_ref.mailbox.retire_clear();
+        if let Some(mut retired) = retired {
+            retired.actor.mailbox.retire_clear();
+            clear_timers(&mut retired.timers);
+            clear_monitors(&mut retired.monitors);
+            drop(retired.actor);
         }
-        drop(retired);
         wake.fire(&self.shared.changed);
         Ok(())
     }
@@ -1532,6 +1610,7 @@ fn validate(
                 expected_strings |= 1 << index;
             }
             wings_abi::ValueType::RequestId if system && *value > 0 => {}
+            wings_abi::ValueType::Pid if *value >= 0 => {}
             _ if ty.accepts(*value) => {}
             _ => return Err("scheduler scalar argument mismatch".into()),
         }
@@ -1589,7 +1668,7 @@ fn envelope(
     max_steps: u64,
     record_mask: u64,
     lists: ListPayload,
-    mut bytes: BytePayload,
+    bytes: BytePayload,
     _system: bool,
     reply: Reply,
 ) -> Result<Envelope, String> {
@@ -1598,6 +1677,29 @@ fn envelope(
     {
         return Err("mailbox_full".into());
     }
+    delayed_envelope(
+        actor,
+        handler,
+        arguments,
+        max_steps,
+        record_mask,
+        lists,
+        bytes,
+        reply,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn delayed_envelope(
+    actor: &Actor,
+    handler: &HandlerId,
+    arguments: &[i64],
+    max_steps: u64,
+    record_mask: u64,
+    lists: ListPayload,
+    mut bytes: BytePayload,
+    reply: Reply,
+) -> Result<Envelope, String> {
     bytes.transfer(&actor.account)?;
     let charge = actor.account.reserve(Resources {
         bytes: std::mem::size_of::<Envelope>() as u64,

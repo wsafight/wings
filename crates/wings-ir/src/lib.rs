@@ -75,6 +75,12 @@ pub enum Operation {
         handler: usize,
         arguments: Vec<Register>,
     },
+    SendAfterSelf {
+        handler: usize,
+        delay: Register,
+        arguments: Vec<Register>,
+    },
+    NullPid,
     SelfPid,
     SpawnSelf,
     SpawnActor(usize),
@@ -88,6 +94,23 @@ pub enum Operation {
         actor: usize,
         handler: usize,
         arguments: Vec<Register>,
+    },
+    SendAfter {
+        target: Register,
+        handler: usize,
+        delay: Register,
+        arguments: Vec<Register>,
+    },
+    SendAfterActor {
+        target: Register,
+        actor: usize,
+        handler: usize,
+        delay: Register,
+        arguments: Vec<Register>,
+    },
+    Monitor {
+        target: Register,
+        handler: usize,
     },
     Request {
         target: Register,
@@ -165,7 +188,8 @@ impl Handler {
                             | ValueType::Ref
                             | ValueType::ListRef
                             | ValueType::BytesRef
-                            | ValueType::StringRef),
+                            | ValueType::StringRef
+                            | ValueType::Pid),
                         ),
                     ],
                 ) => Some(*ty),
@@ -360,16 +384,16 @@ impl Program {
                 return Err("managed call path exceeds 64 shadow roots".into());
             }
         }
-        if self.state.is_capability()
+        if self.state == ValueType::RequestId
             || self.handlers.iter().any(|handler| {
-                handler.reply.is_some_and(ValueType::is_capability)
-                    || handler.parameters.iter().any(|(_, ty)| {
-                        *ty == ValueType::Pid
-                            || (*ty == ValueType::RequestId && !handler.is_completion())
-                    })
+                handler.reply == Some(ValueType::RequestId)
+                    || handler
+                        .parameters
+                        .iter()
+                        .any(|(_, ty)| *ty == ValueType::RequestId && !handler.is_completion())
             })
         {
-            return Err("Pid is only supported as a local value".into());
+            return Err("RequestId is only supported as a local value".into());
         }
         if self.handlers.len() > MAX_HANDLERS {
             return Err("too many handlers for the scalar prototype".into());
@@ -427,6 +451,12 @@ impl Program {
                     handler: target,
                     arguments,
                     ..
+                }
+                | Operation::SendAfterActor {
+                    actor,
+                    handler: target,
+                    arguments,
+                    ..
                 } = &instruction.operation
                 {
                     let ext = self
@@ -449,6 +479,23 @@ impl Program {
                         return Err(
                             "external send requires matching one-way handler parameters".into()
                         );
+                    }
+                }
+                if let Operation::Monitor {
+                    handler: target, ..
+                } = &instruction.operation
+                {
+                    let target = self
+                        .handlers
+                        .get(*target)
+                        .ok_or("invalid monitor handler")?;
+                    if target.reply.is_some()
+                        || target.is_completion()
+                        || target.parameters.len() != 2
+                        || target.parameters[0].1 != ValueType::Pid
+                        || target.parameters[1].1 != ValueType::Int
+                    {
+                        return Err("monitor requires a one-way (Pid, Int) handler".into());
                     }
                 }
                 if let Operation::RequestActor {
@@ -488,6 +535,7 @@ impl Program {
                                 | ValueType::BytesRef
                                 | ValueType::StringRef
                                 | ValueType::RecordRef(_)
+                                | ValueType::Pid
                         )
                     ) || !compatible_reply
                         || matches!(target.reply, Some(ValueType::RecordRef(index))
@@ -532,6 +580,7 @@ impl Program {
                                 | ValueType::BytesRef
                                 | ValueType::StringRef
                                 | ValueType::RecordRef(_)
+                                | ValueType::Pid
                         )
                     ) || callback.completion_reply() != target.reply
                         || matches!(target.reply, Some(ValueType::RecordRef(index))
@@ -554,7 +603,17 @@ impl Program {
                     handler: target,
                     arguments,
                 }
+                | Operation::SendAfterSelf {
+                    handler: target,
+                    arguments,
+                    ..
+                }
                 | Operation::Send {
+                    handler: target,
+                    arguments,
+                    ..
+                }
+                | Operation::SendAfter {
                     handler: target,
                     arguments,
                     ..
@@ -681,8 +740,12 @@ fn is_effect(operation: &Operation) -> bool {
     matches!(
         operation,
         Operation::SendSelf { .. }
+            | Operation::SendAfterSelf { .. }
             | Operation::Send { .. }
             | Operation::SendActor { .. }
+            | Operation::SendAfter { .. }
+            | Operation::SendAfterActor { .. }
+            | Operation::Monitor { .. }
             | Operation::SelfPid
             | Operation::SpawnSelf
             | Operation::SpawnActor(_)
@@ -767,7 +830,12 @@ impl Function {
                         && match comparison {
                             Comparison::Equal | Comparison::NotEqual => matches!(
                                 types.get(left),
-                                Some(ValueType::Int | ValueType::Bool | ValueType::Unit)
+                                Some(
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Pid
+                                )
                             ),
                             _ => types.get(left) == Some(&ValueType::Int),
                         }
@@ -865,12 +933,41 @@ impl Function {
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
+                                        | ValueType::Pid
                                 )
                             })
                         })
                 }
-                Operation::SelfPid | Operation::SpawnSelf | Operation::SpawnActor(_) => {
-                    instruction.ty == ValueType::Pid
+                Operation::SendAfterSelf {
+                    delay,
+                    ref arguments,
+                    ..
+                } => {
+                    instruction.ty == ValueType::Unit
+                        && types.get(delay) == Some(&ValueType::Int)
+                        && arguments.len() <= MAX_PARAMETERS
+                        && arguments.iter().all(|register| {
+                            types.get(*register).is_some_and(|ty| {
+                                matches!(
+                                    ty,
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Ref
+                                        | ValueType::ListRef
+                                        | ValueType::BytesRef
+                                        | ValueType::StringRef
+                                        | ValueType::Pid
+                                )
+                            })
+                        })
+                }
+                Operation::NullPid
+                | Operation::SelfPid
+                | Operation::SpawnSelf
+                | Operation::SpawnActor(_) => instruction.ty == ValueType::Pid,
+                Operation::Monitor { target, .. } => {
+                    instruction.ty == ValueType::Unit && types.get(target) == Some(&ValueType::Pid)
                 }
                 Operation::Request {
                     target,
@@ -899,6 +996,7 @@ impl Function {
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
+                                        | ValueType::Pid
                                 )
                             })
                         })
@@ -932,6 +1030,39 @@ impl Function {
                                         | ValueType::ListRef
                                         | ValueType::BytesRef
                                         | ValueType::StringRef
+                                        | ValueType::Pid
+                                )
+                            })
+                        })
+                }
+                Operation::SendAfter {
+                    target,
+                    delay,
+                    ref arguments,
+                    ..
+                }
+                | Operation::SendAfterActor {
+                    target,
+                    delay,
+                    ref arguments,
+                    ..
+                } => {
+                    instruction.ty == ValueType::Unit
+                        && types.get(target) == Some(&ValueType::Pid)
+                        && types.get(delay) == Some(&ValueType::Int)
+                        && arguments.len() <= MAX_PARAMETERS
+                        && arguments.iter().all(|register| {
+                            types.get(*register).is_some_and(|ty| {
+                                matches!(
+                                    ty,
+                                    ValueType::Int
+                                        | ValueType::Bool
+                                        | ValueType::Unit
+                                        | ValueType::Ref
+                                        | ValueType::ListRef
+                                        | ValueType::BytesRef
+                                        | ValueType::StringRef
+                                        | ValueType::Pid
                                 )
                             })
                         })
@@ -1140,6 +1271,11 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         }
         Operation::StringSlice(ref arguments) => ([None, None], arguments.as_slice()),
         Operation::SendSelf { ref arguments, .. } => ([None, None], arguments),
+        Operation::SendAfterSelf {
+            delay,
+            ref arguments,
+            ..
+        } => ([Some(delay), None], arguments),
         Operation::Call { ref arguments, .. } => ([None, None], arguments),
         Operation::RecordNew { ref arguments, .. } => ([None, None], arguments),
         Operation::RecordField { value, .. } => ([Some(value), None], &[]),
@@ -1153,6 +1289,19 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
             ref arguments,
             ..
         } => ([Some(target), None], arguments),
+        Operation::SendAfter {
+            target,
+            delay,
+            ref arguments,
+            ..
+        }
+        | Operation::SendAfterActor {
+            target,
+            delay,
+            ref arguments,
+            ..
+        } => ([Some(target), Some(delay)], arguments),
+        Operation::Monitor { target, .. } => ([Some(target), None], &[]),
         Operation::Request {
             target,
             timeout,

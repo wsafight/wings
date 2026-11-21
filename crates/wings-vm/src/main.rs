@@ -1,17 +1,14 @@
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
-use wings_vm::{
-    MessageValue, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig, StackPool,
-};
+use wings_vm::{ResourceAccount, Resources, ScalarModule, Scheduler, SchedulerConfig, StackPool};
 
 mod cli;
 mod cli_args;
 mod cli_io;
 mod cli_record;
 mod cli_report;
+mod cli_serve;
 
 fn main() -> ExitCode {
     let limits = Resources {
@@ -77,6 +74,7 @@ fn start(vm: &ResourceAccount, reporter: &mut cli_report::Reporter) -> Result<Ex
             workers,
             max_steps,
             heap_records,
+            listen,
         } => {
             serve(
                 &account,
@@ -84,6 +82,7 @@ fn start(vm: &ResourceAccount, reporter: &mut cli_report::Reporter) -> Result<Ex
                 *workers,
                 *max_steps,
                 *heap_records,
+                *listen,
             )?;
         }
     }
@@ -96,6 +95,7 @@ fn serve(
     workers: usize,
     max_steps: u64,
     heap_records: Option<usize>,
+    listen: Option<cli_args::ListenEndpoint>,
 ) -> Result<(), String> {
     let app_limits = Resources {
         bytes: 256 << 20,
@@ -133,50 +133,25 @@ fn serve(
         Some(records) => handle.spawn_with_heap(entry_module, actor_limits, 64, records)?,
         None => handle.spawn_with_heap(entry_module, actor_limits, 64, 256)?,
     };
-    let mut adapter = cli::Adapter::new(cli_account)?;
-    let mut stdio = cli_io::Stdio::new(cli_account)?;
-    let (reader, writer) = stdio.streams();
-    while let Some(request) = adapter.read_request(reader)? {
-        let handler = entry_module.handler(request.message.as_str())?;
-        let schema = handler.schema();
-        let reply_type = schema.reply;
-        let raw_scalars = request.arguments.scalars(&schema.parameters)?;
-        let mut message_values = [MessageValue::Unit; 64];
-        for (idx, (_, param_ty)) in schema.parameters.iter().enumerate() {
-            message_values[idx] = match param_ty {
-                wings_abi::ValueType::Int => MessageValue::Int(raw_scalars[idx]),
-                wings_abi::ValueType::Bool => MessageValue::Bool(raw_scalars[idx] != 0),
-                wings_abi::ValueType::Unit => MessageValue::Unit,
-                _ => return Err("CLI input supports only Int, Bool and Unit parameters".into()),
-            };
-        }
-        let values = &message_values[..schema.parameters.len()];
-        if reply_type.is_none() {
-            handle.send_values(entry_pid, &handler, values, max_steps)?;
-            adapter.write_reply(writer, None, None)?;
-            continue;
-        }
-        let mut pending = handle.request_values(
+    match listen {
+        None => cli_serve::serve_stdio(cli_account, entry_module, entry_pid, &handle, max_steps),
+        Some(cli_args::ListenEndpoint::Tcp(addr)) => cli_serve::serve_tcp(
+            addr,
+            &app_tenant,
+            entry_module,
             entry_pid,
-            &handler,
-            values,
+            &handle,
             max_steps,
-            Duration::from_secs(30),
-        )?;
-        match pending.wait(Duration::from_secs(30))? {
-            Some(RequestOutcome::Reply(val)) => {
-                adapter.write_reply(writer, reply_type, Some(val))?
-            }
-            Some(RequestOutcome::ReplyString(val)) => adapter.write_string_reply(writer, &val)?,
-            Some(RequestOutcome::ReplyBytes(val)) => adapter.write_bytes_reply(writer, &val)?,
-            Some(RequestOutcome::ReplyList(val)) => adapter.write_list_reply(writer, &val)?,
-            Some(RequestOutcome::ReplyRecord(val)) => adapter.write_record_reply(writer, &val)?,
-            Some(RequestOutcome::TimedOut) | None => return Err("request timed out".into()),
-            Some(RequestOutcome::Cancelled) => return Err("request cancelled".into()),
-            Some(RequestOutcome::Failed) => return Err("managed actor handler failed".into()),
-        }
+        ),
+        Some(cli_args::ListenEndpoint::Http(addr)) => cli_serve::serve_http(
+            addr,
+            &app_tenant,
+            entry_module,
+            entry_pid,
+            &handle,
+            max_steps,
+        ),
     }
-    Ok(())
 }
 
 fn run(

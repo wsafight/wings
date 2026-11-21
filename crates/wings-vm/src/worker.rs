@@ -19,6 +19,8 @@ static NEXT_REQUEST_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
+const MAX_TIMERS: usize = 256;
+const MAX_MONITORS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pid {
@@ -111,12 +113,48 @@ pub struct ScalarWorker {
     identity: u64,
     slots: Box<[ProcessSlot]>,
     requests: Box<[RequestSlot]>,
+    timers: Option<Box<ScheduledTimer>>,
+    timer_count: usize,
+    monitors: Option<Box<MonitorEntry>>,
+    monitor_count: usize,
+    recent_exits: [(i64, i64); 32],
+    recent_exit_cursor: usize,
     pool: StackPool,
     tenant: ResourceAccount,
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     cursor: usize,
     last_exit: Option<ExitSnapshot>,
     _charge: Reservation,
+}
+
+impl Drop for ScalarWorker {
+    fn drop(&mut self) {
+        while let Some(mut node) = self.timers.take() {
+            self.timers = node.next.take();
+        }
+        while let Some(mut node) = self.monitors.take() {
+            self.monitors = node.next.take();
+        }
+    }
+}
+
+struct ScheduledTimer {
+    target: Pid,
+    deadline: Instant,
+    message: Message,
+    _node_charge: Reservation,
+    next: Option<Box<ScheduledTimer>>,
+}
+
+struct MonitorEntry {
+    owner: Pid,
+    target_capability: i64,
+    handler: HandlerId,
+    budget: u64,
+    reason: Option<i64>,
+    message_charge: Reservation,
+    _node_charge: Reservation,
+    next: Option<Box<MonitorEntry>>,
 }
 
 struct ProcessSlot {
@@ -237,6 +275,12 @@ impl ScalarWorker {
             identity,
             slots,
             requests,
+            timers: None,
+            timer_count: 0,
+            monitors: None,
+            monitor_count: 0,
+            recent_exits: [(0, 0); 32],
+            recent_exit_cursor: 0,
             pool,
             tenant: tenant.clone(),
             modules: None,
@@ -292,12 +336,21 @@ impl ScalarWorker {
             return Err("worker wait is not enabled".into());
         }
         let expired = self.expire_requests();
+        let timers_fired = self.flush_timers();
+        self.flush_monitors();
         self.flush_completions();
         if self.has_ready() {
             return Ok(WorkerWait::Ready);
         }
-        if expired {
+        if expired || timers_fired {
             return Ok(WorkerWait::Deadline);
+        }
+        let mut earliest_timer: Option<Instant> = None;
+        let mut timer_ref = self.timers.as_deref();
+        while let Some(node) = timer_ref {
+            earliest_timer =
+                Some(earliest_timer.map_or(node.deadline, |cur| cur.min(node.deadline)));
+            timer_ref = node.next.as_deref();
         }
         let deadline = self
             .requests
@@ -305,6 +358,7 @@ impl ScalarWorker {
             .filter_map(|slot| slot.pending.as_ref())
             .filter(|pending| pending.outcome.is_none())
             .map(|pending| pending.deadline)
+            .chain(earliest_timer)
             .min()
             .map_or(end, |deadline| deadline.min(end));
         self.idle_wait
@@ -314,10 +368,12 @@ impl ScalarWorker {
             .wait(deadline.saturating_duration_since(Instant::now()))
             .map_err(|error| format!("worker wait failed: {error}"))?;
         let expired = self.expire_requests();
+        let timers_fired = self.flush_timers();
+        self.flush_monitors();
         self.flush_completions();
         Ok(if self.has_ready() {
             WorkerWait::Ready
-        } else if expired {
+        } else if expired || timers_fired {
             WorkerWait::Deadline
         } else {
             WorkerWait::TimedOut
@@ -700,8 +756,35 @@ impl ScalarWorker {
         request: Option<RequestId>,
         record_mask: u64,
         lists: &ListPayload,
-        mut bytes: BytePayload,
+        bytes: BytePayload,
     ) -> Result<(), String> {
+        self.enqueue_payload_kind(
+            pid,
+            handler,
+            arguments,
+            max_steps,
+            request,
+            false,
+            record_mask,
+            lists,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_message_payload(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+        allow_pid: bool,
+        require_mailbox_slot: bool,
+        record_mask: u64,
+        lists: &ListPayload,
+        mut bytes: BytePayload,
+    ) -> Result<Message, String> {
         let actor = self.actor_mut(pid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
             return Err("handler ID belongs to a different module".into());
@@ -755,11 +838,15 @@ impl ScalarWorker {
             || arguments
                 .iter()
                 .zip(&schema.parameters)
-                .any(|(value, (_, ty))| !ty.is_reference() && !ty.accepts(*value))
+                .any(|(value, (_, ty))| {
+                    !ty.is_reference()
+                        && !ty.accepts(*value)
+                        && !(allow_pid && *ty == wings_abi::ValueType::Pid && *value >= 0)
+                })
         {
             return Err("handler argument count or scalar type mismatch".into());
         }
-        if actor.mailbox.count == actor.mailbox.slots.len() {
+        if require_mailbox_slot && actor.mailbox.count == actor.mailbox.slots.len() {
             return Err("mailbox_full".into());
         }
         bytes.transfer(&actor.account)?;
@@ -770,7 +857,7 @@ impl ScalarWorker {
         })?;
         let mut owned_arguments = [0; MAX_ARGUMENTS];
         owned_arguments[..arguments.len()].copy_from_slice(arguments);
-        let message = Message {
+        Ok(Message {
             handler: handler.clone(),
             arguments: owned_arguments,
             count: arguments.len(),
@@ -782,7 +869,35 @@ impl ScalarWorker {
             lists: *lists,
             bytes,
             _charge: charge,
-        };
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_payload_kind(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+        allow_pid: bool,
+        record_mask: u64,
+        lists: &ListPayload,
+        bytes: BytePayload,
+    ) -> Result<(), String> {
+        let message = self.prepare_message_payload(
+            pid,
+            handler,
+            arguments,
+            max_steps,
+            request,
+            allow_pid,
+            true,
+            record_mask,
+            lists,
+            bytes,
+        )?;
+        let actor = self.actor_mut(pid)?;
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
         actor.mailbox.slots[tail] = Some(message);
         actor.mailbox.count += 1;
@@ -794,6 +909,8 @@ impl ScalarWorker {
             return Err("worker slice must contain at least one step".into());
         }
         self.expire_requests();
+        self.flush_timers();
+        self.flush_monitors();
         self.flush_completions();
         for _ in 0..self.slots.len() {
             let index = self.cursor;
@@ -979,9 +1096,16 @@ impl ScalarWorker {
                     let mut handler = [0; 256];
                     handler[..name.len()].copy_from_slice(name.as_bytes());
                     let state_type = actor.task.module().manifest().state;
+                    let execution_snapshot =
+                        actor.task.snapshot().expect("failed invocation snapshot");
+                    let exit_reason = execution_snapshot
+                        .fault
+                        .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
+                            fault.exit_code()
+                        });
                     self.last_exit = Some(ExitSnapshot {
                         pid,
-                        execution: actor.task.snapshot().expect("failed invocation snapshot"),
+                        execution: execution_snapshot,
                         state_type,
                         committed_state: (!state_type.is_reference())
                             .then(|| actor.task.committed_state()),
@@ -991,7 +1115,7 @@ impl ScalarWorker {
                         handler,
                         handler_len: name.len(),
                     });
-                    self.remove(index);
+                    self.remove_with_reason(index, exit_reason);
                     Ok(WorkerEvent::Exited { pid, reason })
                 }
             };
@@ -1002,7 +1126,7 @@ impl ScalarWorker {
     pub fn stop(&mut self, pid: Pid) -> Result<(), String> {
         self.actor_mut(pid)?;
         self.expire_requests();
-        self.remove(pid.slot as usize);
+        self.remove_with_reason(pid.slot as usize, 0);
         Ok(())
     }
 
@@ -1139,8 +1263,92 @@ impl ScalarWorker {
                     Err(_) => (wings_abi::STATUS_SPAWN_REJECTED, 0),
                 }
             }
-            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_SEND_ACTOR => {
-                let target = if effect.operation == wings_abi::EFFECT_SEND_SELF {
+            wings_abi::EFFECT_MONITOR => {
+                let result: Result<(), String> = (|| {
+                    if effect.count != 0 || effect.target <= 0 || self.monitor_count >= MAX_MONITORS
+                    {
+                        return Err("invalid monitor target or capacity".into());
+                    }
+                    let schema = module
+                        .manifest()
+                        .handlers
+                        .get(effect.handler)
+                        .ok_or("invalid monitor handler")?;
+                    if schema.is_completion()
+                        || schema.reply.is_some()
+                        || schema.parameters.len() != 2
+                        || schema.parameters[0].1 != wings_abi::ValueType::Pid
+                        || schema.parameters[1].1 != wings_abi::ValueType::Int
+                    {
+                        return Err("monitor requires a one-way (Pid, Int) handler".into());
+                    }
+                    let handler = module.handler(&schema.name)?;
+                    let owner = self.actor(pid)?;
+                    let message_charge = owner.account.reserve(Resources {
+                        messages: 1,
+                        bytes: std::mem::size_of::<Message>() as u64,
+                        ..Resources::default()
+                    })?;
+                    let node_charge = owner.account.reserve(Resources {
+                        bytes: std::mem::size_of::<MonitorEntry>() as u64,
+                        ..Resources::default()
+                    })?;
+                    let target_alive = self.slots.iter().any(|slot| {
+                        slot.actor
+                            .as_ref()
+                            .is_some_and(|a| a.capability == effect.target)
+                    });
+                    let reason = if target_alive {
+                        None
+                    } else {
+                        Some(self.lookup_recent_exit(effect.target).unwrap_or(-1))
+                    };
+                    let entry = Box::new(MonitorEntry {
+                        owner: pid,
+                        target_capability: effect.target,
+                        handler,
+                        budget,
+                        reason,
+                        message_charge,
+                        _node_charge: node_charge,
+                        next: None,
+                    });
+                    let mut tail = &mut self.monitors;
+                    while let Some(node) = tail {
+                        tail = &mut node.next;
+                    }
+                    *tail = Some(entry);
+                    self.monitor_count += 1;
+                    if reason.is_some() {
+                        self.flush_monitors();
+                    }
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => (wings_abi::STATUS_OK, 0),
+                    Err(_) => (wings_abi::STATUS_REQUEST_REJECTED, 0),
+                }
+            }
+            wings_abi::EFFECT_SEND_SELF
+            | wings_abi::EFFECT_SEND
+            | wings_abi::EFFECT_SEND_ACTOR
+            | wings_abi::EFFECT_SEND_AFTER_SELF
+            | wings_abi::EFFECT_SEND_AFTER
+            | wings_abi::EFFECT_SEND_AFTER_ACTOR => {
+                let is_after = matches!(
+                    effect.operation,
+                    wings_abi::EFFECT_SEND_AFTER_SELF
+                        | wings_abi::EFFECT_SEND_AFTER
+                        | wings_abi::EFFECT_SEND_AFTER_ACTOR
+                );
+                let is_cross_actor = matches!(
+                    effect.operation,
+                    wings_abi::EFFECT_SEND_ACTOR | wings_abi::EFFECT_SEND_AFTER_ACTOR
+                );
+                let target = if matches!(
+                    effect.operation,
+                    wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND_AFTER_SELF
+                ) {
                     Some(pid)
                 } else {
                     self.slots.iter().enumerate().find_map(|(index, slot)| {
@@ -1150,7 +1358,7 @@ impl ScalarWorker {
                             .map(|_| self.pid(index))
                     })
                 };
-                let target_and_handler = if effect.operation == wings_abi::EFFECT_SEND_ACTOR {
+                let target_and_handler = if is_cross_actor {
                     let actor_idx = effect.handler >> 16;
                     let h_idx = effect.handler & 0xFFFF;
                     target.and_then(|target| {
@@ -1169,19 +1377,36 @@ impl ScalarWorker {
                                 .map(|handler| (target, handler))
                         })
                 };
-                let accepted = target_and_handler.is_some_and(|(target, handler)| {
-                    self.enqueue_payload(
-                        target,
-                        &handler,
-                        &effect.arguments[..effect.count],
-                        budget,
-                        None,
-                        effect.record_mask,
-                        &effect.lists,
-                        effect.bytes,
-                    )
-                    .is_ok()
-                });
+                let accepted = if is_after {
+                    target_and_handler.is_some_and(|(target, handler)| {
+                        self.schedule_timer(
+                            target,
+                            &handler,
+                            effect.timeout_ms,
+                            &effect.arguments[..effect.count],
+                            budget,
+                            effect.record_mask,
+                            &effect.lists,
+                            effect.bytes,
+                        )
+                        .is_ok()
+                    })
+                } else {
+                    target_and_handler.is_some_and(|(target, handler)| {
+                        self.enqueue_payload_kind(
+                            target,
+                            &handler,
+                            &effect.arguments[..effect.count],
+                            budget,
+                            None,
+                            true,
+                            effect.record_mask,
+                            &effect.lists,
+                            effect.bytes,
+                        )
+                        .is_ok()
+                    })
+                };
                 (
                     if accepted {
                         wings_abi::STATUS_OK
@@ -1193,6 +1418,82 @@ impl ScalarWorker {
             }
             _ => (wings_abi::STATUS_INVALID_CONTROL, 0),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_timer(
+        &mut self,
+        target: Pid,
+        handler: &HandlerId,
+        delay_ms: i64,
+        arguments: &[i64],
+        budget: u64,
+        record_mask: u64,
+        lists: &ListPayload,
+        bytes: BytePayload,
+    ) -> Result<(), String> {
+        if !(0..=86_400_000).contains(&delay_ms) || self.timer_count >= MAX_TIMERS {
+            return Err("invalid timer delay or capacity".into());
+        }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(delay_ms as u64))
+            .ok_or("timer deadline overflow")?;
+        let node_bytes =
+            std::mem::size_of::<ScheduledTimer>().saturating_sub(std::mem::size_of::<Message>());
+        let node_charge = self.actor(target)?.account.reserve(Resources {
+            bytes: node_bytes as u64,
+            ..Resources::default()
+        })?;
+        let message = self.prepare_message_payload(
+            target,
+            handler,
+            arguments,
+            budget,
+            None,
+            true,
+            false,
+            record_mask,
+            lists,
+            bytes,
+        )?;
+        let mut cursor = &mut self.timers;
+        while cursor
+            .as_ref()
+            .is_some_and(|existing| existing.deadline <= deadline)
+        {
+            cursor = &mut cursor.as_mut().expect("timer node").next;
+        }
+        let next = cursor.take();
+        *cursor = Some(Box::new(ScheduledTimer {
+            target,
+            deadline,
+            message,
+            _node_charge: node_charge,
+            next,
+        }));
+        self.timer_count += 1;
+        if delay_ms == 0 {
+            self.flush_timers();
+        }
+        Ok(())
+    }
+
+    fn record_exit(&mut self, capability: i64, reason: i64) {
+        let idx = self.recent_exit_cursor % self.recent_exits.len();
+        self.recent_exits[idx] = (capability, reason);
+        self.recent_exit_cursor = self.recent_exit_cursor.wrapping_add(1);
+    }
+
+    fn lookup_recent_exit(&self, capability: i64) -> Option<i64> {
+        let len = self.recent_exits.len();
+        for offset in 0..len {
+            let idx = self.recent_exit_cursor.wrapping_add(len - 1 - offset) % len;
+            let (cap, reason) = self.recent_exits[idx];
+            if cap == capability && cap > 0 {
+                return Some(reason);
+            }
+        }
+        None
     }
 
     fn pid(&self, index: usize) -> Pid {
@@ -1223,7 +1524,40 @@ impl ScalarWorker {
     }
 
     fn remove(&mut self, index: usize) {
+        self.remove_with_reason(index, i64::from(wings_abi::STATUS_INVALID_CONTROL));
+    }
+
+    fn remove_with_reason(&mut self, index: usize, exit_reason: i64) {
         let pid = self.pid(index);
+        if let Some(dead_capability) = self.slots[index].actor.as_ref().map(|a| a.capability) {
+            self.record_exit(dead_capability, exit_reason);
+            let mut timer_cursor = &mut self.timers;
+            while timer_cursor.is_some() {
+                if timer_cursor.as_ref().expect("timer node").target == pid {
+                    let mut removed = timer_cursor.take().expect("removed timer");
+                    *timer_cursor = removed.next.take();
+                    self.timer_count -= 1;
+                    drop(removed);
+                } else {
+                    timer_cursor = &mut timer_cursor.as_mut().expect("timer node").next;
+                }
+            }
+            let mut mon_cursor = &mut self.monitors;
+            while mon_cursor.is_some() {
+                if mon_cursor.as_ref().expect("monitor node").owner == pid {
+                    let mut removed = mon_cursor.take().expect("removed monitor");
+                    *mon_cursor = removed.next.take();
+                    self.monitor_count -= 1;
+                    drop(removed);
+                } else {
+                    let entry = mon_cursor.as_mut().expect("monitor node");
+                    if entry.target_capability == dead_capability && entry.reason.is_none() {
+                        entry.reason = Some(exit_reason);
+                    }
+                    mon_cursor = &mut entry.next;
+                }
+            }
+        }
         for slot in &mut self.requests {
             if let Some(pending) = &mut slot.pending {
                 if pending
@@ -1350,6 +1684,7 @@ impl ScalarWorker {
                     | wings_abi::ValueType::BytesRef
                     | wings_abi::ValueType::StringRef
                     | wings_abi::ValueType::RecordRef(_)
+                    | wings_abi::ValueType::Pid
             )
         ) {
             return Err("request requires a supported scalar or copied value reply".into());
@@ -1415,12 +1750,13 @@ impl ScalarWorker {
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
             .ok_or("request deadline overflow")?;
-        self.enqueue_payload(
+        self.enqueue_payload_kind(
             target,
             &handler,
             &effect.arguments[..effect.count],
             budget,
             Some(request),
+            true,
             effect.record_mask,
             &effect.lists,
             effect.bytes,
@@ -1441,6 +1777,93 @@ impl ScalarWorker {
             _charge: charge,
         });
         Ok(capability)
+    }
+
+    fn flush_timers(&mut self) -> bool {
+        let now = Instant::now();
+        let mut fired = false;
+        let mut pending = self.timers.take();
+        let mut kept_head: Option<Box<ScheduledTimer>> = None;
+        let mut kept_tail = &mut kept_head;
+        while let Some(mut node) = pending {
+            if node.deadline > now {
+                *kept_tail = Some(node);
+                break;
+            }
+            pending = node.next.take();
+            let target = node.target;
+            let can_deliver = match self.actor(target) {
+                Ok(actor) => actor.mailbox.count < actor.mailbox.slots.len(),
+                Err(_) => {
+                    self.timer_count -= 1;
+                    drop(node);
+                    continue;
+                }
+            };
+            if !can_deliver {
+                let slot = kept_tail.insert(node);
+                kept_tail = &mut slot.next;
+                continue;
+            }
+            self.timer_count -= 1;
+            let actor = self.actor_mut(target).expect("timer recipient");
+            let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
+            actor.mailbox.slots[tail] = Some(node.message);
+            actor.mailbox.count += 1;
+            fired = true;
+        }
+        self.timers = kept_head;
+        fired
+    }
+
+    fn flush_monitors(&mut self) {
+        let mut pending = self.monitors.take();
+        let mut kept_head: Option<Box<MonitorEntry>> = None;
+        let mut kept_tail = &mut kept_head;
+        while let Some(mut entry) = pending {
+            pending = entry.next.take();
+            let Some(reason) = entry.reason else {
+                let slot = kept_tail.insert(entry);
+                kept_tail = &mut slot.next;
+                continue;
+            };
+            let owner = entry.owner;
+            let can_deliver = match self.actor(owner) {
+                Ok(actor) => actor.mailbox.count < actor.mailbox.slots.len(),
+                Err(_) => {
+                    self.monitor_count -= 1;
+                    drop(entry);
+                    continue;
+                }
+            };
+            if !can_deliver {
+                let slot = kept_tail.insert(entry);
+                kept_tail = &mut slot.next;
+                continue;
+            }
+            self.monitor_count -= 1;
+            let mut arguments = [0; MAX_ARGUMENTS];
+            arguments[0] = entry.target_capability;
+            arguments[1] = reason;
+            let message = Message {
+                handler: entry.handler,
+                arguments,
+                count: 2,
+                max_steps: entry.budget,
+                request: None,
+                system: false,
+                external: None,
+                record_mask: 0,
+                lists: ListPayload::default(),
+                bytes: BytePayload::default(),
+                _charge: entry.message_charge,
+            };
+            let actor = self.actor_mut(owner).expect("monitor recipient");
+            let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
+            actor.mailbox.slots[tail] = Some(message);
+            actor.mailbox.count += 1;
+        }
+        self.monitors = kept_head;
     }
 
     fn flush_completions(&mut self) {

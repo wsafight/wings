@@ -1008,6 +1008,13 @@ impl Lowerer<'_> {
 
         let cond = match &first.pattern {
             MatchPattern::Wildcard(_) => unreachable!(),
+            MatchPattern::Null(_) => {
+                let target = self.push(ValueType::Pid, Operation::NullPid)?;
+                self.push(
+                    ValueType::Bool,
+                    Operation::Compare(Comparison::Equal, scrutinee, target),
+                )?
+            }
             MatchPattern::Integer(val, _) => {
                 let target = self.push(ValueType::Int, Operation::Constant(*val))?;
                 self.push(
@@ -1150,6 +1157,7 @@ impl Lowerer<'_> {
                 self.push(ValueType::Bool, Operation::Constant(i64::from(*value)))
             }
             ExprKind::Unit => self.push(ValueType::Unit, Operation::Constant(0)),
+            ExprKind::Null => self.push(ValueType::Pid, Operation::NullPid),
             ExprKind::SelfPid => self.push(ValueType::Pid, Operation::SelfPid),
             ExprKind::Spawn(target_actor) => match target_actor {
                 None => self.push(ValueType::Pid, Operation::SpawnSelf),
@@ -1333,6 +1341,13 @@ impl Lowerer<'_> {
                     (ValueType::StringRef, "bytes") => {
                         self.push(ValueType::BytesRef, Operation::StringBytes(recv))
                     }
+                    (ValueType::Pid, "is_null") => {
+                        let null_reg = self.push(ValueType::Pid, Operation::NullPid)?;
+                        self.push(
+                            ValueType::Bool,
+                            Operation::Compare(Comparison::Equal, recv, null_reg),
+                        )
+                    }
                     (ValueType::RequestId, "cancel") => {
                         self.push(ValueType::Unit, Operation::CancelRequest(recv))
                     }
@@ -1411,6 +1426,100 @@ impl Lowerer<'_> {
                         },
                     )
                 }
+            }
+            ExprKind::SendAfter {
+                target,
+                delay,
+                message,
+                arguments,
+            } => {
+                let target_actor = self
+                    .target_actors
+                    .and_then(|map| map.get(&(expression.span.start, expression.span.end)))
+                    .map(String::as_str)
+                    .unwrap_or(self.actor_name);
+                if target_actor == self.actor_name {
+                    let handler = *self
+                        .handlers
+                        .get(message.text.as_str())
+                        .ok_or("unknown send_after target")?;
+                    if matches!(target.kind, ExprKind::SelfPid) {
+                        let delay_reg = self.expression(delay)?;
+                        let arg_regs: Vec<Register> = arguments
+                            .iter()
+                            .map(|a| self.expression(a))
+                            .collect::<Result<_, _>>()?;
+                        let flattened = self.message_arguments(arg_regs)?;
+                        self.push(
+                            ValueType::Unit,
+                            Operation::SendAfterSelf {
+                                handler,
+                                delay: delay_reg,
+                                arguments: flattened,
+                            },
+                        )
+                    } else {
+                        let target_reg = self.expression(target)?;
+                        let delay_reg = self.expression(delay)?;
+                        let arg_regs: Vec<Register> = arguments
+                            .iter()
+                            .map(|a| self.expression(a))
+                            .collect::<Result<_, _>>()?;
+                        let flattened = self.message_arguments(arg_regs)?;
+                        self.push(
+                            ValueType::Unit,
+                            Operation::SendAfter {
+                                target: target_reg,
+                                handler,
+                                delay: delay_reg,
+                                arguments: flattened,
+                            },
+                        )
+                    }
+                } else {
+                    let (actor_idx, ext_actor) = self
+                        .external_actors
+                        .iter()
+                        .enumerate()
+                        .find(|(_, ext)| ext.name == target_actor)
+                        .ok_or("unknown external send_after actor")?;
+                    let handler = ext_actor
+                        .handlers
+                        .iter()
+                        .position(|h| h.name == message.text)
+                        .ok_or("unknown external send_after handler")?;
+                    let target_reg = self.expression(target)?;
+                    let delay_reg = self.expression(delay)?;
+                    let arg_regs: Vec<Register> = arguments
+                        .iter()
+                        .map(|a| self.expression(a))
+                        .collect::<Result<_, _>>()?;
+                    let flattened = self.message_arguments(arg_regs)?;
+                    self.push(
+                        ValueType::Unit,
+                        Operation::SendAfterActor {
+                            target: target_reg,
+                            actor: actor_idx,
+                            handler,
+                            delay: delay_reg,
+                            arguments: flattened,
+                        },
+                    )
+                }
+            }
+            ExprKind::Monitor { target, handler } => {
+                let target_reg = self.expression(target)?;
+                let handler_idx = *self
+                    .handlers
+                    .get(handler.text.as_str())
+                    .ok_or("unknown monitor handler")?;
+                self.push(
+                    ValueType::Unit,
+                    Operation::Monitor {
+                        target: target_reg,
+                        handler: handler_idx,
+                    },
+                )
             }
             ExprKind::Ask {
                 target,
@@ -1719,6 +1828,21 @@ fn collect_assigned_expr(expr: &Expr, shadowed: &BTreeSet<String>, out: &mut BTr
                 collect_assigned_expr(arg, shadowed, out);
             }
         }
+        ExprKind::SendAfter {
+            target,
+            delay,
+            arguments,
+            ..
+        } => {
+            collect_assigned_expr(target, shadowed, out);
+            collect_assigned_expr(delay, shadowed, out);
+            for arg in arguments {
+                collect_assigned_expr(arg, shadowed, out);
+            }
+        }
+        ExprKind::Monitor { target, .. } => {
+            collect_assigned_expr(target, shadowed, out);
+        }
         ExprKind::Ask {
             target,
             arguments,
@@ -1777,7 +1901,7 @@ fn sema_type_to_value_type(
         Type::IntList => Ok(ValueType::ListRef),
         Type::Bytes => Ok(ValueType::BytesRef),
         Type::String => Ok(ValueType::StringRef),
-        Type::Pid | Type::ActorPid(_) => Ok(ValueType::Pid),
+        Type::Pid | Type::ActorPid(_) | Type::NullPid => Ok(ValueType::Pid),
         Type::RequestId => Ok(ValueType::RequestId),
         Type::Struct(name) => records
             .iter()

@@ -18,7 +18,10 @@ fn named_record_schema_limits_and_nominal_indices_are_explicit() {
         },
         RecordSchema {
             name: "B".into(),
-            fields: vec![("nested".into(), ValueType::RecordRef(0))],
+            fields: vec![
+                ("nested".into(), ValueType::RecordRef(0)),
+                ("peer".into(), ValueType::Pid),
+            ],
         },
     ];
     validate_records(&schemas).unwrap();
@@ -27,7 +30,6 @@ fn named_record_schema_limits_and_nominal_indices_are_explicit() {
     for invalid in [
         ValueType::RecordRef(1),
         ValueType::RecordRef(u16::MAX),
-        ValueType::Pid,
         ValueType::RequestId,
     ] {
         schemas[1].fields[0].1 = invalid;

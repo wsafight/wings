@@ -602,7 +602,7 @@ fn self_send_validates_target_kind_arguments_and_initializer_boundary() {
 }
 
 #[test]
-fn local_capabilities_cannot_be_constants_state_messages_or_compared() {
+fn pid_capabilities_support_state_messages_equality_and_null_while_forging_and_req_state_reject() {
     let mut program = valid_program();
     program.handlers[0]
         .function
@@ -612,24 +612,55 @@ fn local_capabilities_cannot_be_constants_state_messages_or_compared() {
         .function
         .instructions
         .push(instruction(ValueType::Pid, Operation::SpawnSelf));
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::NullPid));
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Bool,
+        Operation::Compare(Comparison::Equal, 3, 5),
+    ));
     program.validate().unwrap();
+
+    let mut pid_state = valid_program();
+    pid_state.state = ValueType::Pid;
+    pid_state.initializer.instructions = vec![instruction(ValueType::Pid, Operation::NullPid)];
+    pid_state.initializer.state = 0;
+    pid_state.initializer.reply = 0;
+    let unit_reg = pid_state.initializer.instructions.len();
+    pid_state
+        .initializer
+        .instructions
+        .push(instruction(ValueType::Unit, Operation::Constant(0)));
+    pid_state.initializer.reply = unit_reg;
+    pid_state.handlers[0].parameters = vec![("peer".into(), ValueType::Pid)];
+    pid_state.handlers[0].reply = Some(ValueType::Pid);
+    pid_state.handlers[0].function.instructions = vec![
+        instruction(ValueType::Pid, Operation::State),
+        instruction(ValueType::Pid, Operation::Argument(0)),
+    ];
+    pid_state.handlers[0].function.state = 1;
+    pid_state.handlers[0].function.reply = 0;
+    pid_state.validate().unwrap();
+
     let mut invalid = program.clone();
-    invalid.state = ValueType::Pid;
+    invalid.state = ValueType::RequestId;
     rejects(&invalid, "local value");
     let mut invalid = program.clone();
-    invalid.handlers[0].reply = Some(ValueType::Pid);
+    invalid.handlers[0].reply = Some(ValueType::RequestId);
     rejects(&invalid, "local value");
     let mut invalid = program.clone();
-    invalid.handlers[0].parameters[0].1 = ValueType::Pid;
+    invalid.handlers[0].parameters[0].1 = ValueType::RequestId;
     rejects(&invalid, "local value");
     let mut invalid = program.clone();
     invalid.handlers[0].function.instructions[3].operation = Operation::Constant(1);
     rejects(&invalid, "invalid scalar IR");
-    program.handlers[0].function.instructions.push(instruction(
+    let mut invalid = program;
+    invalid.handlers[0].function.instructions.push(instruction(
         ValueType::Bool,
-        Operation::Compare(Comparison::Equal, 3, 4),
+        Operation::Compare(Comparison::Less, 3, 4),
     ));
-    rejects(&program, "invalid scalar IR");
+    rejects(&invalid, "invalid scalar IR");
 }
 
 #[test]
@@ -654,7 +685,7 @@ fn cross_process_send_requires_local_pid_and_matching_static_one_way_protocol() 
         (2, 0, vec![2], "invalid scalar IR"),
         (usize::MAX, 0, vec![2], "operand"),
         (3, usize::MAX, vec![2], "invalid self-send handler"),
-        (3, 0, vec![3], "invalid scalar IR"),
+        (3, 0, vec![3], "one-way handler"),
         (3, 0, vec![], "one-way handler"),
     ] {
         let mut invalid = program.clone();

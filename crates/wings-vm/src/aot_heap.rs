@@ -197,6 +197,9 @@ fn collect_record_fields(
         let bit = 1u64 << index;
         match (*ty, value) {
             (wings_abi::ValueType::Int, RecordValue::Int(value)) => arguments[index] = value,
+            (wings_abi::ValueType::Pid, RecordValue::Int(value)) if value >= 0 => {
+                arguments[index] = value
+            }
             (wings_abi::ValueType::Bool, RecordValue::Bool(value)) => {
                 arguments[index] = i64::from(value)
             }
@@ -287,8 +290,12 @@ impl AotHeap {
         for record in records {
             let mut types = [wings_abi::ValueType::Unit; 8];
             let mut fields = [FieldType::Unit; 8];
-            if record.fields.len() > 8 || record.fields.iter().any(|(_, ty)| ty.is_capability()
-                || matches!(ty, wings_abi::ValueType::RecordRef(index) if usize::from(*index) >= named.len())) {
+            if record.fields.len() > 8
+                || record.fields.iter().any(|(_, ty)| {
+                    *ty == wings_abi::ValueType::RequestId
+                        || matches!(ty, wings_abi::ValueType::RecordRef(index) if usize::from(*index) >= named.len())
+                })
+            {
                 return Err("invalid named record layout fields".into());
             }
             for (index, (_, ty)) in record.fields.iter().enumerate() {
@@ -297,7 +304,7 @@ impl AotHeap {
                     FieldType::Ref
                 } else {
                     match ty {
-                        wings_abi::ValueType::Int => FieldType::Int,
+                        wings_abi::ValueType::Int | wings_abi::ValueType::Pid => FieldType::Int,
                         wings_abi::ValueType::Bool => FieldType::Bool,
                         _ => FieldType::Unit,
                     }
@@ -1548,6 +1555,8 @@ pub(crate) unsafe extern "C" fn heap_call(
                         Ok(reference) => RecordValue::Ref(reference),
                         Err(status) => return status,
                     }
+                } else if ty == wings_abi::ValueType::Pid && encoded >= 0 {
+                    RecordValue::Int(encoded)
                 } else if ty.accepts(encoded) {
                     match ty {
                         wings_abi::ValueType::Int => RecordValue::Int(encoded),

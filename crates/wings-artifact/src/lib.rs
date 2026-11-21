@@ -102,7 +102,8 @@ impl Handler {
                             | ValueType::Ref
                             | ValueType::ListRef
                             | ValueType::BytesRef
-                            | ValueType::StringRef),
+                            | ValueType::StringRef
+                            | ValueType::Pid),
                         ),
                     ],
                 ) => Some(*ty),
@@ -162,17 +163,17 @@ impl Manifest {
         if !valid_name(&self.process) || self.handlers.len() > 128 {
             return Err("invalid process name or handler count".into());
         }
-        if self.state.is_capability() {
-            return Err("Pid/RequestId state is not supported".into());
+        if self.state == ValueType::RequestId {
+            return Err("RequestId state is not supported".into());
         }
         if self.handlers.iter().any(|handler| {
-            handler.reply.is_some_and(ValueType::is_capability)
-                || handler.parameters.iter().any(|(_, ty)| {
-                    *ty == ValueType::Pid
-                        || (*ty == ValueType::RequestId && !handler.is_completion())
-                })
+            handler.reply == Some(ValueType::RequestId)
+                || handler
+                    .parameters
+                    .iter()
+                    .any(|(_, ty)| *ty == ValueType::RequestId && !handler.is_completion())
         }) {
-            return Err("Pid cannot cross scalar artifact boundaries; RequestId is only allowed in completion events".into());
+            return Err("RequestId is only allowed in completion events".into());
         }
         let mut names = HashSet::new();
         for handler in &self.handlers {

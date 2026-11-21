@@ -300,16 +300,22 @@ fn accepts_copied_record_and_list_replies_and_parameters() {
 }
 
 #[test]
-fn process_capabilities_are_not_artifact_state_or_external_values() {
+fn request_capabilities_are_not_artifact_state_or_external_replies_while_pid_is_supported() {
+    let mut valid = manifest();
+    valid.state = ValueType::Pid;
+    valid.handlers[0].reply = Some(ValueType::Pid);
+    valid.handlers[0].parameters[0].1 = ValueType::Pid;
+    valid.validate().unwrap();
+
     let mut invalid = manifest();
-    invalid.state = ValueType::Pid;
-    rejects(&invalid, "Pid/RequestId state");
+    invalid.state = ValueType::RequestId;
+    rejects(&invalid, "RequestId state");
     let mut invalid = manifest();
-    invalid.handlers[0].reply = Some(ValueType::Pid);
-    rejects(&invalid, "Pid cannot cross");
+    invalid.handlers[0].reply = Some(ValueType::RequestId);
+    rejects(&invalid, "RequestId is only allowed");
     let mut invalid = manifest();
-    invalid.handlers[0].parameters[0].1 = ValueType::Pid;
-    rejects(&invalid, "Pid cannot cross");
+    invalid.handlers[0].parameters[0].1 = ValueType::RequestId;
+    rejects(&invalid, "RequestId is only allowed");
 }
 
 #[test]
@@ -340,6 +346,7 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
         ValueType::Ref,
         ValueType::ListRef,
         ValueType::BytesRef,
+        ValueType::Pid,
     ] {
         let mut manifest = manifest();
         manifest.handlers[0].parameters = vec![
@@ -364,12 +371,10 @@ fn completion_signatures_round_trip_copyable_values_and_reject_other_types() {
             assert!(!invalid.handlers[0].is_completion());
             assert!(invalid.validate().is_err());
         }
-        for wrong in [ValueType::Pid, ValueType::RequestId] {
-            let mut invalid = manifest.clone();
-            invalid.handlers[0].parameters[2].1 = wrong;
-            assert_eq!(invalid.handlers[0].completion_reply(), None);
-            assert!(invalid.validate().is_err());
-        }
+        let mut invalid = manifest.clone();
+        invalid.handlers[0].parameters[2].1 = ValueType::RequestId;
+        assert_eq!(invalid.handlers[0].completion_reply(), None);
+        assert!(invalid.validate().is_err());
     }
 }
 

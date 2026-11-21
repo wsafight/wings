@@ -171,7 +171,7 @@ fn send_ask_and_process_capabilities_enforce_handler_protocols_and_scopes() {
             "expected int",
         ),
         (
-            "let me = self; let same = me == me",
+            "let id = self.ask(read, timeout: 10, then: done); let same = id == id",
             "T015",
             "cannot be compared",
         ),
@@ -188,16 +188,52 @@ fn send_ask_and_process_capabilities_enforce_handler_protocols_and_scopes() {
         "actor P { state me: pid = self; on add {} }",
         "actor P { fn create() -> pid => spawn() }",
         "actor P { fn cancel_it(id: req) => id.cancel() }",
+        "actor P { fn delay_it() { send_after(10, add) } on add {} }",
+        "actor P { fn watch_it(p: pid) { p.monitor(down) } on down(p: pid, r: int) {} }",
     ] {
         assert_error(src, "T018", "handlers");
     }
 
     for src in [
-        "actor P { on test_it(value: pid) {} }",
-        "actor P { on test_it -> pid => self }",
+        "actor P { on test_it(value: req) {} }",
+        "actor P { on test_it -> req { self.ask(read, timeout: 10, then: done) } on read -> int => 1; on reply done(id: req, status: int, val: int) {} }",
     ] {
         assert_error(src, "T011", "not supported");
     }
+
+    checked(
+        r#"
+        struct PeerInfo { id: int, peer: pid<Worker> }
+        actor Worker {
+          state parent: pid = null
+          on bind(p: pid) -> pid {
+            parent = p
+            self
+          }
+          on ping(n: int) {
+            if !parent.is_null() && parent != null {
+              send_after(5, ping(n))
+            }
+          }
+        }
+        actor Main {
+          state worker: pid<Worker> = null
+          state info: PeerInfo = PeerInfo { id: 0, peer: null }
+          on start {
+            worker = spawn(Worker)
+            worker.monitor(on_down)
+            worker.send_after(10, ping(1))
+            let _ = worker.ask(bind(self), timeout: 100, then: on_bound)
+          }
+          on on_down(dead: pid<Worker>, reason: int) {
+            if dead == worker {
+              worker = null
+            }
+          }
+          on reply on_bound(id: req, status: int, w: pid) {}
+        }
+        "#,
+    );
 }
 
 #[test]
@@ -474,7 +510,7 @@ fn recursion_forward_functions_and_multi_actor_protocols_typecheck() {
     assert_error(
         "actor W { on ping {} } actor M { state saved: pid<W> = spawn(W) }",
         "T018",
-        "capabilities",
+        "handlers",
     );
     assert_error(
         r#"

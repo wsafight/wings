@@ -94,6 +94,16 @@ impl State {
         !progress && (attempted || self.ready[worker].head.is_none())
     }
 
+    pub(super) fn next_park_timeout(&self, default: Duration) -> Duration {
+        match self.timers.as_ref() {
+            Some(head) => head
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(default),
+            None => default,
+        }
+    }
+
     pub(super) fn reserve_slot(&mut self) -> Result<usize, String> {
         let index = self.free.ok_or("scheduler process table full")?;
         let slot = &mut self.slots[index];

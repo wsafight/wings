@@ -598,6 +598,7 @@ dependencies = [
  "serde_json",
  "wings-abi",
  "wings-artifact",
+ "wings-compile",
 ]
 
 [[package]]

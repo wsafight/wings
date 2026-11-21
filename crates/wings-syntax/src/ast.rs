@@ -133,6 +133,7 @@ pub enum InterpolatedPart {
 #[derive(Clone, Debug)]
 pub enum MatchPattern {
     Wildcard(Span),
+    Null(Span),
     Integer(i64, Span),
     Boolean(bool, Span),
     String(String, Span),
@@ -161,6 +162,7 @@ pub enum ExprKind {
     Bytes(Vec<u8>),
     Boolean(bool),
     Unit,
+    Null,
     SelfPid,
     Spawn(Option<Name>),
     Name(Name),
@@ -195,6 +197,16 @@ pub enum ExprKind {
         target: Box<Expr>,
         message: Name,
         arguments: Vec<Expr>,
+    },
+    SendAfter {
+        target: Box<Expr>,
+        delay: Box<Expr>,
+        message: Name,
+        arguments: Vec<Expr>,
+    },
+    Monitor {
+        target: Box<Expr>,
+        handler: Name,
     },
     Ask {
         target: Box<Expr>,

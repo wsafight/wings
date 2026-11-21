@@ -288,16 +288,18 @@ pub(super) fn worker(
         }
         let bit = 1u32 << index;
         shared.changed.mark_parked(bit);
-        let (should_break, should_sleep) =
+        let (should_break, sleep_duration) =
             if !attempted && (shared.ready_mask.load(Ordering::SeqCst) & watch != 0) {
-                (false, false)
+                (false, None)
             } else {
                 let state = shared.lock();
                 if state.closed && local.is_empty() {
                     shared.publish_signal(&state);
-                    (true, false)
+                    (true, None)
                 } else {
-                    let sleep = state.should_park(index, false, attempted);
+                    let sleep = state
+                        .should_park(index, false, attempted)
+                        .then(|| state.next_park_timeout(Duration::from_millis(1)));
                     shared.publish_signal(&state);
                     (false, sleep)
                 }
@@ -306,8 +308,10 @@ pub(super) fn worker(
             shared.changed.clear_parked(bit);
             break;
         }
-        if should_sleep {
-            std::thread::park_timeout(Duration::from_millis(1));
+        if let Some(duration) = sleep_duration
+            && !duration.is_zero()
+        {
+            std::thread::park_timeout(duration);
         }
         shared.changed.clear_parked(bit);
     }
@@ -805,22 +809,31 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     if failed {
         shared.fast_slots[claim.pid.slot as usize].clear();
     }
+    let exit_reason = if closed {
+        i64::from(wings_abi::STATUS_CANCELLED)
+    } else {
+        0
+    };
     let retired = if failed {
-        state.retire(shared.identity, claim.pid)
+        state.retire_with_reason(shared.identity, claim.pid, exit_reason)
     } else {
         None
     };
-    let wake = state.finish_enqueue(claim.pid, failed);
+    let wake = state
+        .finish_enqueue(claim.pid, failed)
+        .combine(state.maintain(shared.identity));
     shared.publish_signal(&state);
     drop(state);
     wake.fire(&shared.changed);
-    if let Some(actor_ref) = retired.as_ref() {
-        actor_ref.mailbox.retire_clear();
+    if let Some(mut retired) = retired {
+        retired.actor.mailbox.retire_clear();
+        clear_timers(&mut retired.timers);
+        clear_monitors(&mut retired.monitors);
+        drop(retired.actor);
     }
     drop(claim.mailbox);
     drop(claim.account);
     drop(claim.cancellation);
-    drop(retired);
 }
 
 fn finish(
@@ -881,6 +894,19 @@ fn finish_process(
         .expect("finishing actor");
     assert_eq!(actor.owner, Some(index));
     let failed = result.is_err() || actor.stopping || closed;
+    let exit_reason = if closed {
+        i64::from(wings_abi::STATUS_CANCELLED)
+    } else if actor.stopping {
+        0
+    } else if result.is_err() {
+        snapshot
+            .and_then(|execution| execution.fault)
+            .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
+                fault.exit_code()
+            })
+    } else {
+        0
+    };
     let diagnostic = if result.is_err() && !actor.stopping && !closed {
         let name = &handler.schema().name;
         let mut handler_name = [0; 256];
@@ -934,7 +960,7 @@ fn finish_process(
         Reply::None => {}
     }
     let retired = if failed {
-        state.retire(shared.identity, pid)
+        state.retire_with_reason(shared.identity, pid, exit_reason)
     } else {
         None
     };
@@ -947,9 +973,11 @@ fn finish_process(
         complete_external(publisher, outcome);
     }
     drop((handler, _charge, _message_charge));
-    if let Some(actor_ref) = retired.as_ref() {
-        actor_ref.mailbox.retire_clear();
+    if let Some(mut retired) = retired {
+        retired.actor.mailbox.retire_clear();
+        clear_timers(&mut retired.timers);
+        clear_monitors(&mut retired.monitors);
+        drop(retired.actor);
     }
-    drop(retired);
     wake.fire(&shared.changed);
 }

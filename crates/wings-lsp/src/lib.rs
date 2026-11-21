@@ -116,7 +116,7 @@ impl Server {
                     })),
                     _ => {
                         let mut labels = HashMap::new();
-                        for keyword in ["actor", "struct", "state", "on", "reply", "fn", "let", "if", "else", "while", "for", "in", "match", "self", "spawn", "true", "false"] {
+                        for keyword in ["actor", "struct", "state", "on", "reply", "fn", "let", "if", "else", "while", "for", "in", "match", "self", "spawn", "null", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
                         for ty in ["int", "bool", "str", "bytes", "pid", "req", "[int]", "box<int>"] {
@@ -125,7 +125,9 @@ impl Server {
                         for (name, detail) in [
                             ("gc", "() -> ()"),
                             ("box", "(int) -> box<int>"),
-                            ("spawn", "() -> pid"),
+                            ("spawn", "([Actor]) -> pid<Actor>"),
+                            ("send_after", "(int, msg) -> ()"),
+                            ("monitor", "(pid, handler) -> ()"),
                             ("bytes::fill", "(int, int) -> bytes"),
                         ] {
                             labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
@@ -133,6 +135,7 @@ impl Server {
                         for (name, detail) in [
                             ("len", "str/bytes -> int"),
                             ("is_empty", "[int]/str/bytes -> bool"),
+                            ("is_null", "pid -> bool"),
                             ("head", "[int] -> int"),
                             ("tail", "[int] -> [int]"),
                             ("push", "[int].push(int) -> [int]"),
@@ -144,6 +147,9 @@ impl Server {
                             ("i64_at", "bytes.i64_at(int) -> int"),
                             ("set_i64", "bytes.set_i64(int, int) -> bytes"),
                             ("to_str", "int/bool/bytes.to_str() -> str"),
+                            ("tell", "pid.tell(msg) -> ()"),
+                            ("send_after", "pid.send_after(int, msg) -> ()"),
+                            ("monitor", "pid.monitor(handler) -> ()"),
                             ("ask", "pid.ask(msg, timeout: int, then: handler) -> req"),
                             ("cancel", "req.cancel() -> ()"),
                         ] {

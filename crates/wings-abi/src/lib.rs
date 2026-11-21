@@ -30,6 +30,10 @@ pub const EFFECT_CANCEL_REQUEST: u32 = 5;
 pub const EFFECT_SPAWN_ACTOR: u32 = 6;
 pub const EFFECT_SEND_ACTOR: u32 = 7;
 pub const EFFECT_REQUEST_ACTOR: u32 = 8;
+pub const EFFECT_SEND_AFTER_SELF: u32 = 9;
+pub const EFFECT_SEND_AFTER: u32 = 10;
+pub const EFFECT_SEND_AFTER_ACTOR: u32 = 11;
+pub const EFFECT_MONITOR: u32 = 12;
 pub const HEAP_RECORD_INT: u32 = 0;
 pub const HEAP_READ_INT: u32 = 1;
 pub const HEAP_COLLECT: u32 = 2;
@@ -143,8 +147,8 @@ pub fn expand_record_schema(
                 {
                     return Err("record reply expansion exceeds 64 total nodes".into());
                 }
-                if ty.is_capability() {
-                    return Err("record reply cannot contain process capabilities".into());
+                if *ty == ValueType::RequestId {
+                    return Err("record reply cannot contain RequestId capabilities".into());
                 }
                 expansion.fields[expansion.count] = *ty;
                 expansion.count += 1;
@@ -226,7 +230,7 @@ pub fn validate_records(records: &[RecordSchema]) -> Result<(), String> {
         for (name, ty) in &record.fields {
             if !valid_name(name)
                 || !fields.insert(name)
-                || ty.is_capability()
+                || *ty == ValueType::RequestId
                 || matches!(ty, ValueType::RecordRef(target) if usize::from(*target) >= index)
             {
                 return Err("invalid record field name, type or forward reference".into());

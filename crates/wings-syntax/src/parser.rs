@@ -621,6 +621,50 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         (arguments, end)
     }
 
+    fn send_after_call(&mut self, receiver: Expr, start: usize) -> Expr {
+        self.bump(); // '('
+        let delay = self.expression(0, true, true);
+        self.expect(TokenKind::Comma, "expected ',' after delay in send_after");
+        let message = self.name();
+        let arguments = if self.at(TokenKind::LeftParen) && !self.line_break() {
+            self.arguments().0
+        } else {
+            Vec::new()
+        };
+        if self.at(TokenKind::Comma) {
+            self.bump();
+        }
+        let close = self.expect(
+            TokenKind::RightParen,
+            "expected ')' after send_after arguments",
+        );
+        Expr {
+            kind: ExprKind::SendAfter {
+                target: Box::new(receiver),
+                delay: Box::new(delay),
+                message,
+                arguments,
+            },
+            span: Span::new(start, close.end),
+        }
+    }
+
+    fn monitor_call(&mut self, receiver: Expr, start: usize) -> Expr {
+        self.bump(); // '('
+        let handler = self.name();
+        if self.at(TokenKind::Comma) {
+            self.bump();
+        }
+        let close = self.expect(TokenKind::RightParen, "expected ')' after monitor handler");
+        Expr {
+            kind: ExprKind::Monitor {
+                target: Box::new(receiver),
+                handler,
+            },
+            span: Span::new(start, close.end),
+        }
+    }
+
     fn ask_call(&mut self, receiver: Expr) -> Expr {
         let start = receiver.span.start;
         self.bump(); // '('
@@ -718,6 +762,34 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 if self.at(TokenKind::LeftParen) && !self.line_break() {
                     if name.text == "ask" {
                         left = self.ask_call(left);
+                    } else if name.text == "send_after" {
+                        let start = left.span.start;
+                        left = self.send_after_call(left, start);
+                    } else if name.text == "monitor" {
+                        let start = left.span.start;
+                        left = self.monitor_call(left, start);
+                    } else if name.text == "tell" {
+                        self.bump(); // '('
+                        let message = self.name();
+                        let arguments = if self.at(TokenKind::LeftParen) && !self.line_break() {
+                            self.arguments().0
+                        } else {
+                            Vec::new()
+                        };
+                        if self.at(TokenKind::Comma) {
+                            self.bump();
+                        }
+                        let close =
+                            self.expect(TokenKind::RightParen, "expected ')' after tell arguments");
+                        let span = Span::new(left.span.start, close.end);
+                        left = Expr {
+                            kind: ExprKind::Send {
+                                target: Box::new(left),
+                                message,
+                                arguments,
+                            },
+                            span,
+                        };
                     } else {
                         let (arguments, close) = self.arguments();
                         let span = Span::new(left.span.start, close.end);
@@ -930,6 +1002,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 let val = self.at(TokenKind::True);
                 MatchPattern::Boolean(val, self.bump())
             }
+            TokenKind::Null => MatchPattern::Null(self.bump()),
             TokenKind::Integer => {
                 let span = self.bump();
                 match self.integer(&self.text[span.start..span.end], span) {
@@ -1201,6 +1274,10 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 self.bump();
                 ExprKind::SelfPid
             }
+            TokenKind::Null => {
+                self.bump();
+                ExprKind::Null
+            }
             TokenKind::Spawn => {
                 self.bump();
                 self.expect(TokenKind::LeftParen, "expected '(' after 'spawn'");
@@ -1281,6 +1358,33 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                         arguments,
                     }
                 } else if self.at(TokenKind::LeftParen) && !self.line_break() {
+                    if callee.text == "send_after" {
+                        let self_expr = Expr {
+                            kind: ExprKind::SelfPid,
+                            span: callee.span,
+                        };
+                        return self.send_after_call(self_expr, start);
+                    }
+                    if callee.text == "monitor" {
+                        self.bump(); // '('
+                        let target = self.expression(0, true, true);
+                        self.expect(TokenKind::Comma, "expected ',' after target in monitor");
+                        let handler = self.name();
+                        if self.at(TokenKind::Comma) {
+                            self.bump();
+                        }
+                        let close = self.expect(
+                            TokenKind::RightParen,
+                            "expected ')' after monitor arguments",
+                        );
+                        return Expr {
+                            kind: ExprKind::Monitor {
+                                target: Box::new(target),
+                                handler,
+                            },
+                            span: Span::new(start, close.end),
+                        };
+                    }
                     let (arguments, close) = self.arguments();
                     span = Span::new(start, close.end);
                     ExprKind::Call { callee, arguments }

@@ -1,14 +1,21 @@
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::os::unix::ffi::OsStrExt;
 
 use wings_abi::DEFAULT_MAX_STEPS;
 use wings_vm::{Reservation, ResourceAccount, ResourceLevel, Resources};
 
-pub const USAGE: &str = "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]\n       wings-vm serve --trusted <bundle-or-artifact> [--workers <1..=16>] [--max-steps <u64>] [--heap-records <1..=1024>]";
-const MAX_ARGUMENTS: usize = 7;
+pub const USAGE: &str = "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]\n       wings-vm serve --trusted <bundle-or-artifact> [--workers <1..=16>] [--max-steps <u64>] [--heap-records <1..=1024>] [--tcp <ip:port> | --http <ip:port>]";
+const MAX_ARGUMENTS: usize = 11;
 const MAX_BYTES: usize = 16 << 10;
 const CONTROL_BYTES: usize = 4 << 10;
 const STARTUP_BYTES: u64 = (MAX_BYTES + CONTROL_BYTES) as u64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListenEndpoint {
+    Tcp(SocketAddr),
+    Http(SocketAddr),
+}
 
 pub struct Startup {
     command: Command,
@@ -27,6 +34,7 @@ pub enum Command {
         workers: usize,
         max_steps: u64,
         heap_records: Option<usize>,
+        listen: Option<ListenEndpoint>,
     },
 }
 
@@ -55,14 +63,17 @@ impl Startup {
         let values = &arguments.values[..arguments.length];
         let command = if matches!(values, [b"--help"] | [b"-h"]) {
             Command::Help
-        } else if matches!(values.len(), 3 | 5 | 7)
-            && matches!(values[0], b"run" | b"serve")
+        } else if ((values.first() == Some(&b"run".as_slice())
+            && matches!(values.len(), 3 | 5 | 7))
+            || (values.first() == Some(&b"serve".as_slice())
+                && matches!(values.len(), 3 | 5 | 7 | 9 | 11)))
             && values[1] == b"--trusted"
         {
             let is_serve = values[0] == b"serve";
             let mut steps = None;
             let mut heap_records = None;
             let mut workers = None;
+            let mut listen = None;
             for option in values[3..].chunks_exact(2) {
                 match option[0] {
                     b"--max-steps" if steps.is_none() => {
@@ -91,6 +102,20 @@ impl Startup {
                                 .ok_or("--workers must be within 1..=16")?,
                         );
                     }
+                    b"--tcp" if is_serve && listen.is_none() => {
+                        let addr = std::str::from_utf8(option[1])
+                            .ok()
+                            .and_then(|value| value.parse::<SocketAddr>().ok())
+                            .ok_or("--tcp must be an <ip:port> socket address")?;
+                        listen = Some(ListenEndpoint::Tcp(addr));
+                    }
+                    b"--http" if is_serve && listen.is_none() => {
+                        let addr = std::str::from_utf8(option[1])
+                            .ok()
+                            .and_then(|value| value.parse::<SocketAddr>().ok())
+                            .ok_or("--http must be an <ip:port> socket address")?;
+                        listen = Some(ListenEndpoint::Http(addr));
+                    }
                     _ => return Err("unknown or duplicate execution option".into()),
                 }
             }
@@ -100,6 +125,7 @@ impl Startup {
                     workers: workers.unwrap_or(2),
                     max_steps: steps.unwrap_or(DEFAULT_MAX_STEPS),
                     heap_records,
+                    listen,
                 }
             } else {
                 Command::Run {
@@ -267,7 +293,7 @@ mod tests {
                 let result = Startup::read(&account, || {
                     read.set(true);
                     Ok(Arguments {
-                        values: [b"--help", &[], &[], &[], &[], &[], &[]],
+                        values: [b"--help", &[], &[], &[], &[], &[], &[], &[], &[], &[], &[]],
                         length: 1,
                     })
                 });
@@ -416,7 +442,7 @@ mod tests {
 
     #[test]
     fn raw_count_null_pointer_and_exact_nul_inclusive_byte_limits_are_checked() {
-        for count in [-1, 0, 9, libc::c_int::MAX] {
+        for count in [-1, 0, 13, libc::c_int::MAX] {
             assert!(unsafe { Arguments::from_raw(count, std::ptr::null()) }.is_err());
         }
         assert!(unsafe { Arguments::from_raw(1, std::ptr::null()) }.is_err());
@@ -473,5 +499,88 @@ mod tests {
     fn native_snapshot_is_available_after_standard_rust_startup() {
         let arguments = native().unwrap();
         assert!(arguments.length <= MAX_ARGUMENTS);
+    }
+
+    #[test]
+    fn serve_accepts_tcp_or_http_and_rejects_conflicts_or_run_listeners() {
+        let (_, _, account) = accounts();
+        let tcp = parse(
+            &account,
+            &[
+                b"serve",
+                b"--trusted",
+                b"bundle",
+                b"--workers",
+                b"4",
+                b"--tcp",
+                b"127.0.0.1:9001",
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            tcp.command(),
+            Command::Serve {
+                workers: 4,
+                listen: Some(ListenEndpoint::Tcp(addr)),
+                ..
+            } if addr.port() == 9001
+        ));
+
+        let http = parse(
+            &account,
+            &[
+                b"serve",
+                b"--trusted",
+                b"bundle",
+                b"--workers",
+                b"2",
+                b"--max-steps",
+                b"5000",
+                b"--heap-records",
+                b"128",
+                b"--http",
+                b"127.0.0.1:0",
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            http.command(),
+            Command::Serve {
+                workers: 2,
+                max_steps: 5000,
+                heap_records: Some(128),
+                listen: Some(ListenEndpoint::Http(addr)),
+                ..
+            } if addr.port() == 0
+        ));
+
+        for invalid in [
+            vec![
+                b"serve".as_slice(),
+                b"--trusted",
+                b"bundle",
+                b"--tcp",
+                b"127.0.0.1:8080",
+                b"--http",
+                b"127.0.0.1:8081",
+            ],
+            vec![b"serve", b"--trusted", b"bundle", b"--http", b"not-an-addr"],
+            vec![
+                b"run",
+                b"--trusted",
+                b"artifact",
+                b"--http",
+                b"127.0.0.1:8080",
+            ],
+            vec![
+                b"run",
+                b"--trusted",
+                b"artifact",
+                b"--tcp",
+                b"127.0.0.1:8080",
+            ],
+        ] {
+            assert!(parse(&account, &invalid).is_err());
+        }
     }
 }

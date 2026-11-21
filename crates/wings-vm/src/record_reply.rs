@@ -201,8 +201,8 @@ impl RecordReply {
                         result.bytes.string_mask |= bit;
                         result.arguments[index + offset] = ListPayload::encode(0, 0);
                     }
-                    ValueType::Int | ValueType::Bool | ValueType::Unit => {}
-                    ValueType::RecordRef(_) | ValueType::Pid | ValueType::RequestId => {
+                    ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Pid => {}
+                    ValueType::RecordRef(_) | ValueType::RequestId => {
                         return Err("invalid record completion leaf type".into());
                     }
                 }
@@ -261,7 +261,29 @@ impl PartialEq for RecordReply {
             &other.inner.records,
             ValueType::RecordRef(other.inner.root),
         ) && self.leaf_types() == other.leaf_types()
-            && self.values().eq(other.values())
+            && self.leaf_types().iter().enumerate().all(|(idx, ty)| {
+                let left = self.inner.payload.arguments[idx];
+                let right = other.inner.payload.arguments[idx];
+                match ty {
+                    ValueType::Int
+                    | ValueType::Bool
+                    | ValueType::Unit
+                    | ValueType::Ref
+                    | ValueType::Pid => left == right,
+                    ValueType::ListRef => {
+                        let (ls, ll) = ListPayload::segment(left);
+                        let (rs, rl) = ListPayload::segment(right);
+                        self.inner.payload.lists.values[ls..ls + ll]
+                            == other.inner.payload.lists.values[rs..rs + rl]
+                    }
+                    ValueType::BytesRef | ValueType::StringRef => {
+                        let (ls, ll) = ListPayload::segment(left);
+                        let (rs, rl) = ListPayload::segment(right);
+                        self.bytes()[ls..ls + ll] == other.bytes()[rs..rs + rl]
+                    }
+                    ValueType::RecordRef(_) | ValueType::RequestId => false,
+                }
+            })
     }
 }
 
@@ -296,12 +318,17 @@ fn validate_payload(expansion: &RecordExpansion, payload: &HostMessage) -> Resul
                 bytes_mask |= bit;
                 string_mask |= bit;
             }
+            ValueType::Pid => {
+                if payload.arguments[index] < 0 {
+                    return Err("record reply pid leaf is invalid".into());
+                }
+            }
             ValueType::Int | ValueType::Bool | ValueType::Unit => {
                 if !ty.accepts(payload.arguments[index]) {
                     return Err("record reply scalar leaf is invalid".into());
                 }
             }
-            ValueType::RecordRef(_) | ValueType::Pid | ValueType::RequestId => {
+            ValueType::RecordRef(_) | ValueType::RequestId => {
                 return Err("invalid record reply leaf type".into());
             }
         }

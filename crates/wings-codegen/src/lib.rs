@@ -274,6 +274,7 @@ fn summarize_direct_function(
     for instruction in &function.instructions {
         match instruction.operation {
             Operation::Constant(_)
+            | Operation::NullPid
             | Operation::State
             | Operation::Argument(_)
             | Operation::Negate(_)
@@ -623,8 +624,12 @@ fn compile_body(
             matches!(
                 instruction.operation,
                 Operation::SendSelf { .. }
+                    | Operation::SendAfterSelf { .. }
                     | Operation::Send { .. }
                     | Operation::SendActor { .. }
+                    | Operation::SendAfter { .. }
+                    | Operation::SendAfterActor { .. }
+                    | Operation::Monitor { .. }
                     | Operation::SelfPid
                     | Operation::SpawnSelf
                     | Operation::SpawnActor(_)
@@ -901,8 +906,12 @@ fn compile_body(
                 builder.ins().load(types::I64, MemFlags::new(), output, 8)
             }
             Operation::SendSelf { .. }
+            | Operation::SendAfterSelf { .. }
             | Operation::Send { .. }
             | Operation::SendActor { .. }
+            | Operation::SendAfter { .. }
+            | Operation::SendAfterActor { .. }
+            | Operation::Monitor { .. }
             | Operation::SelfPid
             | Operation::SpawnSelf
             | Operation::SpawnActor(_)
@@ -914,6 +923,9 @@ fn compile_body(
                     Operation::SendSelf { handler, arguments } => {
                         (wings_abi::EFFECT_SEND_SELF, *handler, arguments)
                     }
+                    Operation::SendAfterSelf {
+                        handler, arguments, ..
+                    } => (wings_abi::EFFECT_SEND_AFTER_SELF, *handler, arguments),
                     Operation::Send {
                         handler, arguments, ..
                     } => (wings_abi::EFFECT_SEND, *handler, arguments),
@@ -927,6 +939,22 @@ fn compile_body(
                         (*actor << 16) | *handler,
                         arguments,
                     ),
+                    Operation::SendAfter {
+                        handler, arguments, ..
+                    } => (wings_abi::EFFECT_SEND_AFTER, *handler, arguments),
+                    Operation::SendAfterActor {
+                        actor,
+                        handler,
+                        arguments,
+                        ..
+                    } => (
+                        wings_abi::EFFECT_SEND_AFTER_ACTOR,
+                        (*actor << 16) | *handler,
+                        arguments,
+                    ),
+                    Operation::Monitor { handler, .. } => {
+                        (wings_abi::EFFECT_MONITOR, *handler, &[])
+                    }
                     Operation::SelfPid => (wings_abi::EFFECT_SELF_PID, 0, &[]),
                     Operation::SpawnSelf => (wings_abi::EFFECT_SPAWN_SELF, 0, &[]),
                     Operation::SpawnActor(actor) => (wings_abi::EFFECT_SPAWN_ACTOR, *actor, &[]),
@@ -1041,6 +1069,9 @@ fn compile_body(
                 let pid = match &instruction.operation {
                     Operation::Send { target, .. }
                     | Operation::SendActor { target, .. }
+                    | Operation::SendAfter { target, .. }
+                    | Operation::SendAfterActor { target, .. }
+                    | Operation::Monitor { target, .. }
                     | Operation::Request { target, .. }
                     | Operation::RequestActor { target, .. } => registers[*target],
                     Operation::CancelRequest(target) => registers[*target],
@@ -1054,6 +1085,9 @@ fn compile_body(
                     | Operation::RequestActor {
                         callback, timeout, ..
                     } => (*callback, registers[*timeout]),
+                    Operation::SendAfterSelf { delay, .. }
+                    | Operation::SendAfter { delay, .. }
+                    | Operation::SendAfterActor { delay, .. } => (0, registers[*delay]),
                     _ => (0, builder.ins().iconst(types::I64, 0)),
                 };
                 let completion = builder.ins().iconst(types::I32, completion as i64);
@@ -1171,6 +1205,7 @@ fn compile_body(
             Operation::EndIf(_) | Operation::EndIfValues(_) => builder.ins().iconst(types::I64, 0),
             Operation::PhiValue(_) => unreachable!("phi values are consumed with owner op"),
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
+            Operation::NullPid => builder.ins().iconst(types::I64, 0),
             Operation::StringLiteral(ref value) => {
                 let output = heap_output.expect("literal heap scratch");
                 let address = builder
@@ -1563,6 +1598,7 @@ fn is_pure_scalar(operation: &Operation) -> bool {
     matches!(
         operation,
         Operation::Constant(_)
+            | Operation::NullPid
             | Operation::State
             | Operation::Argument(_)
             | Operation::Negate(_)
@@ -1599,6 +1635,7 @@ fn emit_pure_scalar(
 ) -> Value {
     match *operation {
         Operation::Constant(value) => builder.ins().iconst(types::I64, value),
+        Operation::NullPid => builder.ins().iconst(types::I64, 0),
         Operation::State => parameters[0],
         Operation::Argument(index) => builder.ins().load(
             types::I64,

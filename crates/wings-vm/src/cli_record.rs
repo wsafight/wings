@@ -69,6 +69,12 @@ fn write_record<'value>(
                 depth += 1;
                 write(writer, b"{")?;
             }
+            ValueType::Pid => {
+                return Err(
+                    "record replies containing Pid capabilities cannot cross the CLI JSON boundary"
+                        .into(),
+                );
+            }
             _ => {
                 let value = values.next().ok_or("missing record reply field")?;
                 serde_json::to_writer(&mut *writer, &Leaf::from(value))

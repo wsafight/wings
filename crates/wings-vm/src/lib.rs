@@ -179,6 +179,9 @@ impl ScalarProcess {
         ) {
             return Err("named record reply requires invoke_record or explicit execution".into());
         }
+        if self.module.manifest().handlers[index].reply == Some(ValueType::Pid) {
+            return Err("Pid reply requires an actor worker or scheduler".into());
+        }
         let mut execution = self.start_index(index, arguments, max_steps, || {
             (
                 cancellation.cloned().unwrap_or_default(),
@@ -332,6 +335,28 @@ impl ScalarProcess {
         lists: &message_values::ListPayload,
         bytes: &message_values::BytePayload,
     ) -> Result<usize, String> {
+        self.validate_handler_payload_internal(
+            handler,
+            arguments,
+            system,
+            false,
+            record_mask,
+            lists,
+            bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn validate_handler_payload_internal(
+        &self,
+        handler: &HandlerId,
+        arguments: &[i64],
+        system: bool,
+        allow_pid: bool,
+        record_mask: u64,
+        lists: &message_values::ListPayload,
+        bytes: &message_values::BytePayload,
+    ) -> Result<usize, String> {
         if self.failed {
             return Err("scalar process has terminated after a managed failure".into());
         }
@@ -383,6 +408,7 @@ impl ScalarProcess {
                 .any(|(value, (_, ty))| {
                     !ty.accepts(*value)
                         && !ty.is_reference()
+                        && !(allow_pid && *ty == ValueType::Pid && *value >= 0)
                         && !(system && *ty == ValueType::RequestId && *value > 0)
                 })
         {
@@ -435,6 +461,7 @@ impl ScalarProcess {
             .reply
             .unwrap_or(ValueType::Unit)
             .accepts(output.reply)
+            || (handler.reply == Some(ValueType::Pid) && output.reply >= 0)
         {
             output.reply
         } else {
@@ -478,7 +505,7 @@ fn commit_state(
             .ok_or("record state requires an accounted heap")?
             .commit_typed(ty, value)
             .map_err(|error| format!("entry returned an invalid record state: {error}"))
-    } else if ty.accepts(value) {
+    } else if ty.accepts(value) || (ty == ValueType::Pid && value >= 0) {
         Ok(())
     } else {
         Err("entry returned an invalid scalar state".into())

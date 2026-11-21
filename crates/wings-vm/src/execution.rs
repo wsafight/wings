@@ -234,6 +234,30 @@ impl ExecutionFault {
             other => Self::UnknownStatus(other),
         })
     }
+
+    pub(crate) fn exit_code(self) -> i64 {
+        match self {
+            Self::Overflow => i64::from(wings_abi::STATUS_OVERFLOW),
+            Self::DivisionByZero => i64::from(wings_abi::STATUS_DIVISION_BY_ZERO),
+            Self::Cancelled => i64::from(STATUS_CANCELLED),
+            Self::BudgetExhausted => i64::from(wings_abi::STATUS_BUDGET_EXHAUSTED),
+            Self::InvalidControl | Self::InvalidOutput => {
+                i64::from(wings_abi::STATUS_INVALID_CONTROL)
+            }
+            Self::StackExhausted => i64::from(wings_abi::STATUS_STACK_EXHAUSTED),
+            Self::HeapExhausted => i64::from(wings_abi::STATUS_HEAP_EXHAUSTED),
+            Self::InvalidRoot => i64::from(wings_abi::STATUS_INVALID_ROOT),
+            Self::EmptyList => i64::from(wings_abi::STATUS_EMPTY_LIST),
+            Self::InvalidBytes => i64::from(wings_abi::STATUS_INVALID_BYTES),
+            Self::InvalidString => i64::from(wings_abi::STATUS_INVALID_STRING),
+            Self::InvalidStringIndex => i64::from(wings_abi::STATUS_INVALID_STRING_INDEX),
+            Self::ReplyRejected => i64::from(wings_abi::STATUS_REPLY_REJECTED),
+            Self::SendRejected => i64::from(wings_abi::STATUS_SEND_REJECTED),
+            Self::SpawnRejected => i64::from(wings_abi::STATUS_SPAWN_REJECTED),
+            Self::RequestRejected => i64::from(wings_abi::STATUS_REQUEST_REJECTED),
+            Self::UnknownStatus(other) => i64::from(other),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,6 +370,9 @@ impl ScalarProcess {
         preemption: &PreemptionToken,
     ) -> Result<ScalarExecution<'_>, String> {
         let handler = self.validate_invocation(name, arguments)?;
+        if self.module.manifest().handlers[handler].reply == Some(wings_abi::ValueType::Pid) {
+            return Err("Pid reply requires an actor worker or scheduler".into());
+        }
         self.start_index(handler, arguments, max_steps, || {
             (cancellation.clone(), preemption.clone())
         })
@@ -392,6 +419,9 @@ impl ScalarProcess {
         pool: &StackPool,
     ) -> Result<ScalarExecution<'_>, String> {
         let handler = self.validate_invocation(name, arguments)?;
+        if self.module.manifest().handlers[handler].reply == Some(wings_abi::ValueType::Pid) {
+            return Err("Pid reply requires an actor worker or scheduler".into());
+        }
         let invocation = Invocation::new(
             self,
             handler,
@@ -511,10 +541,11 @@ impl ScalarTask {
         if self.is_active() {
             return Err("scalar task already has an active invocation".into());
         }
-        let handler = self.process.validate_handler_payload(
+        let handler = self.process.validate_handler_payload_internal(
             handler,
             arguments,
             system,
+            self.effects_enabled,
             record_mask,
             lists,
             bytes,
@@ -1823,8 +1854,11 @@ unsafe fn prepare_effect_checkpoint(
             && !matches!(
                 request.operation,
                 wings_abi::EFFECT_SEND_SELF
+                    | wings_abi::EFFECT_SEND_AFTER_SELF
                     | wings_abi::EFFECT_SEND
                     | wings_abi::EFFECT_SEND_ACTOR
+                    | wings_abi::EFFECT_SEND_AFTER
+                    | wings_abi::EFFECT_SEND_AFTER_ACTOR
                     | wings_abi::EFFECT_REQUEST
                     | wings_abi::EFFECT_REQUEST_ACTOR
             ))
