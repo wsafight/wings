@@ -1,0 +1,47 @@
+actor BeamFairness {
+  fn ten(value: int) -> int {
+    let first = value + 1
+    let second = first + 1
+    let third = second + 1
+    let fourth = third + 1
+    let fifth = fourth + 1
+    let sixth = fifth + 1
+    let seventh = sixth + 1
+    let eighth = seventh + 1
+    let ninth = eighth + 1
+    ninth + 1
+  }
+  fn hundred(value: int) -> int {
+    ten(ten(ten(ten(ten(ten(ten(ten(ten(ten(value))))))))))
+  }
+  fn thousand(value: int) -> int {
+    hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(value))))))))))
+  }
+  fn ten_thousand(value: int) -> int {
+    thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(value))))))))))
+  }
+  fn hundred_thousand(value: int) -> int {
+    ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(value))))))))))
+  }
+  fn million(value: int) -> int {
+    hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(value))))))))))
+  }
+
+  state data = bytes::fill(256, 0)
+
+  on configure(identity: int) -> int {
+    data = data.set_i64(8, identity)
+    data.i64_at(0)
+  }
+
+  on pulse(sequence: int, operation: int, delta: int, reserved: int) -> int {
+    data = data.set_i64(0, data.i64_at(0) + 1)
+    data.i64_at(0)
+  }
+
+  on cpu(sequence: int, operation: int, delta: int, reserved: int) -> int {
+    let result = million(0)
+    data = data.set_i64(0, data.i64_at(0) + 1)
+    result
+  }
+}

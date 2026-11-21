@@ -1,5 +1,184 @@
 # wings-lang
 
+宿主固定跨线程入口可按 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 用 MessageValue 传入 String/Bytes/IntList/RecordInt 等独立内容副本；不改变源码类型/语法或允许原堆引用跨进程，JSON 参数仍只接受标量，具名记录按清单叶签名传值。
+
+## 现代语法（v2）与多 Actor 应用
+
+`wings-lang` 现支持更简洁的现代语法（完全兼容历史 `process` / `record` / 首字母大写类型写法），并开放顶层共享 `struct`、受管栈帧内的有界函数递归（直接递归与互递归）、多 Actor 同文件定义、类型化 `pid<Actor>` / `spawn(Actor)` 跨 Actor 异步交互，以及多 Actor 应用打包与多 worker 调度运行入口。完整可运行示例见 [`examples/multi-actor-app.wings`](../examples/multi-actor-app.wings)。
+
+```wings
+struct Job {
+  id: int,
+  input: int,
+}
+
+struct JobResult {
+  id: int,
+  value: int,
+  even: bool,
+}
+
+actor Worker {
+  state extra = 0
+
+  fn fib(n: int) -> int {
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+  }
+
+  on add_bonus(delta: int) {
+    extra += delta
+  }
+
+  on compute(job: Job) -> JobResult {
+    let val = fib(job.input) + extra
+    JobResult { id: job.id, value: val, even: val % 2 == 0 }
+  }
+}
+
+actor Main {
+  state completed = 0
+  state total = 0
+
+  on dispatch(a: int, b: int) -> int {
+    let w1: pid<Worker> = spawn(Worker)
+    let w2 = spawn(Worker)
+    w1 ! add_bonus(5)
+    w1.ask(compute(Job { id: 1, input: a }), timeout: 1000, then: on_job_done)
+    w2.ask(compute(Job { id: 2, input: b }), timeout: 1000, then: on_job_done)
+    2
+  }
+
+  on reply on_job_done(id: req, status: int, res: JobResult) {
+    if status == 0 {
+      completed += 1
+      total += res.value
+    }
+  }
+
+  on summary -> str => f"done={completed},sum={total}"
+}
+```
+
+核心语法与多 Actor 特性包括：
+
+- **声明与类型别名**：`actor`（兼容 `process`）、顶层共享或 Actor 内 `struct`（兼容 `record`）；小写基础与集合类型 `int`、`bool`、`str`、`bytes`、`unit`、`[int]`、`pid`、`pid<Actor>`、`req`（完全兼容 `Int`、`Bool`、`String`、`Bytes`、`Unit`、`IntList`、`Pid`、`RequestId`），可选省略行尾分号。
+- **状态推导与简写 Handler**：支持多 `state` 声明与初始值类型推导（如 `state count = 0`），单表达式 handler 支持 `=>` 简写（如 `on get -> int => count`），请求完成回调支持 `on reply done(id: req, status: int, res: T) { ... }`。
+- **表达式糖与内置方法**：支持具名字段构造 `Job { id: 1, input: a }` 与结构体展开更新 `Job { input: b, ..base }`、列表字面量 `[1, 2, ..tail]`、字符串插值 `f"done={completed}"`、管道 `x |> f(1)`、逻辑与算术运算符 `!` / `&&` / `||` / `%`、拼接 `++`、复合赋值 `+=` / `-=` / `*=` / `/=` / `%=` / `++=`、`else if` 链，以及值方法（如 `.len()`、`.at(i)`、`.slice(start, len)`、`.head()`、`.tail()`）。
+- **有界受管递归**：`fn` 支持直接递归与互递归，每次调用在受管栈帧前执行剩余原生栈边界检查、步数预算扣除与精确 shadow-frame GC 根链维护；栈空间或步数耗尽时触发受管失败并回滚未提交状态。
+- **跨 Actor 实例化与类型化消息**：`spawn(Worker)` 返回 `pid<Worker>`（`self` 在 Actor 内具有当前 `pid<Self>` 类型）；单向发送支持 `target ! msg(args...)` 或 `target.tell(msg(args...))`，异步请求支持 `target.ask(msg(args...), timeout: ms, then: callback_handler)`，编译期静态校验目标 Actor 的消息名、参数签名与完成回调类型。
+- **多 Actor 编译与运行**：使用 `wings-compile build-app examples/multi-actor-app.wings -o <bundle-dir>` 生成包含各 Actor 原生模块与 `bundle.json` 的应用包（以 `Main` 或最后一个 Actor 作为入口），并通过 `wings-vm serve --trusted <bundle-dir> [--workers <1..=16>]` 在多 worker 调度器上启动运行。底层 ABI 保持 v22，`4352 B` 控制预留与三级资源配额不变。
+
+## 有界具名记录
+
+[ADR-0108](adr/0108-bounded-named-record-values.md) 开放 process 内具名不可变记录，构造参数按字段声明顺序，使用 `value.field` 读取；同形状不同名的记录不兼容。可运行完整示例见 [`examples/named-records.wings`](../examples/named-records.wings)。
+
+```wings
+process Profiles {
+  record Profile { name: String, count: Int }
+  state profile: Profile = Profile("初始", 7)
+  fn advance(value: Profile) -> Profile { Profile(value.name, value.count + 1) }
+  on Advance -> Int { profile = advance(profile); profile.count }
+}
+```
+
+每个 process 最多 32 种记录、每种最多 8 字段，支持空记录。字段可为 Int/Bool/Unit/RecordInt/IntList/Bytes/String 或更早声明的记录；不支持递归、前向引用、Pid/RequestId 字段或字段原地赋值。记录可用于局部、state、分支/循环合流和非递归 fn 参数/结果。`record` 是声明位置的上下文单词，仍可作为现有变量/字段名；不迁移类型大小写。执行必须配置计费堆，源码 ABI v22，旧产物须重编译。
+
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 开放具名记录单向/请求消息参数，支持 `send_self`/`send`/`request`，同形异名仍拒绝。compiler 按字段顺序展开为原有叶值，目标在业务前创建独立记录；实参仅求值一次。源码至多 64 参数，全部参数展开树的记录节点及叶值按出现次数合计至多 64（含空记录），超界在 AOT 前拒绝。列表合计 64 整数、String/Bytes 合计 65536 字节及原堆容量不变。宿主按清单位置使用 `MessageValue` 传展开后的叶值，不提供原 record handle；JSON 对象入口仍拒绝，具名记录回复由 ADR-0116 补充。示例 [`examples/named-record-messages.wings`](../examples/named-record-messages.wings)。
+
+## 有界字符串值
+
+[ADR-0111](adr/0111-bounded-string-content-equality.md) 开放 `String == String` 与 `String != String` 的完整内容比较，按 UTF-8 编码逐块比较，不按引用或前缀；空值/NUL 正常参与，不做 Unicode 规范化、大小写折叠或排序，String/Bytes 混用拒绝。每至多 256 字节扣预算/检查取消和让出，比较不分配业务存储。示例 [`examples/string-equality.wings`](../examples/string-equality.wings)。
+
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 开放独立 `String` 本地、state、分支/循环合流及非递归 fn 值，内容保证 UTF-8，最大编码长度为 65536 字节。[ADR-0104](adr/0104-bounded-string-literals.md) 增加双引号字面量。按 [ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md)，`string_at(String, index: Int) -> Int` 返回 Unicode scalar value 的 code point，`string_slice(String, start: Int, length: Int) -> String` 返回独立计费 UTF-8 副本；位置与长度均按 scalar value 计，空切片允许位于末尾，负数/溢出/越界受管失败。每至多 256 B 检查预算、取消和让出，当前源码 ABI v22；旧产物须重编译。可运行示例见 [`examples/string-values.wings`](../examples/string-values.wings) 与 [`examples/string-slicing.wings`](../examples/string-slicing.wings)。现有类型大小写与待审语法稿不变。
+
+| 内建 | 行为 |
+|---|---|
+| `string_from_bytes(Bytes) -> String` | 校验 UTF-8 后复制；非法或截断编码受管失败 |
+| `string_bytes(String) -> Bytes` | 独立复制 UTF-8 编码字节，不共享可变存储 |
+| `string_len(String) -> Int` | Unicode scalar value 个数，不是字节/字素簇/显示宽度 |
+| `string_at(String, index: Int) -> Int` | 按 scalar value 索引，返回 Unicode code point；越界受管失败 |
+| `string_slice(String, start: Int, length: Int) -> String` | 按 scalar value 提取独立计费副本；支持尾部空切片 |
+| `concat_strings(String, String) -> String` | 复制拼接，编码长度超过 65536 则受管失败 |
+
+字面量支持直接 UTF-8（如 `"中文😀"`）与 `\"`、`\\`、`\n`、`\r`、`\t`、`\0` 六种转义；不支持未知转义、原始控制字符或跨行文本。按解码后 UTF-8 字节检查 65536 上限，IR 另限制程序全部字面量数据合计不超过 1 MiB。每次执行由模块只读常量复制为进程独立计费 String，不把静态地址当受管引用，也不逐字节展开源码操作。
+
+不做隐式编码或规范化；内容 `==`/`!=` 按 ADR-0111 分块执行。[ADR-0105](adr/0105-accounted-string-messages.md) 开放 String 消息参数（含 send_self/send/request 参数）及宿主 `MessageValue::String(&str)`。String/Bytes 全部参数合计最多 65536 编码字节，重复引用独立计数；目标创建独立计费 UTF-8 副本，不接受 Bytes/裸整数冒充 String。[ADR-0106](adr/0106-accounted-string-replies.md) 开放 `-> String` 与完成入口第三参数 String，必须精确匹配目标回复类型；失败/超时/取消的完成值为空字符串，先检查 status。宿主使用 `StringReply::as_str()`，CLI 输出 `{"reply":{"string":"文字"}}`。JSON/标量 ingress 仍不接受引用参数，返回 Bytes 的显式转换不算 String 回复。错误不提交候选 state，但不撤回已发生副作用，取消/让出/总预算与三级准入保持。
+
+## 已有交互切片
+
+[ADR-0098](adr/0098-accounted-byte-replies.md) 开放 `-> Bytes` 和精确匹配的 `(RequestId, Int, Bytes)` 完成入口，单次 0..=65536 字节。仅成功状态携带结果，其他状态导入 `fill_bytes(0, 0)`，须先判 status。结果与候选引用状态在原栈出口保活，分块复制/计费全部成功后才提交。示例 [`examples/bytes-replies.wings`](../examples/bytes-replies.wings) 可检查并 AOT 运行；CLI 输出 `{"reply":{"bytes":[...]}}`，JSON 输入仍限标量。字符串/通用记录及大小写提案不因此完成。
+
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 开放 `-> Result` 形式的具名不可变记录回复。完成入口第三个源码参数可声明同名 schema，例如 `on Done(id: RequestId, status: Int, result: Result)`；产物保存名义完成类型，运行时按字段顺序深度优先复制叶值，最多 64 个记录节点与叶、64 个列表元素及 65536 编码字节。非成功状态导入与 schema 同形的默认空值，业务仍须先检查 status。宿主结果使用 `RecordReply::schema()`、`schemas()` 和 `values()` 读取脱离原堆的副本；JSON CLI 不接受记录参数，按 [ADR-0117](adr/0117-streamed-cli-record-replies.md) 将记录回复输出为字段对象，例如 `{"reply":{"key":7,"detail":{"empty":{},"unit":null}}}`。String/Bytes/IntList/RecordInt 叶沿用各自的包装格式。当前源码 ABI v22，manifest format v2，旧产物须重编译。真实 AOT 示例见 [`examples/named-record-replies.wings`](../examples/named-record-replies.wings)。
+
+[ADR-0097](adr/0097-accounted-int-list-replies.md) 接入 `-> IntList` 与匹配的 `(RequestId, Int, IntList)` 完成入口，单次回复最多 64 元素。非成功完成导入空列表，仍须先判 status；类型拼写方案另行处理。示例 [`examples/list-replies.wings`](../examples/list-replies.wings) 覆盖列表状态、出口 GC、异步完成与导入失败；CLI 输出 `{"reply":{"int_list":[...]}}`，JSON 输入仍只接受原标量。
+
+[ADR-0096](adr/0096-copied-record-replies.md) 接入现有 `-> RecordInt` 类型与匹配的 `(RequestId, Int, RecordInt)` 完成入口，不改变拼写。Reply 复制唯一 i64 内容，其他终态导入 `record_int(0)`，须先判 status。发起方须配置计费堆，导入失败使其受管失败。宿主结果返回内容副本，JSON 输出 `{"reply":{"record_int":N}}`；具名记录回复另见 ADR-0116，Bytes 回复另见 ADR-0098，具体平台证据见[验证记录](validation-2026-11-14.md)。可运行示例为 [`examples/record-replies.wings`](../examples/record-replies.wings) 和 [`examples/record-reply-state.wings`](../examples/record-reply-state.wings)。
+
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 为语言异步 `request` 接入 Int/Bool/Unit 回复。完成入口第三参数必须与目标回复类型精确匹配，status 仍为 Int；非成功终态分别携带 0/false/()，须先判 status。无箭头入口不能请求，`-> Unit` 仍有回复。语法拼写、其他引用回复限制和待审语法稿保持。可检查/AOT 运行的完整示例见 [`examples/scalar-completions.wings`](../examples/scalar-completions.wings)：
+
+```wings
+on ComputeBool(value: Bool, fail: Bool) -> Bool {
+  if fail { 1 / 0 == 0 } else { value }
+}
+on CompletedBool(id: RequestId, status: Int, value: Bool) {
+  count = if status == 0 { if value { 1 } else { 0 } } else { 0 }
+}
+```
+
+上述片段置于具备 Int state `count` 的 process 中，发起方在 handler 内使用 `request(target, ComputeBool, CompletedBool, 1000, true, false)`。Unit 回复相应使用 `on CompletedUnit(id: RequestId, status: Int, value: Unit)`。已投递为完成事件的 RequestId 不再可取消；跨 worker 回复抢先时，取消可能沿原规则使发起 handler 受管 RequestRejected，同一 actor 自请求取消则在目标开始前确定选择 Cancelled。
+
+[ADR-0094](adr/0094-typed-host-message-values.md) 的直接宿主类型化消息使用现有参数类型及复制导入语义，不改变源码拼写、消息入口或回复类型。语法评审稿仍待审核；JSON 与原始整数接口不能据此注入引用。
+
+[ADR-0078](adr/0078-request-publisher-lifetimes.md) 保留异步请求的早期超时/取消事件，但完成事件入队或发起方退出不再提前归还仍排队/执行请求的额度；目标消息结束后才可复用请求槽。已入队事件的能力不可取消，超时结果不撤回对端副作用；满表继续返回 RequestRejected。类型拼写与 ABI v15 不变。
+
+[ADR-0076](adr/0076-accounted-byte-messages.md) 为现有 `send_self`、`send` 和异步 `request` 开放 Bytes 参数，可与 RecordInt、IntList 和标量混用，单条消息所有 Bytes 合计最多 65536 字节。复制的是独立字节值，源后续替换/GC/失败不改变已接受消息；超限或准入失败在发布前拒绝，目标堆不足则目标受管失败。示例 [`examples/byte-messages.wings`](../examples/byte-messages.wings) 沿用 `Int/Bool/Unit`，不改变待审的大小写方案，执行须配置计费堆。字节回复见 ADR-0098，JSON 原 handle 注入仍不支持，ABI v15 的细节见架构/运行时契约。
+
+[`examples/beam-fairness.wings`](../examples/beam-fairness.wings) 用现有声明顺序非递归 `fn`，以六层、每层十次调用执行恰好百万次 checked `+1`；`Cpu` 正常返回才替换 Bytes state。它没有引入可变局部、fn 内 while 或新类型拼写，也不在每次加法时复制 state。单 worker 的突发心跳功能验证见 [ADR-0070](adr/0070-bounded-fairness-heartbeats.md)，不等同公平性性能门禁。基础类型小写仍待独立语法评审，不在该负载中修改。
+
+[`examples/beam-counter.wings`](../examples/beam-counter.wings) 用现有 Bytes 内建构造固定长度 state，通过 `Configure` 初始化 actor ID/计数器，`Apply` 做 checked 加法、完整候选复制及注入失败；正常返回才提交/自动回复。sequence/operation/reserved 由有界外部测试驱动验证，不新增 `await`、同步 call 或消息类型。它是同协议正确性负载，不是生产入口或性能结果，见 [ADR-0059](adr/0059-byte-state-counter-equivalence.md)。
+
+[ADR-0058](adr/0058-byte-i64-big-endian-access.md) 增加 `read_i64_be(Bytes, offset: Int) -> Int` 与 `replace_i64_be(Bytes, offset: Int, value: Int) -> Bytes`：按 signed big-endian 二进制补码访问连续八字节，支持完整 i64 范围及未对齐 offset。offset 必须非负且八字节均在对象内，否则 InvalidBytes；替换复制完整对象，不修改旧值。无隐式编码、字符串或可变切片，消息/回复限制不变。
+
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 增加不可变 `Bytes`，可作 state、局部、fn 参数/结果、条件表达式与 state while 的值。`fill_bytes(length: Int, value: Int) -> Bytes` 构造 0..=65536 字节，`bytes_len(Bytes) -> Int` 取长度，`byte_at(Bytes, Int) -> Int` 读字节，`replace_byte(Bytes, Int, Int) -> Bytes` 复制替换一个字节。字节必须为 0..=255，索引必须非负且小于长度；不合法时受管失败，不修改旧对象或提交候选。没有字符串字面量或隐式 UTF-8，Bytes 消息参数按 [ADR-0076](adr/0076-accounted-byte-messages.md) 复制传递，单条合计至多 65536 字节；Bytes 回复按 ADR-0098 分块复制。示例见 [`examples/bytes.wings`](../examples/bytes.wings)，执行须配置计费堆。
+
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 的多 worker 调度不改变源码拼写或 ABI v12。`examples/scheduler.wings` 在固定 worker 间以现有 spawn/send/request 复制 RecordInt/IntList，异步完成更新持久列表状态；迁移仅在 handler 返回后，仍无同步 call/await/receive；回复边界以 ADR-0096/0097 为准。类型小写等语法调整留待独立草案审核，不在本切片改动。
+
+[ADR-0049](adr/0049-record-message-copies.md) 允许 `on Store(value: RecordInt)` 和 `-> Int` 请求的 RecordInt 参数，语言 `send/send_self/request` 按值复制到目标堆；类型拼写不变。必须配置计费堆；IntList 消息由 [ADR-0051](adr/0051-bounded-int-list-messages.md) 扩展：一条消息全部列表合计最多 64 个整数，逐节点检查预算与取消；外部宿主/JSON/ingress 原 handle 或段编码仍拒绝，Bytes 回复见 ADR-0098。示例 `examples/record-messages.wings`、`examples/list-messages.wings`。
+
+`examples/tcp-counter.wings` 的 `Apply(Int, Bool) -> Int` 由 [ADR-0048](adr/0048-bounded-loopback-service.md) 的宿主适配器接收真实 loopback 请求；源码只含已支持的状态、checked 算术、条件和请求入口，不增加语言 socket/阻塞 I/O 能力。
+
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 的 `examples/tcp-bytes-counter.wings` 保持同一 Apply 入口，使用已支持的不可变 Bytes/state、big-endian 读写、Configure 和 Read -> Bytes；宿主显式选择三种完整状态长度。它已用于真实 TCP 功能验证，不引入新的语法、语言 I/O 或阻塞等待，也不将独立 BEAM/Python 工具当作可执行 Wings 源码的前端。
+
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 仅扩展宿主标量请求入口，保留无 `->` 的单向消息与 `-> Unit` 的请求确认区别；外部线程可以等待结果，业务 handler 仍不支持阻塞 receive/await/call。
+
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 的跨线程 ingress 是宿主入口，只向原线程 actor 投递 Int/Bool/Unit；ADR-0047 增加宿主请求模式，均不增加语言语法或引用消息能力。
+
+宿主资源账本按 [ADR-0045](adr/0045-concurrent-resource-admission.md) 支持跨线程准入和归还，不改变语言语义：业务状态不共享可变数据，actor 与挂起活栈仍在原线程执行，尚无 M:N 迁移。
+
+模块装载寿命由宿主代码租约管理，语言不提供 unload/热更新。heap CLI 和显式 `load_accounted` 使用 [ADR-0044](adr/0044-native-module-leases.md) 的 VM 级模块预算；静态 AOT 不得保留脱离实例的 native 回调或后台线程。
+
+`collect()` 及分配触发的 GC 采用 [ADR-0043](adr/0043-chunked-runtime-gc.md) 的固定工作块：每 16 个节点/根扣一个 runtime 步数，并可在原栈暂停、恢复或取消。总预算包含这些工作，不再只计 IR 指令；中止不提交候选 state/自动回复，已发生消息副作用不回滚。
+
+宿主可用 worker `wait` 推进空闲时的 deadline/完成事件准入，不必 sleep 轮询；仍不在 wait 内执行 handler，也无自动外部 I/O 事件泵，见 [ADR-0041](adr/0041-worker-deadline-parking.md)。
+
+`request(pid, Message, Completed, timeout_ms, args...)` 异步返回局部 RequestId，完成事件为 `on Completed(id: RequestId, status: Int, value: T)`；T 精确匹配目标的 Int/Bool/Unit/RecordInt/IntList/Bytes/String/具名记录回复，status 为 Reply/TimedOut/Cancelled/Failed 的 0/1/2/3。仅 status=0 的 value 为结果，其他状态分别为 0/false/()/record_int(0)/empty_ints()/fill_bytes(0, 0)/空字符串/同形默认记录。`cancel_request(id)` 不撤回目标消息，静态类型契约见 [ADR-0095](adr/0095-typed-scalar-request-events.md)、[ADR-0096](adr/0096-copied-record-replies.md)、[ADR-0097](adr/0097-accounted-int-list-replies.md) 与 [ADR-0116](adr/0116-bounded-named-record-replies.md)，额度/队满及能力有效期沿 [ADR-0040](adr/0040-language-request-events.md)。
+
+`self_pid()` / `spawn_self()` 返回局部 Pid，`send(pid, Message, args...)` 向同 worker 同模块的单向入口投递；仅 handler 可调用。Pid 暂不允许 state、消息、回复或比较。创建继承资源配置、不继承状态，细节见 [ADR-0039](adr/0039-local-process-capabilities.md)。
+
+handler 内 `send_self(Message, args...)` 以本 process 单向入口为静态目标，调用点入队、返回 Unit；初始化/fn 禁止，只能由 worker 驱动。失败不撤回此前发送，队满/额度拒绝受管失败，见 [ADR-0038](adr/0038-self-send-effects.md)。同 worker 同模块创建/发送由 ADR-0039 扩展，异步整数请求事件由 ADR-0040 扩展。
+
+`IntList` 支持 `empty_ints()`、`prepend_int(Int, IntList)`、`head_int(IntList)`、`tail_ints(IntList)` 和 `is_empty_ints(IntList)`；可作 state/局部/fn 值、有界语言消息参数和最多 64 元素的回复。列表不可变，空 head/tail 受管失败，节点及共享尾计费/根边界见 [ADR-0037](adr/0037-immutable-int-lists.md)，回复复制与出口根见 ADR-0097。
+
+process 内可按 [ADR-0042](adr/0042-managed-function-frames.md) 声明有显式参数/返回类型的 `fn`：只访问参数/局部和更早函数，不访问 state，禁止递归/while。私有受管调用支持记录/列表参数与返回、collect，逐帧保留精确根；每函数最多 4096 IR 操作、全程序最多 65536 操作，聚合根和剩余栈也须准入。
+
+持久记录状态扩展见 [ADR-0027](adr/0027-persistent-record-state.md)：可声明 `state value: RecordInt = record_int(0)`，替换绑定及 `read_int(value)`；RecordInt 可作语言消息字段，回复按 ADR-0096 复制内容，复制边界见 ADR-0049。执行必须显式配置计费堆，不接受外部 handle。
+
+条件表达式 `if flag { expression } else { expression }` 要求 Bool 条件与同类型结果，支持标量、RecordInt、IntList 及 Bytes，只求值选中臂。臂内暂不支持语句；可嵌套及用于普通表达式位置。见 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md)。
+
+标量比较按 [ADR-0030](adr/0030-scalar-comparisons.md)：`==`/`!=` 接受同类型 Int/Bool/Unit，`<`/`<=`/`>`/`>=` 仅接受有符号 Int，结果为 Bool；优先级低于算术，不支持数学式链式比较或 Ref 比较。
+
+handler 可写 `while condition { statements }`，Bool 条件、Unit 体，let 不可变且体内局部不逃逸；每轮仅更新候选 state，正常返回才提交。支持标量、RecordInt、IntList 与 Bytes state，尚无 break/continue 或局部循环携带值，见 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md)。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 Wings 用 `process` 声明进程类型，用 `on` 声明消息入口。参数和回复类型显式标注，局部绑定可以推导类型。下面的示例可通过检查；当前源码的标量 AOT 原型还可在可信本机路径编译并执行，不代表完整微进程 VM 已实现：
@@ -63,6 +242,24 @@ process Flag {
 
 ## 状态与失败
 
+### 不可变记录
+
+当前受限记录类型为 `RecordInt`，可作为局部或 state 值。`record_int(Int)` 创建单 Int 字段记录，`read_int(RecordInt)` 读取该字段，`collect()` 返回 Unit 并显式触发本进程 GC。这些内建只能按固定名称调用，参数从左到右求值；不是通用函数或 native FFI。普通绑定可遮蔽内建名称，遮蔽后的名字不再可调用。记录不可变，不能对局部重新赋值或修改字段；state 只可替换绑定。
+
+```text
+process Records {
+  state count: Int = 0
+  on Work(value: Int) -> Int {
+    let saved: RecordInt = record_int(value)
+    collect()
+    count = read_int(saved)
+    count
+  }
+}
+```
+
+该子集可检查并 AOT 编译运行，CLI 需显式传 `--heap-records`；宿主/worker 分别用 `instantiate_with_heap`/`spawn_with_heap`。语言消息字段允许 `RecordInt`，但宿主/JSON/ingress 不能提交原 handle，RecordInt/IntList/Bytes 回复按 ADR-0096/0097/0098 复制。堆容量固定，分配不足从 compiler 活跃根和宿主已提交状态根收集一次，仍不足则受管失败且不提交状态/成功回复。候选状态保活到出口，旧状态直到正常返回并验证输出后才替换；单槽堆不能在替换前回收旧状态，二槽堆可在后续调用收集旧对象。原生栈不保守扫描，不因局部名字仍在作用域就保留已无后续用途的记录。嵌套内建和括号内换行受既有表达式限制约束；不允许任意用户函数调用。契约见 [ADR-0026](adr/0026-language-temporary-records.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)，持久状态示例为 `examples/record-state.wings`。
+
 业务值不可变，状态绑定可以替换。`count = next` 表示替换本次 handler 的候选状态，不代表对象字段可变，也不暴露共享可变引用。后续语句读取更新后的候选值。
 
 执行契约如下；标量 AOT 原型已实现候选状态与正常返回提交，完整 VM 的消息投递、退出和监督尚未实现：
@@ -76,18 +273,18 @@ process Flag {
 
 ## 异步交互与副作用
 
-下面只说明后续内建的调用方向，当前检查器不支持这些调用：
+当前同 worker、同模块的最小调用方向如下；handler 内可运行完整示例见 `examples/request-events.wings`：
 
 ```text
 send(counter, Reset)
-let id = request(counter, Inc(by: 2))
+let id = request(counter, Inc, Completed, 1000, 2)
 ```
 
-`send` 面向单向入口，`request` 面向声明了回复类型的入口；发送前检查目标协议，不能把需要回复的消息当作单向消息发送。编译器检查静态协议；装载或动态边界仍需校验消息 schema。准入失败必须显式返回错误，不伪装成成功发送。错误结果的具体类型与处理写法尚未确定，上例不是完整的错误处理代码。
+`send` 面向单向入口，`request` 面向显式 `-> Int`、`-> Bool`、`-> Unit`、`-> RecordInt`、`-> IntList` 或 `-> Bytes` 入口；Completed 必须是 `(RequestId, Int, 回复类型)` 的单向系统完成入口，不可由普通发送伪造。发送前检查静态协议，装载/动态边界再次校验。准入失败为受管 RequestRejected，不伪装成功；未来可恢复错误值另行设计。
 
-`request` 成功返回 `RequestId`，不返回对端的业务结果。handler 保存关联状态后返回；回复、超时和对端退出转成带关联 ID 的后续事件，每个请求只完成一次，迟到回复不再匹配已结束的请求。取消不回滚对端已经发生的副作用。
+`request` 成功返回局部 `RequestId`，不返回业务结果，handler 随后正常返回；回复/超时/取消/对端退出通过完成事件给出 id、status 和 value。每个请求只选一次结果，迟到回复不覆盖；队满时保留结果及已预留消息，空位可用后入队。当前 id 不能保存到 state 或转成整数，关联 state 是后续能力。取消不撤回目标消息或副作用。
 
-首版不支持函数内部阻塞 `receive`、`await` 或同步 `call`。超时由 timer 投递事件。将来如需等待语法，必须单独设计可序列化续体，不能复用 Idle 冬眠的假设。异步 I/O 通过事件衔接微进程消息，不能阻塞调度线程；请求关联表和超时也受资源预算约束，具体协议在 M0 确定。
+首版不支持函数内部阻塞 `receive`、`await` 或同步 `call`。当前 deadline 由 tick 扫描，自动 timer/OS 事件泵尚未集成；没有 tick 就不主动投递。未来等待语法须另行设计可序列化续体，不能复用 Idle 冬眠假设。异步 I/O 通过事件衔接，不能阻塞调度线程；请求/事件预留受三级资源约束。
 
 受管入口的逻辑签名为 `handle(context, state_handle, message_handle) -> HandlerResult`，这不是普通 Rust ABI。context 只提供受控的 runtime 内建和进程资源访问。
 
@@ -107,22 +304,32 @@ let id = request(counter, Inc(by: 2))
 | Rust | 参数与回复签名、联合类型和穷尽匹配方向 | 业务层所有权、生命周期和借用标注 |
 | Go | 少量规则、明确控制流 | 每个进程手写接收循环和阻塞 `select` |
 
-后续普通代码按 `fn`、`let`、`if`、`match`、记录和联合类型推进；目前只实现了其中的 `let`。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
+后续普通代码按动态派发、`match`、通用记录和联合类型推进；目前已有有界非递归 fn 调用帧、`let`、标量/RecordInt `if` 与 state while 和记录内建，不支持递归或函数值。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
 
 ## 当前原型支持范围
 
 `examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
 
-未发布源码额外插入取消与预算检查，不增加业务语法。取消或预算耗尽属于受管失败，遵守候选状态与自动回复仅正常返回后提交的规则；不提供 `await`、阻塞接收或暂停恢复。源码与 `0.0.2` 的产物 ABI 不兼容，见 [ADR-0010](adr/0010-scalar-execution-control.md)。
+未发布源码插入取消、让出和预算检查。总预算耗尽、取消、入口剩余栈不足、堆耗尽、非法字节参数、非法 UTF-8 字符串或 String 索引越界属于受管失败，候选状态与自动回复仅正常返回后提交；时间片耗尽可由宿主在同线程恢复原栈，不重放 handler，也不表示语言支持 `await` 或阻塞接收。当前 ABI v22 不兼容已发布 `0.0.2` 及旧源码 v2–v21 产物，需重新编译；原栈恢复见 [ADR-0011](adr/0011-scalar-stackful-resume.md)，栈边界见 [ADR-0024](adr/0024-scalar-stack-boundary.md)，compiler 根与持久状态分别见 [ADR-0025](adr/0025-aot-record-roots.md) 和 [ADR-0027](adr/0027-persistent-record-state.md)。
 
 当前子集包含：
 
 - `process`、一个具名 state、统一的 `on`、具名类型化参数和可选回复类型。
-- `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
+- `Int`、`Bool`、`Unit`、RecordInt/IntList 引用类型，整数、布尔与 `()` 字面量，括号、取负和四则运算。
+- 同类型标量相等与有符号 Int 顺序比较，结果为 Bool，不比较引用。
 - 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
+- `RecordInt` 局部/state、受限记录内建、同类型标量/RecordInt `if` 与唯一 state 的 while；无任意引用 phi。
+- handler 内携带唯一标量/RecordInt state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
+- process / actor 内最多 64 个 fn、64 个显式类型参数，支持直接递归与互递归；使用私有受管帧，无 state 访问/赋值，每路径最多 64 个聚合根，各帧独立检查剩余原生栈与步数预算。
+- 顶层共享 `struct` 与同文件多 `actor` 定义；支持 `spawn(Actor)`、`pid<Actor>` 静态类型检查、`!` / `.tell(...)` 单向消息与 `.ask(..., timeout: ..., then: ...)` 跨 Actor 异步请求，配合 `wings-compile build-app` 与 `wings-vm serve` 运行。
+- 不可变 IntList（`[int]`）的构造/字面量/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
+- 不可变 Bytes（`bytes`）与 UTF-8 String（`str`）的独立类型、分块内建、字符串插值 `f"..."`、精确根和 state/fn/条件/循环值；String 支持有界双引号字面量、独立复制消息参数与计费内容回复/完成事件。
+- handler 中 `send_self` / `self ! ...` 静态检查单向目标、参数和遮蔽；worker 调用点准入入队，队满/额度拒绝受管失败，无 worker 不可调用。
+- 局部 Pid（含 `pid<Actor>`）、`self` / `self_pid` / `spawn_self` / `spawn(Actor)` 与单/多 worker 模块间 `send`；fn 可传递 Pid，但不得在函数内创建/发送，无 Pid state/消息/回复或比较。
+- 局部 RequestId（`req`）、异步请求和三参数完成事件（`on reply`）；完成事件不可由普通发送/CLI 伪造，取消只能终结当前发起方仍占 pending 的请求，无阻塞等待。
 
-尚未实现模块、函数、分支、循环、记录、联合类型、完整模式匹配、消息构造与发送、系统事件或其他副作用调用。标量原型只处理一个 process、无业务堆分配的直线入口；状态提交与回复可运行验证，但异步消息、资源账户和监督仍是待实现契约。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现跨文件模块系统、动态派发（trait/闭包）、联合类型（enum ADT）与完整模式匹配、语言级声明式监督树或通用外部异步 I/O reactor。单模块 `wings-vm run` 装载单个 actor，多模块 `wings-vm serve` 通过多 worker `Scheduler` 装载应用 bundle 并向入口 actor 转发 CLI 消息；宿主与运行时仍受既有三级资源账户限制，不代表完整资源账本或正式 MVP/BEAM 全门禁已验收。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 

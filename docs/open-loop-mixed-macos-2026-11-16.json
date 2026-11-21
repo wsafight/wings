@@ -1,0 +1,867 @@
+{
+  "protocol": 6,
+  "status": "exploratory_integration_only",
+  "case": "mixed-4k",
+  "rate": 1000,
+  "actors": 1000,
+  "active": 100,
+  "state_bytes": 4096,
+  "mailbox_capacity": 1,
+  "pending_capacity": 256,
+  "logical_message_bytes": 32,
+  "warmup_seconds": 30,
+  "sample_seconds": 60,
+  "paired_repetitions": 5,
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "cpu": "Apple M3 Pro",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "source_base_commit": "d164e019a50bf0adac2fbca48cf016013ad3f5d6",
+  "source_has_uncommitted_changes": true,
+  "raw_directory": "target/mvp-mixed4k-measure-20261116",
+  "runner_sha256": "2599561b80a476ddc4e2d692e99b0a259365cd5b8b3d9e02ecfe58d21ec8f330",
+  "frozen_key_inputs": {
+    "beam_open_loop": "2599561b80a476ddc4e2d692e99b0a259365cd5b8b3d9e02ecfe58d21ec8f330",
+    "beam_open_loop.escript": "e866284d3233b5c8350facb51673099d32813ff5ceed7f9c2410ac36d29517f1",
+    "beam_bounded_mailbox.erl": "e27dbfd54f37a4c9f895d1105d0e49fb5bc79442b7673dbb64b43b096d7a4f32",
+    "artifact/manifest.json": "1a094ce395e4fbbdf193291485add0bb19c7e15a900f048fb8f193d4b2c00797",
+    "artifact/program.dylib": "35c5bd2395c009e3f2d6b7d8b065a4e61245e99fc9ef5b514219e5a8ccb94ca6",
+    "measure_memory": "916bf8cfd4820124f3baa5be86133cc5893c72a6452f00aaadf087a6c3ea92c2",
+    "measure_memory.c": "46b784b01c59fdeb4b7103d016418aa4e9dca5124321fd60129ff3693abc5c13",
+    "source/scripts/measure_open_loop.py": "ce1a93b0779e1860cdeaf2b779a854a7f90f4e97c9175a2a0f644b9daf1d308b",
+    "source/scripts/measure_memory.py": "10e9615b6a88638738e63c3e90853706c12c0069ac33ce5389a19477bb3d3677",
+    "source/crates/wings-vm/src/bytes_reply.rs": "d029b8dabd73016f614b716926bb2fe3c8d6df3c07897c3d9c635c872e2c5d8d"
+  },
+  "frozen_input_count": 358,
+  "frozen_inputs_verified": true,
+  "latest_offline_verifier_passed": true,
+  "host_isolation": "unverified; exploratory integration measurement, not acceptance",
+  "limits": {
+    "cpu_seconds": 240,
+    "wall_seconds": 130,
+    "stage_seconds": 120,
+    "file_bytes": 10737418240,
+    "observed_rss_stop_bytes": 1073741824
+  },
+  "unrecorded_environment": [
+    "thermal state",
+    "power mode",
+    "QoS",
+    "core assignment"
+  ],
+  "measurement_driver_note": "No project build or test intentionally overlapped the ten runs; unrelated host activity was not isolated. Build/runner sources match the frozen inputs; follow-up evidence documentation was edited afterwards.",
+  "limitations": [
+    "No OS CPU hard quota or verified host isolation; two workers or schedulers are not two dedicated CPU cores.",
+    "Only mixed-4k at a fixed 1000/s; no saturation scan or maximum sustained throughput proof.",
+    "Five paired repetitions are retained without best-run selection; Wings tail latency is higher than BEAM.",
+    "Memory totals include the persistent Python driver and captured descendants; driver RSS changes between runs are not VM-only growth.",
+    "Sampled peaks are non-atomic, may double-count shared pages, and miss transient or short-lived process costs.",
+    "RSS and physical footprint remain separate; host compression and swap are not per-VM costs or added to footprint.",
+    "Probe-only CPU/RSS/wall costs are recorded; census, monitoring bias and complete overhead are not accepted.",
+    "Native Linux, all remaining workloads, long fairness/fault acceptance and complete resource ledger remain incomplete.",
+    "No throughput, whole-system memory or MVP acceptance claim."
+  ],
+  "memory_scope": "driver plus captured descendants; census/probe helpers excluded from tree totals; host compressor/swap not attributed to VM; non-atomic samples",
+  "memory_phase_counts": {
+    "initializing": 10,
+    "warmup": 291,
+    "sampling": 591
+  },
+  "probe_helper_aggregate": {
+    "user_cpu_us": 690913,
+    "system_cpu_us": 902153,
+    "max_rss_bytes": 1409024,
+    "max_wall_ns": 23530334
+  },
+  "host_memory_ranges_bytes": {
+    "swap_total_bytes": {
+      "min": 3221225472,
+      "max": 3221225472
+    },
+    "swap_used_bytes": {
+      "min": 1997144064,
+      "max": 1997144064
+    },
+    "compressor_resident_bytes": {
+      "min": 11447009280,
+      "max": 12114984960
+    },
+    "compressed_logical_bytes": {
+      "min": 23882989568,
+      "max": 26228834304
+    },
+    "compressor_swapped_page_bytes": {
+      "min": 2321793024,
+      "max": 2325708800
+    }
+  },
+  "tail_candidate_passes": {
+    "wings": 5,
+    "beam": 5
+  },
+  "maximum_sustainable_throughput_proven": false,
+  "memory_gate_proven": false,
+  "raw_files_sha256": {
+    "1000-1-beam.events.bin": "6bc9cb0864660da4624e38b632ef33f91b867298dffb8ccbfe0aaa2ab1808e24",
+    "1000-1-beam.json": "b1e66b8a6e8992797cc7268cc1dd37aa53168310d05ae9cb14bfa0272d81877d",
+    "1000-1-beam.memory.jsonl": "44b3ab70b8ee7e4acfc538801165a0f55ceab8732f930749f28b42f0fc865646",
+    "1000-1-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-1-beam.stdout.jsonl": "b8bd4756b067c85abc7839ac0258d3aa41b5ef60da4c6d695a4e8f5cdd31d166",
+    "1000-1-wings.events.bin": "969e3cbec770d132299d29e6143408866744c8fa814a6e08f5971eed68eee6be",
+    "1000-1-wings.json": "0135c6163d77e233005c6a2049d8e6398196bfd425f08daeeb40fa0d880862ec",
+    "1000-1-wings.memory.jsonl": "258c671cde40b5cbf89fb3ef659773d7368281fd7bd7e29ef9d0d45b4241c2ab",
+    "1000-1-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-1-wings.stdout.jsonl": "ccd867079165109686a90f0f531b072d436de245fd9dfa7ab8b99c19b6009baf",
+    "1000-2-beam.events.bin": "22f51f98db6d77062328f2b14817c30a8a7c6d2e9e2325b48b70924508f63bd8",
+    "1000-2-beam.json": "b8a9c36f4115024524744dcd30c155a3b7a163c0d3d9468a1adb2fe566b358f8",
+    "1000-2-beam.memory.jsonl": "8f6be64211a5f53d87db8b688998a2ff065f904103a91301f7b7cb813ad068e7",
+    "1000-2-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-2-beam.stdout.jsonl": "d2d9c802ad0ae3fb4772fa45f0c4a143d8f2963ec8115f175f7f101681eae821",
+    "1000-2-wings.events.bin": "027ab627da8560b806c3ddeb8e07f8f241e31f2d0921f3c7c1ce2835f2df906c",
+    "1000-2-wings.json": "a7daf3fc22300affbafc8e8d4fcc238986dc4694af084903f7a1ca0cf3c418b5",
+    "1000-2-wings.memory.jsonl": "d27d3420e7ce50208401ec56fccfabd36e273475f14576cb43fd1b65b85de0d1",
+    "1000-2-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-2-wings.stdout.jsonl": "4b8b67a521de6dccb7f56e84d8952cb9cd18514188d93a96665894e1c7d8200e",
+    "1000-3-beam.events.bin": "73764776991721c0f63197b2b9ab30db0e1709d2e4c63600c99af542fce4d1dd",
+    "1000-3-beam.json": "6971f3547b9b7dc5b88dc167c79887b7b3a7d254ef23dee6c9387d3ffe56d915",
+    "1000-3-beam.memory.jsonl": "3257158153ad56f0aaaccb42e2c0cde235a84fb1a805346292d27f5f1036d34d",
+    "1000-3-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-3-beam.stdout.jsonl": "0a64a59f8a8a9a36317c80fddb0bd07b8f421f08b1a47517825e36941c07e99c",
+    "1000-3-wings.events.bin": "837de4f017a621461e25bdc776431584d71275282eb0c15931061fdc5332273e",
+    "1000-3-wings.json": "565bcf027a7094454ee317baac0070890311806516d47ffb115d9beb3f7f4c42",
+    "1000-3-wings.memory.jsonl": "dcd18979181b5c9327b4427b54a1d1ba79b111eaccd191e660c9a4422bf70bf2",
+    "1000-3-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-3-wings.stdout.jsonl": "d2a591274bd923b5d5668355ffbad6c0d2d3a78bd66b22931935a0c18928d414",
+    "1000-4-beam.events.bin": "b48d43f598a9c02d924aa45783645e3e75ec5a172a36f8cb38557c6b19e81fb9",
+    "1000-4-beam.json": "eb347b298804cc5d17b0b131c754270f98641b6dcf1e2a252e42854ac101e8d2",
+    "1000-4-beam.memory.jsonl": "1e536bb28c90ec95e738ede396b032a3f4bd5a04b9f1d038095014084528b95a",
+    "1000-4-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-4-beam.stdout.jsonl": "4d64ee8156ae01fd83bdd460449ee091b2aa583c83433addf128794e8f6d0033",
+    "1000-4-wings.events.bin": "5b97f69460e3e12674736f0f89ce1b79ee2d553ce507585ff14383d3db9cf4be",
+    "1000-4-wings.json": "b153842fbe208b058ac308ed644233c8f289fd7eaef033c33623a9dd30d9184e",
+    "1000-4-wings.memory.jsonl": "dd752f9a2a3751110718409b454edd3b5280061238dfd5d519709cfc1ac8e509",
+    "1000-4-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-4-wings.stdout.jsonl": "318a5d4645a640e7562ca734c4e9f1a0ecba1bcb78b1673a6500a3eefbae43ec",
+    "1000-5-beam.events.bin": "6ea327eaf163da3a432d9382d9cc9ae5cbd317f3ad4992a34a4055a9800939dc",
+    "1000-5-beam.json": "b93c8b08469b6712e8ca275e9ddaa317d55ce356c1fd95253850ab40de1c25d5",
+    "1000-5-beam.memory.jsonl": "78ec3f80d6ad5bd928130c42875fc00ef70107d1bb715b1652e275771230f9df",
+    "1000-5-beam.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-5-beam.stdout.jsonl": "d0c317e17447599a74778735f8cb0a3c044bd6bc7d77dbe04f50c613ee017578",
+    "1000-5-wings.events.bin": "11f86686d28b101eb7ec6fe7e14a96654645574b4f89f7ea4841fb29c8272247",
+    "1000-5-wings.json": "1123a82798766baf61d5b5332cc558c6a7919b9968464642938c78df695d903d",
+    "1000-5-wings.memory.jsonl": "30242f8b626c3aee51e8fd6eb0a793f17ac6d7712ac8f462f66d7fd325837098",
+    "1000-5-wings.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "1000-5-wings.stdout.jsonl": "c58b62620d230f4cf67cbc3db96def5e417b6759f83989c3e75189a270585cb9",
+    "environment.json": "5867b83fccac8a8be618a5ce3a9ac132f7c8ae5eb0732d3cfe6732aa46f0e30f",
+    "memory-preflight.json": "0c8ba3d0b63fcadde3663fe5791430857b25f5fbf85af2db84da6cb8ebcc7e6a",
+    "memory-setup.json": "5cad172f6eee8c88d6ecdaa38429568261ee70ba972b34c124b831c3abca9d65",
+    "report.json": "1e7a848cc98d830b3eec1e846371a74b3572639329cd62c480c4f59306846982"
+  },
+  "runs": [
+    {
+      "runtime": "wings",
+      "repetition": 1,
+      "wall_seconds": 90.89285829200526,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 21000,
+        "p99_ns": 16889708,
+        "p999_ns": 27116583,
+        "max_ns": 41304958,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 32971458,
+          "over_20ms": 31,
+          "over_50ms": 0,
+          "p50_ns": 166,
+          "p99_ns": 8560375,
+          "p999_ns": 15660250
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "969e3cbec770d132299d29e6143408866744c8fa814a6e08f5971eed68eee6be",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 58327040,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 56344576,
+          "physical_footprint_bytes": 46679096
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 26034176,
+          "physical_footprint_bytes": 17318584
+        },
+        "85647": {
+          "start_id": "4839203530275",
+          "rss_bytes": 30310400,
+          "physical_footprint_bytes": 29360512
+        }
+      },
+      "runtime_environment": {
+        "runtime": "wings",
+        "workers": 2
+      },
+      "bootstrap_bytes": 168,
+      "remaining_bytes": 168
+    },
+    {
+      "runtime": "beam",
+      "repetition": 1,
+      "wall_seconds": 90.51981212501414,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 2207,
+        "p99_ns": 15621,
+        "p999_ns": 83707,
+        "max_ns": 3095292,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 3061667,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 163,
+          "p99_ns": 371,
+          "p999_ns": 21954
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "6bc9cb0864660da4624e38b632ef33f91b867298dffb8ccbfe0aaa2ab1808e24",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 93290496,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 90259456,
+          "physical_footprint_bytes": 70911584
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 30621696,
+          "physical_footprint_bytes": 22512312
+        },
+        "87559": {
+          "start_id": "4841385000376",
+          "rss_bytes": 58343424,
+          "physical_footprint_bytes": 48857712
+        },
+        "87586": {
+          "start_id": "4841385955362",
+          "rss_bytes": 1392640,
+          "physical_footprint_bytes": 983352
+        }
+      },
+      "runtime_environment": {
+        "emu_flavor": "jit",
+        "runtime": "beam",
+        "otp": "29",
+        "schedulers": 2,
+        "erts": "17.1.1",
+        "architecture": "aarch64-apple-darwin25.6.0"
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 2,
+      "wall_seconds": 90.50056075002067,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 7633,
+        "p99_ns": 28008,
+        "p999_ns": 458322,
+        "max_ns": 4510967,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 4489008,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 4425,
+          "p99_ns": 13758,
+          "p999_ns": 451508
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "22f51f98db6d77062328f2b14817c30a8a7c6d2e9e2325b48b70924508f63bd8",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 94994432,
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 93028352,
+          "physical_footprint_bytes": 69994080
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 33603584,
+          "physical_footprint_bytes": 20464312
+        },
+        "89143": {
+          "start_id": "4843557492666",
+          "rss_bytes": 58064896,
+          "physical_footprint_bytes": 48579184
+        },
+        "89168": {
+          "start_id": "4843558181888",
+          "rss_bytes": 1392640,
+          "physical_footprint_bytes": 983352
+        }
+      },
+      "runtime_environment": {
+        "emu_flavor": "jit",
+        "runtime": "beam",
+        "otp": "29",
+        "schedulers": 2,
+        "erts": "17.1.1",
+        "architecture": "aarch64-apple-darwin25.6.0"
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 2,
+      "wall_seconds": 90.2728723329783,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 11500,
+        "p99_ns": 47875,
+        "p999_ns": 116708,
+        "max_ns": 9987583,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 9604333,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 83,
+          "p99_ns": 625,
+          "p999_ns": 34625
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "027ab627da8560b806c3ddeb8e07f8f241e31f2d0921f3c7c1ce2835f2df906c",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 69140480,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 67158016,
+          "physical_footprint_bytes": 46990440
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 36831232,
+          "physical_footprint_bytes": 18531000
+        },
+        "92018": {
+          "start_id": "4845729527158",
+          "rss_bytes": 30326784,
+          "physical_footprint_bytes": 29409712
+        }
+      },
+      "runtime_environment": {
+        "runtime": "wings",
+        "workers": 2
+      },
+      "bootstrap_bytes": 168,
+      "remaining_bytes": 168
+    },
+    {
+      "runtime": "wings",
+      "repetition": 3,
+      "wall_seconds": 90.27237183297984,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 36958,
+        "p99_ns": 16906750,
+        "p999_ns": 27084791,
+        "max_ns": 44481958,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 43482500,
+          "over_20ms": 41,
+          "over_50ms": 0,
+          "p50_ns": 250,
+          "p99_ns": 8989083,
+          "p999_ns": 17587916
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "837de4f017a621461e25bdc776431584d71275282eb0c15931061fdc5332273e",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 73269248,
+      "platform_memory": {
+        "samples": 88,
+        "complete_samples": 88,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 71286784,
+          "physical_footprint_bytes": 49218640
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 40960000,
+          "physical_footprint_bytes": 19825336
+        },
+        "92846": {
+          "start_id": "4847896084730",
+          "rss_bytes": 30326784,
+          "physical_footprint_bytes": 29393304
+        }
+      },
+      "runtime_environment": {
+        "runtime": "wings",
+        "workers": 2
+      },
+      "bootstrap_bytes": 168,
+      "remaining_bytes": 168
+    },
+    {
+      "runtime": "beam",
+      "repetition": 3,
+      "wall_seconds": 90.56432966698776,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 3462,
+        "p99_ns": 22071,
+        "p999_ns": 108837,
+        "max_ns": 6223071,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 6098529,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 212,
+          "p99_ns": 14446,
+          "p999_ns": 54571
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "73764776991721c0f63197b2b9ab30db0e1709d2e4c63600c99af542fce4d1dd",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 104906752,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 102105088,
+          "physical_footprint_bytes": 70141512
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 41009152,
+          "physical_footprint_bytes": 18956984
+        },
+        "94433": {
+          "start_id": "4850062649215",
+          "rss_bytes": 59719680,
+          "physical_footprint_bytes": 50217560
+        },
+        "94454": {
+          "start_id": "4850063611584",
+          "rss_bytes": 1392640,
+          "physical_footprint_bytes": 983352
+        }
+      },
+      "runtime_environment": {
+        "emu_flavor": "jit",
+        "runtime": "beam",
+        "otp": "29",
+        "schedulers": 2,
+        "erts": "17.1.1",
+        "architecture": "aarch64-apple-darwin25.6.0"
+      }
+    },
+    {
+      "runtime": "beam",
+      "repetition": 4,
+      "wall_seconds": 90.50277412502328,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 2605,
+        "p99_ns": 32687,
+        "p999_ns": 2505770,
+        "max_ns": 21747895,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 20459145,
+          "over_20ms": 1,
+          "over_50ms": 0,
+          "p50_ns": 187,
+          "p99_ns": 13188,
+          "p999_ns": 2421145
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "b48d43f598a9c02d924aa45783645e3e75ec5a172a36f8cb38557c6b19e81fb9",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 104103936,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 102121472,
+          "physical_footprint_bytes": 69764656
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 41074688,
+          "physical_footprint_bytes": 18989752
+        },
+        "96224": {
+          "start_id": "4852236213069",
+          "rss_bytes": 59670528,
+          "physical_footprint_bytes": 50152000
+        },
+        "96245": {
+          "start_id": "4852236926616",
+          "rss_bytes": 1392640,
+          "physical_footprint_bytes": 983352
+        }
+      },
+      "runtime_environment": {
+        "emu_flavor": "jit",
+        "runtime": "beam",
+        "otp": "29",
+        "schedulers": 2,
+        "erts": "17.1.1",
+        "architecture": "aarch64-apple-darwin25.6.0"
+      }
+    },
+    {
+      "runtime": "wings",
+      "repetition": 4,
+      "wall_seconds": 90.26626125001349,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 15209,
+        "p99_ns": 11351084,
+        "p999_ns": 20861292,
+        "max_ns": 38789084,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 21815542,
+          "over_20ms": 2,
+          "over_50ms": 0,
+          "p50_ns": 125,
+          "p99_ns": 7021334,
+          "p999_ns": 10962542
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "5b97f69460e3e12674736f0f89ce1b79ee2d553ce507585ff14383d3db9cf4be",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 74072064,
+      "platform_memory": {
+        "samples": 89,
+        "complete_samples": 89,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 72105984,
+          "physical_footprint_bytes": 45925432
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 41811968,
+          "physical_footprint_bytes": 16663224
+        },
+        "99677": {
+          "start_id": "4854408293877",
+          "rss_bytes": 30294016,
+          "physical_footprint_bytes": 29344128
+        }
+      },
+      "runtime_environment": {
+        "runtime": "wings",
+        "workers": 2
+      },
+      "bootstrap_bytes": 168,
+      "remaining_bytes": 168
+    },
+    {
+      "runtime": "wings",
+      "repetition": 5,
+      "wall_seconds": 90.2656472499948,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 12750,
+        "p99_ns": 79208,
+        "p999_ns": 12184000,
+        "max_ns": 19457667,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 9860250,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 83,
+          "p99_ns": 12333,
+          "p999_ns": 8025125
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "11f86686d28b101eb7ec6fe7e14a96654645574b4f89f7ea4841fb29c8272247",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 76365824,
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 74350592,
+          "physical_footprint_bytes": 47629368
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "1577": {
+          "start_id": "4856574700165",
+          "rss_bytes": 30326784,
+          "physical_footprint_bytes": 29376896
+        },
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 44023808,
+          "physical_footprint_bytes": 18711224
+        }
+      },
+      "runtime_environment": {
+        "runtime": "wings",
+        "workers": 2
+      },
+      "bootstrap_bytes": 168,
+      "remaining_bytes": 168
+    },
+    {
+      "runtime": "beam",
+      "repetition": 5,
+      "wall_seconds": 90.49952895799652,
+      "summary": {
+        "arrivals": 60000,
+        "reply": 60000,
+        "timed_out": 0,
+        "mailbox_full": 0,
+        "pending_full": 0,
+        "on_time_replies_per_second": 1000.0,
+        "p50_ns": 7029,
+        "p99_ns": 18570,
+        "p999_ns": 90487,
+        "max_ns": 4497487,
+        "generator_lateness": {
+          "samples": 60000,
+          "max_ns": 4322820,
+          "over_20ms": 0,
+          "over_50ms": 0,
+          "p50_ns": 4557,
+          "p99_ns": 12862,
+          "p999_ns": 26349
+        },
+        "warmup": {
+          "reply": 30000,
+          "timed_out": 0,
+          "mailbox_full": 0,
+          "pending_full": 0
+        },
+        "trace_bytes": 7200000,
+        "sha256": "6ea327eaf163da3a432d9382d9cc9ae5cbd317f3ad4992a34a4055a9800939dc",
+        "drained": true,
+        "tail_candidate_pass": true
+      },
+      "rss_safety_tree_plus_driver_peak_bytes": 112902144,
+      "platform_memory": {
+        "samples": 90,
+        "complete_samples": 90,
+        "host_error_samples": 0,
+        "identity_changes": 0,
+        "sampled_metric_peaks": {
+          "rss_bytes": 110936064,
+          "physical_footprint_bytes": 73156168
+        },
+        "scope": "driver plus captured descendants; helper costs recorded separately",
+        "all_samples_complete": true
+      },
+      "per_process_sampled_peaks": {
+        "5076": {
+          "start_id": "4858741090023",
+          "rss_bytes": 63455232,
+          "physical_footprint_bytes": 53953112
+        },
+        "85603": {
+          "start_id": "4839179262330",
+          "rss_bytes": 46088192,
+          "physical_footprint_bytes": 19563192
+        },
+        "5097": {
+          "start_id": "4858742052796",
+          "rss_bytes": 1392640,
+          "physical_footprint_bytes": 983352
+        }
+      },
+      "runtime_environment": {
+        "emu_flavor": "jit",
+        "runtime": "beam",
+        "otp": "29",
+        "schedulers": 2,
+        "erts": "17.1.1",
+        "architecture": "aarch64-apple-darwin25.6.0"
+      }
+    }
+  ]
+}

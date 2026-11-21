@@ -1,0 +1,105 @@
+struct SessionCommand {
+  session_id: int,
+  prompt: str,
+}
+
+struct SessionStatus {
+  alive: bool,
+  turns: int,
+  restarts: int,
+  ticks: int,
+  last_reply: str,
+}
+
+actor SessionWorker {
+  state turns = 0
+  state parent: pid = null
+
+  on attach(owner: pid) -> pid {
+    parent = owner
+    self
+  }
+
+  on step(cmd: SessionCommand) -> str {
+    if cmd.prompt == "boom" {
+      let _ = 1 / 0
+    }
+    turns += 1
+    f"s{cmd.session_id}#{turns}:{cmd.prompt}"
+  }
+
+  on ping_parent {
+    if !parent.is_null() {
+      send_after(5, noop)
+    }
+  }
+
+  on noop {}
+}
+
+actor SessionManager {
+  state worker: pid<SessionWorker> = null
+  state bound_ok = false
+  state turns = 0
+  state restarts = 0
+  state ticks = 0
+  state last_reply = "idle"
+
+  on boot -> bool {
+    if worker.is_null() {
+      let w = spawn(SessionWorker)
+      worker = w
+      w.monitor(on_worker_down)
+      let _ = w.ask(attach(self), timeout: 500, then: on_attached)
+      send_after(10, heartbeat)
+    }
+    true
+  }
+
+  on heartbeat {
+    ticks += 1
+  }
+
+  on reply on_attached(id: req, status: int, who: pid) {
+    if status == 0 && who == worker {
+      bound_ok = true
+      worker ! ping_parent
+    }
+  }
+
+  on on_worker_down(dead: pid<SessionWorker>, reason: int) {
+    if dead == worker && reason != 0 {
+      restarts += 1
+      let next = spawn(SessionWorker)
+      worker = next
+      next.monitor(on_worker_down)
+      let _ = next.ask(attach(self), timeout: 500, then: on_attached)
+    }
+  }
+
+  on dispatch(cmd: SessionCommand) -> bool {
+    if worker.is_null() {
+      false
+    } else {
+      let _ = worker.ask(step(cmd), timeout: 500, then: on_step_done)
+      true
+    }
+  }
+
+  on reply on_step_done(id: req, status: int, text: str) {
+    if status == 0 {
+      turns += 1
+      last_reply = text
+    } else {
+      last_reply = f"err:{status}"
+    }
+  }
+
+  on status -> SessionStatus => SessionStatus {
+    alive: !worker.is_null() && bound_ok,
+    turns: turns,
+    restarts: restarts,
+    ticks: ticks,
+    last_reply: last_reply,
+  }
+}

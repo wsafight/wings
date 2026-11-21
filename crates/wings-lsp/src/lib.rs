@@ -116,14 +116,48 @@ impl Server {
                     })),
                     _ => {
                         let mut labels = HashMap::new();
-                        for keyword in ["process", "state", "on", "let", "true", "false"] {
+                        for keyword in ["actor", "struct", "state", "on", "reply", "fn", "let", "if", "else", "while", "for", "in", "match", "self", "spawn", "null", "true", "false"] {
                             labels.insert(keyword.to_owned(), json!({ "label": keyword, "kind": 14 }));
                         }
-                        for ty in ["Int", "Bool", "Unit"] {
+                        for ty in ["int", "bool", "str", "bytes", "pid", "req", "[int]"] {
                             labels.insert(ty.to_owned(), json!({ "label": ty, "kind": 7 }));
                         }
+                        for (name, detail) in [
+                            ("gc", "() -> ()"),
+                            ("spawn", "([Actor]) -> pid<Actor>"),
+                            ("send_after", "(int, msg) -> ()"),
+                            ("monitor", "(pid, handler) -> ()"),
+                            ("bytes::fill", "(int, int) -> bytes"),
+                        ] {
+                            labels.insert(name.to_owned(), json!({ "label": name, "kind": 3, "detail": detail }));
+                        }
+                        for (name, detail) in [
+                            ("len", "str/bytes -> int"),
+                            ("is_empty", "[int]/str/bytes -> bool"),
+                            ("is_null", "pid -> bool"),
+                            ("head", "[int] -> int"),
+                            ("tail", "[int] -> [int]"),
+                            ("push", "[int].push(int) -> [int]"),
+                            ("at", "str/bytes.at(int) -> int"),
+                            ("slice", "str.slice(int, int) -> str"),
+                            ("bytes", "str.bytes() -> bytes"),
+                            ("set", "bytes.set(int, int) -> bytes"),
+                            ("i64_at", "bytes.i64_at(int) -> int"),
+                            ("set_i64", "bytes.set_i64(int, int) -> bytes"),
+                            ("to_str", "int/bool/bytes.to_str() -> str"),
+                            ("send_after", "pid.send_after(int, msg) -> ()"),
+                            ("monitor", "pid.monitor(handler) -> ()"),
+                            ("ask", "pid.ask(msg, timeout: int, then: handler) -> req"),
+                            ("cancel", "req.cancel() -> ()"),
+                        ] {
+                            labels.insert(name.to_owned(), json!({ "label": name, "kind": 2, "detail": detail }));
+                        }
                         for symbol in document.analysis.visible_symbols(offset) {
-                            let kind = match symbol.kind { SymbolKind::Process => 7, SymbolKind::Handler => 3, _ => 6 };
+                            let kind = match symbol.kind {
+                                SymbolKind::Actor | SymbolKind::Struct => 7,
+                                SymbolKind::Handler | SymbolKind::Function => 3,
+                                _ => 6,
+                            };
                             labels.insert(symbol.name.clone(), json!({ "label": symbol.name, "kind": kind, "detail": symbol.ty.to_string() }));
                         }
                         let mut items: Vec<Value> = labels.into_values().collect();

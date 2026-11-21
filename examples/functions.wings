@@ -1,0 +1,45 @@
+actor Functions {
+  struct Boxed { value: int }
+  fn twice(value: int) -> int { value + value }
+  fn fresh(value: int) -> Boxed { Boxed(value) }
+  fn next(value: Boxed) -> Boxed {
+    gc()
+    fresh(value.value + 1)
+  }
+  fn choose(flag: bool, value: Boxed) -> Boxed {
+    if flag { next(value) } else { value }
+  }
+  fn count_value(first: Boxed, second: Boxed) -> int {
+    gc()
+    first.value * 10 + second.value
+  }
+  fn unchanged(value: Boxed) -> Boxed { value }
+  fn fail(value: Boxed) -> int {
+    gc()
+    value.value / 0
+  }
+  state value = fresh(twice(0))
+  on get -> int { value.value }
+  on count(limit: int) -> int {
+    while value.value < limit {
+      value = next(value)
+    }
+    value.value
+  }
+  on choose(flag: bool) -> int {
+    value = choose(flag, value)
+    value.value
+  }
+  on order -> int { count_value(fresh(1), fresh(2)) }
+  on once -> int { count_value(unchanged(fresh(3)), unchanged(value)) }
+  on first_failure -> int {
+    count_value(fresh(1 / 0), fresh(9223372036854775807 + 1))
+  }
+  on second_failure -> int {
+    count_value(fresh(9223372036854775807 + 1), fresh(1 / 0))
+  }
+  on fail -> int {
+    value = next(value)
+    fail(value)
+  }
+}

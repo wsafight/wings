@@ -1,5 +1,243 @@
 # 风险与里程碑
 
+[ADR-0148](adr/0148-bounded-startup-stage-tracing.md) 为第 2/5/6 项增加默认关闭的逐进程启动阶段轨迹：模块路径、元数据、清单、映像、`dlopen` 和符号解析以每进程最多 64 条、8192 B 文件保留，超限显式截断并与同 PID 原限超时栈关联。真实 AOT 和默认关闭对照见[记录](validation-startup-stage-tracing-2026-11-20.md)；诊断不延长原期限，历史启动根因、完整受管执行/账本及其余 MVP 门禁不变。
+
+[ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 在离线摘要有界保留逐拒绝的 planned/sent、迟发、阶段、actor 和前一到达间隔；冻结重放保持 211/56 次拒绝及尾候选不变。open-loop 符合数十毫秒迟发补发关联；fairness 56 次当前拒绝虽仅迟发 0.103–0.224ms，但前一同 actor burst 迟发约 9.72–9.86ms 且均未完成，前后实际仅隔约 0.38ms，保留迟发压缩候选而不宣称阈值或 OS/VM 根因。实测见[记录](validation-mailbox-full-attribution-summary-2026-11-19.md)，其余 MVP 门禁不变。
+
+[ADR-0146](adr/0146-measurement-artifact-schema-preflight.md) 在 open-loop/fairness 创建 actor 和业务 `t0` 前核对 state/handler schema；真实错误 Counter 产物以固定错误、0 B trace 和无开始事件拒绝，正确负载与期限不变。实测见[记录](validation-measurement-schema-preflight-2026-11-19.md)，其余 MVP 门禁不变。
+
+[ADR-0145](adr/0145-bounded-failure-soak-tracebacks.md) 为失败长测验证保留异常位置、因果链和至多 8192 B 的 UTF-8 诊断，以定位旧 push CI 中仅有 `[Errno 1]` 的间歇失败；不重试或修改期限，根因与其余 MVP 门禁不变。实测见[记录](validation-failure-soak-diagnostics-2026-11-19.md)。
+
+[ADR-0144](adr/0144-command-timeout-stack-sampling.md) 将默认关闭的超时采样扩展到通用 `command`：原 30 秒判定后对直接子进程取证并保留输出，默认路径不变；cargo 包装与业务 example 不作混同。实测见[记录](validation-command-timeout-sampling-2026-11-19.md)，`scalar_requests` 等原超时根因和其余 MVP 门禁不变。
+
+2026-11-19 [开环 mailbox_full 归因](validation-mailbox-full-attribution-2026-11-19.md)：开环间歇拒绝由发生器 OS 迟发后追时刻突发触发，热 actor 约 11ms 即达满槽阈值，锁证据排除 VM 内部停顿；OS 延迟来源未定位，补发协议变更须另行 ADR。fairness 的 56 次拒绝经 [ADR-0147](adr/0147-bounded-mailbox-full-attribution.md) 与前一 actor 事件重放后保留迟发压缩关联，但 OS 来源与 VM 内部机制未定，门禁解读须区分发生器迟发关联拒绝与其他 VM 背压。
+
+2026-11-19 在本机执行两项冻结长测并补测量工具链：[fairness 五对](validation-fairness-measurement-2026-11-19.md) Wings 4/5、BEAM 5/5 通过尾候选（Wings 第 2 对 56 次 mailbox_full、零超时）；[hot-queue 开环 --scan](validation-open-loop-scan-2026-11-19.md) 在基准 10000/s 因 Wings 单轮 95 次 mailbox_full 触发停止判据，不是最大吞吐证明。测量前置补 fairness 探针 preflight，两端 preflight 用 30s 设置期限、被测样本仍 2s；探针首执行 0.74s/0.39s 证据保留。CPU 硬配额、过载分组、原生双平台与 BEAM 双门禁仍未完成。
+
+[ADR-0143](adr/0143-shared-invoke-timeout-sampling.md) 将 ADR-0142 的默认关闭超时采样扩展到八个脚本共用的 `verify_multi_counter.invoke`（含多 actor 十秒入口与 `observed_yield`），并在原上限内保留采样窗口内迟到的输出；默认证据形状与期限不变。实测见[记录](validation-timeout-sampling-coverage-2026-11-19.md)，长测独立捕获路径未接入，启动根因与其余 MVP 门禁不变。
+
+[ADR-0142](adr/0142-opt-in-timeout-stack-sampling.md) 为第 5/6 项的启动稳定性补取证入口：`verify_scalar_aot.py` 默认关闭的 `WINGS_TIMEOUT_SAMPLE=1` 在握手失败判定之后、清理之前，对原超时进程做独立限额的原生采样并保留迟到就绪证据。判定/期限/默认行为不变；它只是诊断，不关闭启动根因、完整账本、公平/服务长测、原生双平台或 BEAM/MVP 门禁。实测见[记录](validation-startup-timeout-sampling-2026-11-19.md)。
+
+[ADR-0141](adr/0141-bounded-allocator-failure-injection.md) 推进第 4/6 项的真实分配拒绝：有界测试 allocator 返回 null 后核对模块路径结果、构造回滚、未发布参数/消息重试、受管 GC 重试/失败、候选不提交和健康 actor 进展。19 次注入的范围和实测见[记录](validation-allocator-failures-2026-11-19.md)；完整原生账本、启动稳定性、公平/服务长测、原生双平台和 BEAM/MVP 门禁保持。
+
+[ADR-0140](adr/0140-bytes-tcp-service-equivalence.md) 推进第 5/7 项的真实服务同业务基础：受限 TCP 支持三种完整 Bytes state，显式 Wings/BEAM/Python 逐帧核对与健康完整状态校验。它不关闭公平/过载/故障长测、完整账本、启动稳定性、原生双平台或 BEAM 吞吐/整机内存门禁；实际状态见[记录](validation-tcp-bytes-2026-11-19.md)。
+
+[ADR-0139](adr/0139-regular-file-manifest-loading.md) 补第 4 项清单打开/读取边界，拒绝特殊文件并按已验证长度构造输入；保留修改前 FIFO 阻塞与普通文件符号链接兼容。实际证据见[记录](validation-manifest-loading-2026-11-18.md)，产物不变前提、完整资源账本、启动稳定性、原生双平台及 BEAM/MVP 门禁保持。
+
+[ADR-0138](adr/0138-native-thread-stack-startup-boundary.md) 补第 4/5 项宿主线程栈的启动边界：实际可用范围不得超过原计费桶，失败先 join 再退账。验证和首次失败见[记录](validation-native-thread-stacks-2026-11-18.md)；没有完成 OS 分配前硬限额、完整原生账本、原生双平台或 BEAM/MVP 门禁。
+
+[ADR-0137](adr/0137-infinite-handler-atomic-progress.md) 补第 5 项的原子让出进展前置，区分无限步骤片下健康 actor 进展与已有一步片轮转。实际结果及失败保留见[记录](validation-atomic-progress-2026-11-18.md)；不关闭单核配额/长时公平性、资源账本、服务 I/O、原生双平台或 BEAM/MVP 门禁。
+
+[ADR-0136](adr/0136-fixed-buffer-native-module-paths.md) 继续补第 4 项，使用调用者固定原生缓冲为路径结果建立 Rust 分配前容量边界；不关闭 libc/装载器/allocator 完整账本或其他 MVP 门禁，实际证据见[记录](validation-native-paths-2026-11-18.md)。
+
+[ADR-0135](adr/0135-bounded-accounted-module-paths.md) 补第 4 项模块来源暂存边界，保留 3 MiB 来源超出原 2 MiB 控制的修改前证据；修复只推进相应 Rust 副本和拼接，不关闭 canonicalize/libc/allocator、完整账本或原生双平台/BEAM/MVP 门禁，见[记录](validation-module-paths-2026-11-18.md)。
+
+[ADR-0134](adr/0134-opt-in-worker-cpu-observation.md) 补第 5/7 项诊断的 worker 线程 CPU 区间，默认关闭、先计费、join 后区分实际值与缺失。它不含 timer/发生器、不作锁内 CPU 归因，也不关闭原生双平台、完整账本或 BEAM/MVP 门禁；状态见[记录](validation-worker-cpu-2026-11-18.md)。
+
+[ADR-0133](adr/0133-open-loop-worker-lock-diagnostics.md) 为第 5/7 项接同负载长测锁诊断，在 worker join 后核对累计与业务数量，不改变 VM 或预算。它只推进定位后续优化的证据，不能关闭 CPU 归因、完整内存、原生双平台或 BEAM/MVP 门禁，实际状态见[记录](validation-open-loop-locks-2026-11-18.md)。
+
+[ADR-0132](adr/0132-bounded-multi-counter-failure-evidence.md) 为第 6 项诊断补 v2 子进程的有界 I/O、输入/用例身份与失败双流证据，保持原业务与期限。实际专项见[记录](validation-multi-counter-evidence-2026-11-18.md)，它没有修复或关闭启动稳定性、完整资源账本、原生双平台和 BEAM/MVP 门禁。
+
+[ADR-0131](adr/0131-equivalent-beam-cancellation-recovery.md) 为第 3/6 项补真实 BEAM 的有限请求、超时/取消不撤回、停止竞争、全新恢复和按 child 强度对照。原时段/容量和每轮限制保持，范围及本机证据见[记录](validation-beam-recovery-2026-11-18.md)；完整账本、长时过载/服务 I/O、原生双平台及同负载 BEAM 双门禁仍未完成，MVP 未完成。
+
+[ADR-0127](adr/0127-accounted-string-indexing-and-slicing.md) 补 MVP 第 4 项 String 的基本字符读取/子串操作，UTF-8 扫描按 Unicode scalar value 分块且切片独立计费。ABI v22；定向 Debug/Release 真实 AOT、三层配额/GC/取消与两种构建各 691 项测试通过，Release 完整 AOT 通过；Debug 完整套件仍有启动/Counter/fairness 超时记录。它不关闭完整资源账本、Linux 原生验证、公平/故障长测及双平台 BEAM 双门禁，MVP 未完成，见[验证记录](validation-string-slicing-2026-11-18.md)。
+
+[ADR-0125](adr/0125-streamed-resume-fairness-diagnostics.md)/[0126](adr/0126-bounded-resume-trace-retention.md) 推进第 5/7 项的持续观测：保留原始满额失败，以固定预算区分完整业务与不完整诊断。原生双平台、CPU 硬配额、过载分组、完整公平性分布与 BEAM 吞吐/整机内存仍未完成，不能以新的观测模式代替验收。
+
+[ADR-0124](adr/0124-bounded-scheduler-slice-observation.md) 推进第 5/7 项的观测来源：补齐步骤片实际恢复调用区间，保留原子让出事件的独立含义和默认关闭路径。仍需冻结长测协议、每 actor 饥饿检查、过载分组、CPU 硬配额与原生双平台门禁，不因诊断与有界 AOT 通过而完成 MVP。
+
+[ADR-0123](adr/0123-status-only-resource-rejection.md) 收敛第 4 项记录回复准入拒绝的错误存储，以共享状态路径避免丢弃 String；[实际验证](validation-quota-reply-2026-11-18.md) 不将一条路径减少分配当作完整账本或端到端性能完成。原生双平台及 BEAM 吞吐/整机内存仍独立验收，MVP 未完成。
+
+[ADR-0122](adr/0122-bounded-handler-lookup-diagnostics.md) 补第 4/6 项的宿主错误来源边界，修复满额账户下未知名字仍生成任意长错误的问题。真实回归见[记录](validation-handler-lookup-2026-11-18.md)，完整诊断/装载账本、原生双平台和同业务 BEAM 双目标仍待完成，MVP 未完成。
+
+[ADR-0121](adr/0121-persistent-cancellation-recovery.md) 为第 3/6 项补持续 Scheduler 中的超时/取消、stop 竞争和监督重启强度验证，一/双 worker 同容量复用。实际结果见[记录](validation-recovery-reuse-2026-11-18.md)；等价 BEAM 恢复、长时过载/服务 I/O、完整账本/内存和原生双平台仍独立验收，MVP 未完成。
+
+[ADR-0120](adr/0120-persistent-concurrent-failure-soak.md) 为第 6 项补持续环境中的双发送者失败前缀、槽复用和资源清理；显式 900 轮长测与普通三轮回归分开。它没有补齐长时超时/取消、自动重启强度与过载竞争，最新原生双平台及 BEAM 双目标仍须独立验收；[实际验证](validation-failure-soak-2026-11-18.md) 不改 MVP 未完成的状态。
+
+[ADR-0118](adr/0118-native-sync-storage-admission.md) 修复第 4 项根门闩与退出票据遗漏 macOS 原生同步后备存储的问题，准入后在共享发布前完成初始化。该缺口有修复前分配计数器失败证据；完整分配/装载账本、公平/过载/长时故障、原生双平台和 BEAM 双门禁仍待完成，MVP 未完成。
+
+[ADR-0117](adr/0117-streamed-cli-record-replies.md) 将第 4 项具名记录回复接入可运行 CLI，以固定遍历控制流式输出字段对象，仍只接受原标量 JSON 输入。完整分配/装载账本、公平/过载/长时故障、原生双平台与 BEAM 同负载吞吐/整机内存门禁仍待完成；实际验证见[CLI 记录输出记录](validation-cli-record-replies-2026-11-18.md)。
+
+[ADR-0116](adr/0116-bounded-named-record-replies.md) 补齐第 4 项具名记录的有界回复复制及异步完成重建；本机真实 AOT 已覆盖 worker 和 Scheduler。完整分配/装载账本、公平/过载/长时故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未通过，MVP 未完成，见[验证记录](validation-named-record-replies-2026-11-18.md)。
+
+[ADR-0115](adr/0115-typed-cross-thread-ingress.md) 推进第 3/4/5 项外部事件业务值：固定 ingress 支持类型化独立副本，保留标量入口拒绝、计费/GC/预算、有限准入与请求双端生命周期。仍无通用 reactor、完整分配/装载账本及长时/原生双平台同负载 BEAM 双门禁，MVP 未完成。
+
+[ADR-0114](adr/0114-scalar-process-account-binding.md) 推进第 4 项资源身份闭环：纯标量初始化后不能经直接换池或 detach/attach 改用其他账户，拒绝先于准入与业务，同账户迁移仍保留。原控制预留/ABI/限额不变；完整分配/装载账本、公平/过载/故障、最新原生双平台与同负载 BEAM 双门禁仍未完成，不能宣布 MVP 完成。
+
+[ADR-0113](adr/0113-bounded-named-record-message-expansion.md) 推进第 3/4 项具名记录单向/请求参数：源码名义类型、有界字段展开、计费目标重建与精确根，原 ABI/额度不变。完整资源账本、公平/过载/故障和最新原生双平台/BEAM 双门禁仍未完成。
+
+[ADR-0112](adr/0112-bounded-tcp-startup-evidence.md) 补第 5/6 项 TCP 启动验证的有界失败证据；原限复验和一次动态加载采样不构成间歇失败根因修复或 MVP 验收通过，见[记录](validation-tcp-startup-2026-11-17.md)。
+
+[ADR-0111](adr/0111-bounded-string-content-equality.md) 为第 4 项业务值补 String 完整内容 `==`/`!=`，保留分块预算/取消及精确根；ABI v21、旧产物重编译。具名记录传输、完整账本、公平/故障、最新原生双平台和同负载 BEAM 双门禁仍未完成。
+
+[ADR-0110](adr/0110-reproducible-bounded-workspace-validation.md) 把临时全目标测试运行器纳入仓库及原生双平台 CI，按固定 OS 限制实际执行并保留指纹/失败日志；只补验收可复现性，不把配置好的 CI 当作已取得最新平台结果，MVP 门槛不变。
+
+[ADR-0109](adr/0109-accounted-wakeup-endpoint-leases.md) 推进第 4/5 项，修复独立通知者与等待票据寿命分离导致的提前退账；显式计费 OS 端点与末通知者共同保留原额度。完整账本、公平/故障、最新原生双平台及同负载 BEAM 双门禁仍未完成，MVP 状态不变。
+
+[ADR-0108](adr/0108-bounded-named-record-values.md) 推进第 4 项：具名不可变记录接入本地/state/fn、嵌套精确根和计费布局表，源码 ABI v20。具名记录传输、完整资源账本、公平/过载/并发故障、最新原生双平台和同机同负载 BEAM 吞吐/整机内存双门禁仍未完成，不能宣布 MVP 完成。
+
+[ADR-0107](adr/0107-accounted-control-token-leases.md) 收敛第 4 项中的常驻控制原子与外部 token 生命周期：分配前准入、末 owner 归还，复现并修正 worker 销毁后存活标志无票据的问题。原生平台、完整账本、业务值、公平/故障及 BEAM 双门禁保持未完成，不扩大 MVP 范围或放宽限制。
+
+[ADR-0106](adr/0106-accounted-string-replies.md) 推进第 3/4 项，补 String 内容回复和匹配完成事件，不再通过 Bytes 回包替代文字类型。通用记录、完整资源账本、公平/过载/并发故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未完成；MVP 未完成。
+
+[ADR-0105](adr/0105-accounted-string-messages.md) 继续第 3/4 项，开放 String 语言/宿主参数的独立计费复制、混合载荷与请求输入。String 回复、通用记录、完整账本、长时公平/过载/故障、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍未完成，MVP 状态不变。
+
+[ADR-0104](adr/0104-bounded-string-literals.md) 继续第 4 项，为最小业务文字构造补有界 UTF-8 字面量及显式转义，源码 ABI v17；常量只读装载，执行时分块计费复制。String 消息/回复、通用记录、完整资源账本、公平/过载/故障、原生双平台与同负载 BEAM 双门禁仍待完成，不改变 MVP 门槛；本轮结果见[验证记录](validation-string-literals-2026-11-17.md)。
+
+[ADR-0103](adr/0103-accounted-utf8-string-values.md) 回到 MVP 第 4 项，补独立 UTF-8 String 的本地/状态/函数、分块转换/拼接/字符计数、精确 GC 和失败清理，源码 ABI v16。字符串字面量/消息/回复、通用记录、完整资源账本、长时公平/过载/并发故障、最新原生双平台及 BEAM 同负载吞吐/整机内存仍未完成。下一步优先补业务值交互与账本，不继续无归因优化；本切片不改变 MVP 验收门槛，验证见[记录](validation-string-values-2026-11-17.md)。
+
+[ADR-0102](adr/0102-opt-in-worker-lock-statistics.md) 推进第 5/6/7 项的局部诊断：先补可关闭的 worker 锁区间统计，为后续优化定位路径；不继续无归因地重试已回退方案。它不补齐完整 CPU/调度观测、业务值/账本、原生双平台或同负载 BEAM 双门禁，MVP 仍未完成。
+
+[ADR-0101](adr/0101-empty-language-request-maintenance.md) 的第 3/5/7 项空请求维护实验已因五对无稳定收益回退；当前源码恢复已提交基线，失败证据保留。M0/MVP、最新原生双平台及同负载 BEAM 双门禁仍未完成。
+
+[ADR-0100](adr/0100-coalesced-deadline-timer-notifications.md) 的第 5/7 项计时通知实验已回退，hot-queue 五对结果及候选退化保留；当前 timer 不变。后续应继续区分发生器迟发、OS 调度和受管执行开销，不能因局部功能通过宣布 M0/MVP 或双平台 BEAM 双目标达标。
+
+[ADR-0099](adr/0099-unready-result-poll-fast-path.md) 在第 3/7 项既有宿主结果表加入计费原子就绪快路径，只消除期限前未就绪轮询的全表加锁。性能须同业务配对比较，完整 MVP 和原生双平台 BEAM 双门禁仍未完成。
+
+[ADR-0098](adr/0098-accounted-byte-replies.md) 按第 3/4 项补齐有界 Bytes 回复、计费结果所有权及完成导入；具体证据见[验证记录](validation-2026-11-16.md)。字符串/通用记录、完整启动/装载资源账本、长时公平/过载/故障、最新原生双平台以及同负载 BEAM 吞吐/整机内存双门禁仍未完成，不能宣布 MVP 完成。
+
+[ADR-0097](adr/0097-accounted-int-list-replies.md) 按第 3/4 项补齐有界 IntList 回复、计费结果与完成导入，平台证据见[验证记录](validation-2026-11-15.md)；Bytes 回复由 ADR-0098 补齐，通用业务值、完整账本、公平/故障、原生双平台及 BEAM 双门禁保持未完成。
+
+[ADR-0096](adr/0096-copied-record-replies.md) 按第 3/4 项补齐 RecordInt 内容回复，具体平台证据见[验证记录](validation-2026-11-14.md)。Bytes 回复由 ADR-0098 补齐，通用记录回复、完整账本、公平/故障、原生双平台及 BEAM 双门禁仍未完成。
+
+[ADR-0095](adr/0095-typed-scalar-request-events.md) 按第 3 项补齐语言请求的既有标量回复和匹配完成签名，具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、完整业务值/账本、长时公平/故障、最新原生双平台及同负载 BEAM 双门禁不因此完成。
+
+[ADR-0094](adr/0094-typed-host-message-values.md) 按第 3/4 项补齐直接宿主向既有 RecordInt/IntList/Bytes 消息的类型化复制入口，保留原语法、ABI、合计上限及请求生命周期；具体平台证据见[验证记录](validation-2026-11-14.md)。引用回复、字符串/通用记录、完整账本、原生双平台及同负载 BEAM 双门禁仍未完成。
+
+[ADR-0093](adr/0093-scheduler-ready-before-park.md) 推进第 3/5 项，消除 Scheduler 空认领后已有本地就绪项仍进入有界等待的窗口，保留准入失败退避；非零请求期限竞争另有单测证据。长时公平性、完整业务值/账本、原生双平台及同负载 BEAM 双门禁仍未完成。
+
+[ADR-0092](adr/0092-concurrent-failure-counter.md) 推进第 3/6/7 项的双发送者并发失败对照，检查合法成功前缀、候选不提交和健康目标推进。此处不包含 timeout/cancel、重启或长时故障；完整业务值/账本、最新原生双平台与同负载 BEAM 双目标仍未完成。
+
+[ADR-0091](adr/0091-manifest-string-preflight.md) 推进第 4/6 项的产物错误来源边界，在原控制预算内预检字符串，消除已复现的长清单错误放大；其他错误来源/生命周期、完整业务值/账本和原生双平台 BEAM 门禁仍未完成。
+
+[ADR-0090](adr/0090-bounded-cli-reporting.md) 继续第 4/6 项的控制输出资源与失败诊断：帮助/诊断有独立预算、固定输出上限和断管处理；来源错误构造、可信启动存储、完整业务值/账本及原生双平台 BEAM 门禁仍待完成。
+
+[ADR-0089](adr/0089-bounded-cli-startup-arguments.md) 将第 4 项的 CLI 自有启动参数接入计费预留和数量/字节边界，保留原选项与业务额度；可信启动存储、来源错误构造、完整业务值/账本和原生双平台 BEAM 门禁仍待完成。
+
+[ADR-0088](adr/0088-owned-cli-stdio.md) 继续第 4 项，将业务 stdin/stdout 的独立描述符与固定缓冲接入原三级额度；可信启动存储、来源错误构造和完整宿主账本仍须收敛，原生双平台与 BEAM 双门禁不变。
+
+[ADR-0087](adr/0087-accounted-beam-workload-roots.md) 将第 7 项的六个对照驱动接入实际计费根，补新采集清理回执要求；原业务、额度、阶段时限与历史测量保持，原生双平台与性能/整机内存门禁仍须验收。
+
+[ADR-0086](adr/0086-accounted-cli-json.md) 推进第 4 项的 CLI 请求适配层计费和有界解析，保留原额度与协议正常路径；可信启动存储、来源错误构造及完整宿主账本仍须收敛，MVP 门槛不变。
+
+[ADR-0085](adr/0085-module-path-admission.md) 继续推进第 4 项：路径解析先准入原控制预算，库页追加失败完整回滚；原生双平台、完整账本与 BEAM 双门禁仍未完成。
+
+[ADR-0084](adr/0084-accounted-root-module-admission.md) 推进第 4 项，禁止计费根接收未计费工具模块；保持独立工具入口、资源上限和 MVP 验收门槛不变。
+
+[ADR-0083](adr/0083-accounted-module-execution.md) 推进第 4 项的模块执行绑定：计费模块禁止默认/显式未计费池与未绑定 process 池，镜像接回遵循相同校验。独立工具模块、完整业务值/账本、宿主适配层、公平性及原生双平台 BEAM 双门禁仍待完成，MVP 未完成。
+
+[ADR-0082](adr/0082-bounded-tcp-segments.md) 推进第 4/5 项 TCP 适配器的运行期缓冲边界：先复现原配置后增长，再增加 macOS 分段限制、逐次 I/O 检查及失败峰值诊断。原额度和时限不变；配置前内核占用、完整账本、公平性和原生双平台 BEAM 双门禁仍待验证，MVP 未完成。
+
+[ADR-0081](adr/0081-accounted-default-cli.md) 继续推进第 4 项，将 CLI 默认标量模式接入既有计费根、模块和单槽栈池，沿用堆模式 16 MiB 三级逻辑额度。JSON/标准 I/O 适配层、独立工具入口、完整业务值/账本、公平性和原生双平台 BEAM 双门禁仍待完成，MVP 未完成。
+
+[ADR-0080](adr/0080-central-execution-admission.md) 推进第 4 项所有计费执行入口的控制准入：补直接调用/初始化，删除 worker 重复预留并保留显式标量池。原控制容量 4352 字节、ABI v15 和预算不变；默认未计费工具入口、完整业务值/账本、公平性及原生双平台 BEAM 双门禁仍待完成，MVP 未完成。
+
+[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 推进第 4 项根/门闩控制存储：新增启动前计费根、强制其子节点准入，CLI 堆模式/TCP 清理回到存活根基线。旧工具入口、完整业务值/账本、长时公平性与原生双平台 BEAM 双门禁仍未完成，MVP 未完成。
+
+[ADR-0078](adr/0078-request-publisher-lifetimes.md) 修正第 3 项内部请求在超时/取消结果取走、完成事件入队或发起方退出后的提前回收；槽和请求票据保持到目标消息完成/清理。仍缺完整业务值/账本、长时公平性、CPU 硬配额、最新原生双平台与 BEAM 吞吐/整机内存双门禁，MVP 未完成。
+
+[ADR-0077](adr/0077-streamed-fairness-measurement.md) 为第 5/7 项接独立长时 CPU/突发心跳采样，保留原业务、255+1 pending 和短测边界。本机 30s/60s 五对及单独观测已完成；Wings 4/5、BEAM 5/5 通过尾延迟候选，但有 291 次队满、观测采样无数据，CPU 硬配额/过载分组/原生双平台仍不完整；MVP 未完成。
+
+[ADR-0076](adr/0076-accounted-byte-messages.md) 推进第 3/4 项的 Bytes 消息：单条合计 64 KiB、源/目标分别准入、发布时净转移、分块复制、入口根及取消/超时/失败清理。ABI v15 不改类型拼写。字符串/通用记录、引用回复、全部资源账本、长时公平性和原生双平台 BEAM 双门禁仍待完成，MVP 未完成。
+
+[ADR-0075](adr/0075-platform-memory-observation.md) 补第 7 项的 Linux PSS/macOS physical footprint 与主机压缩/swap 原始采样，保留身份/错误/缺失与监测成本。平台口径不混算，仍非完整整机内存、CPU 硬配额、原生双平台或 BEAM 双门禁验收，MVP 未完成。
+
+[ADR-0074](adr/0074-bounded-concurrent-recovery.md) 补第 3/6 项的一/双 worker 有界并发取消/超时、排队保留、stop 竞争、候选 GC/旧提交状态与全新重启回归。仍未覆盖所有故障交错、完整业务值/账本、长时公平性和原生双平台 BEAM 双门禁，MVP 未完成。
+
+[ADR-0073](adr/0073-reusable-initializer-stack-pool.md) 针对 Linux 隔离仿真大容量启动的原 3 秒失败，增加宿主显式复用计费初始化池。v2 的 actor 数、状态、窗口、配额与所有 deadline 保持不变，完整回归结果见验证记录；此资源复用不替代原生双平台、完整业务值/账本和 BEAM 吞吐/整机内存门禁，MVP 未完成。
+
+v5/v6 开环随后接入相同一槽显式池，池创建仍计入原阶段，业务到达和清理核对保持完整。阶段探针定位重复 mapping 成本，但启动早期的旧版/复用版失败均保留，不能从消除该成本推出全部超时或原生性能门禁已解决。
+
+[ADR-0072](adr/0072-scheduler-yield-observation.md) 接入第 5 项的可选 Scheduler timer 请求/真实返回观测、有限 FIFO 与完整丢样/清除计数，默认关闭。v7 原业务的独立 `--observe` 不提高步骤片或 quantum 来凑样本；仍缺长时公平性、诊断开销/样本完整性、CPU/平台内存和原生双平台门禁，MVP 未完成。
+
+[ADR-0071](adr/0071-observed-atomic-yield.md) 补可选计费的原子请求/真实 coroutine 返回时间原语及独立 AOT 回归。默认不增加时钟/诊断锁，仍未接为完整 Scheduler 让出统计；长时公平性、样本覆盖与开销、CPU/平台内存和原生双平台门禁继续推进，MVP 未完成。
+
+[ADR-0070](adr/0070-bounded-fairness-heartbeats.md) 接入 fairness 行的短时 CPU/突发心跳业务前置，保留百万次 checked 加法、101×256 B、mailbox 1、原每 actor 10ms 心跳；不以低频或标量 state 替代。OS 单核硬配额、长时公平性、独立让出延迟和原生双平台仍未完成，不能据功能回归宣布 MVP 达标。
+
+[ADR-0069](adr/0069-streamed-open-loop-measurement.md) 新增长时开环测量入口，固定 30s/60s/五次配对重复，不缩短验收；原始事件、离线精确分位及进程树 RSS 仍非完整性能门禁。CPU 硬配额、平台完整内存、fairness、故障竞争、完整业务值/账本和最新原生双平台继续推进，MVP 未完成。
+
+[ADR-0068](adr/0068-bounded-open-loop-counter.md) 补四组代表负载的短时计划开环，保留迟发、拒绝、超时及迟到实际回复，核对最终提交与有界 pending；不是长时性能验收。预热 30 秒/采样 60 秒/五次重复、饱和扫描、fairness、并发失败竞争、完整业务值/账本、最新原生双平台与同负载吞吐/整机内存双门禁仍未完成。
+
+[ADR-0067](adr/0067-beam-bounded-admission.md) 补齐可信 BEAM 发送前有限准入/开始归还/关闭，在 1/100/256 满队列及健康 actor 上与 Wings 做有界正确性对照；不绕开原热点 mailbox 100。开环、并发失败/超时、热点/公平性、完整业务值/账本、最新原生双平台和 BEAM 吞吐/整机内存门禁仍待验收。
+
+[ADR-0066](adr/0066-bounded-scheduler-mailbox-capacity.md) 补 hot-queue 所需的 mailbox 100 准入前置，Scheduler 可配置上限 256，保留固定槽计费/拒绝/活栈与取消清理。BEAM 有限准入正确性见 ADR-0067；开环采样及热点/公平性双门禁仍待推进，不能因可排满 100 条就宣称性能或 MVP 达标。
+
+[ADR-0065](adr/0065-two-sender-counter-fifo.md) 补齐安全加法 Counter 的两个真实发送者、各自 FIFO 与合法交错正确性；不是跨发送者全序，也不覆盖并发失败/过载/超时。闭环功能通过仍不能跳过完整业务值/资源账本、开环/热点/公平性、最新原生双平台及同负载 BEAM 吞吐/整机内存门禁。
+
+[ADR-0064](adr/0064-indexed-supervisor-slots.md) 消除监督批量创建/查询/停止的容量扫描，针对多 actor Linux 隔离仿真的 3 秒失败补充回归；poll 仍为固定容量扫描。M0/MVP、原生双平台和同业务 BEAM 双目标门槛不变。
+
+[ADR-0063](adr/0063-multi-actor-byte-counter.md) 补齐代表性 actor 数量的完整 Bytes Counter 闭环正确性：三端核对各目标状态/FIFO/失败与清理，未改变 ABI 或语法。安全加法双发送者见 ADR-0065；开环/热点/公平性、完整业务值/资源账本、最新原生双平台及同负载 BEAM 吞吐/整机内存双门禁仍待推进，MVP 未完成。
+
+[ADR-0062](adr/0062-sparse-ready-scheduler.md) 去除全 actor 派发与本地空执行槽扫描，使用固定 intrusive 就绪 FIFO、本地活栈 FIFO 和空槽链；actor 容量扩至 16384，请求表各最多 256 不变。1000/10000 actor 标量稀疏功能探测接入完整受限 AOT，完整 Bytes 多 actor 正确性见 ADR-0063；开环/热点/公平性、自适应负载、原生最新双平台及 BEAM 吞吐/整机内存双门禁仍待推进，不因容量可创建而称 MVP 完成。
+
+[ADR-0061](adr/0061-on-demand-scheduler-stacks.md) 消除逐 worker 全 actor 容量的空闲栈映射，保留完整单栈/guard 及借入前三级准入、活栈线程固定和最多两个已返回栈的缓存。冷启动准入失败仍保留原 FIFO，额度释放后重试；未降低同时活栈上限。后续扫描/容量由 ADR-0062 改进，逻辑预留减少不替代代表性同业务 BEAM 吞吐/整机内存门禁。
+
+[ADR-0060](adr/0060-shared-scheduler-reply-table.md) 先消除多 actor 空闲元数据的重复宿主结果表，固定实例总容量并保留逐目标三级请求计费；有界密度探测接入完整 AOT 回归。后续栈安排及扫描/容量由 ADR-0061/0062 改进，不据此宣布 M:N、M0 或 MVP 完成。
+
+[ADR-0059](adr/0059-byte-state-counter-equivalence.md) 接入 Wings/BEAM v1 的同协议正确性对照：真实固定字节 state、有限异步请求窗口、FIFO、checked i64、失败退出与清理，不再用标量/列表替代业务。独立模型与真实 OTP 结果另行核对，未完成多 actor/开环、热点/公平性、原生双平台最新 CI 或同负载性能/整机内存门禁，MVP 状态不变。
+
+[ADR-0058](adr/0058-byte-i64-big-endian-access.md) 为固定字节 state 增加完整 i64 大端读写，避免业务以多次整对象单字节复制模拟一次更新。ABI v14，沿原根/预算/额度契约；后续仍需真正的异步窗口、失败退出、BEAM 同协议及双平台性能/内存验证，不提前提高里程碑状态。
+
+[ADR-0057](adr/0057-accounted-immutable-bytes.md) 推进第 4 项的实际字节状态：0..=64 KiB 不可变 Bytes、精确叶节点 GC、原账户数据预留、分块构造/复制、取消清理与迁移/监督回归。ABI v13，旧产物重编译，语法大小写不变。Bytes 消息另由 ADR-0076 接入；字符串、通用记录、引用回复、全部资源账本及原生双平台/同业务 BEAM 双目标仍待完成，不改变 M0/MVP 验收门槛。
+
+[ADR-0056](adr/0056-multi-worker-supervision.md) 接入第 6 项的宿主有界 one-for-one 恢复：独立终态交接、全新实例、有限滚动强度与失败回滚。依赖宿主 poll，不覆盖语言监督、link/monitor 或可靠日志；原生最新双平台、完整资源/业务值和同负载 BEAM 双目标仍待验收，MVP 状态不变。
+
+[ADR-0055](adr/0055-multi-worker-exit-diagnostics.md) 补第 6 项的跨 worker 最近失败定位，不保留旧堆/栈/账户，也不把可覆盖缓存当可靠恢复事件。有界终态交接与宿主恢复由 ADR-0056 独立接入；该切片不改变 MVP 验收门槛。
+
+[ADR-0054](adr/0054-bounded-multi-worker-scheduler.md) 实现第 5 项的有界 M:N 集成切片：稳定 Pid、唯一活栈 owner、返回后迁移和跨 worker 语言消息/请求。初始扫描/容量由 ADR-0062 替代，仍无自适应窃取；宿主监督集成见 ADR-0056。原生双平台最新验证、完整资源与业务值和同负载 BEAM 双目标仍是独立门禁，不能据此宣布 M0/MVP 完成。
+
+[ADR-0053](adr/0053-detached-process-images.md) 提供无活栈进程镜像的独占线程转交，验证原 state/堆/额度在目标同账户栈池继续执行；镜像本身不携带 worker Pid/mailbox/request，不转交挂起活栈。调度集成由 ADR-0054 扩展，完整第 5 项仍未验收。
+
+[ADR-0052](adr/0052-cross-thread-module-leases.md) 去除计费模块 Rc 租约的原线程限制，只读模块/handler 自动 Send/Sync，可供不同线程创建的独立 worker 共享；该模块切片本身没有 actor 唯一执行权转移，调度另由 ADR-0054 接入，不提前改变第 5 项整体验收状态。
+
+[ADR-0051](adr/0051-bounded-int-list-messages.md) 接入 ABI v12 的有界 IntList 消息、源遍历检查与目标重建根：每消息合计最多 64 个整数元素，不是任意业务图或引用回复。该切片须独立执行各平台回归，旧 Linux 记录不覆盖此变更；M:N、完整业务值及同业务 BEAM 双目标仍未验收。
+
+[2026-11-13 验证记录](validation-2026-11-13.md) 保存 Linux x86-64 隔离仿真功能证据：`6e390af` 的 release 独立测试与 AOT 全回归通过；较早源码的 debug AOT 大型编译触及既有 CPU 上限，未重标成功。原生双平台和 BEAM 门禁仍未完成，不放宽既有资源限制。
+
+[ADR-0050](adr/0050-account-node-admission.md) 接入子账户节点的父路径预留与末持有者清理，worker 默认计费进程账户；[ADR-0079](adr/0079-accounted-vm-bootstrap.md) 接入根/门闩计费入口。旧工具树、执行入口统一及 allocator/动态装载器内部开销仍未闭环，M1 与 MVP 资源门禁仍未完成。
+
+[ADR-0049](adr/0049-record-message-copies.md) 接入 ABI v11 的 RecordInt 语言消息复制、目标入口根及整数请求参数，列表消息由 ADR-0051 扩展，现有 RecordInt/IntList/Bytes 回复由 ADR-0096–0098 补充；通用业务值、完整 M:N 和 M0/M1 及同业务 BEAM 双目标门禁仍未完成。
+
+[ADR-0048](adr/0048-bounded-loopback-service.md) 增加真实 loopback TCP Counter 验证示例，有界连接/帧/截止时间及预算清理；单适配线程、Int state 尚不等价于 BEAM 状态/到达负载。外部 I/O 已从原语推进至可运行示例，完整服务公平性、M:N 和双平台性能/内存仍未验收。
+
+[ADR-0047](adr/0047-cross-thread-ingress-requests.md) 为外部有界入口增加 Int/Bool/Unit 请求结果与双端清理；受限适配器由 ADR-0048 验证，通用业务值、M:N 与同业务服务的双平台性能门禁仍须完成。
+
+[ADR-0045](adr/0045-concurrent-resource-admission.md) 使三级账户和票据可跨线程提交/转移/归还；VM 共享锁是正确性基线，有界入口由 ADR-0046 接入，仍无 actor 迁移或 M:N 调度，不降低 MVP 公平性与性能门槛。
+
+[ADR-0044](adr/0044-native-module-leases.md) 修复模块永久泄留，增加 VM 级加载预算、代码租约和归属检查；旧不计费工具入口、allocator/动态装载器内部开销仍不在完整资源门禁内，M1 与 MVP 尚未完成。
+
+[ADR-0043](adr/0043-chunked-runtime-gc.md) 接入 16 节点/根的 GC 工作块、runtime 预算/取消和原栈暂停；模块加载、allocator 与其他长操作仍须分别审计，不等于所有 runtime 操作已满足公平性或 M0 完成。
+
+[ADR-0042](adr/0042-managed-function-frames.md) 用非递归受管函数帧替代完全内联，接入逐帧剩余栈检查与跨帧精确根；递归/动态派发、完整业务值、外部 I/O、M:N 和双平台业务/性能门禁仍未完成。
+
+[ADR-0041](adr/0041-worker-deadline-parking.md) 将 OS 等待接到单 worker 空闲检查与请求 deadline；ADR-0046 增加有界标量入口，完整 I/O reactor 和 M:N 仍未实现，不降低 MVP 门槛。
+
+[ADR-0040](adr/0040-language-request-events.md) 接入有界异步整数请求事件；一般回复类型、关联 state、自动 OS 事件泵与双平台门禁尚未完成，保留完整 MVP 门槛。
+
+[ADR-0039](adr/0039-local-process-capabilities.md) 接入同 worker 同模块创建与单向发送；Pid 暂不跨 state/消息，异步整数请求另见 ADR-0040，跨 worker 迁移与完整业务值仍未完成，不降低 MVP 门槛。
+
+[ADR-0038](adr/0038-self-send-effects.md) 先验证语言自发送的调用点副作用与计费，ABI v8；同模块创建/发送由 ADR-0039 扩展，异步整数请求另见 ADR-0040，引用消息仍须完成，不降低 MVP 门槛。
+
+[ADR-0037](adr/0037-immutable-int-lists.md) 增加有界不可变 IntList 及传递根，ABI v7；字符串、通用记录、引用消息和三级账本全覆盖仍未完成，不降低 MVP 门槛。
+
+[ADR-0036](adr/0036-bounded-inline-functions.md) 先开放有界内联 fn，后端已由 ADR-0042 的真实受管帧替代；完整 M0 仍未完成，不跳过语言消息、业务值、外部事件与双平台 BEAM 门槛。
+
+失败定位按 [ADR-0035](adr/0035-bounded-exit-diagnostics.md) 增加 ABI 故障分类及单槽最近退出快照；仍无跨线程聚合、历史或语言级监督，不把宿主诊断视为完整 MVP。
+
+[ADR-0034](adr/0034-record-state-loops.md) 补充唯一 RecordInt state 的循环根证明，不开放任意引用 phi，也不跳过双平台及完整 M0 门槛；有界源码函数另见 ADR-0036。
+
+宿主诊断先按 [ADR-0032](adr/0032-safe-point-diagnostics.md) 暴露单 worker 最近安全点的预算/堆统计；跨线程、故障历史与完整可试用诊断仍在 MVP 门槛内。
+
+M0/M1 后续切片 [ADR-0027](adr/0027-persistent-record-state.md) 开放有界 RecordInt 持久状态；不改变 MVP 门槛，引用消息、业务控制流、完整语言消息交互、真实 I/O、M:N 及双平台 BEAM 对照仍须完成。
+
+宿主恢复切片 [ADR-0028](adr/0028-supervised-record-heaps.md) 接入带堆进程的显式配置与全新状态重建，不替代语言监督或完整诊断门槛。
+
+M0 条件控制流按 [ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 验证标量/RecordInt 惰性合流与路径根；任意引用 phi、递归及动态派发仍需独立设计与根/栈证明。
+
+条件输入补充 [ADR-0030](adr/0030-scalar-comparisons.md) 的标量比较，不改变后续循环、完整受管执行和双平台性能门槛。
+
+回边执行按 [ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 验证唯一标量/RecordInt state 的 while，不因此开放任意引用 phi、动态调用或宣称 M0 完成。
+
 [文档目录](../docs.md) · [项目概览](../README.md)
 
 ## 风险登记
@@ -23,9 +261,15 @@
 
 ## 里程碑
 
-当前处于 M0：已有前端与单文件 LSP，并接入无循环、无业务堆分配的标量 AOT 原型。macOS AArch64 与 Linux x86-64 均已通过 Counter 编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)。safepoint、精确根、活栈切换、OS 唤醒与 BEAM 基线仍未完成，不能将标量示例可执行视为 M0 已通过。原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+[ADR-0046](adr/0046-bounded-cross-thread-ingress.md) 接入单 actor 单入口的有界计费跨线程发送与 OS 通知租约，仍由原 worker 执行业务；不代表 M:N、真实服务或完整外部 I/O 验收。
 
-`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码按 [ADR-0010](adr/0010-scalar-execution-control.md) 增加逐 IR 原子取消检查与执行预算，先验证无 unwind 的终止路径；它不是让出恢复，完整 safepoint、根链与活栈验证仍是下一步，不扩展语言语法或调度规模。
+当前处于 M0：已有前端与单文件 LSP，AOT 已从原始标量切片扩展至有界记录/IntList、非递归 fn 调用帧、条件表达式、比较和标量/RecordInt state while。历史标量 Counter 在 macOS AArch64 与 Linux x86-64 均通过编译、链接、可信装载、连续状态调用及错误边界的 [CI 验证](https://github.com/wsafight/wings/actions/runs/43089909858)，不覆盖后续扩展。完整 safepoint、全部业务根、跨线程切换、外部 OS 事件集成与 BEAM 基线仍未完成，不能视为 M0 已通过。原始原型范围见 [ADR-0009](adr/0009-scalar-aot-prototype.md)。
+
+`0.0.2` 的十个包均已发布，此后专注开发，不安排新版本。未发布源码已有取消/总预算、原栈恢复、[剩余栈检查](adr/0024-scalar-stack-boundary.md) 和有限宿主 worker/消息/请求/监督；[ADR-0025](adr/0025-aot-record-roots.md) 接入 compiler 精确根及进程计费 GC，[ADR-0026](adr/0026-language-temporary-records.md) 开放受限记录内建，[ADR-0027](adr/0027-persistent-record-state.md) 升至 ABI v6、开放持久 RecordInt 状态，[ADR-0029](adr/0029-scalar-conditional-expressions.md) 与 [ADR-0033](adr/0033-record-conditional-roots.md) 增加标量/记录分支，[ADR-0031](adr/0031-scalar-state-loops.md) 与 [ADR-0034](adr/0034-record-state-loops.md) 增加有预算回边，[ADR-0042](adr/0042-managed-function-frames.md) 将源码函数接到真实受管帧。已有 RecordInt 复制消息/入口根，列表消息根由 ADR-0051 接入，列表/字节回复由 ADR-0097/0098 接入；[ADR-0149](adr/0149-cfg-reference-root-plan.md) 将既有结构化控制流的根集合计算统一为内部 CFG 边 phi 与反向 liveness，但没有新增源码/IR phi 指令，仍未开放递归或动态派发，不等于完整 safepoint/GC 或 M0 验证。
+
+资源方面，[ADR-0014](adr/0014-resource-reservations.md) 的三级四维账户附带预留、转移、Drop 守恒的[有界确定性回归](evaluation.md#独立资源账户回归)，[ADR-0045](adr/0045-concurrent-resource-admission.md) 增加同 VM 门闩下的跨线程原子准入、净转移和票据归还。独立记录堆、根表及宿主 worker 的活栈、mailbox、请求表已接入容量准入，[ADR-0044](adr/0044-native-module-leases.md) 增加共享模块租约及 VM 级加载预算；完整业务堆、allocator 元数据和外部 I/O 仍未覆盖，线程安全账本也不等于 M:N 或 M1 三级计费完成。后续须逐项在真实分配前准入、失败回滚并与资源同寿命清理。
+
+[ADR-0015](adr/0015-owned-scalar-tasks.md) 的 owned 执行槽只是后续进程表的所有权前置，不改变下述 MVP 的阶段顺序或验收门槛。
 
 - **M0：双平台执行模型与 BEAM 基线。** 在 macOS AArch64 与 Linux x86-64 选定代表性负载，固定 BEAM 版本与配置、性能和内存验收协议。确定产物格式、入口、启动与退出约定、对外 I/O 范围及受管契约。完成两个平台的 Cranelift AOT + safepoint + shadow stack + 切换恢复原型，验证链接、程序装载和 `kqueue`/`epoll` 唤醒。
 - **M1：单 worker 的最小实现与内存账本。** 在两个首要平台交付 VM 与编译工具，包含最小语言、逻辑独立 arena、有限 inbox、非移动精确 GC、栈限额和三级计费。最小程序要能编译运行，消息和状态正确，局部超限返回受管错误，失败后不泄漏。按平台发布内存账本和同状态 BEAM 对照，优先试验紧凑 PCB、内联值与分配快路径，同时交付基础诊断。
@@ -38,7 +282,45 @@
 
 工具链与上述阶段同步推进：M0 确定 workspace 边界和可查询的容错前端；M1 提供 `wings-vm`、`wings-compile` 与首版 `wings-lsp`，支持文档同步、诊断、跳转、悬停和基础补全；M2 起完善增量分析与取消，再扩展引用查找、重命名和语义高亮。详细拆分见 [Crate 设计](crates.md)，已采纳的选择见 [ADR](adr/README.md)。
 
-下一步是 M0 最小原型与 BEAM 基线测试。性能和内存目标未验证前，不扩展语言语法、平台数量或热更新范围。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
+下一步继续 M0 执行/根边界与 BEAM 基线测试；语言扩展只接入完成契约和验证的必要切片，不同时铺开可选语法、平台或热更新。持续无法达标时，缩小场景或停止开发，受管契约不能为性能数字让步。
+
+OS 唤醒按 [ADR-0016](adr/0016-worker-wakeup.md) 提供独立等待/通知接口，平台实现分别采用 kqueue 与 epoll/eventfd；[ADR-0041](adr/0041-worker-deadline-parking.md) 已接入 worker 就绪重查和请求 deadline，ADR-0046/0047 增加外部有界标量 ingress/结果，ADR-0048 验证有限 loopback I/O。各平台须验证最新源码，不替代完整 M0 与 BEAM 负载冻结门槛。
+
+## MVP 范围与开发顺序
+
+[ADR-0020](adr/0020-single-worker-mailbox.md) 提供宿主单 worker、generation Pid、有限 mailbox 与手动时间片轮转，过程/消息/活栈先准入再执行；[ADR-0021](adr/0021-bounded-requests.md) 补充固定表的异步 request/reply、deadline 和取消。它的语言自发送/同模块创建与发送另见 ADR-0038/0039，异步整数请求由 ADR-0040 扩展，真实 I/O 尚未接入，也不跳过 compiler 根和动态栈门槛，不能把宿主消息演示称为完整 MVP。
+
+[ADR-0022](adr/0022-worker-deadline-preemption.md) 可选在 worker 执行 deadline 到达后请求原子让出，仍由原线程强制检查点恢复/挂起；默认无计时线程。ADR-0031 补充标量循环中的计时请求与有限轮转回归，但仍不覆盖 runtime 长操作、真实服务尾延迟、M:N 唯一执行权或迁移。
+
+[ADR-0023](adr/0023-bounded-host-supervision.md) 提供第 6 项的宿主 one-for-one 恢复前置：新实例重启、滚动窗口强度上限、旧请求终结和结构化退出事件。[ADR-0032](adr/0032-safe-point-diagnostics.md) 补充最近安全点 GC/预算快照；尚无语言级监督、link/monitor 或跨线程/故障历史诊断，不跳过 M0/M1 或性能门禁。
+
+[ADR-0018](adr/0018-bounded-record-heap.md) 先验证 Rust 侧不可变定长记录、精确 mark-sweep 和作用域根表；[ADR-0025](adr/0025-aot-record-roots.md) 增加 AOT 临时引用的根发布与堆所有权闭环；[ADR-0026](adr/0026-language-temporary-records.md) 将局部 RecordInt 接入语言/CLI/worker，堆与执行栈保持同 process 计费；[ADR-0027](adr/0027-persistent-record-state.md) 增加已提交状态根与候选出口保活。容量构造前三级准入，RecordInt/IntList/Bytes 消息根按 ADR-0049/0051/0076 接入，对应回复由 ADR-0096–0098 补充；通用业务值尚未集成，不视为完整 GC 或 M0 精确根验收完成。
+
+BEAM 对照已固化 [v1–v10 协议与代表负载](beam-workloads.md)：ADR-0059 接入单 actor，ADR-0063 增加三种完整 Bytes 状态的代表性多 actor 数量，显式三端核对 i64、每目标 FIFO、独立失败退出和旧提交值；ADR-0065 增加安全加法下两个真实发送者的各自 FIFO/合法交错，ADR-0067 增加有限准入/满队列关闭，ADR-0068 增加短时计划开环，ADR-0069 增加独立长时采样入口，ADR-0070/0077 增加同 worker CPU/突发心跳短时业务及独立长测，ADR-0092 补双发送者并发失败前缀，ADR-0120 补持续环境的失败生命周期。正确性和部分测量仍不等同完整基线；长时取消/超时/自动恢复与过载竞争、CPU/平台内存口径和双平台性能门禁尚未完成。
+
+[ADR-0017](adr/0017-scalar-frame-admission.md) 限制当前标量业务帧，64 KiB 以上在写产物前拒绝；[ADR-0024](adr/0024-scalar-stack-boundary.md) 增加薄入口的实际剩余空间检查，栈不足正常返回受管错误。同步与 initializer 也使用有界池，worker 初始化先准入且失败回滚。源码调用按 ADR-0042 逐帧检查，仍依赖固定可信慢路径余量，不包含递归；compiler 根链见 ADR-0025 与 ADR-0042。表中第 2 项与 M0 尚未完成。
+
+MVP 指可在单机、小范围试用的微进程系统，不是 Counter 能运行或包已经发布。它取 M0/M1 的完整执行与资源边界、M2 的公平调度与对照验证，以及 M4 的最小恢复和诊断；不等于 M0–M4 全部能力一次交付。第 1 项已有实现并通过历史双平台 debug/release CI；第 4 项已推进至计费字符串与具名记录交互，具名记录回复已有本机 AOT 功能验证，但完整分配/装载账本仍待闭环。
+
+[ADR-0128](adr/0128-native-module-image-admission.md) 为第 4 项补充动态装载前的有界映像跨度准入，包含原生页取整、零填充和段间空洞，保持文件/执行/账户上限。它不覆盖装载器、依赖库和 allocator 内部成本，不替代最新原生双平台、完整资源账本或第 7 项 BEAM 双目标验收。
+
+[ADR-0129](adr/0129-native-module-dependency-boundary.md) 收紧第 4 项的旁加载边界：计费模块拒绝除固定系统运行库外的原生依赖及加载重定向，避免单库预算下隐式引入任意映像。保留可信宿主前提；并不完成装载器/allocator 内存计量或 MVP 门禁。
+
+[ADR-0130](adr/0130-readonly-cgroup-cpu-quota-observation.md) 为第 5/7 项补 Linux 整测量作业 CPU 条件入口，只读核对预配置独占 cgroup v2，原业务/配额/时段/重复不变。本机仅验证格式、变化、失败保留与 macOS 早拒绝；仍缺原生 Linux 节流和两端完整复验，不移除 CPU 或其他 MVP 缺失门禁。
+
+| 顺序 | 技术切片 | 最小验收 |
+|---|---|---|
+| 1 | 同线程活栈让出与恢复 | 生成代码在强制检查点让出；保留原栈和活跃值；取消、丢弃挂起调用不跨 ABI unwind，不重放 handler |
+| 2 | 完成受管执行与 M0 | shadow stack、根发布、栈限额、双平台 OS 唤醒；先限定栈与堆，再开放必要的控制流、函数及分块内建；同时冻结 BEAM 负载与测量口径 |
+| 3 | 单 worker 多进程与有限 mailbox | spawn、send、异步 request/reply、超时；唯一执行权、FIFO 的明确范围、队列满显式失败、无饿死；副作用不随 handler 失败回滚 |
+| 4 | 业务值、GC 与三级资源账本 | 最小字符串/记录等业务值、每进程逻辑 arena、非移动精确 GC；堆、栈、消息、请求表在分配前准入，失败回滚预留，退出完整清理 |
+| 5 | 公平调度与外部事件 | 计时线程原子请求让出、长操作有界；先验收单 worker，再验证 M:N 唯一执行权/迁移；用受限 I/O 适配器跑一个真实服务场景 |
+| 6 | 最小故障恢复与诊断 | 退出原因、受控重启及重启强度上限；定位队列、预算、GC 和 handler 失败；不承诺完整 OTP 兼容 |
+| 7 | 双平台业务与性能门禁 | 在各平台同机同负载对照 BEAM，吞吐与内存两项目标同时验证；含尾延迟、清理、过载与受限子进程故障测试，不用单项微基准替代 |
+
+工程上先完成 1–4，得到单 worker 内部演示；只有 5–7 的边界和采用价值也得到验证后，才称为可试用 MVP。性能或内存目标未达成时保留结果、缩小适用负载或停止，不因功能齐全就宣布达标。
+
+暂不纳入 MVP：热更新、冬眠、分布式、不可信原生扩展、额外平台、完整 OTP、完整 IDE 重构能力。已发布 `0.0.2` 不变；在 `feat/mvp` 按可验证技术切片多次提交，不为每个切片发布 crate。活栈切片的契约见 [ADR-0011](adr/0011-scalar-stackful-resume.md)。
 
 ## 相关文档
 

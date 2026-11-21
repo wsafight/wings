@@ -1,0 +1,16 @@
+actor BeamMultiCounter {
+  state data = bytes::fill(256, 0)
+
+  on configure(length: int, initial: int, identity: int) -> int {
+    let empty = bytes::fill(length, 0)
+    let identified = empty.set_i64(8, identity)
+    data = identified.set_i64(0, initial)
+    data.i64_at(0)
+  }
+
+  on apply(sequence: int, operation: int, delta: int, reserved: int) -> int {
+    let next = data.i64_at(0) + delta
+    data = data.set_i64(0, next)
+    if operation == 2 { 1 / 0 } else { data.i64_at(0) }
+  }
+}

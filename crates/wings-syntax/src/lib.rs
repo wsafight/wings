@@ -1,6 +1,7 @@
 pub mod ast;
 mod lexer;
 mod parser;
+mod string;
 
 pub use lexer::{Token, TokenKind, lex};
 use wings_source::{Diagnostic, Span};

@@ -1,0 +1,85 @@
+actor ListMessages {
+  struct Boxed { value: int }
+  state saved: [int] = []
+
+  on start(value: int, fail: bool) -> int {
+    let child = spawn()
+    let message = [value, value + 1]
+    child ! store(message)
+    gc()
+    if fail { 1 / 0 } else { message.head() }
+  }
+
+  on self_msg(value: int) -> int {
+    let message = [value, value + 1]
+    self ! store(message)
+    gc()
+    message.head()
+  }
+
+  on ask(value: int) -> int {
+    let child = spawn()
+    let id = child.ask(compute([value, value + 1]), timeout: 60000, then: completed)
+    if saved.is_empty() { -1 } else { saved.head() }
+  }
+
+  on mixed(value: int) -> int {
+    let child = spawn()
+    let message = [value, value + 1]
+    child ! store_mixed(message, true, Boxed(value + 2), message.tail(), [])
+    value
+  }
+
+  on fill(count: int, twice: bool) -> int {
+    saved = []
+    while if saved.is_empty() { count > 0 } else { saved.head() < count } {
+      saved = [if saved.is_empty() { 1 } else { saved.head() + 1 }, ..saved]
+    }
+    let child = spawn()
+    if twice { child ! store_both(saved, saved) } else { child ! store(saved) }
+    count
+  }
+
+  on empty -> int { self ! store([]); 0 }
+
+  on prepare(count: int) -> int {
+    saved = []
+    while if saved.is_empty() { count > 0 } else { saved.head() < count } {
+      saved = [if saved.is_empty() { 1 } else { saved.head() + 1 }, ..saved]
+    }
+    count
+  }
+
+  on copy -> int { let child = spawn(); child ! store(saved); saved.head() }
+
+  on store(value: [int]) { gc(); saved = value; gc() }
+
+  on store_both(first: [int], second: [int]) {
+    gc()
+    saved = if first.head() == second.head() { second } else { [] }
+    gc()
+  }
+
+  on store_mixed(first: [int], flag: bool, record: Boxed, second: [int], empty: [int]) {
+    gc()
+    saved = [first.head() + second.head() + record.value
+      + if flag { 1 } else { 0 } + if empty.is_empty() { 0 } else { 100 }, ..empty]
+    gc()
+  }
+
+  on compute(value: [int]) -> int {
+    gc()
+    value.head() + value.tail().head()
+  }
+
+  on reply completed(id: req, status: int, value: int) {
+    saved = [status * 100 + value]
+  }
+
+  on read -> int { gc(); if saved.is_empty() { -1 } else { saved.head() } }
+  on next -> int {
+    gc()
+    let rest = if saved.is_empty() { saved } else { saved.tail() }
+    if rest.is_empty() { -1 } else { rest.head() }
+  }
+}

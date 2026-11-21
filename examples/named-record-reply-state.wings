@@ -1,0 +1,16 @@
+actor NamedRecordReplyState {
+  struct Boxed { value: int }
+  struct Reply { text: str, saved: Boxed }
+  state data: Reply = Reply("saved", Boxed(7))
+
+  on current -> Reply { gc(); data }
+  on read -> int { data.text.len() + data.saved.value }
+  on start -> int {
+    let target = spawn()
+    target.ask(current, timeout: 1000, then: done)
+    9
+  }
+  on reply done(id: req, status: int, value: Reply) {
+    data = value
+  }
+}

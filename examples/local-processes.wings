@@ -1,0 +1,19 @@
+actor LocalProcesses {
+  fn identity(pid: pid) -> pid { pid }
+  state count = 0
+  on start(value: int, fail: bool) -> int {
+    let child = identity(spawn());
+    child ! add(value);
+    count = 9;
+    count / if fail { 0 } else { 1 }
+  }
+  on me(value: int) -> int { self ! add(value); count }
+  on choose(flag: bool) -> int {
+    let me = self;
+    let child = spawn();
+    (if flag { me } else { child }) ! add(7);
+    count
+  }
+  on add(value: int) { count = count + value }
+  on read -> int { count }
+}

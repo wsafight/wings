@@ -68,7 +68,7 @@ crates.io 没有独立的项目创建或名称预留步骤，首次成功发布�
 
 2026-11-12，全部十个包依照上述顺序完成 dry-run、归档检查、独立构建与实际上传。归档对应 [PR #1](https://github.com/wsafight/wings/pull/1) 合并后的干净源码提交 `58dc9073ae17162375de0b666764170a19938750`。已检查各包许可证、仓库地址、源码提交和内部依赖版本；crates.io API 复核十个版本均为 `0.0.2`、所有者为 `wsafight`、许可证为 `Apache-2.0`，且未撤回，内部依赖均为注册表上的 `^0.0.2`。
 
-[发布 PR 检查](https://github.com/wsafight/wings/actions/runs/43091081968)和[合并后 main 检查](https://github.com/wsafight/wings/actions/runs/43092139855)均通过 macOS AArch64、Linux x86-64 原生执行与 Rust 1.85 构建。端到端脚本覆盖 Counter 连续状态、Bool/Unit、整数溢出、除零、输入和产物拒绝；不包含抢占、GC、mailbox 或 BEAM 对照。`cargo test` 当前没有 Rust 测试用例，不能把零用例通过写成行为覆盖。
+[发布 PR 检查](https://github.com/wsafight/wings/actions/runs/43091081968)和[合并后 main 检查](https://github.com/wsafight/wings/actions/runs/43092139855)均通过 macOS AArch64、Linux x86-64 原生执行与 Rust 1.85 构建。端到端脚本覆盖 Counter 连续状态、Bool/Unit、整数溢出、除零、输入和产物拒绝；不包含抢占、GC、mailbox 或 BEAM 对照。该发布版本的 `cargo test` 没有 Rust 测试用例，不能把零用例通过写成行为覆盖；未发布源码的新增回归见[评测与验收](evaluation.md#工具链与-lsp-验收)。
 
 另从 crates.io 将三个命令安装到 macOS AArch64 临时目录，已验证示例检查、命令帮助、Counter 编译及七条消息的执行结果，以及 LSP 初始化、版本 `0.0.2` 和正常关闭。GitHub 发布入口为 [v0.0.2](https://github.com/wsafight/wings/releases/tag/v0.0.2)。
 
@@ -96,7 +96,7 @@ wings-lsp --help
 
 包归档对应源码提交 `247cf72ad24f78d7451955a90acdaf359361900e`。已检查各归档内的许可证、仓库地址、源码提交及依赖版本，并通过 crates.io API 复核版本、所有者、许可证、未撤回状态和依赖。
 
-macOS AArch64 上已通过 workspace 检查、Clippy、格式检查、示例静态检查、命令帮助和 LSP 初始化、文档诊断及退出的冒烟验证。`cargo test --workspace --locked` 执行成功，但当前没有自动化测试用例，不把零用例通过写成行为测试覆盖。Linux 验证、AOT、VM 执行和性能基线仍未完成。
+macOS AArch64 上已通过 workspace 检查、Clippy、格式检查、示例静态检查、命令帮助和 LSP 初始化、文档诊断及退出的冒烟验证。`cargo test --workspace --locked` 执行成功，但该发布版本没有自动化测试用例，不把零用例通过写成行为测试覆盖。Linux 验证、AOT、VM 执行和性能基线仍未完成。
 
 另从 crates.io 将两个命令安装到临时目录，验证示例检查、LSP 帮助、初始化和正常关闭。安装命令如下；示例路径相对于本仓库：
 

@@ -1,0 +1,13 @@
+actor SelfSendRoots {
+  struct Boxed { value: int }
+  state n = Boxed(0)
+  on start -> int {
+    let old = n;
+    n = Boxed(9);
+    self ! add(3);
+    gc();
+    old.value + n.value
+  }
+  on add(value: int) { n = Boxed(n.value + value) }
+  on read -> int { n.value }
+}

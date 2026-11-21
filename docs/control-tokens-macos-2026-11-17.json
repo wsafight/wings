@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "base_commit": "e43193be601ee8c1f65e49c08dc327c44ef62431",
+  "branch": "feat/mvp",
+  "working_tree": "Control token lease slice before commit; user proposals excluded",
+  "platform": {
+    "system": "macOS 26.6.2",
+    "kernel": "Darwin 25.6.0",
+    "architecture": "aarch64",
+    "cpu": "Apple M3 Pro",
+    "memory_bytes": 38654705664,
+    "rust": "1.99.1",
+    "msrv": "1.85.0"
+  },
+  "limits": {
+    "child_cpu_seconds": 20,
+    "child_wall_seconds": 30,
+    "child_core_bytes": 0,
+    "fixture_phase_seconds": 3,
+    "tcp_start_seconds": 5,
+    "cpu_hard_quota_available": false
+  },
+  "scope": {
+    "abi": 19,
+    "execution_control_reservation_bytes": 4352,
+    "accounted_cancellation_and_preemption": true,
+    "worker_tenant_flag": true,
+    "scheduler_actor_process_flag": true,
+    "default_host_tools_remain_unaccounted": true
+  },
+  "tests_current": [
+    {
+      "profile": "debug",
+      "harnesses": 92,
+      "passed_tests": 631,
+      "failures": []
+    },
+    {
+      "profile": "release",
+      "harnesses": 92,
+      "passed_tests": 631,
+      "failures": []
+    }
+  ],
+  "focused_aot": {
+    "debug_repetitions_passed": 5,
+    "release_repetitions_passed": 5
+  },
+  "full_aot": {
+    "debug_exit": 0,
+    "release_exit": 0
+  },
+  "development_failures": [
+    "Pre-fix regression: worker dropped with retained private flag had zero tenant charge; fixed",
+    "First all-flags inline optional reservation representation exceeded existing invocation size bound: 4384 required vs 4352; changed private representation instead of raising quota; 293 passed/1 failed then 294 passed",
+    "Admission test filler used equal ancestor limits and failed before intended boundary; corrected nested fixture limits; 298 passed/1 failed then 299 passed",
+    "Moved account/process borrow compile errors and unused imports corrected"
+  ],
+  "checks_passed": [
+    "workspace all-targets check",
+    "clippy all-targets -D warnings",
+    "fmt",
+    "MSRV1.85 all-targets",
+    "debug/release bins/examples build",
+    "doc-tests actual zero",
+    "dependency boundaries and no coroutine unwind",
+    "Python syntax",
+    "Markdown links/fences",
+    "git diff --check"
+  ],
+  "acceptance": {
+    "mvp_complete": false,
+    "native_linux_current": false,
+    "beam_throughput_memory_dual_gate": false
+  },
+  "source_sha256": {
+    "AGENTS.md": "47d7459408e45e4034f2c4bf4af03600b22dcc824337d181d85b4bf43e7ebb07",
+    "README.md": "9a322bbf4c55cf9cbc31af63c0e8621e7189cb8e1041967e680cceb3ae94ad5e",
+    "crates/wings-vm/examples/control_tokens.rs": "f4c63f0ab7ee51942b80e5ee004bd3d19f6142c2c31b52624d573ae051a90cfd",
+    "crates/wings-vm/src/control_flag.rs": "559e5255f92c23fba0255974b3aea2184eeaaf8312e72855210b8036ed9ab677",
+    "crates/wings-vm/src/execution.rs": "2cd847000999b5cbf7b7f418ec5d3d7891c0cf998deb2565b1844d365cee367d",
+    "crates/wings-vm/src/lib.rs": "4269c3be76af2f98779e7023c8e3060f356957bdffa845bfbf0a55932efa7b82",
+    "crates/wings-vm/src/preemption.rs": "b3422a914f5f845b3943c864558b5650e892671e949bce65a782de8e18d6b60d",
+    "crates/wings-vm/src/scheduler/mod.rs": "c7b3799e92a7090b0b7b0fcae7a60b91d40e588f718c89aa538f6b1599522caf",
+    "crates/wings-vm/src/scheduler/tests.rs": "72e5a9d69f3fb54532d2435ca948f9888e16a5218629f94423e8df6296351d07",
+    "crates/wings-vm/src/tests/preemption.rs": "a43ee206c7e364225df762a32757c96546bac7740dd28592cda2465ffd4b59e7",
+    "crates/wings-vm/src/worker.rs": "b956c901d593cd082bc514ed3d5c3e18eeebb2daf746e7c119187bc5833b6ecf",
+    "docs.md": "0248fc6fb18ddbcb978cefe8e6d8ba983baf89e5043f0230a3634de161a26172",
+    "docs/adr/0107-accounted-control-token-leases.md": "59c48b6282f28b7357b65c8cf170f1bc449f3d6435250b3ca40f6cce6c03075e",
+    "docs/adr/README.md": "fad0bc3f8f1fbdba1b55de4485dff51cdf1552bb83f1ec811150c61bc0fc4992",
+    "docs/architecture.md": "1d0ca19e13b35c09d865914fbe64d0465bde68ae607d6808cad3123cf24ea27c",
+    "docs/evaluation.md": "b84bc59f3d4a85b687716ecc0875f407a74dce29cef02a442699e47745fceb03",
+    "docs/roadmap.md": "b0daa9e9fd1e752cdf3d32a4ca14b3847755064884a657369da56f9b47733408",
+    "docs/runtime.md": "2aa741668db83b31946b898e12fe572b67098bc4018f4abfac21a0f073c5ad48",
+    "docs/validation-control-tokens-2026-11-17.md": "f8152c89167107c658513b0db2b5c32b273a8bbbc77e1ec4a9530033dfd80c7e",
+    "scripts/verify_scalar_aot.py": "fc156f9abcf780303d228cc6914c09ece66e90c450dbdfbf09e114f442ac3aa5"
+  },
+  "log_sha256": {
+    "/tmp/wings-control-lease-aot-focused.log": "c142c07192a2cde16cee7b894b835084083557a6095f456c6145529616dbf1ac",
+    "/tmp/wings-control-lease-aot-full-debug.log": "5296223501898d998e2fee99122cdfae6f1525bbf8fdb4b344bb0096645fb623",
+    "/tmp/wings-control-lease-aot-full-release.log": "5296223501898d998e2fee99122cdfae6f1525bbf8fdb4b344bb0096645fb623",
+    "/tmp/wings-control-lease-boundaries.log": "d0f43d8ef49f68845b360e697eaccdf5e254ac82dd05fdb785d1e6d16e4e291f",
+    "/tmp/wings-control-lease-build-debug.log": "fc0a15d014e23f18b7be5058046879dd421f13131444c89efc56030e51a399b8",
+    "/tmp/wings-control-lease-build-release.log": "9940c24994d18496ccb7a68a3b431fdb44642902e2125f0c0e3a82912d255a5f",
+    "/tmp/wings-control-lease-check-2.log": "944b1b1a1f9046c8b5a4650f6377062611c2e146596b6b590342d0e37d79fb2c",
+    "/tmp/wings-control-lease-check-final.log": "8dbba4175c896b53f51d8f4b37905378668fa0d5ec43106feb48dfd1c4445a0e",
+    "/tmp/wings-control-lease-check.log": "cff3331148427cf31e6f54eb36b1386491f1d0417e33f1088d8b8c77fc7f2602",
+    "/tmp/wings-control-lease-clippy.log": "14ec0eed0e266c295d34cfa99feaec722221b5d5ae247d710f1468ba4e49b2e2",
+    "/tmp/wings-control-lease-doctests.log": "ed29efc3f543d8360d9a75240cf5fbedca5a8754a6d279d6cf4aeb2ca85f95d5",
+    "/tmp/wings-control-lease-document-check.log": "23dcc8c093e78999a9d2d7ca1fceff4ac4b45d5bf5bf426cbe8db2a499fdcb80",
+    "/tmp/wings-control-lease-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/tmp/wings-control-lease-harness-debug-final.jsonl": "a2dd417cd467fb576bd0c374d48672f6d9fc7072f3270ade9d3f922472db7afd",
+    "/tmp/wings-control-lease-harness-debug.jsonl": "d88bd2c8c5d0acd5e9bd41bacdce8d60e5cf2c5460278f3f2fd53dbfcb6792fe",
+    "/tmp/wings-control-lease-harness-release-final.jsonl": "51c5fbcdbd7e2132eaf062485a99f434fb73110675b232045abed7a56f3b1309",
+    "/tmp/wings-control-lease-harness-release.jsonl": "99377935b79caa6ddd09adb29461b9c903d3883863dd0554039f6ce7c33dcd2a",
+    "/tmp/wings-control-lease-lsp-tree.log": "a2b83534460402059e1ac1c1a99dc6bf0d98e622c994978200dd34fb5a68e855",
+    "/tmp/wings-control-lease-msrv.log": "e469f7c13b5af165d19d4b410328f1b359e6c4c691388d91ea7ee1b9815b34d0",
+    "/tmp/wings-control-lease-repro-build.log": "a6161a14ee7c757f75f6d212490c835ed9771f1ec56c5cc60193542c268e4268",
+    "/tmp/wings-control-lease-repro-harness.jsonl": "782701f3e93b90abfa63d1c7ff6ad99bd9cbcc263b2fc9770498115d58c61986",
+    "/tmp/wings-control-lease-repro.log": "01bdf4c06c00890b6c510317e796865b489e5376de7de1e1491a05dd8e82d423",
+    "/tmp/wings-control-lease-tests-all.log": "878230b3ee6984d9e9b95d79d352443aa830f26107d706ceb29aaefcc1541974",
+    "/tmp/wings-control-lease-tests-build-debug-final.log": "4cfdd12661cc1b36443fc318729ee90314df6e226fb59ebd2ee09fc24bddf86c",
+    "/tmp/wings-control-lease-tests-build-debug.log": "0fd9a90a09c122300ddf4647c5a3a986cf0fd2963b678d1700fb3da3118613f4",
+    "/tmp/wings-control-lease-tests-build-release-final.log": "7a5ea31dbef9230fe7f905f29134e42d7cec1c09c6deb46ad22f9bd38de816cc",
+    "/tmp/wings-control-lease-tests-build-release.log": "4cd558028e83fee65423d02b3e2f443d8b0925c07ffbd94fbebdac508f4c0fc0",
+    "/tmp/wings-control-lease-tests-result.json": "79a47b5a5796d8ccb7c73522e01d6bfe7764654c95d4d5b9895f6e1da32bf940",
+    "/tmp/wings-control-lease-unit-2.log": "3adfc80ca32597a18e6b3d85f819cdef3cf369a4f1872cbb404f9cddae7f9e00",
+    "/tmp/wings-control-lease-unit-3.log": "cd5e6f5a71e582e92d521b962b2ce888e33ca1328671a98ab1e0ec5d64e2f155",
+    "/tmp/wings-control-lease-unit-4.log": "b167fa89f45312533fca8b1438ef3bf5b191d841b4ed8c45d143288530e818d4",
+    "/tmp/wings-control-lease-unit-build-2.log": "1f378a756ac7fa75ff8e2f60ee328ec0f22c24a9d0e7a93d1d629facead9e65c",
+    "/tmp/wings-control-lease-unit-build-3.log": "0fc4fcf4e274c40758fb043f562261a94d28f87cd9d2ee0e41c5b095012929fb",
+    "/tmp/wings-control-lease-unit-build-4.log": "18323938cdce686cfa4652faddf67d1c3f95c59ca2c876d994095c22a7f20f68",
+    "/tmp/wings-control-lease-unit-build.log": "151e8f96a2fab34eabaa1102afe1e5642e14df3f280f4ebb40192d49c6107c12",
+    "/tmp/wings-control-lease-unit-harness-2.jsonl": "782701f3e93b90abfa63d1c7ff6ad99bd9cbcc263b2fc9770498115d58c61986",
+    "/tmp/wings-control-lease-unit-harness-3.jsonl": "668a5371a38298f1fd7453dee8aa636535d5b1fb876d977aae6e8830b790aebf",
+    "/tmp/wings-control-lease-unit-harness-4.jsonl": "8e66db1e1e516e13df4e41cffe7c8213aeffdafc97d2d3d3a1ace4d65ee0a965",
+    "/tmp/wings-control-lease-unit-harness.jsonl": "702bcd48b40b65886e0b9f0cf5ff6d3b75d206e594852c71600326bd3edd4079",
+    "/tmp/wings-control-lease-unit.log": "d0da18a129d20e9629d6a652b3ee96fcba64612cd04d117503f92fc7c4c5acbf",
+    "/tmp/wings-control-lease-unwind-tree.log": "5db082f00a66e63fbea0d6ec93f670ea6f8fe8ed42436d2a90cec9ec32457236",
+    "/tmp/wings-control-lease-vm-tree.log": "354100dbf8664c3d62a58a303fef6e6b33ebaf16f7fa856e5c4fc7e4507ee7c2"
+  }
+}

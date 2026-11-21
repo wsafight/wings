@@ -1,0 +1,42 @@
+actor SelfSend {
+  state n = 0
+  on start(value: int) -> int {
+    n = 9;
+    self ! add(value);
+    n
+  }
+  on twice -> int {
+    self ! add(1);
+    self ! add(2);
+    n
+  }
+  on fail(divisor: int) -> int {
+    n = 9;
+    self ! add(3);
+    n / divisor
+  }
+  on budget -> int { self ! add(4); n + 1 }
+  on flags -> int { self ! flag(true, ()); n }
+  on flag(value: bool, unit: ()) { n = if value { 7 } else { 8 } }
+  on ping { self ! empty }
+  on wide_start -> int {
+    self ! wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64);
+    n
+  }
+  on wide(a00: int, a01: int, a02: int, a03: int, a04: int, a05: int, a06: int, a07: int,
+    a08: int, a09: int, a10: int, a11: int, a12: int, a13: int, a14: int, a15: int,
+    a16: int, a17: int, a18: int, a19: int, a20: int, a21: int, a22: int, a23: int,
+    a24: int, a25: int, a26: int, a27: int, a28: int, a29: int, a30: int, a31: int,
+    a32: int, a33: int, a34: int, a35: int, a36: int, a37: int, a38: int, a39: int,
+    a40: int, a41: int, a42: int, a43: int, a44: int, a45: int, a46: int, a47: int,
+    a48: int, a49: int, a50: int, a51: int, a52: int, a53: int, a54: int, a55: int,
+    a56: int, a57: int, a58: int, a59: int, a60: int, a61: int, a62: int, a63: int) {
+    n = a00 + a01 + a02 + a03 + a04 + a05 + a06 + a07 + a08 + a09 + a10 + a11 + a12 + a13 + a14 + a15 +
+      a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 +
+      a32 + a33 + a34 + a35 + a36 + a37 + a38 + a39 + a40 + a41 + a42 + a43 + a44 + a45 + a46 + a47 +
+      a48 + a49 + a50 + a51 + a52 + a53 + a54 + a55 + a56 + a57 + a58 + a59 + a60 + a61 + a62 + a63
+  }
+  on empty { () }
+  on add(value: int) { n = n * 10 + value }
+  on read -> int { n }
+}

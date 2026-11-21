@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "date": "2026-11-17",
+  "base_commit": "3ec0a728aeb6c0b0a316734c2975b35227f10efb",
+  "branch": "feat/mvp",
+  "working_tree": "String literal slice before commit; user proposals excluded",
+  "platform": {
+    "system": "macOS 26.6.2",
+    "kernel": "Darwin 25.6.0",
+    "architecture": "aarch64",
+    "cpu": "Apple M3 Pro",
+    "memory_bytes": 38654705664,
+    "rust": "1.99.1",
+    "msrv": "1.85.0"
+  },
+  "limits": {
+    "child_cpu_seconds": 20,
+    "child_wall_seconds": 30,
+    "child_core_bytes": 0,
+    "fixture_phase_seconds": 3,
+    "tcp_start_seconds": 5,
+    "cpu_hard_quota_available": false
+  },
+  "scope": {
+    "abi": 17,
+    "context_bytes": 88,
+    "effect_request_bytes": 72,
+    "execution_control_reservation_bytes": 4352,
+    "string_bytes_max": 65536,
+    "program_literal_bytes_max": 1048576,
+    "utf8_chunk_bytes_max": 256,
+    "messages_and_replies": false
+  },
+  "tests": [
+    {
+      "profile": "debug",
+      "harnesses": 90,
+      "passed_tests": 615,
+      "failures": []
+    },
+    {
+      "profile": "release",
+      "harnesses": 90,
+      "passed_tests": 615,
+      "failures": []
+    }
+  ],
+  "focused_aot": {
+    "debug_repetitions_passed": 5,
+    "release_repetitions_passed": 5,
+    "release_boundary_cases_passed": true
+  },
+  "full_aot": {
+    "debug_exit": 0,
+    "release_exit": 0
+  },
+  "earlier_failures": [
+    {
+      "kind": "unfrozen ABI16 binary / ABI17 script mismatch",
+      "valid_baseline": false,
+      "profiles": [
+        "debug",
+        "release"
+      ]
+    },
+    {
+      "kind": "filtered zero-test historical scalar_supervisor startup exceeded original 30s wall limit",
+      "cause": "undetermined",
+      "log": "/tmp/wings-literal-focused-debug.log"
+    }
+  ],
+  "native_linux_validated": false,
+  "beam_dual_gate_passed": false,
+  "mvp_complete": false,
+  "source_sha256": {
+    "AGENTS.md": "895576fd1c085cc33ffc6ccec18e79c150c1230f69be4237cee2f2da0100bb61",
+    "README.md": "1fc7add247c10da84d2b6317eebf9d1b3ba5ace4e660c3e0ee3609b5285328f1",
+    "crates/wings-abi/src/lib.rs": "031a48a5128912cc50e0476545b4e6bcb67639a1fd13b5bfae1d87f6ed08c668",
+    "crates/wings-abi/tests/scalar_contract.rs": "69939eca18f0e70ae880b2be2108ffa4068946f2c9f7ca0bdf593475e1a9e8a5",
+    "crates/wings-codegen/src/lib.rs": "a8f27c72671120888969dab9aeb1d3d3922e5a0fca93a27d7828ca986a33fa2f",
+    "crates/wings-compile/src/lower.rs": "08a750b755c3759aee35f8fd222d32fb08cde66c740978709b5149e3bc34cee3",
+    "crates/wings-ir/src/lib.rs": "808ca4ee78fbe80b7b02bff5b454c26342e6317efe4526836ee53a7f59911540",
+    "crates/wings-ir/tests/validation.rs": "6263174233b2ce35810dbf717fa318fe40703526a4f84ffb561d206bd58febcb",
+    "crates/wings-lsp/tests/protocol.rs": "f9f1d2bec74af4e613c22eebb7c024fa068cfd99b1e66addd121bfb6809d24db",
+    "crates/wings-sema/src/lib.rs": "10064fa4535ec42fbfb6877674691f6d78cbc3a10795946f0d2409642ae1d5b6",
+    "crates/wings-syntax/src/ast.rs": "a511d3bd47fb64c64342a796d622e569c6ddf917323bf44e9739f97b7f0a3769",
+    "crates/wings-syntax/src/lexer.rs": "1815839c11a3763b904c0cb9e87c07ad1ce018e6b7ed0f8b67eede70e1131b64",
+    "crates/wings-syntax/src/lib.rs": "b740bf3c8bafbb93942bb7b8d71681281b3bf7b08230cf3b104013d913c0f4a8",
+    "crates/wings-syntax/src/parser.rs": "18724cf6371fd524c99c49be1fa240e635da8e37894082b5b06b95f992bf8d0b",
+    "crates/wings-syntax/src/string.rs": "00a023353b3e2e255239199d4f919818a87eb7be2af149bda2d358e7cb508efc",
+    "crates/wings-syntax/tests/frontend.rs": "bd01d2510d2ab3727f92d1f8a5870fbab7eb18747edadb749aad4c3dd1572eab",
+    "crates/wings-vm/examples/string_values.rs": "83ed1353665aac507a7c4c7fdc99f20fbc205e4495e9e488167973088bad645f",
+    "crates/wings-vm/src/aot_heap.rs": "d82e3b15c0fe118a0781573e472982da28d559310e7f10f01efe9fb19d79d07f",
+    "docs.md": "0fc9a5b9fd4017fa72d2111c372d9fad5b143e4786e39eb48bfb19ee26465138",
+    "docs/adr/0104-bounded-string-literals.md": "1b969b140622cf38822814e537392e4f05195e649e641a700beedd1b3cdb1ee6",
+    "docs/adr/README.md": "6e0baf879e5926e65cc943c97dda9e4c4f3d01ef1ed419cb67cdd6f59bc8ce65",
+    "docs/architecture.md": "e0cc99e41276a59e46ad86729ec0433c03ccb8aefc903096d208a2ed861714bc",
+    "docs/evaluation.md": "4e58b756644df594669be6a3675c736b10816745d933aaaea6998d5d5f2006ff",
+    "docs/language.md": "8a0fabd7e5cb037e75d6dd00dba4873748f3a78335b1c9b0a638eaf0a526b9e6",
+    "docs/roadmap.md": "474fd51673ba070fa03e52857ac60033d1b2b9174c84a99b0c7a9dbcf859f81d",
+    "docs/runtime.md": "c992f104dd508cf22f06bcdaef4a504f3fa3475e9a784c34f656a6519d8ed733",
+    "docs/validation-string-literals-2026-11-17.md": "f856a19bc1cb02e6c8336e267947477ad7ccf277e7450dd17a7bfe9376880afa",
+    "examples/string-values.wings": "1686dcd27a22956a2e347d83493740213b8563d31907fdb6acb9af693b361b80",
+    "scripts/verify_scalar_aot.py": "65a870be07f07d7e378d707a8f6ab7d6d7c4076e3ca3652287bdbbaf880c2163"
+  },
+  "log_sha256": {
+    "/tmp/wings-literal-check-initial.log": "8266e97e41f41df2c90301b5c91a460e1eb9b71b33a6598722d838420c8c5972",
+    "/tmp/wings-literal-clippy.log": "31b3f181b53893bfb1fdf3ea4ea5b89e1651812f8c3f965d5fddcc9f0fb6852c",
+    "/tmp/wings-literal-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "/tmp/wings-literal-msrv.log": "523efafff0650fbd57e78e7fb23074c2ea7cf3e9d17971db14580dc5824cecb0",
+    "/tmp/wings-literal-doctests.log": "0ae90b657224010550b8adc7e55fc03e4dda0d80ada77d583592c96b7432792e",
+    "/tmp/wings-literal-dependencies.log": "236cd84dd4ab87d2274e83a7d6cef2f4b3e4054212446420baff3bf86941667e",
+    "/tmp/wings-literal-aot-debug.log": "10c4012ef1d0fe15dc276e2c40239df078af47d33b82bcb33a1f4bb878160483",
+    "/tmp/wings-literal-aot-release-focused.log": "cea717696626c913d2e06c1bcf50dad01f3f63da576eba7a3fac9356dc6c761d",
+    "/tmp/wings-literal-aot-full-debug.log": "761ce2034c337b3f0c0721a23303fc14765a2003211d49053e3761293e29186f",
+    "/tmp/wings-literal-aot-full-release.log": "761ce2034c337b3f0c0721a23303fc14765a2003211d49053e3761293e29186f",
+    "/tmp/wings-literal-focused-debug.log": "d0168286cad26ed22fecc4eb83134c2600715b7c1df378c28ac6493527795a96",
+    "/tmp/wings-literal-tests-all.log": "ccf021e7c2f8618bd4b18e23e25702416899702d153f13ba6365381f86514f64",
+    "/tmp/wings-mvp-baseline-aot-debug.log": "0de6570b682d91447ddae2f7ccf4f421a0767293ed8463a9dc937d5dc4d09c07",
+    "/tmp/wings-mvp-baseline-aot-release.log": "b10d14f79c564b5e8684a923cdc04783e0b90aba3eb3236a5aa0d0a41fadec82"
+  }
+}

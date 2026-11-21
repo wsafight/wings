@@ -1,0 +1,47 @@
+actor Lists {
+  fn singleton(value: int) -> [int] { [value] }
+  fn first(values: [int]) -> int { gc(); values.head() }
+  fn keep(flag: bool, values: [int]) -> [int] {
+    if flag { values } else { [99, ..values] }
+  }
+  state values: [int] = []
+  on empty -> bool { values.is_empty() }
+  on push(value: int) -> int {
+    values = [value, ..values]
+    gc()
+    values.head()
+  }
+  on pop -> int {
+    let value = values.head()
+    values = values.tail()
+    gc()
+    value
+  }
+  on head -> int { first(values) }
+  on shared(flag: bool) -> int {
+    let one = singleton(7)
+    let two = [11, ..one]
+    let chosen = keep(flag, two)
+    gc()
+    first(chosen) + first(two.tail())
+  }
+  on drain -> () {
+    while !values.is_empty() {
+      values = values.tail()
+      gc()
+    }
+  }
+  on build(limit: int) -> int {
+    values = singleton(0)
+    while values.head() < limit {
+      values = [values.head() + 1, ..values]
+      gc()
+    }
+    values.head()
+  }
+  on fail -> int {
+    values = [99, ..values]
+    gc()
+    1 / 0
+  }
+}

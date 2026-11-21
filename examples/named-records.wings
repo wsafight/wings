@@ -1,0 +1,18 @@
+actor Profiles {
+  struct Boxed { value: int }
+  struct Label { text: str, code: int }
+  struct Profile { label: Label, enabled: bool, values: [int], data: bytes, saved: Boxed, nothing: () }
+  struct Empty {}
+  struct Wide { empty: Empty, minimum: int, maximum: int, flag: bool, unit: (), text: str, data: bytes, values: [int] }
+  state profile: Profile = Profile(Label("初始😀", 7), true, [3], bytes::fill(1, 9), Boxed(11), ())
+  fn label(value: Label) -> Label { Label { text: value.text + "!", code: value.code + 1 } }
+  fn update(value: Profile) -> Profile { Profile { label: label(value.label), ..value } }
+  on read -> int { gc(); profile.label.code + profile.label.text.len() + profile.values.head() + profile.data.at(0) + profile.saved.value }
+  on advance -> int { profile = update(profile); gc(); profile.label.code }
+  on select(flag: bool) -> int { let selected = if flag { profile } else { update(profile) }; gc(); selected.label.code }
+  on count(limit: int) -> int { while profile.label.code < limit { profile = update(profile) }; profile.label.code }
+  on empty_value -> int { let empty = Empty(); gc(); 1 }
+  on wide_value -> int { let value = Wide(Empty(), -9223372036854775808, 9223372036854775807, true, (), "wide", bytes::fill(0, 0), []); gc(); if value.flag { value.minimum + value.maximum + value.text.len() + value.data.len() } else { 1 / 0 } }
+  on text -> str { profile.label.text }
+  on fail -> int { profile = update(profile); 1 / 0 }
+}

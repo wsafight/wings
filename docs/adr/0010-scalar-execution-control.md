@@ -2,6 +2,7 @@
 
 - 日期：2026-11-12
 - 状态：已采纳（M0 原型设计）
+- 后续：[ADR-0011](0011-scalar-stackful-resume.md) 扩展未发布源码为 ABI v3，增加原栈让出恢复，保留总预算和失败提交语义。
 - 替代：[ADR-0009](0009-scalar-aot-prototype.md) 的标量 ABI v1；可信装载与标量范围不变
 - 相关决定：[抢占与精确根](0004-safepoints-and-gc.md)
 

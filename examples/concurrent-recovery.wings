@@ -1,0 +1,20 @@
+actor ConcurrentRecovery {
+  state data = bytes::fill(4096, 0)
+
+  on add(delta: int) -> int {
+    data = data.set_i64(0, data.i64_at(0) + delta)
+    data.i64_at(0)
+  }
+
+  on hold {
+    data = data.set_i64(0, 99)
+    gc()
+    while true {}
+  }
+
+  on fail -> int {
+    data = data.set_i64(0, 99)
+    gc()
+    1 / 0
+  }
+}

@@ -1,0 +1,55 @@
+actor StringEquality {
+  state text = "";
+
+  fn copy(value: str) -> str {
+    let result = value.bytes().to_str();
+    gc();
+    result
+  }
+
+  fn same(first: str, second: str) -> bool {
+    gc();
+    first == second
+  }
+
+  on fill(length: int) -> int {
+    text = bytes::fill(length, 97).to_str();
+    text.len()
+  }
+
+  on equal(length: int) -> bool {
+    same(text, bytes::fill(length, 97).to_str())
+  }
+
+  on different(length: int) -> bool {
+    text != bytes::fill(length, 97).to_str()
+  }
+
+  on compare(first: str, second: str) -> bool {
+    same(first, copy(second))
+  }
+
+  on self_msg -> bool { text == text }
+
+  on unicode -> bool {
+    text = "中😀\0";
+    same(text, ("中" + "😀\0"))
+  }
+
+  on not_normalized -> bool { "é" != "é" }
+
+  on last_byte -> bool {
+    let first = bytes::fill(65536, 97).to_str();
+    let second = first.bytes().set(65535, 98).to_str();
+    first != second
+  }
+
+  on failed_candidate -> bool {
+    text = "candidate";
+    same(text, copy(text));
+    1 / 0;
+    true
+  }
+
+  on read -> int { text.len() }
+}

@@ -1,0 +1,1699 @@
+//! Runtime unit tests use small trusted Rust ABI entries, not generated native code.
+//! Compiler safepoint coverage and real AOT execution remain in verify_scalar_aot.py.
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use wings_abi::{
+    SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO,
+    STATUS_INVALID_CONTROL, STATUS_OK, STATUS_OVERFLOW, ScalarContext, ScalarEntry, ScalarOutput,
+    ValueType,
+};
+use wings_artifact::{FORMAT_VERSION, Handler, Manifest};
+
+use crate::module::ModuleData;
+use crate::*;
+
+mod bytes_replies;
+mod diagnostics;
+mod ingress;
+mod ingress_requests;
+mod list_replies;
+mod named_record_replies;
+mod persistent_state;
+mod preemption;
+mod primitives;
+mod process_effects;
+mod request_events;
+mod scheduler;
+mod stack_boundary;
+mod string_replies;
+mod string_values;
+mod supervision;
+mod worker_wait;
+
+fn limits(bytes: u64) -> Resources {
+    Resources {
+        bytes,
+        processes: 16,
+        messages: 16,
+        requests: 16,
+    }
+}
+
+fn accounts() -> [ResourceAccount; 3] {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant(limits(16 << 20)).unwrap();
+    let process = tenant.process(limits(8 << 20)).unwrap();
+    [vm, tenant, process]
+}
+
+unsafe extern "C" fn initialize(
+    _state: i64,
+    _args: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    unsafe { *output = ScalarOutput { state: 0, reply: 0 } };
+    STATUS_OK
+}
+
+// Keep all failure paths non-panicking: unwinding across ScalarEntry is forbidden.
+unsafe fn checkpoint(context: *mut ScalarContext) -> u32 {
+    let context = unsafe { &mut *context };
+    loop {
+        if unsafe { &*context.cancellation }.load(Ordering::SeqCst) != 0 {
+            return STATUS_CANCELLED;
+        }
+        if context.remaining_steps == 0 {
+            return STATUS_BUDGET_EXHAUSTED;
+        }
+        if context.slice_remaining == 0
+            || unsafe { &*context.yield_request }.load(Ordering::SeqCst) != 0
+        {
+            let Some(slow_path) = context.slow_path else {
+                return STATUS_INVALID_CONTROL;
+            };
+            let status = unsafe { slow_path(context) };
+            if status != STATUS_OK {
+                return status;
+            }
+            continue;
+        }
+        context.remaining_steps -= 1;
+        context.slice_remaining -= 1;
+        return STATUS_OK;
+    }
+}
+
+unsafe extern "C" fn increment(
+    state: i64,
+    args: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    for _ in 0..4 {
+        let status = unsafe { checkpoint(context) };
+        if status != STATUS_OK {
+            return status;
+        }
+    }
+    let Some(next) = state.checked_add(unsafe { *args }) else {
+        return STATUS_OVERFLOW;
+    };
+    unsafe {
+        *output = ScalarOutput {
+            state: next,
+            reply: next,
+        }
+    };
+    STATUS_OK
+}
+
+unsafe extern "C" fn add(
+    state: i64,
+    args: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let status = unsafe { increment(state, args, output, context) };
+    if status == STATUS_OK {
+        unsafe { (*output).reply = 0 };
+    }
+    status
+}
+
+unsafe extern "C" fn get(
+    state: i64,
+    _args: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let status = unsafe { checkpoint(context) };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: state,
+            }
+        };
+    }
+    status
+}
+
+unsafe extern "C" fn unit(
+    state: i64,
+    _args: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let status = unsafe { checkpoint(context) };
+    if status == STATUS_OK {
+        unsafe { *output = ScalarOutput { state, reply: 0 } };
+    }
+    status
+}
+
+unsafe extern "C" fn fail(
+    _state: i64,
+    _args: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    // Even candidate output from a failed trusted entry must not be committed.
+    unsafe {
+        *output = ScalarOutput {
+            state: 99,
+            reply: 99,
+        }
+    };
+    STATUS_DIVISION_BY_ZERO
+}
+
+unsafe extern "C" fn invalid_output(
+    _state: i64,
+    _args: *const i64,
+    output: *mut ScalarOutput,
+    _context: *mut ScalarContext,
+) -> u32 {
+    unsafe { *output = ScalarOutput { state: 2, reply: 2 } };
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn list_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut encoded = 0;
+        let status = heap_call(context, wings_abi::HEAP_EMPTY_INTS, 0, &mut encoded);
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state,
+            reply: encoded as i64,
+        };
+    }
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn list_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    unsafe {
+        let Some(heap_call) = (*context).heap_call else {
+            return STATUS_INVALID_CONTROL;
+        };
+        let mut empty = 0;
+        let status = heap_call(
+            context,
+            wings_abi::HEAP_IS_EMPTY_INTS,
+            *arguments.add(2) as u64,
+            &mut empty,
+        );
+        if status != STATUS_OK {
+            return status;
+        }
+        *output = ScalarOutput {
+            state: *arguments.add(1) * 100 + 1 - empty as i64,
+            reply: 0,
+        };
+    }
+    STATUS_OK
+}
+
+pub(crate) unsafe extern "C" fn bytes_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [0i64; 3];
+    let mut reference = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_FILL_BYTES,
+            scratch.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: reference as i64,
+            }
+        };
+    }
+    status
+}
+
+pub(crate) unsafe extern "C" fn string_reply(
+    state: i64,
+    _arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [b"".as_ptr() as usize as i64, 0, 0];
+    let mut reference = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_STRING_LITERAL,
+            scratch.as_ptr() as usize as u64,
+            &mut reference,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state,
+                reply: reference as i64,
+            };
+        }
+    }
+    status
+}
+
+pub(crate) unsafe extern "C" fn string_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [unsafe { *arguments.add(2) }, 0, 0];
+    let mut length = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_STRING_LEN,
+            scratch.as_ptr() as usize as u64,
+            &mut length,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state: *arguments.add(1) * 100 + length as i64,
+                reply: 0,
+            };
+        }
+    }
+    status
+}
+
+pub(crate) fn copied_string_reply(account: &ResourceAccount, text: &str) -> StringReply {
+    let flag = std::sync::atomic::AtomicU32::new(0);
+    let mut context = ScalarContext {
+        cancellation: &flag,
+        remaining_steps: 4096,
+        yield_request: &flag,
+        slice_remaining: 4096,
+        slow_path: None,
+        data: std::ptr::null_mut(),
+        stack_limit: 0,
+        roots: std::ptr::null(),
+        heap_call: None,
+        heap_data: std::ptr::null_mut(),
+        effect_call: None,
+    };
+    let mut payload = crate::message_values::BytePayload::new(account, 1, text.len()).unwrap();
+    payload.string_mask = 1;
+    payload.data.extend_from_slice(text.as_bytes());
+    StringReply::from_payload(account, payload, &mut context).unwrap()
+}
+
+pub(crate) unsafe extern "C" fn bytes_completion(
+    _state: i64,
+    arguments: *const i64,
+    output: *mut ScalarOutput,
+    context: *mut ScalarContext,
+) -> u32 {
+    let Some(call) = (unsafe { (*context).heap_call }) else {
+        return STATUS_INVALID_CONTROL;
+    };
+    let scratch = [unsafe { *arguments.add(2) }, 0, 0];
+    let mut length = 0;
+    let status = unsafe {
+        call(
+            context,
+            wings_abi::HEAP_BYTES_LEN,
+            scratch.as_ptr() as usize as u64,
+            &mut length,
+        )
+    };
+    if status == STATUS_OK {
+        unsafe {
+            *output = ScalarOutput {
+                state: *arguments.add(1) * 100 + length as i64,
+                reply: 0,
+            }
+        };
+    }
+    status
+}
+
+pub(crate) fn module() -> ScalarModule {
+    let handlers = [
+        (
+            "Add",
+            vec![("value".into(), ValueType::Int)],
+            None,
+            add as ScalarEntry,
+        ),
+        (
+            "Bump",
+            vec![("value".into(), ValueType::Int)],
+            Some(ValueType::Int),
+            increment as ScalarEntry,
+        ),
+        ("Get", vec![], Some(ValueType::Int), get as ScalarEntry),
+        ("Ack", vec![], Some(ValueType::Unit), unit as ScalarEntry),
+        ("Fail", vec![], None, fail as ScalarEntry),
+        (
+            "FailRequest",
+            vec![],
+            Some(ValueType::Int),
+            fail as ScalarEntry,
+        ),
+        (
+            "Bool",
+            vec![("value".into(), ValueType::Bool)],
+            None,
+            unit as ScalarEntry,
+        ),
+        (
+            "Unit",
+            vec![("value".into(), ValueType::Unit)],
+            None,
+            unit as ScalarEntry,
+        ),
+    ];
+    let manifest = Manifest {
+        records: Vec::new(),
+        format: FORMAT_VERSION,
+        abi: SCALAR_ABI_VERSION,
+        target: wings_abi::host_target().unwrap().into(),
+        process: "RuntimeFixture".into(),
+        state: ValueType::Int,
+        handlers: handlers
+            .iter()
+            .map(|(name, parameters, reply, _)| Handler {
+                name: (*name).into(),
+                parameters: parameters.clone(),
+                reply: *reply,
+                completion: None,
+            })
+            .collect(),
+    };
+    manifest.validate().unwrap();
+    ScalarModule {
+        inner: Arc::new(ModuleData {
+            manifest,
+            initializer: initialize,
+            entries: handlers.into_iter().map(|(_, _, _, entry)| entry).collect(),
+            direct_meta: Box::new([]),
+            _library: None,
+            lease: None,
+        }),
+    }
+}
+
+fn worker_fixture(
+    capacity: usize,
+    pending: usize,
+    mailbox: usize,
+) -> (
+    ResourceAccount,
+    ResourceAccount,
+    ScalarWorker,
+    ScalarModule,
+    Pid,
+) {
+    let [vm, tenant, _] = accounts();
+    let module = module();
+    let mut worker = ScalarWorker::with_request_capacity(&tenant, capacity, pending).unwrap();
+    let pid = worker.spawn(&module, limits(4 << 20), mailbox).unwrap();
+    (vm, tenant, worker, module, pid)
+}
+
+#[test]
+fn module_instances_share_schema_but_have_independent_state_and_failure() {
+    let module = module();
+    let mut first = module.instantiate().unwrap();
+    let mut second = module.clone().instantiate().unwrap();
+    let bump = module.handler("Bump").unwrap();
+    assert_eq!(
+        first
+            .invoke_handler(&bump, &[5], 4, &CancellationToken::default())
+            .unwrap(),
+        Some(5)
+    );
+    assert_eq!(second.invoke("Get", &[]).unwrap(), Some(0));
+    assert!(first.invoke("Fail", &[]).is_err());
+    assert_eq!(first.state, 5);
+    assert!(first.invoke("Get", &[]).is_err());
+    assert_eq!(second.invoke("Bump", &[3]).unwrap(), Some(3));
+    assert_eq!(module.manifest().process, "RuntimeFixture");
+}
+
+#[test]
+fn handler_identity_is_module_bound_not_just_schema_bound() {
+    let first = module();
+    let other = module();
+    let mut process = first.instantiate().unwrap();
+    let foreign = other.handler("Get").unwrap();
+    assert!(
+        process
+            .invoke_handler(&foreign, &[], 10, &CancellationToken::default())
+            .unwrap_err()
+            .contains("different module")
+    );
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
+    assert!(first.handler("Missing").is_err());
+    assert_eq!(
+        first.handler("Ack").unwrap().schema().reply,
+        Some(ValueType::Unit)
+    );
+}
+
+#[test]
+fn invalid_arguments_and_names_do_not_poison_a_process() {
+    let mut process = module().instantiate().unwrap();
+    for (name, arguments) in [
+        ("Missing", vec![]),
+        ("Bump", vec![]),
+        ("Bump", vec![1, 2]),
+        ("Bool", vec![-1]),
+        ("Bool", vec![2]),
+        ("Unit", vec![1]),
+    ] {
+        assert!(process.invoke(name, &arguments).is_err());
+        assert!(!process.failed);
+        assert_eq!(process.state, 0);
+    }
+    for value in [0, 1] {
+        assert_eq!(process.invoke("Bool", &[value]).unwrap(), None);
+    }
+    assert_eq!(process.invoke("Unit", &[0]).unwrap(), None);
+    assert_eq!(process.invoke("Ack", &[]).unwrap(), Some(0));
+}
+
+#[test]
+fn immutable_modules_and_handler_ids_are_send_sync_without_unsafe_impls() {
+    fn assert_send_sync<Value: Send + Sync>() {}
+    assert_send_sync::<ScalarModule>();
+    assert_send_sync::<HandlerId>();
+    assert_send_sync::<crate::module::ModuleData>();
+    assert_send_sync::<crate::module::ModuleLease>();
+    let module = module();
+    let handler = module.handler("Add").unwrap();
+    let other = handler.clone();
+    let module = std::thread::spawn(move || {
+        assert!(Arc::ptr_eq(&module.inner, &handler.module.inner));
+        module
+    })
+    .join()
+    .unwrap();
+    assert!(Arc::ptr_eq(&module.inner, &other.module.inner));
+}
+
+#[test]
+fn module_sharing_does_not_make_actor_execution_or_stack_pools_send_sync() {
+    trait AmbiguousIfSend<Marker> {
+        fn check() {}
+    }
+    impl<Value: ?Sized> AmbiguousIfSend<()> for Value {}
+    impl<Value: ?Sized + Send> AmbiguousIfSend<u8> for Value {}
+    trait AmbiguousIfSync<Marker> {
+        fn check() {}
+    }
+    impl<Value: ?Sized> AmbiguousIfSync<()> for Value {}
+    impl<Value: ?Sized + Sync> AmbiguousIfSync<u8> for Value {}
+    let _ = <ScalarWorker as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarWorker as AmbiguousIfSync<_>>::check;
+    let _ = <StackPool as AmbiguousIfSend<_>>::check;
+    let _ = <StackPool as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarProcess as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarProcess as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarTask as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarTask as AmbiguousIfSync<_>>::check;
+    let _ = <ScalarExecution<'static> as AmbiguousIfSend<_>>::check;
+    let _ = <ScalarExecution<'static> as AmbiguousIfSync<_>>::check;
+}
+
+#[test]
+fn detached_scalar_state_moves_once_and_preserves_committed_state() {
+    let module = module();
+    let mut process = module.instantiate().unwrap();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let pool = StackPool::new(1, 0).unwrap();
+    let mut restored = image.attach(&pool).unwrap();
+    assert!(image.attach(&pool).is_err());
+    assert_eq!(restored.invoke("Get", &[]).unwrap(), Some(7));
+    let mut image = restored.detach();
+    let value = std::thread::spawn(move || {
+        let pool = StackPool::new(1, 0).unwrap();
+        let mut process = image.attach(&pool).unwrap();
+        process.invoke("Bump", &[5]).unwrap()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(value, Some(12));
+}
+
+#[test]
+fn detached_heap_rejects_other_accounts_without_losing_ownership_or_budget() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(8 << 20)).unwrap();
+    let account = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let other = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+    let bound = pool.for_process(&account).unwrap();
+    let module = module();
+    let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
+    assert_eq!(process.invoke("Bump", &[7]).unwrap(), Some(7));
+    let mut image = process.detach();
+    let baseline = vm.used();
+    let wrong = pool.for_process(&other).unwrap();
+    let unaccounted = StackPool::new(1, 0).unwrap();
+    assert!(image.attach(&wrong).is_err());
+    assert!(image.attach(&pool).is_err());
+    assert!(image.attach(&unaccounted).is_err());
+    assert_eq!(vm.used(), baseline);
+    let stack = bound.acquire().unwrap();
+    let busy_baseline = vm.used();
+    let mut process = image.attach(&bound).unwrap();
+    assert!(image.attach(&bound).is_err());
+    assert!(
+        process
+            .invoke("Get", &[])
+            .unwrap_err()
+            .contains("exhausted")
+    );
+    assert_eq!(vm.used(), busy_baseline);
+    assert!(!process.failed);
+    drop(stack);
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+    let mut image = process.detach();
+    drop((bound, wrong, unaccounted, pool));
+    let process = std::thread::spawn(move || {
+        let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
+        let bound = pool.for_process(&account).unwrap();
+        let mut process = image.attach(&bound).unwrap();
+        assert_eq!(process.invoke("Bump", &[11]).unwrap(), Some(18));
+        process.detach()
+    })
+    .join()
+    .unwrap();
+    drop((process, other));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
+    use crate::message_values::ListPayload;
+    let mut module = module();
+    Arc::get_mut(&mut module.inner).unwrap().manifest.handlers[0].parameters = vec![
+        ("list".into(), ValueType::ListRef),
+        ("scalar".into(), ValueType::Int),
+        ("flag".into(), ValueType::Bool),
+    ];
+    module.manifest().validate().unwrap();
+    let process = module.instantiate().unwrap();
+    let handler = module.handler("Add").unwrap();
+    let payload = ListPayload {
+        mask: 1,
+        count: 2,
+        ..ListPayload::default()
+    };
+    let arguments = [ListPayload::encode(0, 2), 9, 1];
+    assert!(
+        process
+            .validate_handler_payload_internal(
+                &handler,
+                &arguments,
+                false,
+                false,
+                &payload,
+                &crate::message_values::BytePayload::default()
+            )
+            .is_ok()
+    );
+    for mask in [0, 2, 3, 4, u64::MAX] {
+        let invalid = ListPayload { mask, ..payload };
+        assert!(
+            process
+                .validate_handler_payload_internal(
+                    &handler,
+                    &arguments,
+                    false,
+                    false,
+                    &invalid,
+                    &crate::message_values::BytePayload::default()
+                )
+                .is_err()
+        );
+    }
+    for encoded in [
+        -1,
+        ListPayload::encode(1, 2),
+        ListPayload::encode(0, 1),
+        ListPayload::encode(0, 3),
+    ] {
+        assert!(
+            process
+                .validate_handler_payload_internal(
+                    &handler,
+                    &[encoded, 9, 1],
+                    false,
+                    false,
+                    &payload,
+                    &crate::message_values::BytePayload::default()
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        process
+            .validate_handler_payload_internal(
+                &handler,
+                &arguments,
+                false,
+                false,
+                &ListPayload::default(),
+                &crate::message_values::BytePayload::default()
+            )
+            .is_err()
+    );
+    assert!(!process.failed);
+}
+
+#[test]
+fn cancellation_is_shared_between_clones_and_thread_safe() {
+    let token = CancellationToken::default();
+    let clone = token.clone();
+    std::thread::spawn(move || clone.cancel()).join().unwrap();
+    let mut process = module().instantiate().unwrap();
+    let error = process
+        .invoke_controlled("Bump", &[2], 0, &token)
+        .unwrap_err();
+    assert!(error.contains("cancelled"));
+    assert!(process.failed);
+    assert_eq!(process.state, 0);
+}
+
+#[test]
+fn total_budget_is_exact_and_resets_on_each_successful_invocation() {
+    for budget in 0..4 {
+        let mut process = module().instantiate().unwrap();
+        assert!(
+            process
+                .invoke_controlled("Bump", &[2], budget, &CancellationToken::default())
+                .unwrap_err()
+                .contains("budget")
+        );
+        assert_eq!(process.state, 0);
+    }
+    let mut process = module().instantiate().unwrap();
+    for expected in [2, 4, 6] {
+        assert_eq!(
+            process
+                .invoke_controlled("Bump", &[2], 4, &CancellationToken::default())
+                .unwrap(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn status_mapping_and_unknown_status_fail_closed() {
+    for (status, expected) in [
+        (STATUS_OVERFLOW, "overflow"),
+        (STATUS_DIVISION_BY_ZERO, "division by zero"),
+        (STATUS_CANCELLED, "cancelled"),
+        (STATUS_BUDGET_EXHAUSTED, "budget"),
+        (STATUS_INVALID_CONTROL, "callback"),
+        (STATUS_STACK_EXHAUSTED, "stack exhausted"),
+        (STATUS_HEAP_EXHAUSTED, "heap exhausted"),
+        (STATUS_INVALID_ROOT, "shadow roots"),
+        (u32::MAX, "unknown"),
+    ] {
+        assert!(check_status(status).unwrap_err().contains(expected));
+    }
+    assert!(check_status(STATUS_OK).is_ok());
+}
+
+#[test]
+fn worker_heap_spawn_admission_and_cleanup_are_atomic() {
+    let [vm, tenant, _] = accounts();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let module = module();
+    let baseline = vm.used();
+    for capacity in [0, 1025, usize::MAX] {
+        assert!(
+            worker
+                .spawn_with_heap(&module, limits(1 << 20), 1, capacity)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(worker.process_count(), 0);
+    }
+    assert!(worker.spawn_with_heap(&module, limits(1), 1, 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let pid = worker
+        .spawn_with_heap(&module, limits(1 << 20), 1, 1)
+        .unwrap();
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[3], 64)
+        .unwrap();
+    assert_eq!(worker.tick(64).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 3);
+    worker.stop(pid).unwrap();
+    assert_eq!(vm.used(), baseline);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn invalid_initializer_state_and_managed_initializer_failure_are_rejected() {
+    let mut module = module();
+    let data = Arc::get_mut(&mut module.inner).unwrap();
+    data.manifest.state = ValueType::Bool;
+    data.initializer = invalid_output;
+    assert!(
+        module
+            .instantiate()
+            .err()
+            .unwrap()
+            .contains("invalid scalar state")
+    );
+    Arc::get_mut(&mut module.inner).unwrap().initializer = fail;
+    assert!(
+        module
+            .instantiate()
+            .err()
+            .unwrap()
+            .contains("division by zero")
+    );
+}
+
+#[test]
+fn invalid_success_output_never_commits_state_and_terminates_process() {
+    for (state_type, reply_type) in [
+        (ValueType::Bool, Some(ValueType::Int)),
+        (ValueType::Int, Some(ValueType::Bool)),
+        (ValueType::Int, Some(ValueType::Unit)),
+        (ValueType::Int, None),
+    ] {
+        let mut module = module();
+        let data = Arc::get_mut(&mut module.inner).unwrap();
+        data.manifest.state = state_type;
+        data.manifest.handlers[2].reply = reply_type;
+        data.entries[2] = invalid_output;
+        let mut process = module.instantiate().unwrap();
+        assert!(
+            process
+                .invoke("Get", &[])
+                .unwrap_err()
+                .contains("invalid scalar")
+        );
+        assert_eq!(process.state, 0);
+        assert!(process.failed);
+    }
+}
+
+#[test]
+fn task_zero_slice_and_busy_rejection_preserve_the_active_invocation() {
+    let module = module();
+    let handler = module.handler("Bump").unwrap();
+    let pool = StackPool::new(1, 1).unwrap();
+    let mut task = ScalarTask::new(module.instantiate().unwrap());
+    assert!(task.resume(1).is_err());
+    task.start(
+        &handler,
+        &[7],
+        4,
+        &CancellationToken::default(),
+        &PreemptionToken::default(),
+        &pool,
+    )
+    .unwrap();
+    assert!(task.resume(0).is_err());
+    assert!(
+        task.start(
+            &handler,
+            &[9],
+            4,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+            &pool
+        )
+        .is_err()
+    );
+    assert!(task.is_active());
+    for _ in 0..3 {
+        assert_eq!(task.resume(1).unwrap(), ExecutionStatus::Suspended);
+        assert_eq!(task.committed_state(), 0);
+        assert_eq!(pool.stats().active, 1);
+    }
+    assert_eq!(task.resume(1).unwrap(), ExecutionStatus::Complete(Some(7)));
+    assert!(!task.is_active());
+    assert_eq!(task.committed_state(), 7);
+    assert_eq!(pool.stats().active, 0);
+    assert!(task.resume(1).is_err());
+}
+
+#[test]
+fn task_owns_arguments_and_can_move_between_slices_without_replay() {
+    let module = module();
+    let pool = StackPool::new(1, 0).unwrap();
+    let mut task = ScalarTask::new(module.instantiate().unwrap());
+    let mut arguments = [11];
+    task.start(
+        &module.handler("Bump").unwrap(),
+        &arguments,
+        4,
+        &CancellationToken::default(),
+        &PreemptionToken::default(),
+        &pool,
+    )
+    .unwrap();
+    arguments[0] = 99;
+    assert_eq!(arguments[0], 99);
+    assert_eq!(task.resume(1).unwrap(), ExecutionStatus::Suspended);
+    let mut moved = vec![task].pop().unwrap();
+    assert_eq!(
+        moved.resume(3).unwrap(),
+        ExecutionStatus::Complete(Some(11))
+    );
+    let mut process = moved.into_process();
+    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(11));
+}
+
+#[test]
+fn cancellation_between_slices_preserves_state_and_releases_stack() {
+    let module = module();
+    let pool = StackPool::new(1, 1).unwrap();
+    let token = CancellationToken::default();
+    let mut process = module.instantiate().unwrap();
+    {
+        let mut execution = process
+            .start_in_pool("Bump", &[5], 4, &token, &PreemptionToken::default(), &pool)
+            .unwrap();
+        assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
+        token.cancel();
+        assert!(execution.resume(3).unwrap_err().contains("cancelled"));
+        assert!(execution.resume(1).is_err());
+    }
+    assert_eq!(process.state, 0);
+    assert!(process.failed);
+    assert_eq!(pool.stats().active, 0);
+}
+
+#[test]
+fn preemption_request_suspends_without_cancelling_or_replenishing_budget() {
+    let module = module();
+    let pool = StackPool::new(1, 1).unwrap();
+    let token = PreemptionToken::default();
+    token.request();
+    let mut task = ScalarTask::new(module.instantiate().unwrap());
+    task.start(
+        &module.handler("Bump").unwrap(),
+        &[5],
+        3,
+        &CancellationToken::default(),
+        &token,
+        &pool,
+    )
+    .unwrap();
+    assert_eq!(task.resume(100).unwrap(), ExecutionStatus::Suspended);
+    assert_eq!(task.committed_state(), 0);
+    assert!(task.resume(100).unwrap_err().contains("budget"));
+    assert_eq!(task.committed_state(), 0);
+    assert_eq!(pool.stats().active, 0);
+}
+
+#[test]
+fn dropping_started_and_unstarted_execution_terminates_without_committing() {
+    for start in [false, true] {
+        let pool = StackPool::new(1, 1).unwrap();
+        let mut process = module().instantiate().unwrap();
+        let mut execution = process
+            .start_in_pool(
+                "Bump",
+                &[5],
+                4,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+                &pool,
+            )
+            .unwrap();
+        if start {
+            assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
+        }
+        drop(execution);
+        assert_eq!(pool.stats().active, 0);
+        assert_eq!(process.state, 0);
+        assert!(process.invoke("Get", &[]).is_err());
+    }
+}
+
+#[test]
+fn into_process_cancels_an_active_task_but_preserves_an_idle_one() {
+    let module = module();
+    let mut idle = ScalarTask::new(module.instantiate().unwrap()).into_process();
+    assert_eq!(idle.invoke("Get", &[]).unwrap(), Some(0));
+    for start in [false, true] {
+        let pool = StackPool::new(1, 0).unwrap();
+        let mut task = ScalarTask::new(module.instantiate().unwrap());
+        task.start(
+            &module.handler("Bump").unwrap(),
+            &[5],
+            4,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+            &pool,
+        )
+        .unwrap();
+        if start {
+            assert_eq!(task.resume(1).unwrap(), ExecutionStatus::Suspended);
+        }
+        let mut process = task.into_process();
+        assert_eq!(pool.stats().active, 0);
+        assert_eq!(process.state, 0);
+        assert!(process.invoke("Get", &[]).is_err());
+    }
+}
+
+#[test]
+fn exhausted_stack_pool_rejection_does_not_poison_process() {
+    let pool = StackPool::new(1, 0).unwrap();
+    let held = pool.acquire().unwrap();
+    let mut process = module().instantiate().unwrap();
+    assert!(
+        process
+            .start_in_pool(
+                "Bump",
+                &[5],
+                4,
+                &CancellationToken::default(),
+                &PreemptionToken::default(),
+                &pool
+            )
+            .err()
+            .unwrap()
+            .contains("exhausted")
+    );
+    assert!(!process.failed);
+    drop(held);
+    let mut execution = process
+        .start_in_pool(
+            "Bump",
+            &[5],
+            4,
+            &CancellationToken::default(),
+            &PreemptionToken::default(),
+            &pool,
+        )
+        .unwrap();
+    assert_eq!(
+        execution.resume(4).unwrap(),
+        ExecutionStatus::Complete(Some(5))
+    );
+}
+
+#[test]
+fn worker_constructor_rejects_invalid_capacity_account_and_quota_without_leaks() {
+    let [vm, tenant, process] = accounts();
+    for capacity in [0, 257, usize::MAX] {
+        assert!(ScalarWorker::new(&tenant, capacity).is_err());
+        assert!(ScalarWorker::with_request_capacity(&tenant, 1, capacity).is_err());
+    }
+    assert!(ScalarWorker::new(&vm, 1).is_err());
+    assert!(ScalarWorker::new(&process, 1).is_err());
+    assert_eq!(vm.used(), Resources::default());
+    let low = vm.tenant(limits(1)).unwrap();
+    assert!(ScalarWorker::new(&low, 1).is_err());
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn worker_idle_and_zero_slice_do_not_modify_actor_or_resources() {
+    let (vm, _tenant, mut worker, _module, pid) = worker_fixture(1, 1, 1);
+    let before = vm.used();
+    assert!(worker.tick(0).is_err());
+    assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Idle);
+    assert_eq!(worker.queued(pid).unwrap(), 0);
+    assert_eq!(worker.process_count(), 1);
+    assert_eq!(vm.used(), before);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn spawn_capacity_and_process_quota_failures_leave_no_partial_actor() {
+    let [vm, tenant, _] = accounts();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let module = module();
+    let before = vm.used();
+    for capacity in [0, 65, usize::MAX] {
+        assert!(worker.spawn(&module, limits(1 << 20), capacity).is_err());
+    }
+    let mut no_process = limits(1 << 20);
+    no_process.processes = 0;
+    assert!(worker.spawn(&module, no_process, 1).is_err());
+    assert!(worker.spawn(&module, limits(1), 1).is_err());
+    assert_eq!(vm.used(), before);
+    assert_eq!(worker.process_count(), 0);
+    worker.spawn(&module, limits(1 << 20), 1).unwrap();
+    let before = vm.used();
+    assert!(worker.spawn(&module, limits(1 << 20), 1).is_err());
+    assert_eq!(vm.used(), before);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn mailbox_wraparound_keeps_fifo_and_rejects_full_without_charging() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
+    let add = module.handler("Add").unwrap();
+    worker.send(pid, &add, &[1], 4).unwrap();
+    worker.send(pid, &add, &[10], 4).unwrap();
+    let full = vm.used();
+    assert!(
+        worker
+            .send(pid, &add, &[1000], 4)
+            .unwrap_err()
+            .contains("mailbox_full")
+    );
+    assert_eq!(vm.used(), full);
+    assert_eq!(worker.tick(4).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 1);
+    worker.send(pid, &add, &[100], 4).unwrap();
+    for expected in [11, 111] {
+        assert_eq!(worker.tick(4).unwrap(), WorkerEvent::Delivered(pid));
+        assert_eq!(worker.committed_state(pid).unwrap(), expected);
+    }
+    assert_eq!(worker.resources(pid).unwrap().messages, 0);
+}
+
+#[test]
+fn round_robin_visits_each_busy_actor_and_commits_only_on_completion() {
+    let (_vm, _tenant, mut worker, module, first) = worker_fixture(2, 1, 1);
+    let second = worker.spawn(&module, limits(4 << 20), 1).unwrap();
+    for pid in [first, second] {
+        worker
+            .send(pid, &module.handler("Add").unwrap(), &[3], 4)
+            .unwrap();
+    }
+    for _ in 0..3 {
+        for pid in [first, second] {
+            assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
+            assert_eq!(worker.committed_state(pid).unwrap(), 0);
+        }
+    }
+    for pid in [first, second] {
+        assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Delivered(pid));
+        assert_eq!(worker.committed_state(pid).unwrap(), 3);
+    }
+    assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Idle);
+}
+
+#[test]
+fn send_and_request_validate_message_kind_arguments_and_module_atomically() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
+    let before = vm.used();
+    let add = module.handler("Add").unwrap();
+    let get = module.handler("Get").unwrap();
+    let ack = module.handler("Ack").unwrap();
+    assert!(worker.send(pid, &get, &[], 4).is_err());
+    assert!(worker.send(pid, &ack, &[], 4).is_err());
+    assert!(
+        worker
+            .request(pid, &add, &[1], 4, Duration::from_secs(60))
+            .is_err()
+    );
+    assert!(worker.send(pid, &add, &[], 4).is_err());
+    assert!(
+        worker
+            .send(pid, &module.handler("Bool").unwrap(), &[2], 4)
+            .is_err()
+    );
+    let foreign = self::module().handler("Add").unwrap();
+    assert!(worker.send(pid, &foreign, &[1], 4).is_err());
+    assert_eq!(worker.queued(pid).unwrap(), 0);
+    assert_eq!(vm.used(), before);
+    let request = worker
+        .request(pid, &ack, &[], 1, Duration::from_secs(60))
+        .unwrap();
+    worker.tick(1).unwrap();
+    assert_eq!(
+        worker.take_reply(request).unwrap(),
+        Some(RequestOutcome::Reply(0))
+    );
+}
+
+#[test]
+fn stale_and_foreign_pids_cannot_access_or_stop_reused_slots() {
+    let (_vm, _tenant, mut worker, module, old) = worker_fixture(1, 1, 1);
+    let (_, _, mut other, _, _) = worker_fixture(1, 1, 1);
+    assert!(other.queued(old).is_err());
+    assert!(other.stop(old).is_err());
+    worker.stop(old).unwrap();
+    let new = worker.spawn(&module, limits(4 << 20), 1).unwrap();
+    assert_ne!(old, new);
+    assert!(worker.stop(old).is_err());
+    assert!(worker.resources(old).is_err());
+    assert!(worker.committed_state(old).is_err());
+    assert!(
+        worker
+            .send(old, &module.handler("Add").unwrap(), &[1], 4)
+            .is_err()
+    );
+    assert_eq!(worker.process_count(), 1);
+    assert_eq!(worker.committed_state(new).unwrap(), 0);
+}
+
+#[test]
+fn completed_reply_holds_pending_capacity_and_charge_until_taken() {
+    let (_vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
+    let get = module.handler("Get").unwrap();
+    let id = worker
+        .request(pid, &get, &[], 1, Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(worker.take_reply(id).unwrap(), None);
+    assert_eq!(worker.resources(pid).unwrap().requests, 1);
+    worker.tick(1).unwrap();
+    assert!(
+        worker
+            .request(pid, &get, &[], 1, Duration::from_secs(60))
+            .unwrap_err()
+            .contains("request_table_full")
+    );
+    assert_eq!(worker.resources(pid).unwrap().messages, 0);
+    assert_eq!(worker.resources(pid).unwrap().requests, 1);
+    assert_eq!(
+        worker.take_reply(id).unwrap(),
+        Some(RequestOutcome::Reply(0))
+    );
+    assert_eq!(worker.resources(pid).unwrap().requests, 0);
+    assert!(worker.take_reply(id).is_err());
+    assert!(worker.cancel_request(id).is_err());
+}
+
+#[test]
+fn consumed_timeout_retains_request_capacity_until_target_message_finishes() {
+    let module = module();
+    let vm = ResourceAccount::vm(limits(32 << 20));
+    let tenant = vm.tenant_accounted(limits(32 << 20)).unwrap();
+    let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 1).unwrap();
+    let pid = worker.spawn(&module, limits(8 << 20), 2).unwrap();
+    let handler = module.handler("Bump").unwrap();
+    let request = worker
+        .request(pid, &handler, &[4], 128, Duration::ZERO)
+        .unwrap();
+    assert_eq!(
+        worker.take_reply(request).unwrap(),
+        Some(RequestOutcome::TimedOut)
+    );
+    assert_eq!(worker.resources(pid).unwrap().requests, 1);
+    let baseline = vm.used();
+    for _ in 0..4 {
+        assert!(
+            worker
+                .request(pid, &handler, &[6], 128, Duration::ZERO)
+                .is_err()
+        );
+        assert_eq!(vm.used(), baseline);
+        assert_eq!(worker.queued(pid).unwrap(), 1);
+    }
+    assert!(worker.take_reply(request).is_err());
+    assert!(worker.cancel_request(request).is_err());
+    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 4);
+    assert_eq!(worker.resources(pid).unwrap().requests, 0);
+    let next = worker
+        .request(pid, &handler, &[6], 128, Duration::from_secs(60))
+        .unwrap();
+    assert_ne!(next, request);
+    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(
+        worker.take_reply(next).unwrap(),
+        Some(RequestOutcome::Reply(10))
+    );
+    drop((worker, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn consumed_terminal_results_keep_all_three_request_limits_until_message_cleanup() {
+    for level in [
+        ResourceLevel::Process,
+        ResourceLevel::Tenant,
+        ResourceLevel::Vm,
+    ] {
+        for cancel in [false, true] {
+            for stop in [false, true] {
+                let mut vm_limit = limits(32 << 20);
+                let mut tenant_limit = vm_limit;
+                let mut process_limit = limits(8 << 20);
+                match level {
+                    ResourceLevel::Vm => vm_limit.requests = 1,
+                    ResourceLevel::Tenant => tenant_limit.requests = 1,
+                    ResourceLevel::Process => process_limit.requests = 1,
+                }
+                let vm = ResourceAccount::vm(vm_limit);
+                let tenant = vm.tenant_accounted(tenant_limit).unwrap();
+                let module = module();
+                let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 2).unwrap();
+                let pid = worker.spawn(&module, process_limit, 2).unwrap();
+                let handler = module.handler("Bump").unwrap();
+                let timeout = if cancel {
+                    Duration::from_secs(60)
+                } else {
+                    Duration::ZERO
+                };
+                let request = worker.request(pid, &handler, &[4], 128, timeout).unwrap();
+                if cancel {
+                    worker.cancel_request(request).unwrap();
+                }
+                let expected = if cancel {
+                    RequestOutcome::Cancelled
+                } else {
+                    RequestOutcome::TimedOut
+                };
+                assert_eq!(worker.take_reply(request).unwrap(), Some(expected));
+                let baseline = vm.used();
+                assert!(
+                    worker
+                        .request(pid, &handler, &[6], 128, Duration::ZERO)
+                        .is_err()
+                );
+                assert_eq!(vm.used(), baseline);
+                assert_eq!(worker.queued(pid).unwrap(), 1);
+                if stop {
+                    worker.stop(pid).unwrap();
+                } else {
+                    assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Delivered(pid));
+                    assert_eq!(worker.committed_state(pid).unwrap(), 4);
+                }
+                assert_eq!(vm.used().requests, 0);
+                assert!(worker.take_reply(request).is_err());
+                drop((worker, tenant));
+                assert_eq!(vm.used(), Resources::default());
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_timeout_retains_slot_until_late_message_finishes_then_reuses_generation() {
+    let (_vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 2);
+    let bump = module.handler("Bump").unwrap();
+    let old = worker.request(pid, &bump, &[5], 4, Duration::ZERO).unwrap();
+    assert_eq!(
+        worker.take_reply(old).unwrap(),
+        Some(RequestOutcome::TimedOut)
+    );
+    assert_eq!(worker.queued(pid).unwrap(), 1);
+    assert!(worker.request(pid, &bump, &[7], 4, Duration::ZERO).is_err());
+    worker.tick(4).unwrap();
+    assert_eq!(worker.committed_state(pid).unwrap(), 5);
+    let new = worker
+        .request(pid, &bump, &[7], 4, Duration::from_secs(60))
+        .unwrap();
+    assert_ne!(old, new);
+    assert!(worker.take_reply(old).is_err());
+    assert_eq!(worker.take_reply(new).unwrap(), None);
+    worker.tick(4).unwrap();
+    assert_eq!(
+        worker.take_reply(new).unwrap(),
+        Some(RequestOutcome::Reply(12))
+    );
+    assert_eq!(worker.committed_state(pid).unwrap(), 12);
+}
+
+#[test]
+fn cancellation_during_suspension_is_terminal_but_does_not_cancel_actor_effects() {
+    let (_vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
+    let id = worker
+        .request(
+            pid,
+            &module.handler("Bump").unwrap(),
+            &[5],
+            4,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
+    worker.cancel_request(id).unwrap();
+    worker.cancel_request(id).unwrap();
+    assert_eq!(worker.tick(3).unwrap(), WorkerEvent::Delivered(pid));
+    assert_eq!(worker.committed_state(pid).unwrap(), 5);
+    assert_eq!(
+        worker.take_reply(id).unwrap(),
+        Some(RequestOutcome::Cancelled)
+    );
+}
+
+#[test]
+fn cancel_does_not_replace_already_completed_or_timed_out_outcome() {
+    let (_vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
+    let get = module.handler("Get").unwrap();
+    let complete = worker
+        .request(pid, &get, &[], 1, Duration::from_secs(60))
+        .unwrap();
+    worker.tick(1).unwrap();
+    worker.cancel_request(complete).unwrap();
+    assert_eq!(
+        worker.take_reply(complete).unwrap(),
+        Some(RequestOutcome::Reply(0))
+    );
+    let timed_out = worker.request(pid, &get, &[], 1, Duration::ZERO).unwrap();
+    worker.cancel_request(timed_out).unwrap();
+    assert_eq!(
+        worker.take_reply(timed_out).unwrap(),
+        Some(RequestOutcome::TimedOut)
+    );
+}
+
+#[test]
+fn request_enqueue_failure_rolls_back_pending_quota_and_slot() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[1], 4)
+        .unwrap();
+    let before = vm.used();
+    assert!(
+        worker
+            .request(
+                pid,
+                &module.handler("Get").unwrap(),
+                &[],
+                1,
+                Duration::from_secs(60)
+            )
+            .unwrap_err()
+            .contains("mailbox_full")
+    );
+    assert_eq!(vm.used(), before);
+    assert_eq!(worker.resources(pid).unwrap().requests, 0);
+    worker.tick(4).unwrap();
+    let id = worker
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    worker.tick(1).unwrap();
+    assert_eq!(
+        worker.take_reply(id).unwrap(),
+        Some(RequestOutcome::Reply(1))
+    );
+}
+
+#[test]
+fn request_and_message_quota_failures_do_not_consume_pending_slots() {
+    for resource in ["requests", "messages"] {
+        let [vm, tenant, _] = accounts();
+        let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+        let module = module();
+        let mut process_limit = limits(4 << 20);
+        if resource == "requests" {
+            process_limit.requests = 0;
+        } else {
+            process_limit.messages = 0;
+        }
+        let pid = worker.spawn(&module, process_limit, 1).unwrap();
+        let before = vm.used();
+        for _ in 0..2 {
+            assert!(
+                worker
+                    .request(
+                        pid,
+                        &module.handler("Get").unwrap(),
+                        &[],
+                        1,
+                        Duration::from_secs(60)
+                    )
+                    .unwrap_err()
+                    .contains("resource_exhausted")
+            );
+            assert_eq!(worker.queued(pid).unwrap(), 0);
+            assert_eq!(vm.used(), before);
+        }
+    }
+}
+
+#[test]
+fn managed_failure_marks_queued_requests_failed_and_releases_all_actor_resources() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 2, 2);
+    let first = worker
+        .request(
+            pid,
+            &module.handler("FailRequest").unwrap(),
+            &[],
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let second = worker
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    assert!(
+        matches!(worker.tick(1).unwrap(), WorkerEvent::Exited { pid: exited, reason } if exited == pid && reason.contains("division by zero"))
+    );
+    assert_eq!(worker.process_count(), 0);
+    assert_eq!(vm.used().messages, 0);
+    assert_eq!(vm.used().processes, 0);
+    assert_eq!(vm.used().requests, 2);
+    for id in [first, second] {
+        assert_eq!(worker.take_reply(id).unwrap(), Some(RequestOutcome::Failed));
+    }
+    assert_eq!(vm.used().requests, 0);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn stop_of_suspended_actor_preserves_terminal_results_and_cleans_live_stack() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 2, 2);
+    let get = module.handler("Get").unwrap();
+    let expired = worker.request(pid, &get, &[], 1, Duration::ZERO).unwrap();
+    let waiting = worker
+        .request(pid, &get, &[], 1, Duration::from_secs(60))
+        .unwrap();
+    worker.stop(pid).unwrap();
+    assert_eq!(
+        worker.take_reply(expired).unwrap(),
+        Some(RequestOutcome::TimedOut)
+    );
+    assert_eq!(
+        worker.take_reply(waiting).unwrap(),
+        Some(RequestOutcome::Failed)
+    );
+    let pid = worker.spawn(&module, limits(4 << 20), 1).unwrap();
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[1], 4)
+        .unwrap();
+    assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
+    worker.stop(pid).unwrap();
+    assert_eq!(vm.used().messages, 0);
+    assert_eq!(vm.used().processes, 0);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn request_ids_are_worker_bound_and_drop_releases_unconsumed_results() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
+    let id = worker
+        .request(
+            pid,
+            &module.handler("Get").unwrap(),
+            &[],
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let (_, _, mut other, _, _) = worker_fixture(1, 1, 1);
+    assert!(other.take_reply(id).is_err());
+    assert!(other.cancel_request(id).is_err());
+    worker.tick(1).unwrap();
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn tick_start_quota_failure_preserves_mailbox_and_committed_state() {
+    let [vm, tenant, _] = accounts();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let module = module();
+    let baseline = vm.used();
+    assert!(worker.spawn(&module, limits(16 * 1024), 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    let probe = worker.spawn(&module, limits(1 << 20), 1).unwrap();
+    let actor_bytes = worker.resources(probe).unwrap().bytes;
+    worker.stop(probe).unwrap();
+    let stack_bytes = StackPool::new(1, 0).unwrap().stats().reserved_bytes as u64;
+    let before = vm.used();
+    assert!(
+        worker
+            .spawn(&module, limits(actor_bytes + stack_bytes), 1)
+            .is_err()
+    );
+    assert_eq!(vm.used(), before);
+    let pid = worker
+        .spawn(
+            &module,
+            limits(actor_bytes + stack_bytes + crate::execution::INVOCATION_OVERHEAD),
+            1,
+        )
+        .unwrap();
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[1], 4)
+        .unwrap();
+    let before = vm.used();
+    assert!(worker.tick(4).unwrap_err().contains("resource_exhausted"));
+    assert_eq!(worker.queued(pid).unwrap(), 1);
+    assert_eq!(worker.committed_state(pid).unwrap(), 0);
+    assert_eq!(vm.used(), before);
+    worker.stop(pid).unwrap();
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn worker_timer_is_optional_validates_arguments_and_charges_once() {
+    let (vm, _tenant, mut worker, _, _) = worker_fixture(1, 1, 1);
+    let before = vm.used();
+    assert!(worker.tick_timed(1, Duration::from_secs(1)).is_err());
+    assert!(worker.tick_timed(0, Duration::from_secs(1)).is_err());
+    assert!(worker.tick_timed(1, Duration::ZERO).is_err());
+    assert!(worker.tick_timed(1, Duration::MAX).is_err());
+    assert_eq!(vm.used(), before);
+    worker.enable_timer().unwrap();
+    let enabled = vm.used();
+    assert!(enabled.bytes > before.bytes);
+    assert!(worker.enable_timer().is_err());
+    assert_eq!(vm.used(), enabled);
+    assert_eq!(
+        worker.tick_timed(1, Duration::from_secs(60)).unwrap(),
+        WorkerEvent::Idle
+    );
+    assert_eq!(vm.used(), enabled);
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn worker_account_metadata_is_parent_charged_and_spawn_failures_roll_it_back() {
+    let vm = ResourceAccount::vm(limits(16 << 20));
+    let tenant = vm.tenant_accounted(limits(16 << 20)).unwrap();
+    let tenant_metadata = vm.used();
+    let probe = tenant.process_accounted(limits(4 << 20)).unwrap();
+    let node_bytes = tenant.used().bytes;
+    drop(probe);
+    assert!(node_bytes > 0);
+    assert_eq!(tenant.used(), Resources::default());
+    let blueprint = module();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let baseline = vm.used();
+    let pid = worker.spawn(&blueprint, limits(4 << 20), 1).unwrap();
+    let actor_bytes = worker.resources(pid).unwrap().bytes;
+    assert_eq!(vm.used().bytes - baseline.bytes, actor_bytes + node_bytes);
+    worker.stop(pid).unwrap();
+    assert_eq!(vm.used(), baseline);
+    for target in [&vm, &tenant] {
+        let held = target
+            .reserve(Resources {
+                bytes: target.limit().bytes - target.used().bytes - actor_bytes - node_bytes + 1,
+                ..Resources::default()
+            })
+            .unwrap();
+        let blocked = vm.used();
+        assert!(worker.spawn(&blueprint, limits(4 << 20), 1).is_err());
+        assert_eq!(vm.used(), blocked);
+        assert_eq!(worker.process_count(), 0);
+        drop(held);
+        assert_eq!(vm.used(), baseline);
+    }
+    let mut invalid = module();
+    Arc::get_mut(&mut invalid.inner).unwrap().initializer = fail;
+    assert!(worker.spawn(&invalid, limits(4 << 20), 1).is_err());
+    assert_eq!(vm.used(), baseline);
+    drop(worker);
+    assert_eq!(vm.used(), tenant_metadata);
+    drop(tenant);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn worker_drop_cancels_suspended_work_and_joins_enabled_timer() {
+    let (vm, _tenant, mut worker, module, pid) = worker_fixture(1, 1, 1);
+    worker.enable_timer().unwrap();
+    worker
+        .send(pid, &module.handler("Add").unwrap(), &[1], 4)
+        .unwrap();
+    assert_eq!(
+        worker.tick_timed(1, Duration::from_secs(60)).unwrap(),
+        WorkerEvent::Suspended(pid)
+    );
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn timer_quota_failure_is_atomic_and_does_not_enable_timer() {
+    let [vm, tenant, _] = accounts();
+    let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
+    let held = tenant
+        .reserve(Resources {
+            bytes: tenant.limit().bytes - tenant.used().bytes,
+            ..Resources::default()
+        })
+        .unwrap();
+    let before = vm.used();
+    assert!(
+        worker
+            .enable_timer()
+            .unwrap_err()
+            .contains("resource_exhausted")
+    );
+    assert_eq!(vm.used(), before);
+    assert!(worker.tick_timed(1, Duration::from_secs(1)).is_err());
+    drop(held);
+    worker.enable_timer().unwrap();
+    drop(worker);
+    assert_eq!(vm.used(), Resources::default());
+}

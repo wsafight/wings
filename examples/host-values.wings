@@ -1,0 +1,34 @@
+actor HostValues {
+  struct Boxed { value: int }
+  state saved = 0
+
+  fn score(value: bytes) -> int {
+    value.len() * 512 + if value.len() == 0 { 0 } else {
+      value.at(0) + value.at(value.len() - 1)
+    }
+  }
+
+  fn total(first: bytes, record: Boxed, values: [int], second: bytes, flag: bool) -> int {
+    score(first) + score(second) + record.value +
+      if values.is_empty() { 0 } else { values.head() +
+        if values.tail().is_empty() { 0 } else { values.tail().head() }
+      } + if flag { 1 } else { 0 }
+  }
+
+  on store(first: bytes, record: Boxed, values: [int], second: bytes, flag: bool, unit: ()) {
+    gc()
+    saved = total(first, record, values, second, flag)
+    gc()
+  }
+
+  on compute(first: bytes, record: Boxed, values: [int], second: bytes, flag: bool, unit: ()) -> int {
+    gc()
+    saved = total(first, record, values, second, flag)
+    gc()
+    saved
+  }
+
+  on echo(flag: bool) -> bool { flag }
+  on ack(value: bytes) -> () { gc(); () }
+  on get -> int { saved }
+}
