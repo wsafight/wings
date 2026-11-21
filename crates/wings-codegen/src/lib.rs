@@ -16,7 +16,10 @@ use wings_abi::{
     STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
     STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, host_target,
 };
-use wings_artifact::{FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest, handler_symbol, library_name};
+use wings_artifact::{
+    BUNDLE_FORMAT_VERSION, BundleManifest, FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest,
+    handler_symbol, library_name,
+};
 use wings_ir::{Comparison, Function, Operation, Operator, Program};
 
 pub const MAX_SCALAR_FRAME_BYTES: u32 = 64 * 1024;
@@ -26,6 +29,42 @@ const EFFECT_ARGUMENT_OFFSET: i32 = EFFECT_RESULT_OFFSET + 8;
 
 pub fn build(program: &Program, directory: &Path) -> Result<(), String> {
     build_with_frame_limit(program, directory, MAX_SCALAR_FRAME_BYTES)
+}
+
+pub fn build_app(programs: &[Program], directory: &Path) -> Result<(), String> {
+    if programs.is_empty() || programs.len() > wings_artifact::MAX_BUNDLE_ACTORS {
+        return Err("application bundle requires 1..=32 actors".into());
+    }
+    let actors: Vec<String> = programs.iter().map(|p| p.name.clone()).collect();
+    let entry = actors
+        .iter()
+        .find(|name| name.as_str() == "Main")
+        .cloned()
+        .unwrap_or_else(|| actors.last().expect("non-empty actors").clone());
+    let bundle_bytes = BundleManifest {
+        format: BUNDLE_FORMAT_VERSION,
+        abi: SCALAR_ABI_VERSION,
+        target: host_target()?.into(),
+        entry,
+        actors,
+    }
+    .encode()?;
+
+    fs::create_dir(directory).map_err(|error| format!("create new bundle directory: {error}"))?;
+    let build_inner = (|| -> Result<(), String> {
+        let actors_dir = directory.join("actors");
+        fs::create_dir(&actors_dir).map_err(|error| error.to_string())?;
+        for program in programs {
+            build(program, &actors_dir.join(&program.name))?;
+        }
+        fs::write(directory.join("bundle.json"), bundle_bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if build_inner.is_err() {
+        let _ = fs::remove_dir_all(directory);
+    }
+    build_inner
 }
 
 pub fn build_with_frame_limit(
@@ -70,23 +109,61 @@ pub fn build_with_frame_limit(
     let object = ObjectBuilder::new(isa, "wings_scalar", default_libcall_names())
         .map_err(|error| error.to_string())?;
     let mut module = ObjectModule::new(object);
-    let mut procedures = Vec::new();
-    let mut procedure_summaries = Vec::new();
+    let pointer_type = module.target_config().pointer_type();
+    let mut entry_sig = module.make_signature();
+    entry_sig.params = vec![
+        AbiParam::new(types::I64),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+        AbiParam::new(pointer_type),
+    ];
+    entry_sig.returns = vec![AbiParam::new(types::I32)];
+    let mut procedures = Vec::with_capacity(program.functions.len());
+    for index in 0..program.functions.len() {
+        let func_id = module
+            .declare_function(
+                &format!("wings_managed_function_{index}"),
+                Linkage::Local,
+                &entry_sig,
+            )
+            .map_err(|error| error.to_string())?;
+        procedures.push(func_id);
+    }
+    let mut procedure_frames = Vec::with_capacity(program.functions.len());
     for (index, procedure) in program.functions.iter().enumerate() {
-        let (func_id, entry_frame) = compile_function(
+        let (_, entry_frame) = compile_function(
             &mut module,
             &format!("wings_managed_function_{index}"),
             &procedure.function,
             max_frame_bytes,
             Linkage::Local,
+            Some(procedures[index]),
             &procedures,
         )?;
-        procedures.push(func_id);
-        procedure_summaries.push(summarize_direct_function(
-            &procedure.function,
-            entry_frame,
-            &procedure_summaries,
-        ));
+        procedure_frames.push(entry_frame);
+    }
+    let mut procedure_summaries = vec![DirectSummary::default(); program.functions.len()];
+    for _ in 0..program.functions.len() {
+        let mut next = Vec::with_capacity(program.functions.len());
+        let mut changed = false;
+        for (index, procedure) in program.functions.iter().enumerate() {
+            let summary = summarize_direct_function(
+                &procedure.function,
+                procedure_frames[index],
+                &procedure_summaries,
+            );
+            if summary.eligible != procedure_summaries[index].eligible
+                || summary.base_steps != procedure_summaries[index].base_steps
+                || summary.max_stack_bytes != procedure_summaries[index].max_stack_bytes
+            {
+                changed = true;
+            }
+            next.push(summary);
+        }
+        procedure_summaries = next;
+        if !changed {
+            break;
+        }
     }
     compile_function(
         &mut module,
@@ -94,6 +171,7 @@ pub fn build_with_frame_limit(
         &program.initializer,
         max_frame_bytes,
         Linkage::Export,
+        None,
         &procedures,
     )?;
     let mut direct_meta_bytes = Vec::with_capacity(program.handlers.len() * 16);
@@ -104,6 +182,7 @@ pub fn build_with_frame_limit(
             &handler.function,
             max_frame_bytes,
             Linkage::Export,
+            None,
             &procedures,
         )?;
         let summary =
@@ -292,6 +371,7 @@ fn compile_function(
     function: &Function,
     max_frame_bytes: u32,
     linkage: Linkage,
+    declared_id: Option<FuncId>,
     procedures: &[FuncId],
 ) -> Result<(FuncId, u32), String> {
     let (body, frame_bytes) = compile_body(module, name, function, max_frame_bytes, procedures)?;
@@ -304,9 +384,12 @@ fn compile_function(
         AbiParam::new(pointer_type),
     ];
     context.func.signature.returns = vec![AbiParam::new(types::I32)];
-    let identifier = module
-        .declare_function(name, linkage, &context.func.signature)
-        .map_err(|error| error.to_string())?;
+    let identifier = match declared_id {
+        Some(id) => id,
+        None => module
+            .declare_function(name, linkage, &context.func.signature)
+            .map_err(|error| error.to_string())?,
+    };
     let body = module.declare_func_in_func(body, &mut context.func);
     let mut builder_context = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -541,9 +624,12 @@ fn compile_body(
                 instruction.operation,
                 Operation::SendSelf { .. }
                     | Operation::Send { .. }
+                    | Operation::SendActor { .. }
                     | Operation::SelfPid
                     | Operation::SpawnSelf
+                    | Operation::SpawnActor(_)
                     | Operation::Request { .. }
+                    | Operation::RequestActor { .. }
                     | Operation::CancelRequest(_)
             )
         })
@@ -816,9 +902,12 @@ fn compile_body(
             }
             Operation::SendSelf { .. }
             | Operation::Send { .. }
+            | Operation::SendActor { .. }
             | Operation::SelfPid
             | Operation::SpawnSelf
+            | Operation::SpawnActor(_)
             | Operation::Request { .. }
+            | Operation::RequestActor { .. }
             | Operation::CancelRequest(_) => {
                 let (operation, handler, arguments): (_, _, &[usize]) = match &instruction.operation
                 {
@@ -828,11 +917,32 @@ fn compile_body(
                     Operation::Send {
                         handler, arguments, ..
                     } => (wings_abi::EFFECT_SEND, *handler, arguments),
+                    Operation::SendActor {
+                        actor,
+                        handler,
+                        arguments,
+                        ..
+                    } => (
+                        wings_abi::EFFECT_SEND_ACTOR,
+                        (*actor << 16) | *handler,
+                        arguments,
+                    ),
                     Operation::SelfPid => (wings_abi::EFFECT_SELF_PID, 0, &[]),
                     Operation::SpawnSelf => (wings_abi::EFFECT_SPAWN_SELF, 0, &[]),
+                    Operation::SpawnActor(actor) => (wings_abi::EFFECT_SPAWN_ACTOR, *actor, &[]),
                     Operation::Request {
                         handler, arguments, ..
                     } => (wings_abi::EFFECT_REQUEST, *handler, arguments),
+                    Operation::RequestActor {
+                        actor,
+                        handler,
+                        arguments,
+                        ..
+                    } => (
+                        wings_abi::EFFECT_REQUEST_ACTOR,
+                        (*actor << 16) | *handler,
+                        arguments,
+                    ),
                     Operation::CancelRequest(_) => (wings_abi::EFFECT_CANCEL_REQUEST, 0, &[]),
                     _ => unreachable!(),
                 };
@@ -929,15 +1039,19 @@ fn compile_body(
                 let target = builder.ins().iconst(types::I32, handler as i64);
                 let operation = builder.ins().iconst(types::I32, i64::from(operation));
                 let pid = match &instruction.operation {
-                    Operation::Send { target, .. } | Operation::Request { target, .. } => {
-                        registers[*target]
-                    }
+                    Operation::Send { target, .. }
+                    | Operation::SendActor { target, .. }
+                    | Operation::Request { target, .. }
+                    | Operation::RequestActor { target, .. } => registers[*target],
                     Operation::CancelRequest(target) => registers[*target],
                     _ => builder.ins().iconst(types::I64, 0),
                 };
                 let count = builder.ins().iconst(pointer_type, arguments.len() as i64);
                 let (completion, timeout) = match &instruction.operation {
                     Operation::Request {
+                        callback, timeout, ..
+                    }
+                    | Operation::RequestActor {
                         callback, timeout, ..
                     } => (*callback, registers[*timeout]),
                     _ => (0, builder.ins().iconst(types::I64, 0)),

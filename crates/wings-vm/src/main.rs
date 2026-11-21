@@ -1,7 +1,11 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use wings_vm::{ResourceAccount, Resources, ScalarModule, StackPool};
+use wings_vm::{
+    MessageValue, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
+    SchedulerConfig, StackPool,
+};
 
 mod cli;
 mod cli_args;
@@ -68,8 +72,111 @@ fn start(vm: &ResourceAccount, reporter: &mut cli_report::Reporter) -> Result<Ex
                 *heap_records,
             )?;
         }
+        cli_args::Command::Serve {
+            directory,
+            workers,
+            max_steps,
+            heap_records,
+        } => {
+            serve(
+                &account,
+                Path::new(directory),
+                *workers,
+                *max_steps,
+                *heap_records,
+            )?;
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn serve(
+    cli_account: &ResourceAccount,
+    directory: &Path,
+    workers: usize,
+    max_steps: u64,
+    heap_records: Option<usize>,
+) -> Result<(), String> {
+    let app_limits = Resources {
+        bytes: 256 << 20,
+        processes: 1024,
+        messages: 4096,
+        requests: 256,
+    };
+    let app_vm = ResourceAccount::vm_accounted(app_limits)?;
+    let app_tenant = app_vm.tenant_accounted(app_limits)?;
+    let (modules, entry_idx) = if directory.join("bundle.json").exists() {
+        unsafe { ScalarModule::load_bundle_accounted(directory, &app_vm) }?
+    } else {
+        let single = unsafe { ScalarModule::load_accounted(directory, &app_vm) }?;
+        (vec![single], 0)
+    };
+    let scheduler = Scheduler::new(
+        &app_tenant,
+        SchedulerConfig {
+            workers,
+            capacity: 256,
+            requests: 256,
+            ..SchedulerConfig::default()
+        },
+    )?;
+    let handle = scheduler.handle();
+    handle.register_modules(&modules)?;
+    let entry_module = &modules[entry_idx];
+    let actor_limits = Resources {
+        bytes: 16 << 20,
+        processes: 256,
+        messages: 512,
+        requests: 128,
+    };
+    let entry_pid = match heap_records {
+        Some(records) => handle.spawn_with_heap(entry_module, actor_limits, 64, records)?,
+        None => handle.spawn_with_heap(entry_module, actor_limits, 64, 256)?,
+    };
+    let mut adapter = cli::Adapter::new(cli_account)?;
+    let mut stdio = cli_io::Stdio::new(cli_account)?;
+    let (reader, writer) = stdio.streams();
+    while let Some(request) = adapter.read_request(reader)? {
+        let handler = entry_module.handler(request.message.as_str())?;
+        let schema = handler.schema();
+        let reply_type = schema.reply;
+        let raw_scalars = request.arguments.scalars(&schema.parameters)?;
+        let mut message_values = [MessageValue::Unit; 64];
+        for (idx, (_, param_ty)) in schema.parameters.iter().enumerate() {
+            message_values[idx] = match param_ty {
+                wings_abi::ValueType::Int => MessageValue::Int(raw_scalars[idx]),
+                wings_abi::ValueType::Bool => MessageValue::Bool(raw_scalars[idx] != 0),
+                wings_abi::ValueType::Unit => MessageValue::Unit,
+                _ => return Err("CLI input supports only Int, Bool and Unit parameters".into()),
+            };
+        }
+        let values = &message_values[..schema.parameters.len()];
+        if reply_type.is_none() {
+            handle.send_values(entry_pid, &handler, values, max_steps)?;
+            adapter.write_reply(writer, None, None)?;
+            continue;
+        }
+        let mut pending = handle.request_values(
+            entry_pid,
+            &handler,
+            values,
+            max_steps,
+            Duration::from_secs(30),
+        )?;
+        match pending.wait(Duration::from_secs(30))? {
+            Some(RequestOutcome::Reply(val)) => {
+                adapter.write_reply(writer, reply_type, Some(val))?
+            }
+            Some(RequestOutcome::ReplyString(val)) => adapter.write_string_reply(writer, &val)?,
+            Some(RequestOutcome::ReplyBytes(val)) => adapter.write_bytes_reply(writer, &val)?,
+            Some(RequestOutcome::ReplyList(val)) => adapter.write_list_reply(writer, &val)?,
+            Some(RequestOutcome::ReplyRecord(val)) => adapter.write_record_reply(writer, &val)?,
+            Some(RequestOutcome::TimedOut) | None => return Err("request timed out".into()),
+            Some(RequestOutcome::Cancelled) => return Err("request cancelled".into()),
+            Some(RequestOutcome::Failed) => return Err("managed actor handler failed".into()),
+        }
+    }
+    Ok(())
 }
 
 fn run(

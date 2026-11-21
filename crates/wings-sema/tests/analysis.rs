@@ -426,3 +426,71 @@ fn symbol_queries_utf8_spans_and_diagnostic_budget_hold() {
     assert_eq!(capped.diagnostics.len(), MAX_DIAGNOSTICS);
     assert!(capped.diagnostics.iter().all(|d| d.code == "T005"));
 }
+
+#[test]
+fn recursion_forward_functions_and_multi_actor_protocols_typecheck() {
+    checked(
+        r#"
+        struct Task { id: int, label: str }
+        struct Outcome { id: int, score: int }
+
+        actor Helper {
+          fn is_even(n: int) -> bool => if n == 0 { true } else { is_odd(n - 1) }
+          fn is_odd(n: int) -> bool => if n == 0 { false } else { is_even(n - 1) }
+          fn fact(n: int) -> int => if n <= 1 { 1 } else { n * fact(n - 1) }
+
+          on fire(delta: int) {}
+          on evaluate(task: Task) -> Outcome => Outcome {
+            id: task.id,
+            score: if is_even(task.id) { fact(4) } else { task.label.len() },
+          }
+        }
+
+        actor Supervisor {
+          state acc = 0
+          fn helper_passthrough(p: pid<Helper>) -> pid<Helper> => p
+
+          on run -> int {
+            let h = helper_passthrough(spawn(Helper))
+            h ! fire(1)
+            h.ask(evaluate(Task { id: 2, label: "ok" }), timeout: 100, then: on_eval)
+            acc
+          }
+
+          on reply on_eval(id: req, status: int, out: Outcome) {
+            if status == 0 {
+              acc += out.score
+            }
+          }
+        }
+        "#,
+    );
+
+    assert_error(
+        "actor A { on go { let w = spawn(Missing) } }",
+        "T002",
+        "unknown actor 'Missing'",
+    );
+    assert_error(
+        "actor W { on ping {} } actor M { state saved: pid<W> = spawn(W) }",
+        "T018",
+        "capabilities",
+    );
+    assert_error(
+        r#"
+        actor W {
+          struct Local { x: int }
+          on take(v: Local) {}
+        }
+        actor M {
+          struct Local { x: int, y: int }
+          on go {
+            let w = spawn(W)
+            w ! take(Local { x: 1, y: 2 })
+          }
+        }
+        "#,
+        "T019",
+        "shared top-level struct",
+    );
+}

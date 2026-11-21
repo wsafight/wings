@@ -351,3 +351,25 @@ fn v2_ergonomic_features_build_cleanly() {
     build(showcase, &directory.artifact()).unwrap();
     assert!(directory.artifact().join("manifest.json").is_file());
 }
+
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
+#[test]
+fn multi_actor_bundle_and_recursive_functions_build_via_cli() {
+    let directory = Directory::new();
+    let app_source = include_str!("../../../examples/multi-actor-app.wings");
+    let source = directory.source(app_source);
+    let bundle = directory.artifact();
+    let output = cli(&[
+        OsStr::new("build-app"),
+        source.as_os_str(),
+        OsStr::new("-o"),
+        bundle.as_os_str(),
+    ]);
+    assert_exit(&output, 0);
+    assert!(bundle.join("bundle.json").is_file());
+    assert!(bundle.join("actors/Worker/manifest.json").is_file());
+    assert!(bundle.join("actors/Main/manifest.json").is_file());
+}

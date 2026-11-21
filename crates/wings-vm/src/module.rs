@@ -100,6 +100,62 @@ impl ScalarModule {
         unsafe { Self::load(directory, Some(vm)) }
     }
 
+    /// # Safety
+    /// Every actor artifact in `directory/actors/<name>` must satisfy the same
+    /// trusted native code and lifetime requirements as `load_trusted`.
+    pub unsafe fn load_bundle_trusted(directory: &Path) -> Result<(Vec<Self>, usize), String> {
+        unsafe { Self::load_bundle(directory, None) }
+    }
+
+    /// # Safety
+    /// Every actor artifact in `directory/actors/<name>` must satisfy the same
+    /// trusted native code and lifetime requirements as `load_accounted`.
+    pub unsafe fn load_bundle_accounted(
+        directory: &Path,
+        vm: &ResourceAccount,
+    ) -> Result<(Vec<Self>, usize), String> {
+        if vm.level() != ResourceLevel::Vm {
+            return Err("bundle loading requires a VM resource account".into());
+        }
+        unsafe { Self::load_bundle(directory, Some(vm)) }
+    }
+
+    unsafe fn load_bundle(
+        directory: &Path,
+        vm: Option<&ResourceAccount>,
+    ) -> Result<(Vec<Self>, usize), String> {
+        let resolved = if vm.is_some() {
+            crate::module_path::resolve(directory)?
+        } else {
+            directory
+                .canonicalize()
+                .map_err(|error| error.to_string())?
+        };
+        let bundle = wings_artifact::BundleManifest::read(&resolved)?;
+        let actors_dir = resolved.join("actors");
+        let mut modules = Vec::new();
+        modules
+            .try_reserve_exact(bundle.actors.len())
+            .map_err(|error| error.to_string())?;
+        for actor_name in &bundle.actors {
+            let module = unsafe { Self::load(&actors_dir.join(actor_name), vm) }?;
+            if &module.manifest().process != actor_name {
+                return Err(format!(
+                    "bundle actor '{}' manifest declares '{}'",
+                    actor_name,
+                    module.manifest().process
+                ));
+            }
+            modules.push(module);
+        }
+        let entry_idx = bundle
+            .actors
+            .iter()
+            .position(|name| name == &bundle.entry)
+            .ok_or("bundle entry actor missing")?;
+        Ok((modules, entry_idx))
+    }
+
     unsafe fn load(directory: &Path, vm: Option<&ResourceAccount>) -> Result<Self, String> {
         let trace = crate::startup_trace::begin_load();
         crate::startup_trace::mark(trace, "module_load_begin");

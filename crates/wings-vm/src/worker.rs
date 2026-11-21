@@ -113,6 +113,7 @@ pub struct ScalarWorker {
     requests: Box<[RequestSlot]>,
     pool: StackPool,
     tenant: ResourceAccount,
+    modules: Option<(Box<[ScalarModule]>, Reservation)>,
     cursor: usize,
     last_exit: Option<ExitSnapshot>,
     _charge: Reservation,
@@ -238,10 +239,32 @@ impl ScalarWorker {
             requests,
             pool,
             tenant: tenant.clone(),
+            modules: None,
             cursor: 0,
             last_exit: None,
             _charge: charge,
         })
+    }
+
+    pub fn register_modules(&mut self, modules: &[ScalarModule]) -> Result<(), String> {
+        if modules.is_empty() || modules.len() > wings_artifact::MAX_BUNDLE_ACTORS {
+            return Err("worker module registry requires 1..=32 modules".into());
+        }
+        let bytes = std::mem::size_of_val(modules);
+        let charge = self.tenant.reserve(Resources {
+            bytes: bytes as u64,
+            ..Resources::default()
+        })?;
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(modules.len())
+            .map_err(|error| error.to_string())?;
+        if owned.capacity() != modules.len() {
+            return Err("allocator changed worker module registry capacity".into());
+        }
+        owned.extend_from_slice(modules);
+        self.modules = Some((owned.into_boxed_slice(), charge));
+        Ok(())
     }
 
     pub fn enable_timer(&mut self) -> Result<(), String> {
@@ -1063,7 +1086,7 @@ impl ScalarWorker {
             .message
             .max_steps;
         match effect.operation {
-            wings_abi::EFFECT_REQUEST => {
+            wings_abi::EFFECT_REQUEST | wings_abi::EFFECT_REQUEST_ACTOR => {
                 let result = self.language_request(pid, effect);
                 match result {
                     Ok(value) => (wings_abi::STATUS_OK, value),
@@ -1094,11 +1117,21 @@ impl ScalarWorker {
             wings_abi::EFFECT_SELF_PID if effect.count == 0 => {
                 (wings_abi::STATUS_OK, actor.capability)
             }
-            wings_abi::EFFECT_SPAWN_SELF if effect.count == 0 => {
+            wings_abi::EFFECT_SPAWN_SELF | wings_abi::EFFECT_SPAWN_ACTOR if effect.count == 0 => {
                 let limits = actor.account.limit();
                 let capacity = actor.mailbox.slots.len();
                 let heap_records = actor.heap_records;
-                match self.spawn_configured(&module, limits, capacity, heap_records) {
+                let target_mod = if effect.operation == wings_abi::EFFECT_SPAWN_SELF {
+                    Some(module)
+                } else {
+                    self.modules
+                        .as_ref()
+                        .and_then(|(mods, _)| mods.get(effect.handler).cloned())
+                };
+                match target_mod
+                    .ok_or_else(|| "unregistered spawn actor".into())
+                    .and_then(|m| self.spawn_configured(&m, limits, capacity, heap_records))
+                {
                     Ok(child) => (
                         wings_abi::STATUS_OK,
                         self.actor(child).expect("spawned actor").capability,
@@ -1106,7 +1139,7 @@ impl ScalarWorker {
                     Err(_) => (wings_abi::STATUS_SPAWN_REJECTED, 0),
                 }
             }
-            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND => {
+            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_SEND_ACTOR => {
                 let target = if effect.operation == wings_abi::EFFECT_SEND_SELF {
                     Some(pid)
                 } else {
@@ -1117,27 +1150,38 @@ impl ScalarWorker {
                             .map(|_| self.pid(index))
                     })
                 };
-                let accepted = target
-                    .zip(module.manifest().handlers.get(effect.handler))
-                    .and_then(|(target, schema)| {
-                        module
-                            .handler(&schema.name)
-                            .ok()
-                            .map(|handler| (target, handler))
+                let target_and_handler = if effect.operation == wings_abi::EFFECT_SEND_ACTOR {
+                    let actor_idx = effect.handler >> 16;
+                    let h_idx = effect.handler & 0xFFFF;
+                    target.and_then(|target| {
+                        let reg_mod = self.modules.as_ref()?.0.get(actor_idx)?;
+                        let schema = reg_mod.manifest().handlers.get(h_idx)?;
+                        let handler = reg_mod.handler(&schema.name).ok()?;
+                        Some((target, handler))
                     })
-                    .is_some_and(|(target, handler)| {
-                        self.enqueue_payload(
-                            target,
-                            &handler,
-                            &effect.arguments[..effect.count],
-                            budget,
-                            None,
-                            effect.record_mask,
-                            &effect.lists,
-                            effect.bytes,
-                        )
-                        .is_ok()
-                    });
+                } else {
+                    target
+                        .zip(module.manifest().handlers.get(effect.handler))
+                        .and_then(|(target, schema)| {
+                            module
+                                .handler(&schema.name)
+                                .ok()
+                                .map(|handler| (target, handler))
+                        })
+                };
+                let accepted = target_and_handler.is_some_and(|(target, handler)| {
+                    self.enqueue_payload(
+                        target,
+                        &handler,
+                        &effect.arguments[..effect.count],
+                        budget,
+                        None,
+                        effect.record_mask,
+                        &effect.lists,
+                        effect.bytes,
+                    )
+                    .is_ok()
+                });
                 (
                     if accepted {
                         wings_abi::STATUS_OK
@@ -1278,10 +1322,22 @@ impl ScalarWorker {
                     .map(|_| self.pid(index))
             })
             .ok_or("invalid request target")?;
-        let schema = module
+        let (target_module, handler_idx) = if effect.operation == wings_abi::EFFECT_REQUEST_ACTOR {
+            let actor_idx = effect.handler >> 16;
+            let h_idx = effect.handler & 0xFFFF;
+            let reg_mod = self
+                .modules
+                .as_ref()
+                .and_then(|(mods, _)| mods.get(actor_idx).cloned())
+                .ok_or("unregistered request actor")?;
+            (reg_mod, h_idx)
+        } else {
+            (module.clone(), effect.handler)
+        };
+        let schema = target_module
             .manifest()
             .handlers
-            .get(effect.handler)
+            .get(handler_idx)
             .ok_or("invalid request handler")?;
         if !matches!(
             schema.reply,
@@ -1302,9 +1358,19 @@ impl ScalarWorker {
             .manifest()
             .handlers
             .get(effect.callback)
-            .filter(|callback| callback.completion_reply() == schema.reply)
+            .filter(
+                |callback| match (callback.completion_reply(), schema.reply) {
+                    (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
+                        &module.manifest().records,
+                        cb_ty,
+                        &target_module.manifest().records,
+                        rep_ty,
+                    ),
+                    _ => false,
+                },
+            )
             .ok_or("invalid request completion")?;
-        let handler = module.handler(&schema.name)?;
+        let handler = target_module.handler(&schema.name)?;
         let callback = module.handler(&callback.name)?;
         let index = self
             .requests

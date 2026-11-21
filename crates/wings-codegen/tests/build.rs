@@ -71,6 +71,7 @@ fn string_equality_arguments_allocate_heap_callback_scratch_without_local_constr
 fn program() -> Program {
     Program {
         records: Vec::new(),
+        external_actors: Vec::new(),
         name: "Counter".into(),
         state: ValueType::Int,
         functions: Vec::new(),

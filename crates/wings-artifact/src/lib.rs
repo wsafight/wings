@@ -10,9 +10,66 @@ mod preflight;
 
 pub const MAX_NAME_BYTES: usize = 256;
 pub const FORMAT_VERSION: u32 = 2;
+pub const BUNDLE_FORMAT_VERSION: u32 = 1;
+pub const MAX_BUNDLE_ACTORS: usize = 32;
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
 pub const INITIALIZER_SYMBOL: &str = "wings_scalar_init";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleManifest {
+    pub format: u32,
+    pub abi: u32,
+    pub target: String,
+    pub entry: String,
+    pub actors: Vec<String>,
+}
+
+impl BundleManifest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.format != BUNDLE_FORMAT_VERSION || self.abi != SCALAR_ABI_VERSION {
+            return Err("unsupported bundle format or scalar ABI version".into());
+        }
+        if self.target != host_target()? {
+            return Err("bundle target does not match this VM host".into());
+        }
+        if self.actors.is_empty() || self.actors.len() > MAX_BUNDLE_ACTORS {
+            return Err("bundle requires 1..=32 actors".into());
+        }
+        let mut seen = HashSet::new();
+        for actor in &self.actors {
+            if !valid_name(actor) || actor.contains(['/', '\\', '.']) || !seen.insert(actor) {
+                return Err("invalid or duplicate actor name in bundle".into());
+            }
+        }
+        if !seen.contains(&self.entry) {
+            return Err("bundle entry actor is not listed in bundle actors".into());
+        }
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        let bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err("bundle manifest exceeds 64 KiB".into());
+        }
+        Ok(bytes)
+    }
+
+    pub fn read(directory: &Path) -> Result<Self, String> {
+        let path = directory.join("bundle.json");
+        manifest_file_size(&std::fs::metadata(&path).map_err(|error| error.to_string())?)?;
+        let mut file = File::open(path).map_err(|error| error.to_string())?;
+        let length = manifest_file_size(&file.metadata().map_err(|error| error.to_string())?)?;
+        let bytes = read_manifest_bytes(&mut file, length)?;
+        preflight::check(&bytes)?;
+        let manifest: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

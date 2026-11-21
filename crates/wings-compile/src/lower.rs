@@ -2,29 +2,23 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use wings_abi::ValueType;
 use wings_ir::{
-    Comparison, Function, Handler, Instruction, MAX_OPERATIONS, Operation, Operator, Procedure,
-    Program, Register,
+    Comparison, ExternalActor, ExternalHandler, Function, Handler, Instruction, MAX_OPERATIONS,
+    Operation, Operator, Procedure, Program, Register,
 };
-use wings_sema::Type;
+use wings_sema::{Analysis, Type};
 use wings_syntax::ast::{
     BinaryOperator, Block, Expr, ExprKind, InterpolatedPart, MatchArm, MatchPattern, Name,
-    Statement, TypeExpr, TypeKind,
+    Statement, StructDecl, TypeExpr, TypeKind,
 };
 
 use crate::check;
 
-pub fn lower(text: &str) -> Result<Program, String> {
-    let analysis = check(text);
-    if !analysis.diagnostics.is_empty() {
-        return Err(crate::render_diagnostics("<source>", text, &analysis));
-    }
-    let [actor] = analysis.parsed.program.actors.as_slice() else {
-        return Err("scalar AOT requires exactly one actor per source file".into());
-    };
-    let resolved_states = &analysis.actor_states[0];
-
+fn collect_actor_records(
+    global_structs: &[StructDecl],
+    actor_structs: &[StructDecl],
+) -> Result<Vec<wings_abi::RecordSchema>, String> {
     let mut records = Vec::new();
-    for decl in &actor.structs {
+    for decl in global_structs.iter().chain(actor_structs.iter()) {
         let fields = decl
             .fields
             .iter()
@@ -40,6 +34,124 @@ pub fn lower(text: &str) -> Result<Program, String> {
             fields,
         });
     }
+    Ok(records)
+}
+
+fn expand_external_param(
+    ty: ValueType,
+    name: &str,
+    expanded: bool,
+    records: &[wings_abi::RecordSchema],
+    parameters: &mut Vec<(String, ValueType)>,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    *nodes += 1;
+    if *nodes > 64 {
+        return Err("message struct expansion exceeds 64 total nodes".into());
+    }
+    if let ValueType::RecordRef(schema) = ty {
+        let fields = records[usize::from(schema)].fields.clone();
+        for (field, field_ty) in fields {
+            expand_external_param(field_ty, &field, expanded, records, parameters, nodes)?;
+        }
+    } else {
+        let index = parameters.len();
+        parameters.push((
+            if expanded {
+                format!("field_{index}")
+            } else {
+                name.into()
+            },
+            ty,
+        ));
+    }
+    Ok(())
+}
+
+fn build_external_actors(analysis: &Analysis) -> Result<Vec<ExternalActor>, String> {
+    let global_structs = &analysis.parsed.program.structs;
+    let mut out = Vec::with_capacity(analysis.parsed.program.actors.len());
+    for actor in &analysis.parsed.program.actors {
+        let records = collect_actor_records(global_structs, &actor.structs)?;
+        let mut handlers = Vec::with_capacity(actor.handlers.len());
+        for handler in &actor.handlers {
+            let source_params: Vec<(String, ValueType)> = handler
+                .parameters
+                .iter()
+                .map(|p| Ok((p.name.text.clone(), resolve_value_type(&p.ty, &records)?)))
+                .collect::<Result<_, String>>()?;
+            let expanded = source_params
+                .iter()
+                .any(|(_, ty)| matches!(ty, ValueType::RecordRef(_)));
+            let is_record_completion = handler.is_reply
+                && source_params.len() == 3
+                && source_params[0].1 == ValueType::RequestId
+                && source_params[1].1 == ValueType::Int
+                && matches!(source_params[2].1, ValueType::RecordRef(_));
+            let mut parameters = Vec::new();
+            let mut nodes = 0usize;
+            for (idx, (name, ty)) in source_params.iter().enumerate() {
+                if is_record_completion && idx == 2 {
+                    nodes = 0;
+                }
+                expand_external_param(*ty, name, expanded, &records, &mut parameters, &mut nodes)?;
+            }
+            let reply = handler
+                .reply_type
+                .as_ref()
+                .map(|ty| resolve_value_type(ty, &records))
+                .transpose()?;
+            handlers.push(ExternalHandler {
+                name: handler.name.text.clone(),
+                parameters,
+                reply,
+            });
+        }
+        out.push(ExternalActor {
+            name: actor.name.text.clone(),
+            records,
+            handlers,
+        });
+    }
+    Ok(out)
+}
+
+pub fn lower(text: &str) -> Result<Program, String> {
+    let analysis = check(text);
+    if !analysis.diagnostics.is_empty() {
+        return Err(crate::render_diagnostics("<source>", text, &analysis));
+    }
+    if analysis.parsed.program.actors.len() != 1 {
+        return Err("scalar AOT requires exactly one actor per source file".into());
+    }
+    lower_actor(&analysis, 0, &[])
+}
+
+pub fn lower_app(text: &str) -> Result<Vec<Program>, String> {
+    let analysis = check(text);
+    if !analysis.diagnostics.is_empty() {
+        return Err(crate::render_diagnostics("<source>", text, &analysis));
+    }
+    let count = analysis.parsed.program.actors.len();
+    if !(1..=32).contains(&count) {
+        return Err("application bundle requires 1..=32 actors".into());
+    }
+    let external_actors = build_external_actors(&analysis)?;
+    let mut programs = Vec::with_capacity(count);
+    for idx in 0..count {
+        programs.push(lower_actor(&analysis, idx, &external_actors)?);
+    }
+    Ok(programs)
+}
+
+fn lower_actor(
+    analysis: &Analysis,
+    actor_idx: usize,
+    external_actors: &[ExternalActor],
+) -> Result<Program, String> {
+    let actor = &analysis.parsed.program.actors[actor_idx];
+    let resolved_states = &analysis.actor_states[actor_idx];
+    let mut records = collect_actor_records(&analysis.parsed.program.structs, &actor.structs)?;
 
     let state_fields: Vec<(String, ValueType)> = resolved_states
         .iter()
@@ -172,6 +284,9 @@ pub fn lower(text: &str) -> Result<Program, String> {
             None
         };
         let mut lowerer = Lowerer {
+            actor_name: actor.name.text.as_str(),
+            external_actors,
+            target_actors: Some(&analysis.target_actors),
             functions: functions.clone(),
             records: &records,
             handlers: handler_ids.clone(),
@@ -286,6 +401,7 @@ pub fn lower(text: &str) -> Result<Program, String> {
 
     let program = Program {
         records,
+        external_actors: external_actors.to_vec(),
         name: actor.name.text.clone(),
         state: state_type,
         initializer,
@@ -298,6 +414,9 @@ pub fn lower(text: &str) -> Result<Program, String> {
 
 #[derive(Default)]
 struct Lowerer<'program> {
+    actor_name: &'program str,
+    external_actors: &'program [ExternalActor],
+    target_actors: Option<&'program HashMap<(usize, usize), String>>,
     records: &'program [wings_abi::RecordSchema],
     bindings: BTreeMap<String, Register>,
     instructions: Vec<Instruction>,
@@ -1032,7 +1151,25 @@ impl Lowerer<'_> {
             }
             ExprKind::Unit => self.push(ValueType::Unit, Operation::Constant(0)),
             ExprKind::SelfPid => self.push(ValueType::Pid, Operation::SelfPid),
-            ExprKind::Spawn => self.push(ValueType::Pid, Operation::SpawnSelf),
+            ExprKind::Spawn(target_actor) => match target_actor {
+                None => self.push(ValueType::Pid, Operation::SpawnSelf),
+                Some(name) if name.text == self.actor_name => {
+                    self.push(ValueType::Pid, Operation::SpawnSelf)
+                }
+                Some(name) => {
+                    let idx = self
+                        .external_actors
+                        .iter()
+                        .position(|ext| ext.name == name.text)
+                        .ok_or_else(|| {
+                            format!(
+                                "cross-actor spawn('{}') requires multi-actor build ('wings-compile build-app')",
+                                name.text
+                            )
+                        })?;
+                    self.push(ValueType::Pid, Operation::SpawnActor(idx))
+                }
+            },
             ExprKind::Name(name) => Ok(self.bindings[&name.text]),
             ExprKind::List { elements, tail } => {
                 let mut elem_regs = Vec::with_capacity(elements.len());
@@ -1207,24 +1344,57 @@ impl Lowerer<'_> {
                 message,
                 arguments,
             } => {
-                let handler = *self
-                    .handlers
-                    .get(message.text.as_str())
-                    .ok_or("unknown send target")?;
-                if matches!(target.kind, ExprKind::SelfPid) {
-                    let arg_regs: Vec<Register> = arguments
-                        .iter()
-                        .map(|a| self.expression(a))
-                        .collect::<Result<_, _>>()?;
-                    let flattened = self.message_arguments(arg_regs)?;
-                    self.push(
-                        ValueType::Unit,
-                        Operation::SendSelf {
-                            handler,
-                            arguments: flattened,
-                        },
-                    )
+                let target_actor = self
+                    .target_actors
+                    .and_then(|map| map.get(&(expression.span.start, expression.span.end)))
+                    .map(String::as_str)
+                    .unwrap_or(self.actor_name);
+                if target_actor == self.actor_name {
+                    let handler = *self
+                        .handlers
+                        .get(message.text.as_str())
+                        .ok_or("unknown send target")?;
+                    if matches!(target.kind, ExprKind::SelfPid) {
+                        let arg_regs: Vec<Register> = arguments
+                            .iter()
+                            .map(|a| self.expression(a))
+                            .collect::<Result<_, _>>()?;
+                        let flattened = self.message_arguments(arg_regs)?;
+                        self.push(
+                            ValueType::Unit,
+                            Operation::SendSelf {
+                                handler,
+                                arguments: flattened,
+                            },
+                        )
+                    } else {
+                        let target_reg = self.expression(target)?;
+                        let arg_regs: Vec<Register> = arguments
+                            .iter()
+                            .map(|a| self.expression(a))
+                            .collect::<Result<_, _>>()?;
+                        let flattened = self.message_arguments(arg_regs)?;
+                        self.push(
+                            ValueType::Unit,
+                            Operation::Send {
+                                target: target_reg,
+                                handler,
+                                arguments: flattened,
+                            },
+                        )
+                    }
                 } else {
+                    let (actor_idx, ext_actor) = self
+                        .external_actors
+                        .iter()
+                        .enumerate()
+                        .find(|(_, ext)| ext.name == target_actor)
+                        .ok_or("unknown external send actor")?;
+                    let handler = ext_actor
+                        .handlers
+                        .iter()
+                        .position(|h| h.name == message.text)
+                        .ok_or("unknown external send handler")?;
                     let target_reg = self.expression(target)?;
                     let arg_regs: Vec<Register> = arguments
                         .iter()
@@ -1233,8 +1403,9 @@ impl Lowerer<'_> {
                     let flattened = self.message_arguments(arg_regs)?;
                     self.push(
                         ValueType::Unit,
-                        Operation::Send {
+                        Operation::SendActor {
                             target: target_reg,
+                            actor: actor_idx,
                             handler,
                             arguments: flattened,
                         },
@@ -1248,11 +1419,12 @@ impl Lowerer<'_> {
                 timeout,
                 then,
             } => {
+                let target_actor = self
+                    .target_actors
+                    .and_then(|map| map.get(&(expression.span.start, expression.span.end)))
+                    .map(String::as_str)
+                    .unwrap_or(self.actor_name);
                 let target_reg = self.expression(target)?;
-                let handler = *self
-                    .handlers
-                    .get(message.text.as_str())
-                    .ok_or("unknown request message")?;
                 let callback = *self
                     .handlers
                     .get(then.text.as_str())
@@ -1263,16 +1435,45 @@ impl Lowerer<'_> {
                     .map(|a| self.expression(a))
                     .collect::<Result<_, _>>()?;
                 let flattened = self.message_arguments(arg_regs)?;
-                self.push(
-                    ValueType::RequestId,
-                    Operation::Request {
-                        target: target_reg,
-                        handler,
-                        callback,
-                        timeout: timeout_reg,
-                        arguments: flattened,
-                    },
-                )
+                if target_actor == self.actor_name {
+                    let handler = *self
+                        .handlers
+                        .get(message.text.as_str())
+                        .ok_or("unknown request message")?;
+                    self.push(
+                        ValueType::RequestId,
+                        Operation::Request {
+                            target: target_reg,
+                            handler,
+                            callback,
+                            timeout: timeout_reg,
+                            arguments: flattened,
+                        },
+                    )
+                } else {
+                    let (actor_idx, ext_actor) = self
+                        .external_actors
+                        .iter()
+                        .enumerate()
+                        .find(|(_, ext)| ext.name == target_actor)
+                        .ok_or("unknown external request actor")?;
+                    let handler = ext_actor
+                        .handlers
+                        .iter()
+                        .position(|h| h.name == message.text)
+                        .ok_or("unknown external request handler")?;
+                    self.push(
+                        ValueType::RequestId,
+                        Operation::RequestActor {
+                            target: target_reg,
+                            actor: actor_idx,
+                            handler,
+                            callback,
+                            timeout: timeout_reg,
+                            arguments: flattened,
+                        },
+                    )
+                }
             }
             ExprKind::Call { callee, arguments } => {
                 if let Some(schema) = self
@@ -1576,7 +1777,7 @@ fn sema_type_to_value_type(
         Type::IntList => Ok(ValueType::ListRef),
         Type::Bytes => Ok(ValueType::BytesRef),
         Type::String => Ok(ValueType::StringRef),
-        Type::Pid => Ok(ValueType::Pid),
+        Type::Pid | Type::ActorPid(_) => Ok(ValueType::Pid),
         Type::RequestId => Ok(ValueType::RequestId),
         Type::Struct(name) => records
             .iter()
@@ -1595,6 +1796,7 @@ fn resolve_value_type(
         TypeKind::Unit => Ok(ValueType::Unit),
         TypeKind::List(_) => Ok(ValueType::ListRef),
         TypeKind::Boxed(_) => Ok(ValueType::Ref),
+        TypeKind::ActorPid(_) => Ok(ValueType::Pid),
         TypeKind::Named(name) => match name.text.as_str() {
             "int" => Ok(ValueType::Int),
             "bool" => Ok(ValueType::Bool),

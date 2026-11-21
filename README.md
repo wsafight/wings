@@ -26,7 +26,7 @@ VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行�
 
 ## 当前进度
 
-处于 M0：已有前端与单文件 LSP，可信本机 AOT 支持标量/RecordInt/IntList/Bytes/String 和具名不可变记录，覆盖分支、state while、有界非递归 fn 调用帧与精确 GC。String/Bytes 是 0..=64 KiB 的计费值；String 按 Unicode scalar value 索引/切片，切片为独立计费副本；具名记录支持嵌套字段、本地/state/fn、消息参数和 ADR-0116 的有界独立回复，回复完成事件按名义 schema 重建。已有单 worker mailbox、异步请求、监督与强制检查点活栈恢复；另有固定多 worker 调度切片，提供稳定 Pid、跨 worker 消息/请求、handler 返回后的迁移及宿主有界监督重启。递归/动态派发和语言级监督仍未完成。历史 Counter 双平台 CI 不覆盖后续扩展，完整资源账本、M0 与同业务 BEAM 性能/内存门禁尚未验证。更新日期：2026-11-18。
+处于 M0：已有现代 v2 语法前端（完全兼容 v1 语法）与单文件 LSP，可信本机 AOT 支持标量（`int`/`bool`/`unit`）、`[int]`、`bytes`、`str`、顶层共享或 Actor 内具名不可变 `struct`/`record`，覆盖分支、循环、受管栈帧内的有界函数递归（含互递归）与精确 CFG GC 根（ADR-0149）。支持同文件多 `actor` 定义、`spawn(Actor)`、静态类型化 `pid<Actor>` 跨 Actor 单向消息（`!` / `.tell`）与异步请求回调（`.ask(..., timeout: ..., then: ...)`），可通过 `wings-compile build-app` 编译多 Actor 应用包并由 `wings-vm serve` 在多 worker 调度器上运行。String/Bytes 是 0..=64 KiB 的计费值；具名记录支持嵌套字段、具名初始化与 `..base` 展开、消息参数和有界独立回复。动态派发、跨文件模块与语言级监督树仍未完成；完整资源账本、双平台原生验收与同业务 BEAM 正式全门禁尚未关闭。更新日期：2026-11-21。
 
 ## 开发
 
@@ -254,6 +254,10 @@ cargo run -p wings-lsp
 ```sh
 cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
 cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
+
+# 编译并启动多 Actor 应用包（多 worker 调度）
+cargo run -p wings-compile -- build-app examples/multi-actor-app.wings -o target/multi-actor-bundle
+cargo run -p wings-vm -- serve --trusted target/multi-actor-bundle --workers 2
 ```
 
 Rust 自动化回归运行 `cargo test --workspace --locked`，覆盖前端、LSP、编译与产物校验，以及 VM 执行、资源账户、记录堆、活栈和宿主 worker 边界。真实生成代码的端到端边界验证另行执行：`cargo build --locked -p wings-compile -p wings-vm --bins --examples`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）；release 构建增加 `--release`，脚本加 `WINGS_PROFILE=release`。两层验证互不替代。

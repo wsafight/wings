@@ -77,13 +77,28 @@ pub enum Operation {
     },
     SelfPid,
     SpawnSelf,
+    SpawnActor(usize),
     Send {
         target: Register,
         handler: usize,
         arguments: Vec<Register>,
     },
+    SendActor {
+        target: Register,
+        actor: usize,
+        handler: usize,
+        arguments: Vec<Register>,
+    },
     Request {
         target: Register,
+        handler: usize,
+        callback: usize,
+        timeout: Register,
+        arguments: Vec<Register>,
+    },
+    RequestActor {
+        target: Register,
+        actor: usize,
         handler: usize,
         callback: usize,
         timeout: Register,
@@ -160,9 +175,24 @@ impl Handler {
 }
 
 #[derive(Clone, Debug)]
+pub struct ExternalHandler {
+    pub name: String,
+    pub parameters: Vec<(String, ValueType)>,
+    pub reply: Option<ValueType>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalActor {
+    pub name: String,
+    pub records: Vec<wings_abi::RecordSchema>,
+    pub handlers: Vec<ExternalHandler>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub name: String,
     pub records: Vec<wings_abi::RecordSchema>,
+    pub external_actors: Vec<ExternalActor>,
     pub state: ValueType,
     pub initializer: Function,
     pub functions: Vec<Procedure>,
@@ -288,8 +318,18 @@ impl Program {
             })
             .filter(|total| *total <= MAX_LITERAL_BYTES)
             .ok_or("program exceeds 1 MiB total string literal bytes")?;
-        let mut paths = Vec::new();
-        for (index, procedure) in self.functions.iter().enumerate() {
+        if self.external_actors.len() > 32 {
+            return Err("external actor count exceeds 32".into());
+        }
+        for ext in &self.external_actors {
+            wings_abi::validate_records(&ext.records)?;
+            if ext.handlers.len() > MAX_HANDLERS {
+                return Err("external actor exceeds 128 handlers".into());
+            }
+        }
+        let mut call_edges = Vec::with_capacity(self.functions.len());
+        let mut own_roots = Vec::with_capacity(self.functions.len());
+        for procedure in &self.functions {
             if procedure.parameters.len() > MAX_PARAMETERS {
                 return Err("too many managed function parameters".into());
             }
@@ -308,11 +348,17 @@ impl Program {
             {
                 return Err("effects are not supported in managed functions".into());
             }
-            let path = self.validate_calls(&procedure.function, index, &paths)?;
+            call_edges.push(self.validate_call_signatures(&procedure.function)?);
+            own_roots.push(procedure.function.root_plan().capacity);
+        }
+        let acyclic_paths = compute_acyclic_call_paths(&call_edges, &own_roots);
+        for path in acyclic_paths.iter().flatten() {
             if path.0 > 32 {
                 return Err("function call chain exceeds 32".into());
             }
-            paths.push(path);
+            if path.1 > MAX_SHADOW_ROOTS {
+                return Err("managed call path exceeds 64 shadow roots".into());
+            }
         }
         if self.state.is_capability()
             || self.handlers.iter().any(|handler| {
@@ -330,18 +376,13 @@ impl Program {
         }
         self.initializer
             .validate(self.state, &[], ValueType::Unit, false, false)?;
-        self.validate_calls(&self.initializer, self.functions.len(), &paths)?;
-        if self.initializer.instructions.iter().any(|instruction| {
-            matches!(
-                instruction.operation,
-                Operation::SendSelf { .. }
-                    | Operation::Send { .. }
-                    | Operation::SelfPid
-                    | Operation::SpawnSelf
-                    | Operation::Request { .. }
-                    | Operation::CancelRequest(_)
-            )
-        }) {
+        self.validate_entry_calls(&self.initializer, &acyclic_paths)?;
+        if self
+            .initializer
+            .instructions
+            .iter()
+            .any(|instruction| is_effect(&instruction.operation))
+        {
             return Err("self-send is not supported in initializers".into());
         }
         for handler in &self.handlers {
@@ -374,8 +415,97 @@ impl Program {
                 true,
                 true,
             )?;
-            self.validate_calls(&handler.function, self.functions.len(), &paths)?;
+            self.validate_entry_calls(&handler.function, &acyclic_paths)?;
             for instruction in &handler.function.instructions {
+                if let Operation::SpawnActor(actor) = &instruction.operation
+                    && *actor >= self.external_actors.len()
+                {
+                    return Err("invalid external actor spawn index".into());
+                }
+                if let Operation::SendActor {
+                    actor,
+                    handler: target,
+                    arguments,
+                    ..
+                } = &instruction.operation
+                {
+                    let ext = self
+                        .external_actors
+                        .get(*actor)
+                        .ok_or("invalid external actor index")?;
+                    let target = ext
+                        .handlers
+                        .get(*target)
+                        .ok_or("invalid external send handler")?;
+                    if target.reply.is_some()
+                        || target.parameters.len() != arguments.len()
+                        || arguments
+                            .iter()
+                            .zip(&target.parameters)
+                            .any(|(register, (_, ty))| {
+                                handler.function.instructions[*register].ty != *ty
+                            })
+                    {
+                        return Err(
+                            "external send requires matching one-way handler parameters".into()
+                        );
+                    }
+                }
+                if let Operation::RequestActor {
+                    actor,
+                    handler: target,
+                    callback,
+                    arguments,
+                    ..
+                } = &instruction.operation
+                {
+                    let ext = self
+                        .external_actors
+                        .get(*actor)
+                        .ok_or("invalid external actor index")?;
+                    let target = ext
+                        .handlers
+                        .get(*target)
+                        .ok_or("invalid external request handler")?;
+                    let callback = self
+                        .handlers
+                        .get(*callback)
+                        .ok_or("invalid request completion")?;
+                    let compatible_reply = match (callback.completion_reply(), target.reply) {
+                        (Some(cb_ty), Some(tgt_ty)) => {
+                            wings_abi::equivalent_types(&self.records, cb_ty, &ext.records, tgt_ty)
+                        }
+                        _ => false,
+                    };
+                    if !matches!(
+                        target.reply,
+                        Some(
+                            ValueType::Int
+                                | ValueType::Bool
+                                | ValueType::Unit
+                                | ValueType::Ref
+                                | ValueType::ListRef
+                                | ValueType::BytesRef
+                                | ValueType::StringRef
+                                | ValueType::RecordRef(_)
+                        )
+                    ) || !compatible_reply
+                        || matches!(target.reply, Some(ValueType::RecordRef(index))
+                            if wings_abi::expand_record_schema(&ext.records, index).is_err())
+                        || target.parameters.len() != arguments.len()
+                        || arguments
+                            .iter()
+                            .zip(&target.parameters)
+                            .any(|(register, (_, ty))| {
+                                handler.function.instructions[*register].ty != *ty
+                            })
+                    {
+                        return Err(
+                            "external request requires a supported reply, matching completion event and matching parameters"
+                                .into(),
+                        );
+                    }
+                }
                 if let Operation::Request {
                     handler: target,
                     callback,
@@ -452,14 +582,8 @@ impl Program {
         Ok(())
     }
 
-    fn validate_calls(
-        &self,
-        function: &Function,
-        allowed: usize,
-        paths: &[(usize, usize)],
-    ) -> Result<(usize, usize), String> {
-        let mut depth = 1;
-        let mut child_roots = 0;
+    fn validate_call_signatures(&self, function: &Function) -> Result<Vec<usize>, String> {
+        let mut callees = Vec::new();
         for instruction in &function.instructions {
             if let Operation::Call {
                 function: target,
@@ -469,8 +593,7 @@ impl Program {
                 let procedure = self
                     .functions
                     .get(*target)
-                    .filter(|_| *target < allowed)
-                    .ok_or("unknown or forward managed function call")?;
+                    .ok_or("unknown managed function call")?;
                 if instruction.ty != procedure.result
                     || arguments.len() != procedure.parameters.len()
                     || arguments
@@ -480,17 +603,78 @@ impl Program {
                 {
                     return Err("managed function call signature mismatch".into());
                 }
-                let path = paths[*target];
-                depth = depth.max(1 + path.0);
-                child_roots = child_roots.max(path.1);
+                callees.push(*target);
             }
         }
-        let roots = function.root_plan().capacity + child_roots;
-        if roots > MAX_SHADOW_ROOTS {
+        Ok(callees)
+    }
+
+    fn validate_entry_calls(
+        &self,
+        function: &Function,
+        acyclic_paths: &[Option<(usize, usize)>],
+    ) -> Result<(), String> {
+        let callees = self.validate_call_signatures(function)?;
+        let mut child_roots = 0usize;
+        let mut reaches_cycle = false;
+        for target in callees {
+            match acyclic_paths[target] {
+                Some((_, roots)) => child_roots = child_roots.max(roots),
+                None => reaches_cycle = true,
+            }
+        }
+        if !reaches_cycle && function.root_plan().capacity + child_roots > MAX_SHADOW_ROOTS {
             return Err("managed call path exceeds 64 shadow roots".into());
         }
-        Ok((depth, roots))
+        Ok(())
     }
+}
+
+fn compute_acyclic_call_paths(
+    edges: &[Vec<usize>],
+    own_roots: &[usize],
+) -> Vec<Option<(usize, usize)>> {
+    let n = edges.len();
+    let mut state = vec![0u8; n];
+    let mut memo: Vec<Option<(usize, usize)>> = vec![None; n];
+
+    fn dfs(
+        u: usize,
+        edges: &[Vec<usize>],
+        own_roots: &[usize],
+        state: &mut [u8],
+        memo: &mut [Option<(usize, usize)>],
+    ) -> Option<(usize, usize)> {
+        if state[u] == 1 {
+            return None;
+        }
+        if state[u] == 2 {
+            return memo[u];
+        }
+        state[u] = 1;
+        let mut depth = 1usize;
+        let mut child_roots = 0usize;
+        let mut reaches_cycle = false;
+        for &v in &edges[u] {
+            match dfs(v, edges, own_roots, state, memo) {
+                Some((d, r)) => {
+                    depth = depth.max(1 + d);
+                    child_roots = child_roots.max(r);
+                }
+                None => reaches_cycle = true,
+            }
+        }
+        state[u] = 2;
+        memo[u] = (!reaches_cycle).then_some((depth, own_roots[u] + child_roots));
+        memo[u]
+    }
+
+    for i in 0..n {
+        if state[i] == 0 {
+            dfs(i, edges, own_roots, &mut state, &mut memo);
+        }
+    }
+    memo
 }
 
 fn is_effect(operation: &Operation) -> bool {
@@ -498,9 +682,12 @@ fn is_effect(operation: &Operation) -> bool {
         operation,
         Operation::SendSelf { .. }
             | Operation::Send { .. }
+            | Operation::SendActor { .. }
             | Operation::SelfPid
             | Operation::SpawnSelf
+            | Operation::SpawnActor(_)
             | Operation::Request { .. }
+            | Operation::RequestActor { .. }
             | Operation::CancelRequest(_)
     )
 }
@@ -682,8 +869,16 @@ impl Function {
                             })
                         })
                 }
-                Operation::SelfPid | Operation::SpawnSelf => instruction.ty == ValueType::Pid,
+                Operation::SelfPid | Operation::SpawnSelf | Operation::SpawnActor(_) => {
+                    instruction.ty == ValueType::Pid
+                }
                 Operation::Request {
+                    target,
+                    timeout,
+                    ref arguments,
+                    ..
+                }
+                | Operation::RequestActor {
                     target,
                     timeout,
                     ref arguments,
@@ -714,6 +909,11 @@ impl Function {
                 }
                 Operation::Call { ref arguments, .. } => arguments.len() <= MAX_PARAMETERS,
                 Operation::Send {
+                    target,
+                    ref arguments,
+                    ..
+                }
+                | Operation::SendActor {
                     target,
                     ref arguments,
                     ..
@@ -947,8 +1147,19 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
             target,
             ref arguments,
             ..
+        }
+        | Operation::SendActor {
+            target,
+            ref arguments,
+            ..
         } => ([Some(target), None], arguments),
         Operation::Request {
+            target,
+            timeout,
+            ref arguments,
+            ..
+        }
+        | Operation::RequestActor {
             target,
             timeout,
             ref arguments,

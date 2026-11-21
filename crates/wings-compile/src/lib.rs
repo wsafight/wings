@@ -13,6 +13,10 @@ pub fn build(text: &str, directory: &Path) -> Result<(), String> {
     wings_codegen::build(&lower::lower(text)?, directory)
 }
 
+pub fn build_app(text: &str, directory: &Path) -> Result<(), String> {
+    wings_codegen::build_app(&lower::lower_app(text)?, directory)
+}
+
 pub fn build_with_frame_limit(
     text: &str,
     directory: &Path,

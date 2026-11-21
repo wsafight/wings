@@ -144,6 +144,7 @@ struct State {
     closed: bool,
     ready_bits: u32,
     last_exit: Option<SchedulerExitSnapshot>,
+    modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
     requests: state::RequestTable,
     ready: Box<[ready::ReadyQueue]>,
@@ -441,6 +442,7 @@ impl Scheduler {
                 closed: false,
                 ready_bits: 0,
                 last_exit: None,
+                modules: None,
                 slots: storage(config.capacity, || {
                     next_slot += 1;
                     Slot {
@@ -546,10 +548,36 @@ impl Drop for Scheduler {
                 .unwrap_or_else(|error| error.into_inner());
         }
         state.requests.clear_all();
+        state.modules = None;
     }
 }
 
 impl SchedulerHandle {
+    pub fn register_modules(&self, modules: &[ScalarModule]) -> Result<(), String> {
+        if modules.is_empty() || modules.len() > wings_artifact::MAX_BUNDLE_ACTORS {
+            return Err("scheduler module registry requires 1..=32 modules".into());
+        }
+        let bytes = std::mem::size_of_val(modules);
+        let charge = self.shared.tenant.reserve(Resources {
+            bytes: bytes as u64,
+            ..Resources::default()
+        })?;
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(modules.len())
+            .map_err(|error| error.to_string())?;
+        if owned.capacity() != modules.len() {
+            return Err("allocator changed scheduler module registry capacity".into());
+        }
+        owned.extend_from_slice(modules);
+        let mut state = self.shared.lock();
+        if state.closed {
+            return Err("scheduler is closed".into());
+        }
+        state.modules = Some((owned.into_boxed_slice(), charge));
+        Ok(())
+    }
+
     pub fn take_slice_sample(&self, worker: usize) -> Result<Option<SchedulerSliceSample>, String> {
         if worker >= self.shared.config.workers {
             return Err("scheduler worker index out of range".into());
@@ -1346,6 +1374,17 @@ impl SharedMailbox {
         Ok(())
     }
 
+    pub(super) fn pop_for_claim(&self, starting: bool) -> Envelope {
+        let mut guard = self.lock();
+        let head = guard.head;
+        let message = guard.slots[head].take().expect("ready mailbox");
+        guard.head = (head + 1) % guard.slots.len();
+        guard.count -= 1;
+        guard.starting = starting;
+        message
+    }
+
+    #[cfg(test)]
     pub(super) fn pop(&self) -> Envelope {
         let mut guard = self.lock();
         let head = guard.head;

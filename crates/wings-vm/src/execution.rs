@@ -1822,7 +1822,11 @@ unsafe fn prepare_effect_checkpoint(
             != 0
             && !matches!(
                 request.operation,
-                wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND | wings_abi::EFFECT_REQUEST
+                wings_abi::EFFECT_SEND_SELF
+                    | wings_abi::EFFECT_SEND
+                    | wings_abi::EFFECT_SEND_ACTOR
+                    | wings_abi::EFFECT_REQUEST
+                    | wings_abi::EFFECT_REQUEST_ACTOR
             ))
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);

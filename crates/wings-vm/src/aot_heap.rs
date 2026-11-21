@@ -232,6 +232,12 @@ struct NamedLayout {
     count: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShadowRootError {
+    Invalid,
+    Exhausted,
+}
+
 impl AotHeap {
     pub(crate) fn byte_state_snapshot(&self) -> Option<crate::ByteStateSnapshot> {
         let bytes = self.heap.bytes(self.committed?).ok()?;
@@ -421,30 +427,49 @@ impl AotHeap {
         Ok(reference)
     }
 
-    unsafe fn prepare_roots(&mut self, mut frame: *const ShadowFrame) -> Result<(), String> {
+    unsafe fn prepare_roots_checked(
+        &mut self,
+        mut frame: *const ShadowFrame,
+    ) -> Result<(), ShadowRootError> {
         let mut references = [None; MAX_SHADOW_ROOTS + 65];
         let mut count = 0;
         let mut depth = 0;
+        let mut slow = frame;
+        let mut advance_slow = false;
         while !frame.is_null() {
-            if depth == MAX_SHADOW_ROOTS {
-                return Err("shadow frame depth exceeds 64".into());
-            }
             let current = unsafe { &*frame };
-            if current.count > MAX_SHADOW_ROOTS - count
-                || (current.count != 0 && current.slots.is_null())
-            {
-                return Err("invalid shadow root count or slots".into());
+            if current.count > MAX_SHADOW_ROOTS || (current.count != 0 && current.slots.is_null()) {
+                return Err(ShadowRootError::Invalid);
+            }
+            if current.previous == frame {
+                return Err(ShadowRootError::Invalid);
+            }
+            if depth == MAX_SHADOW_ROOTS || current.count > MAX_SHADOW_ROOTS - count {
+                return Err(ShadowRootError::Exhausted);
             }
             for index in 0..current.count {
                 let encoded = unsafe { *current.slots.add(index) };
-                references[count] = Some(self.heap.import_reference(encoded)?);
+                references[count] = Some(
+                    self.heap
+                        .import_reference(encoded)
+                        .map_err(|_| ShadowRootError::Invalid)?,
+                );
                 count += 1;
             }
             depth += 1;
             frame = current.previous;
+            if advance_slow {
+                slow = unsafe { (*slow).previous };
+                if !frame.is_null() && slow == frame {
+                    return Err(ShadowRootError::Invalid);
+                }
+            }
+            advance_slow = !advance_slow;
         }
         if let Some(committed) = self.committed {
-            self.heap.import_reference(committed.encoded())?;
+            self.heap
+                .import_reference(committed.encoded())
+                .map_err(|_| ShadowRootError::Invalid)?;
             references[count] = Some(committed);
             count += 1;
         }
@@ -453,13 +478,26 @@ impl AotHeap {
             let slot = incoming_bits.trailing_zeros() as usize;
             incoming_bits &= incoming_bits - 1;
             if let Some(reference) = self.incoming[slot] {
-                self.heap.import_reference(reference.encoded())?;
+                self.heap
+                    .import_reference(reference.encoded())
+                    .map_err(|_| ShadowRootError::Invalid)?;
                 references[count] = Some(reference);
                 count += 1;
             }
         }
         self.roots.replace(&references[..count]);
         Ok(())
+    }
+
+    #[cfg(test)]
+    unsafe fn prepare_roots(&mut self, frame: *const ShadowFrame) -> Result<(), String> {
+        match unsafe { self.prepare_roots_checked(frame) } {
+            Ok(()) => Ok(()),
+            Err(ShadowRootError::Exhausted) => {
+                Err("shadow frame depth or root capacity exhausted".into())
+            }
+            Err(ShadowRootError::Invalid) => Err("invalid shadow root count or slots".into()),
+        }
     }
 
     #[cfg(test)]
@@ -798,7 +836,10 @@ unsafe fn collect_managed_recycling(
     let pointer = context.heap_data.cast::<AotHeap>();
     let mut collection = {
         let heap = unsafe { &mut *pointer };
-        unsafe { heap.prepare_roots(context.roots) }.map_err(|_| STATUS_INVALID_ROOT)?;
+        unsafe { heap.prepare_roots_checked(context.roots) }.map_err(|err| match err {
+            ShadowRootError::Exhausted => wings_abi::STATUS_STACK_EXHAUSTED,
+            ShadowRootError::Invalid => STATUS_INVALID_ROOT,
+        })?;
         heap.heap
             .begin_collection(&heap.roots)
             .map_err(|_| STATUS_INVALID_ROOT)?

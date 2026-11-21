@@ -4,7 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use wings_abi::DEFAULT_MAX_STEPS;
 use wings_vm::{Reservation, ResourceAccount, ResourceLevel, Resources};
 
-pub const USAGE: &str = "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]";
+pub const USAGE: &str = "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>] [--heap-records <1..=1024>]\n       wings-vm serve --trusted <bundle-or-artifact> [--workers <1..=16>] [--max-steps <u64>] [--heap-records <1..=1024>]";
 const MAX_ARGUMENTS: usize = 7;
 const MAX_BYTES: usize = 16 << 10;
 const CONTROL_BYTES: usize = 4 << 10;
@@ -19,6 +19,12 @@ pub enum Command {
     Help,
     Run {
         directory: OsString,
+        max_steps: u64,
+        heap_records: Option<usize>,
+    },
+    Serve {
+        directory: OsString,
+        workers: usize,
         max_steps: u64,
         heap_records: Option<usize>,
     },
@@ -49,15 +55,14 @@ impl Startup {
         let values = &arguments.values[..arguments.length];
         let command = if matches!(values, [b"--help"] | [b"-h"]) {
             Command::Help
-        } else {
-            if !matches!(values.len(), 3 | 5 | 7)
-                || values[0] != b"run"
-                || values[1] != b"--trusted"
-            {
-                return Err(USAGE.into());
-            }
+        } else if matches!(values.len(), 3 | 5 | 7)
+            && matches!(values[0], b"run" | b"serve")
+            && values[1] == b"--trusted"
+        {
+            let is_serve = values[0] == b"serve";
             let mut steps = None;
             let mut heap_records = None;
+            let mut workers = None;
             for option in values[3..].chunks_exact(2) {
                 match option[0] {
                     b"--max-steps" if steps.is_none() => {
@@ -77,14 +82,34 @@ impl Startup {
                                 .ok_or("--heap-records must be within 1..=1024")?,
                         );
                     }
+                    b"--workers" if is_serve && workers.is_none() => {
+                        workers = Some(
+                            std::str::from_utf8(option[1])
+                                .ok()
+                                .and_then(|value| value.parse::<usize>().ok())
+                                .filter(|value| (1..=16).contains(value))
+                                .ok_or("--workers must be within 1..=16")?,
+                        );
+                    }
                     _ => return Err("unknown or duplicate execution option".into()),
                 }
             }
-            Command::Run {
-                directory: std::ffi::OsStr::from_bytes(values[2]).to_os_string(),
-                max_steps: steps.unwrap_or(DEFAULT_MAX_STEPS),
-                heap_records,
+            if is_serve {
+                Command::Serve {
+                    directory: std::ffi::OsStr::from_bytes(values[2]).to_os_string(),
+                    workers: workers.unwrap_or(2),
+                    max_steps: steps.unwrap_or(DEFAULT_MAX_STEPS),
+                    heap_records,
+                }
+            } else {
+                Command::Run {
+                    directory: std::ffi::OsStr::from_bytes(values[2]).to_os_string(),
+                    max_steps: steps.unwrap_or(DEFAULT_MAX_STEPS),
+                    heap_records,
+                }
             }
+        } else {
+            return Err(USAGE.into());
         };
         Ok(Self {
             command,

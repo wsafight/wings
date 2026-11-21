@@ -421,16 +421,32 @@ impl Shared {
         budget: u64,
         pool: &StackPool,
     ) -> (u32, i64) {
-        if effect.operation == wings_abi::EFFECT_SPAWN_SELF && effect.count == 0 {
+        if matches!(
+            effect.operation,
+            wings_abi::EFFECT_SPAWN_SELF | wings_abi::EFFECT_SPAWN_ACTOR
+        ) && effect.count == 0
+        {
             let options = {
                 let state = self.lock();
+                let spawn_module = if effect.operation == wings_abi::EFFECT_SPAWN_SELF {
+                    state
+                        .actor(self.identity, pid)
+                        .ok()
+                        .map(|actor| actor.module.clone())
+                } else {
+                    state
+                        .modules
+                        .as_ref()
+                        .and_then(|(mods, _)| mods.get(effect.handler).cloned())
+                };
                 state
                     .actor(self.identity, pid)
                     .ok()
                     .filter(|actor| !actor.stopping && !state.closed)
-                    .map(|actor| {
+                    .zip(spawn_module)
+                    .map(|(actor, target_mod)| {
                         (
-                            actor.module.clone(),
+                            target_mod,
                             actor.account.limit(),
                             actor.mailbox.capacity(),
                             actor.heap_records,
@@ -478,20 +494,42 @@ impl Shared {
                 }
                 wings_abi::EFFECT_SEND
                 | wings_abi::EFFECT_SEND_SELF
-                | wings_abi::EFFECT_REQUEST => {
+                | wings_abi::EFFECT_SEND_ACTOR
+                | wings_abi::EFFECT_REQUEST
+                | wings_abi::EFFECT_REQUEST_ACTOR => {
+                    let is_request = matches!(
+                        effect.operation,
+                        wings_abi::EFFECT_REQUEST | wings_abi::EFFECT_REQUEST_ACTOR
+                    );
+                    let is_cross_actor = matches!(
+                        effect.operation,
+                        wings_abi::EFFECT_SEND_ACTOR | wings_abi::EFFECT_REQUEST_ACTOR
+                    );
                     let target = if effect.operation == wings_abi::EFFECT_SEND_SELF {
                         pid
                     } else {
                         state.target(self.identity, effect.target)?
                     };
-                    let schema = module
+                    let (target_module, handler_idx) = if is_cross_actor {
+                        let actor_idx = effect.handler >> 16;
+                        let h_idx = effect.handler & 0xFFFF;
+                        let reg_mod = state
+                            .modules
+                            .as_ref()
+                            .and_then(|(mods, _)| mods.get(actor_idx).cloned())
+                            .ok_or("unregistered target actor module")?;
+                        (reg_mod, h_idx)
+                    } else {
+                        (module.clone(), effect.handler)
+                    };
+                    let target_actor = state.actor(self.identity, target)?;
+                    let schema = target_module
                         .manifest()
                         .handlers
-                        .get(effect.handler)
+                        .get(handler_idx)
                         .ok_or("invalid effect handler")?;
-                    let handler = module.handler(&schema.name)?;
+                    let handler = target_module.handler(&schema.name)?;
                     let arguments = &effect.arguments[..effect.count];
-                    let target_actor = state.actor(self.identity, target)?;
                     validate(
                         target_actor,
                         &handler,
@@ -501,7 +539,7 @@ impl Shared {
                         &effect.lists,
                         &effect.bytes,
                     )?;
-                    if effect.operation != wings_abi::EFFECT_REQUEST {
+                    if !is_request {
                         if schema.reply.is_some() {
                             return Err("send requires one-way entry".into());
                         }
@@ -543,7 +581,17 @@ impl Shared {
                         .manifest()
                         .handlers
                         .get(effect.callback)
-                        .filter(|callback| callback.completion_reply() == schema.reply)
+                        .filter(
+                            |callback| match (callback.completion_reply(), schema.reply) {
+                                (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
+                                    &module.manifest().records,
+                                    cb_ty,
+                                    &target_module.manifest().records,
+                                    rep_ty,
+                                ),
+                                _ => false,
+                            },
+                        )
                         .ok_or("invalid completion handler")?;
                     let callback = module.handler(&callback.name)?;
                     let index = state
@@ -611,12 +659,12 @@ impl Shared {
             Ok(value) => (wings_abi::STATUS_OK, value),
             Err(_) => (
                 match effect.operation {
-                    wings_abi::EFFECT_REQUEST | wings_abi::EFFECT_CANCEL_REQUEST => {
-                        wings_abi::STATUS_REQUEST_REJECTED
-                    }
-                    wings_abi::EFFECT_SEND | wings_abi::EFFECT_SEND_SELF => {
-                        wings_abi::STATUS_SEND_REJECTED
-                    }
+                    wings_abi::EFFECT_REQUEST
+                    | wings_abi::EFFECT_REQUEST_ACTOR
+                    | wings_abi::EFFECT_CANCEL_REQUEST => wings_abi::STATUS_REQUEST_REJECTED,
+                    wings_abi::EFFECT_SEND
+                    | wings_abi::EFFECT_SEND_ACTOR
+                    | wings_abi::EFFECT_SEND_SELF => wings_abi::STATUS_SEND_REJECTED,
                     _ => wings_abi::STATUS_INVALID_CONTROL,
                 },
                 0,

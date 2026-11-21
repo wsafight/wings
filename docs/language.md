@@ -2,6 +2,72 @@
 
 宿主固定跨线程入口可按 [ADR-0115](adr/0115-typed-cross-thread-ingress.md) 用 MessageValue 传入 String/Bytes/IntList/RecordInt 等独立内容副本；不改变源码类型/语法或允许原堆引用跨进程，JSON 参数仍只接受标量，具名记录按清单叶签名传值。
 
+## 现代语法（v2）与多 Actor 应用
+
+`wings-lang` 现支持更简洁的现代语法（完全兼容历史 `process` / `record` / 首字母大写类型写法），并开放顶层共享 `struct`、受管栈帧内的有界函数递归（直接递归与互递归）、多 Actor 同文件定义、类型化 `pid<Actor>` / `spawn(Actor)` 跨 Actor 异步交互，以及多 Actor 应用打包与多 worker 调度运行入口。完整可运行示例见 [`examples/multi-actor-app.wings`](../examples/multi-actor-app.wings)。
+
+```wings
+struct Job {
+  id: int,
+  input: int,
+}
+
+struct JobResult {
+  id: int,
+  value: int,
+  even: bool,
+}
+
+actor Worker {
+  state extra = 0
+
+  fn fib(n: int) -> int {
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+  }
+
+  on add_bonus(delta: int) {
+    extra += delta
+  }
+
+  on compute(job: Job) -> JobResult {
+    let val = fib(job.input) + extra
+    JobResult { id: job.id, value: val, even: val % 2 == 0 }
+  }
+}
+
+actor Main {
+  state completed = 0
+  state total = 0
+
+  on dispatch(a: int, b: int) -> int {
+    let w1: pid<Worker> = spawn(Worker)
+    let w2 = spawn(Worker)
+    w1 ! add_bonus(5)
+    w1.ask(compute(Job { id: 1, input: a }), timeout: 1000, then: on_job_done)
+    w2.ask(compute(Job { id: 2, input: b }), timeout: 1000, then: on_job_done)
+    2
+  }
+
+  on reply on_job_done(id: req, status: int, res: JobResult) {
+    if status == 0 {
+      completed += 1
+      total += res.value
+    }
+  }
+
+  on summary -> str => f"done={completed},sum={total}"
+}
+```
+
+核心语法与多 Actor 特性包括：
+
+- **声明与类型别名**：`actor`（兼容 `process`）、顶层共享或 Actor 内 `struct`（兼容 `record`）；小写基础与集合类型 `int`、`bool`、`str`、`bytes`、`unit`、`[int]`、`pid`、`pid<Actor>`、`req`（完全兼容 `Int`、`Bool`、`String`、`Bytes`、`Unit`、`IntList`、`Pid`、`RequestId`），可选省略行尾分号。
+- **状态推导与简写 Handler**：支持多 `state` 声明与初始值类型推导（如 `state count = 0`），单表达式 handler 支持 `=>` 简写（如 `on get -> int => count`），请求完成回调支持 `on reply done(id: req, status: int, res: T) { ... }`。
+- **表达式糖与内置方法**：支持具名字段构造 `Job { id: 1, input: a }` 与结构体展开更新 `Job { input: b, ..base }`、列表字面量 `[1, 2, ..tail]`、字符串插值 `f"done={completed}"`、管道 `x |> f(1)`、逻辑与算术运算符 `!` / `&&` / `||` / `%`、拼接 `++`、复合赋值 `+=` / `-=` / `*=` / `/=` / `%=` / `++=`、`else if` 链，以及值方法（如 `.len()`、`.at(i)`、`.slice(start, len)`、`.head()`、`.tail()`）。
+- **有界受管递归**：`fn` 支持直接递归与互递归，每次调用在受管栈帧前执行剩余原生栈边界检查、步数预算扣除与精确 shadow-frame GC 根链维护；栈空间或步数耗尽时触发受管失败并回滚未提交状态。
+- **跨 Actor 实例化与类型化消息**：`spawn(Worker)` 返回 `pid<Worker>`（`self` 在 Actor 内具有当前 `pid<Self>` 类型）；单向发送支持 `target ! msg(args...)` 或 `target.tell(msg(args...))`，异步请求支持 `target.ask(msg(args...), timeout: ms, then: callback_handler)`，编译期静态校验目标 Actor 的消息名、参数签名与完成回调类型。
+- **多 Actor 编译与运行**：使用 `wings-compile build-app examples/multi-actor-app.wings -o <bundle-dir>` 生成包含各 Actor 原生模块与 `bundle.json` 的应用包（以 `Main` 或最后一个 Actor 作为入口），并通过 `wings-vm serve --trusted <bundle-dir> [--workers <1..=16>]` 在多 worker 调度器上启动运行。底层 ABI 保持 v22，`4352 B` 控制预留与三级资源配额不变。
+
 ## 有界具名记录
 
 [ADR-0108](adr/0108-bounded-named-record-values.md) 开放 process 内具名不可变记录，构造参数按字段声明顺序，使用 `value.field` 读取；同形状不同名的记录不兼容。可运行完整示例见 [`examples/named-records.wings`](../examples/named-records.wings)。
@@ -255,14 +321,15 @@ let id = request(counter, Inc, Completed, 1000, 2)
 - `RecordInt` 局部/state、受限记录内建、同类型标量/RecordInt `if` 与唯一 state 的 while；无任意引用 phi。
 - handler 内携带唯一标量/RecordInt state 的 `while`，Bool 条件、Unit 体；块最多 64 层，总预算和每回边检查不可绕过。
 - 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
-- process 内最多 64 个 fn、64 个显式类型参数、32 层声明顺序调用；使用私有受管帧，无 state 访问/赋值或函数内 while，每路径最多 64 个聚合根，各帧独立检查剩余栈。
-- 不可变 IntList 的单节点构造/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
-- 不可变 Bytes 与 UTF-8 String 的独立类型、分块内建、精确根和 state/fn/条件/循环值；String 支持有界双引号字面量、独立复制消息参数与计费内容回复/完成事件。
-- handler 中 `send_self` 静态检查单向目标、标量参数和遮蔽；worker 调用点准入入队，队满/额度拒绝受管失败，无 worker 不可调用。
-- 局部 Pid、`self_pid` / `spawn_self` 与同 worker 同模块 `send`；fn 可传递 Pid，但不得在函数内创建/发送，无 Pid state/消息/回复或比较。
-- 局部 RequestId、异步 Int 请求和三参数完成事件；完成事件不可由普通发送/CLI 伪造，取消只能终结当前发起方仍占 pending 的请求，无阻塞等待。
+- process / actor 内最多 64 个 fn、64 个显式类型参数，支持直接递归与互递归；使用私有受管帧，无 state 访问/赋值，每路径最多 64 个聚合根，各帧独立检查剩余原生栈与步数预算。
+- 顶层共享 `struct` 与同文件多 `actor` 定义；支持 `spawn(Actor)`、`pid<Actor>` 静态类型检查、`!` / `.tell(...)` 单向消息与 `.ask(..., timeout: ..., then: ...)` 跨 Actor 异步请求，配合 `wings-compile build-app` 与 `wings-vm serve` 运行。
+- 不可变 IntList（`[int]`）的构造/字面量/读取和传递 GC 根，条件/循环/fn 支持精确 ListRef 类型，不与 RecordInt 混用。
+- 不可变 Bytes（`bytes`）与 UTF-8 String（`str`）的独立类型、分块内建、字符串插值 `f"..."`、精确根和 state/fn/条件/循环值；String 支持有界双引号字面量、独立复制消息参数与计费内容回复/完成事件。
+- handler 中 `send_self` / `self ! ...` 静态检查单向目标、参数和遮蔽；worker 调用点准入入队，队满/额度拒绝受管失败，无 worker 不可调用。
+- 局部 Pid（含 `pid<Actor>`）、`self` / `self_pid` / `spawn_self` / `spawn(Actor)` 与单/多 worker 模块间 `send`；fn 可传递 Pid，但不得在函数内创建/发送，无 Pid state/消息/回复或比较。
+- 局部 RequestId（`req`）、异步请求和三参数完成事件（`on reply`）；完成事件不可由普通发送/CLI 伪造，取消只能终结当前发起方仍占 pending 的请求，无阻塞等待。
 
-尚未实现模块、动态派发/递归、任意引用 phi、通用记录、联合类型、完整模式匹配、跨模块消息、通用异步请求或外部系统事件。CLI 装载一个 process，可显式配置记录堆保存局部与状态值；宿主 worker 已有有限消息、请求、资源账户和监督切片，自发送和同模块创建/发送只验证调用点副作用，不代表完整语言交互或恢复契约已实现。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
+尚未实现跨文件模块系统、动态派发（trait/闭包）、联合类型（enum ADT）与完整模式匹配、语言级声明式监督树或通用外部异步 I/O reactor。单模块 `wings-vm run` 装载单个 actor，多模块 `wings-vm serve` 通过多 worker `Scheduler` 装载应用 bundle 并向入口 actor 转发 CLI 消息；宿主与运行时仍受既有三级资源账户限制，不代表完整资源账本或正式 MVP/BEAM 全门禁已验收。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
 
 解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
 

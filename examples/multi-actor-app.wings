@@ -1,0 +1,69 @@
+struct Job {
+  id: int,
+  input: int,
+}
+
+struct JobResult {
+  id: int,
+  value: int,
+  even: bool,
+}
+
+actor Worker {
+  state extra = 0
+
+  fn fib(n: int) -> int {
+    if n <= 1 {
+      n
+    } else {
+      fib(n - 1) + fib(n - 2)
+    }
+  }
+
+  fn is_even(n: int) -> bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+  }
+
+  fn is_odd(n: int) -> bool {
+    if n == 0 { false } else { is_even(n - 1) }
+  }
+
+  on add_bonus(delta: int) {
+    extra += delta
+  }
+
+  on compute(job: Job) -> JobResult {
+    let val = fib(job.input) + extra
+    JobResult {
+      id: job.id,
+      value: val,
+      even: is_even(val),
+    }
+  }
+}
+
+actor Main {
+  state completed = 0
+  state total = 0
+  state all_even = true
+
+  on dispatch(a: int, b: int) -> int {
+    let w1: pid<Worker> = spawn(Worker)
+    let w2 = spawn(Worker)
+    w1 ! add_bonus(5)
+    w1.ask(compute(Job { id: 1, input: a }), timeout: 1000, then: on_job_done)
+    w2.ask(compute(Job { id: 2, input: b }), timeout: 1000, then: on_job_done)
+    2
+  }
+
+  on reply on_job_done(id: req, status: int, res: JobResult) {
+    if status == 0 {
+      completed += 1
+      total += res.value
+      all_even = all_even && res.even
+    }
+  }
+
+  on completed_count -> int => completed
+  on summary -> str => f"done={completed},sum={total},even={all_even}"
+}

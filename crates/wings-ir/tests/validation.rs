@@ -342,6 +342,7 @@ fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
 fn valid_program() -> Program {
     Program {
         records: Vec::new(),
+        external_actors: Vec::new(),
         name: "Counter".into(),
         state: ValueType::Int,
         functions: Vec::new(),
@@ -393,7 +394,7 @@ fn identity_procedure(ty: ValueType) -> Procedure {
 }
 
 #[test]
-fn managed_calls_validate_signatures_scope_and_acyclic_declaration_order() {
+fn managed_calls_validate_signatures_scope_recursion_and_acyclic_depth_bounds() {
     let mut program = valid_program();
     program.functions.push(identity_procedure(ValueType::Int));
     program.handlers[0].function.instructions.push(instruction(
@@ -406,7 +407,7 @@ fn managed_calls_validate_signatures_scope_and_acyclic_declaration_order() {
     program.handlers[0].function.reply = 3;
     program.validate().unwrap();
     for (target, arguments, ty, message) in [
-        (1, vec![2], ValueType::Int, "forward"),
+        (1, vec![2], ValueType::Int, "unknown"),
         (0, vec![], ValueType::Int, "signature"),
         (0, vec![usize::MAX], ValueType::Int, "operand"),
         (0, vec![2], ValueType::Bool, "signature"),
@@ -422,15 +423,19 @@ fn managed_calls_validate_signatures_scope_and_acyclic_declaration_order() {
         );
         rejects(&invalid, message);
     }
-    let mut invalid = program.clone();
-    invalid.functions[0].function.instructions.push(instruction(
-        ValueType::Int,
-        Operation::Call {
-            function: 0,
-            arguments: vec![1],
-        },
-    ));
-    rejects(&invalid, "forward");
+    let mut recursive = program.clone();
+    recursive.functions[0]
+        .function
+        .instructions
+        .push(instruction(
+            ValueType::Int,
+            Operation::Call {
+                function: 0,
+                arguments: vec![1],
+            },
+        ));
+    recursive.functions[0].function.reply = 2;
+    recursive.validate().unwrap();
     let mut invalid = program.clone();
     invalid.functions[0]
         .function

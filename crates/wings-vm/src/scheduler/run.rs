@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 const HOT_SPIN_WINDOW: Duration = Duration::from_micros(25);
 const BACKLOG_BATCH_THRESHOLD: usize = 8;
-const MAX_BACKLOG_BATCH: usize = 16;
+const MAX_BACKLOG_BATCH: usize = 32;
 
 pub(super) struct Running {
     pid: SchedulerPid,
@@ -114,7 +114,7 @@ pub(super) fn worker(
         let (claim, wake, should_exit) = {
             let mut state = shared.worker_lock(index, LockPhase::Claim);
             let wake = state.maintain(shared.identity);
-            if state.closed {
+            let out = if state.closed {
                 (None, wake, local.is_empty())
             } else if let Some(slot) = state.pop_ready_for_claim(index) {
                 let pid = state.pid(shared.identity, slot);
@@ -137,22 +137,23 @@ pub(super) fn worker(
                     None
                 };
                 actor.owner = Some(index);
-                if fused_direct.is_some() {
+                let is_starting = if fused_direct.is_some() {
                     actor.starting = false;
-                    actor.mailbox.set_starting(false);
                     if actor.last_worker.is_some_and(|previous| previous != index) {
                         actor.migrations += 1;
                     }
                     actor.last_worker = Some(index);
+                    false
                 } else {
                     actor.starting = true;
-                    actor.mailbox.set_starting(true);
-                }
+                    true
+                };
+                let popped = actor.mailbox.pop_for_claim(is_starting);
                 (
                     Some(Claim {
                         pid,
                         image: actor.image.take().expect("unowned actor image"),
-                        message: actor.mailbox.pop(),
+                        message: popped,
                         mailbox: (*actor.mailbox).clone(),
                         account: actor.account.clone(),
                         cancellation: actor.cancellation.clone(),
@@ -163,7 +164,9 @@ pub(super) fn worker(
                 )
             } else {
                 (None, wake, false)
-            }
+            };
+            shared.publish_signal(&state);
+            out
         };
         wake.fire(&shared.changed);
         if should_exit {
@@ -545,7 +548,8 @@ fn run_fast_claim(
                     if !shared.config.lock_statistics
                         && !matches!(reply, Reply::Language(_))
                         && !shared.closed.load(Ordering::Acquire)
-                        && (shared.ready_mask.load(Ordering::Acquire) & watch) == 0
+                        && (batch_step < 8
+                            || (shared.ready_mask.load(Ordering::Acquire) & watch) == 0)
                         && let Some(next_msg) = mailbox.try_pop_batch_fast(BACKLOG_BATCH_THRESHOLD)
                     {
                         let outcome = match mapped {
@@ -583,9 +587,8 @@ fn run_fast_claim(
                             let actor = state
                                 .actor_mut(shared.identity, pid)
                                 .expect("continuing batched actor");
-                            let next_msg = actor.mailbox.pop();
+                            let next_msg = actor.mailbox.pop_for_claim(true);
                             actor.starting = true;
-                            actor.mailbox.set_starting(true);
                             actor.execution = Some(snapshot);
                             actor.committed_state = committed_state;
                             let mut external_reply = None;
@@ -597,6 +600,7 @@ fn run_fast_claim(
                                 Reply::None => {}
                             }
                             let wake = state.maintain(shared.identity);
+                            shared.publish_signal(&state);
                             drop(state);
                             if let Some((publisher, outcome)) = external_reply {
                                 complete_external(publisher, outcome);
@@ -807,6 +811,7 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
         None
     };
     let wake = state.finish_enqueue(claim.pid, failed);
+    shared.publish_signal(&state);
     drop(state);
     wake.fire(&shared.changed);
     if let Some(actor_ref) = retired.as_ref() {
@@ -936,6 +941,7 @@ fn finish_process(
     let wake = state
         .finish_enqueue(pid, failed)
         .combine(state.maintain(shared.identity));
+    shared.publish_signal(&state);
     drop(state);
     if let Some((publisher, outcome)) = external_reply {
         complete_external(publisher, outcome);

@@ -1881,6 +1881,68 @@ def main():
             {"string": "v2:35:false:true:3"},
             {"string": "v2:35:false:true:3|total=12"},
         ], showcase_out.stdout
+        rec_source = parent / "recursion.wings"
+        rec_source.write_text("""actor Recursion {
+  state memo = 0
+  fn fib(n: int) -> int => if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+  fn repeat_str(s: str, n: int) -> str => if n <= 0 { "" } else { s + repeat_str(s, n - 1) }
+  on calc(n: int) -> int { memo = fib(n); memo }
+  on build_str(n: int) -> str => repeat_str("ab", n)
+  on deep_scalar(n: int) -> int => if n <= 0 { 0 } else { 1 + fib(n) }
+}
+""")
+        rec_artifact = parent / "recursion"
+        command([COMPILER, "build", rec_source, "-o", rec_artifact])
+        rec_out = command(
+            [VM, "run", "--trusted", rec_artifact, "--heap-records", 32],
+            json.dumps(message("calc", 10)) + "\n" + json.dumps(message("build_str", 5)) + "\n",
+        )
+        assert [json.loads(line)["reply"] for line in rec_out.stdout.splitlines()] == [
+            55,
+            {"string": "ababababab"},
+        ], rec_out.stdout
+        deep_str_fail = command(
+            [VM, "run", "--trusted", rec_artifact, "--heap-records", 4],
+            json.dumps(message("build_str", 70)) + "\n",
+            expected=1,
+        )
+        assert "stack" in deep_str_fail.stderr or "heap" in deep_str_fail.stderr, deep_str_fail.stderr
+
+        multi_bundle = parent / "multi-app"
+        command([COMPILER, "build-app", ROOT / "examples/multi-actor-app.wings", "-o", multi_bundle])
+        serve_proc = subprocess.Popen(
+            [str(VM), "serve", "--trusted", str(multi_bundle), "--workers", "2", "--heap-records", "64"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=ROOT,
+            preexec_fn=limit_child,
+        )
+        try:
+            serve_proc.stdin.write(json.dumps(message("dispatch", 6, 7)) + "\n")
+            serve_proc.stdin.flush()
+            first_reply = json.loads(serve_proc.stdout.readline())
+            assert first_reply == {"reply": 2}, first_reply
+            deadline = time.monotonic() + 3.0
+            while True:
+                serve_proc.stdin.write(json.dumps(message("completed_count")) + "\n")
+                serve_proc.stdin.flush()
+                done_reply = json.loads(serve_proc.stdout.readline())
+                if done_reply == {"reply": 2}:
+                    break
+                assert time.monotonic() < deadline, f"multi-actor serve timed out: {done_reply}"
+                time.sleep(0.005)
+            serve_proc.stdin.write(json.dumps(message("summary")) + "\n")
+            serve_proc.stdin.flush()
+            summary_reply = json.loads(serve_proc.stdout.readline())
+            assert summary_reply == {"reply": {"string": "done=2,sum=26,even=false"}}, summary_reply
+            serve_proc.stdin.close()
+            assert serve_proc.wait(timeout=5) == 0, serve_proc.stderr.read()
+        finally:
+            if serve_proc.poll() is None:
+                serve_proc.kill()
+                serve_proc.wait()
         for invalid in [message("Missing"), message("add"), message("add", True), message("add", 2**63), message("add", 1, 2)]:
             assert not invoke(arithmetic, [invalid], expected=1).stdout
         assert "--trusted" in command([VM, "run", arithmetic], expected=2).stderr

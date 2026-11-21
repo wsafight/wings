@@ -28,8 +28,12 @@ pub fn parse(
     while !parser.at(TokenKind::Eof) {
         if parser.at(TokenKind::Actor) {
             program.actors.push(parser.actor());
+        } else if parser.at(TokenKind::Struct) {
+            program.structs.push(parser.struct_decl());
+        } else if parser.at(TokenKind::Semicolon) {
+            parser.bump();
         } else {
-            parser.error("expected 'actor'");
+            parser.error("expected 'actor' or 'struct'");
             parser.bump();
         }
     }
@@ -225,6 +229,19 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                         .end;
                     TypeExpr {
                         kind: TypeKind::Boxed(Box::new(inner)),
+                        span: Span::new(start, end),
+                    }
+                } else if ident.text == "pid" && self.at(TokenKind::Less) {
+                    self.bump();
+                    let actor = self.name();
+                    let end = self
+                        .expect(
+                            TokenKind::Greater,
+                            "expected '>' after actor name in pid<Actor>",
+                        )
+                        .end;
+                    TypeExpr {
+                        kind: TypeKind::ActorPid(actor),
                         span: Span::new(start, end),
                     }
                 } else {
@@ -1187,11 +1204,16 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             TokenKind::Spawn => {
                 self.bump();
                 self.expect(TokenKind::LeftParen, "expected '(' after 'spawn'");
+                let target = if !self.at(TokenKind::RightParen) && !self.boundary() {
+                    Some(self.name())
+                } else {
+                    None
+                };
                 let end = self
                     .expect(TokenKind::RightParen, "expected ')' after 'spawn('")
                     .end;
                 span = Span::new(start, end);
-                ExprKind::Spawn
+                ExprKind::Spawn(target)
             }
             TokenKind::Integer => {
                 self.bump();

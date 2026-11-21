@@ -18,11 +18,13 @@ pub enum TypeKind {
     Unit,
     List(Box<TypeExpr>),
     Boxed(Box<TypeExpr>),
+    ActorPid(Name),
     Error,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Program {
+    pub structs: Vec<StructDecl>,
     pub actors: Vec<Actor>,
 }
 
@@ -160,7 +162,7 @@ pub enum ExprKind {
     Boolean(bool),
     Unit,
     SelfPid,
-    Spawn,
+    Spawn(Option<Name>),
     Name(Name),
     List {
         elements: Vec<Expr>,
