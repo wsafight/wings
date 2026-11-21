@@ -53,39 +53,39 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     for (seed, length) in [(i64::MIN, 1), (i64::MAX, 1), (17, 0), (17, 1), (17, 64)] {
         assert!(
             process
-                .invoke("Make", &[seed, length])
+                .invoke("make", &[seed, length])
                 .unwrap_err()
                 .contains("invoke_list")
         );
         let result = process
             .invoke_list(
-                "Make",
+                "make",
                 &[seed, length],
                 32768,
                 &CancellationToken::default(),
             )
             .unwrap();
         assert_eq!(result.as_slice(), expected(seed, length as usize));
-        process.invoke("Clear", &[]).unwrap();
+        process.invoke("clear", &[]).unwrap();
         assert_eq!(result.as_slice(), expected(seed, length as usize));
     }
     process
-        .invoke_list("Make", &[17, 64], 32768, &CancellationToken::default())
+        .invoke_list("make", &[17, 64], 32768, &CancellationToken::default())
         .unwrap();
     let candidate = process
-        .invoke_list("Candidate", &[], 32768, &CancellationToken::default())
+        .invoke_list("candidate", &[], 32768, &CancellationToken::default())
         .unwrap();
     assert_eq!(candidate.as_slice(), expected(17, 64));
-    assert_eq!(process.invoke("Marker", &[]).unwrap(), Some(77));
+    assert_eq!(process.invoke("marker", &[]).unwrap(), Some(77));
     let result = process
-        .invoke_list("Make", &[0, 65], 32768, &CancellationToken::default())
+        .invoke_list("make", &[0, 65], 32768, &CancellationToken::default())
         .unwrap_err();
     assert!(result.contains("exceeds 64"));
     drop(process);
     let process = module.instantiate_with_heap(&pool, &account, 140).unwrap();
     let mut task = ScalarTask::new(process);
     task.start(
-        &module.handler("Make").unwrap(),
+        &module.handler("make").unwrap(),
         &[17, 64],
         32768,
         &CancellationToken::default(),
@@ -120,7 +120,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request(
                 owner,
-                &module.handler("Make").unwrap(),
+                &module.handler("make").unwrap(),
                 &[17, length],
                 32768,
                 remaining(deadline),
@@ -134,7 +134,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request_values(
             owner,
-            &module.handler("Echo").unwrap(),
+            &module.handler("echo").unwrap(),
             &[MessageValue::IntList(&input)],
             32768,
             remaining(deadline),
@@ -145,7 +145,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Make").unwrap(),
+            &module.handler("make").unwrap(),
             &[17, 64],
             32768,
             Duration::ZERO,
@@ -160,7 +160,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Current").unwrap(),
+            &module.handler("current").unwrap(),
             &[],
             32768,
             remaining(deadline),
@@ -172,7 +172,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Make").unwrap(),
+            &module.handler("make").unwrap(),
             &[91, 1],
             32768,
             remaining(deadline),
@@ -187,7 +187,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Current").unwrap(),
+            &module.handler("current").unwrap(),
             &[],
             32768,
             remaining(deadline),
@@ -198,7 +198,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Fail").unwrap(),
+            &module.handler("fail").unwrap(),
             &[],
             32768,
             remaining(deadline),
@@ -215,7 +215,7 @@ fn worker_host(module: &ScalarModule, tenant: &ResourceAccount) {
     );
     let owner = worker.spawn_with_heap(module, limits(), 2, 140).unwrap();
     let sender = worker
-        .open_request_ingress(owner, &module.handler("Make").unwrap(), 2, 32768)
+        .open_request_ingress(owner, &module.handler("make").unwrap(), 2, 32768)
         .unwrap();
     let (mut request, _) = sender.request(&[37, 64], remaining(deadline)).unwrap();
     assert_eq!(request.reply_type(), ValueType::ListRef);
@@ -238,7 +238,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = supervisor
         .request_values(
             owner,
-            &module.handler("Make").unwrap(),
+            &module.handler("make").unwrap(),
             &[MessageValue::Int(17), MessageValue::Int(64)],
             32768,
             remaining(deadline),
@@ -278,7 +278,7 @@ fn scheduler_host(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let mut request = handle
             .request(
                 owner,
-                &module.handler("Make").unwrap(),
+                &module.handler("make").unwrap(),
                 &[17, length],
                 32768,
                 remaining(deadline),
@@ -294,7 +294,7 @@ fn scheduler_host(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
     let mut request = handle
         .request_values(
             owner,
-            &module.handler("Echo").unwrap(),
+            &module.handler("echo").unwrap(),
             &[MessageValue::IntList(&input)],
             32768,
             remaining(deadline),
@@ -307,7 +307,7 @@ fn scheduler_host(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
     let mut request = handle
         .request(
             owner,
-            &module.handler("Make").unwrap(),
+            &module.handler("make").unwrap(),
             &[37, 64],
             32768,
             Duration::ZERO,
@@ -320,7 +320,7 @@ fn scheduler_host(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
     let mut retained = handle
         .request(
             owner,
-            &module.handler("Current").unwrap(),
+            &module.handler("current").unwrap(),
             &[],
             32768,
             remaining(deadline),
@@ -382,13 +382,13 @@ fn language_worker(
     let owner = worker.spawn_with_heap(module, limits(), 3, 140).unwrap();
     assert!(
         worker
-            .send(owner, &module.handler("Done").unwrap(), &[1, 0, 0], 128)
+            .send(owner, &module.handler("done").unwrap(), &[1, 0, 0], 128)
             .is_err()
     );
     let request = worker
         .request(
             owner,
-            &module.handler("Start").unwrap(),
+            &module.handler("start").unwrap(),
             &args(length, mode, same),
             32768,
             remaining(deadline),
@@ -415,7 +415,7 @@ fn language_worker(
         let status = worker
             .request(
                 owner,
-                &module.handler("CompletedStatus").unwrap(),
+                &module.handler("completed_status").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -424,7 +424,7 @@ fn language_worker(
         let list = worker
             .request(
                 owner,
-                &module.handler("CompletedValues").unwrap(),
+                &module.handler("completed_values").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -447,7 +447,7 @@ fn language_worker(
         let request = worker
             .request(
                 child,
-                &module.handler("Current").unwrap(),
+                &module.handler("current").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -488,7 +488,7 @@ fn language_scheduler(
     let mut request = handle
         .request(
             owner,
-            &module.handler("Start").unwrap(),
+            &module.handler("start").unwrap(),
             &args(length, mode, same),
             32768,
             remaining(deadline),
@@ -524,7 +524,7 @@ fn language_scheduler(
                 let mut marker = handle
                     .request(
                         owner,
-                        &module.handler("Marker").unwrap(),
+                        &module.handler("marker").unwrap(),
                         &[],
                         32768,
                         remaining(deadline),
@@ -539,7 +539,7 @@ fn language_scheduler(
         let mut status = handle
             .request(
                 owner,
-                &module.handler("CompletedStatus").unwrap(),
+                &module.handler("completed_status").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -551,7 +551,7 @@ fn language_scheduler(
         let mut list = handle
             .request(
                 owner,
-                &module.handler("CompletedValues").unwrap(),
+                &module.handler("completed_values").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -579,7 +579,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let request = worker
             .request(
                 owner,
-                &module.handler("StartImportFail").unwrap(),
+                &module.handler("start_import_fail").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -592,7 +592,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         );
         let exit = worker.last_exit().unwrap();
         assert_eq!(exit.pid, owner);
-        assert_eq!(exit.handler(), "Done");
+        assert_eq!(exit.handler(), "done");
         assert_eq!(exit.execution.fault, Some(ExecutionFault::HeapExhausted));
     } else {
         let scheduler = Scheduler::new(
@@ -611,7 +611,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let mut request = handle
             .request(
                 owner,
-                &module.handler("StartImportFail").unwrap(),
+                &module.handler("start_import_fail").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -625,7 +625,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
             remaining(deadline);
             if let Some(exit) = handle.last_exit() {
                 assert_eq!(exit.pid, owner);
-                assert_eq!(exit.handler(), "Done");
+                assert_eq!(exit.handler(), "done");
                 assert_eq!(
                     exit.reason,
                     SchedulerExitReason::Managed(ExecutionFault::HeapExhausted)

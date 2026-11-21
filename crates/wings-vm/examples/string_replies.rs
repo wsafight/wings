@@ -50,25 +50,25 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     for length in [0, 1, 255, 256, 257, 65536] {
         assert!(
             process
-                .invoke("Make", &[length])
+                .invoke("make", &[length])
                 .unwrap_err()
                 .contains("invoke_string")
         );
         let retained = process
-            .invoke_string("Make", &[length], 32768, &CancellationToken::default())
+            .invoke_string("make", &[length], 32768, &CancellationToken::default())
             .unwrap();
         assert_eq!(retained.as_str(), "a".repeat(length as usize));
         let old = process
-            .invoke_string("Candidate", &[], 32768, &CancellationToken::default())
+            .invoke_string("candidate", &[], 32768, &CancellationToken::default())
             .unwrap();
         assert_eq!(old, retained);
-        assert_eq!(process.invoke("Marker", &[]).unwrap(), Some(77));
-        process.invoke("Clear", &[]).unwrap();
+        assert_eq!(process.invoke("marker", &[]).unwrap(), Some(77));
+        process.invoke("clear", &[]).unwrap();
         assert_eq!(retained.as_str(), "a".repeat(length as usize));
     }
     let mut execution = process
         .start_controlled(
-            "Make",
+            "make",
             &[65536],
             32768,
             &CancellationToken::default(),
@@ -100,7 +100,7 @@ fn worker(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request(
                 owner,
-                &module.handler("Make").unwrap(),
+                &module.handler("make").unwrap(),
                 &[length],
                 32768,
                 remaining(deadline),
@@ -116,7 +116,7 @@ fn worker(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request_values(
             owner,
-            &module.handler("Echo").unwrap(),
+            &module.handler("echo").unwrap(),
             &[MessageValue::String(input)],
             32768,
             remaining(deadline),
@@ -125,7 +125,7 @@ fn worker(module: &ScalarModule, tenant: &ResourceAccount) {
     drain(&mut worker, deadline);
     assert_eq!(reply(worker.take_reply(request).unwrap()).as_str(), input);
     let sender = worker
-        .open_request_ingress(owner, &module.handler("Make").unwrap(), 1, 32768)
+        .open_request_ingress(owner, &module.handler("make").unwrap(), 1, 32768)
         .unwrap();
     let (mut request, _) = sender.request(&[65536], remaining(deadline)).unwrap();
     drain(&mut worker, deadline);
@@ -155,7 +155,7 @@ fn scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         let mut request = handle
             .request(
                 owner,
-                &module.handler("Make").unwrap(),
+                &module.handler("make").unwrap(),
                 &[length],
                 32768,
                 remaining(deadline),
@@ -170,7 +170,7 @@ fn scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     let mut request = handle
         .request_values(
             owner,
-            &module.handler("Echo").unwrap(),
+            &module.handler("echo").unwrap(),
             &[MessageValue::String(input)],
             32768,
             remaining(deadline),
@@ -193,7 +193,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = supervisor
         .request(
             owner,
-            &module.handler("Make").unwrap(),
+            &module.handler("make").unwrap(),
             &[65536],
             32768,
             remaining(deadline),
@@ -233,7 +233,7 @@ fn language(
         let request = worker
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &arguments,
                 32768,
                 remaining(deadline),
@@ -258,7 +258,7 @@ fn language(
             let status = worker
                 .request(
                     owner,
-                    &module.handler("CompletedStatus").unwrap(),
+                    &module.handler("completed_status").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -267,7 +267,7 @@ fn language(
             let size = worker
                 .request(
                     owner,
-                    &module.handler("CompletedLength").unwrap(),
+                    &module.handler("completed_length").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -276,7 +276,7 @@ fn language(
             let edges = worker
                 .request(
                     owner,
-                    &module.handler("CompletedEdges").unwrap(),
+                    &module.handler("completed_edges").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -297,7 +297,7 @@ fn language(
             let request = worker
                 .request(
                     child,
-                    &module.handler("Current").unwrap(),
+                    &module.handler("current").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -326,7 +326,7 @@ fn language(
         let mut request = handle
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &arguments,
                 32768,
                 remaining(deadline),
@@ -360,7 +360,7 @@ fn language(
             let mut marker = handle
                 .request(
                     owner,
-                    &module.handler("Completed").unwrap(),
+                    &module.handler("completed").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -376,7 +376,7 @@ fn language(
             let mut status = handle
                 .request(
                     owner,
-                    &module.handler("CompletedStatus").unwrap(),
+                    &module.handler("completed_status").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -385,7 +385,7 @@ fn language(
             let mut size = handle
                 .request(
                     owner,
-                    &module.handler("CompletedLength").unwrap(),
+                    &module.handler("completed_length").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -394,7 +394,7 @@ fn language(
             let mut edges = handle
                 .request(
                     owner,
-                    &module.handler("CompletedEdges").unwrap(),
+                    &module.handler("completed_edges").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -422,7 +422,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let request = worker
             .request(
                 owner,
-                &module.handler("StartImportFail").unwrap(),
+                &module.handler("start_import_fail").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -453,7 +453,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let mut request = handle
             .request(
                 owner,
-                &module.handler("StartImportFail").unwrap(),
+                &module.handler("start_import_fail").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),

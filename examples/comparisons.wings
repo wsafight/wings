@@ -1,17 +1,17 @@
-process Comparisons {
-  state count: Int = 0
-  on Eq(left: Int, right: Int) -> Bool { left == right }
-  on Ne(left: Int, right: Int) -> Bool { left != right }
-  on Lt(left: Int, right: Int) -> Bool { left < right }
-  on Le(left: Int, right: Int) -> Bool { left <= right }
-  on Gt(left: Int, right: Int) -> Bool { left > right }
-  on Ge(left: Int, right: Int) -> Bool { left >= right }
-  on BoolEq(left: Bool, right: Bool) -> Bool { left == right }
-  on UnitEq(left: Unit, right: Unit) -> Bool { left == right }
-  on Max(left: Int, right: Int) -> Int { if left >= right { left } else { right } }
-  on Heap(value: Int) -> Bool {
-    let record = record_int(value)
-    collect()
-    read_int(record) == value
+actor Comparisons {
+  state count = 0
+  on eq(left: int, right: int) -> bool { left == right }
+  on ne(left: int, right: int) -> bool { left != right }
+  on lt(left: int, right: int) -> bool { left < right }
+  on le(left: int, right: int) -> bool { left <= right }
+  on gt(left: int, right: int) -> bool { left > right }
+  on ge(left: int, right: int) -> bool { left >= right }
+  on bool_eq(left: bool, right: bool) -> bool { left == right }
+  on unit_eq(left: (), right: ()) -> bool { left == right }
+  on max(left: int, right: int) -> int { if left >= right { left } else { right } }
+  on heap(value: int) -> bool {
+    let record = box(value)
+    gc()
+    record.get() == value
   }
 }

@@ -17,6 +17,7 @@ pub enum Operator {
     Subtract,
     Multiply,
     Divide,
+    Remainder,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +34,9 @@ pub enum Comparison {
 pub enum Operation {
     Constant(i64),
     StringLiteral(String),
+    BytesLiteral(Vec<u8>),
+    IntToString(Register),
+    BoolToString(Register),
     RecordNew {
         schema: u16,
         arguments: Vec<Register>,
@@ -93,9 +97,14 @@ pub enum Operation {
     If(Register),
     Else(Register),
     EndIf(Register),
+    ElseValues(Vec<Register>),
+    EndIfValues(Vec<Register>),
     Loop(Register),
+    LoopValues(Vec<Register>),
     While(Register),
     EndLoop(Register),
+    EndLoopValues(Vec<Register>),
+    PhiValue(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -168,9 +177,16 @@ pub struct Procedure {
     pub function: Function,
 }
 
+#[derive(Clone, Debug)]
+enum ElseArm {
+    Single(ValueType),
+    Many(Vec<ValueType>),
+}
+
 enum Region {
-    Branch(usize, Option<ValueType>),
+    Branch(usize, Option<ElseArm>),
     Loop(usize, ValueType, bool),
+    LoopValues(usize, Vec<ValueType>, bool),
 }
 
 impl Program {
@@ -267,6 +283,7 @@ impl Program {
             .flat_map(|function| &function.instructions)
             .try_fold(0usize, |total, instruction| match &instruction.operation {
                 Operation::StringLiteral(value) => total.checked_add(value.len()),
+                Operation::BytesLiteral(value) => total.checked_add(value.len()),
                 _ => Some(total),
             })
             .filter(|total| *total <= MAX_LITERAL_BYTES)
@@ -280,6 +297,7 @@ impl Program {
                 ValueType::Unit,
                 &procedure.parameters,
                 procedure.result,
+                false,
                 true,
             )?;
             if procedure
@@ -311,7 +329,7 @@ impl Program {
             return Err("too many handlers for the scalar prototype".into());
         }
         self.initializer
-            .validate(self.state, &[], ValueType::Unit, true)?;
+            .validate(self.state, &[], ValueType::Unit, false, false)?;
         self.validate_calls(&self.initializer, self.functions.len(), &paths)?;
         if self.initializer.instructions.iter().any(|instruction| {
             matches!(
@@ -353,7 +371,8 @@ impl Program {
                 self.state,
                 &handler.parameters,
                 handler.reply.unwrap_or(ValueType::Unit),
-                false,
+                true,
+                true,
             )?;
             self.validate_calls(&handler.function, self.functions.len(), &paths)?;
             for instruction in &handler.function.instructions {
@@ -492,7 +511,8 @@ impl Function {
         state: ValueType,
         parameters: &[(String, ValueType)],
         reply: ValueType,
-        initializer: bool,
+        allow_state: bool,
+        allow_loops: bool,
     ) -> Result<(), String> {
         if self.instructions.len() > MAX_OPERATIONS {
             return Err("too many operations for the scalar prototype".into());
@@ -500,7 +520,22 @@ impl Function {
         let mut types = Vec::new();
         let mut available = Vec::new();
         let mut branches = Vec::new();
+        let mut expected_phis: std::collections::VecDeque<(usize, ValueType)> =
+            std::collections::VecDeque::new();
         for instruction in &self.instructions {
+            if let Some((expected_index, expected_ty)) = expected_phis.pop_front() {
+                if !matches!(instruction.operation, Operation::PhiValue(actual) if actual == expected_index)
+                    || instruction.ty != expected_ty
+                {
+                    return Err("invalid or missing phi result instruction".into());
+                }
+                types.push(instruction.ty);
+                available.push(true);
+                continue;
+            }
+            if matches!(instruction.operation, Operation::PhiValue(_)) {
+                return Err("unexpected phi result instruction".into());
+            }
             let operands = operands(&instruction.operation);
             if operands
                 .into_iter()
@@ -515,8 +550,19 @@ impl Function {
                 Operation::StringLiteral(ref value) => {
                     instruction.ty == ValueType::StringRef && value.len() <= 65536
                 }
+                Operation::BytesLiteral(ref value) => {
+                    instruction.ty == ValueType::BytesRef && value.len() <= 65536
+                }
+                Operation::IntToString(value) => {
+                    instruction.ty == ValueType::StringRef
+                        && types.get(value) == Some(&ValueType::Int)
+                }
+                Operation::BoolToString(value) => {
+                    instruction.ty == ValueType::StringRef
+                        && types.get(value) == Some(&ValueType::Bool)
+                }
                 Operation::RecordNew { .. } | Operation::RecordField { .. } => true,
-                Operation::State => !initializer && instruction.ty == state,
+                Operation::State => allow_state && instruction.ty == state,
                 Operation::Argument(index) => parameters
                     .get(index)
                     .is_some_and(|parameter| parameter.1 == instruction.ty),
@@ -699,33 +745,94 @@ impl Function {
                         && types.get(condition) == Some(&ValueType::Bool)
                 }
                 Operation::Else(value) => {
-                    let Some(Region::Branch(start, then_type)) = branches.last_mut() else {
+                    let Some(Region::Branch(start, arm)) = branches.last_mut() else {
                         return Err("else without matching if".into());
                     };
-                    if then_type.is_some() {
+                    if arm.is_some() {
                         return Err("duplicate else in conditional".into());
                     }
-                    *then_type = types.get(value).copied();
+                    let Some(&ty) = types.get(value) else {
+                        return Err("invalid scalar IR operand, type or forward reference".into());
+                    };
+                    *arm = Some(ElseArm::Single(ty));
+                    available[start.saturating_add(1)..].fill(false);
+                    instruction.ty == ValueType::Unit
+                }
+                Operation::ElseValues(ref values) => {
+                    let Some(Region::Branch(start, arm)) = branches.last_mut() else {
+                        return Err("else without matching if".into());
+                    };
+                    if arm.is_some() {
+                        return Err("duplicate else in conditional".into());
+                    }
+                    if values.is_empty() || values.len() > MAX_PARAMETERS {
+                        return Err("invalid multi-value branch arity".into());
+                    }
+                    let then_types: Vec<ValueType> = values.iter().map(|&reg| types[reg]).collect();
+                    *arm = Some(ElseArm::Many(then_types));
                     available[start.saturating_add(1)..].fill(false);
                     instruction.ty == ValueType::Unit
                 }
                 Operation::EndIf(value) => {
-                    let Some(Region::Branch(start, Some(then_type))) = branches.pop() else {
+                    let Some(Region::Branch(start, Some(ElseArm::Single(then_type)))) =
+                        branches.pop()
+                    else {
                         return Err("end-if without matching if/else".into());
                     };
                     available[start.saturating_add(1)..].fill(false);
                     instruction.ty == then_type && types.get(value) == Some(&then_type)
+                }
+                Operation::EndIfValues(ref values) => {
+                    let Some(Region::Branch(start, Some(ElseArm::Many(then_types)))) =
+                        branches.pop()
+                    else {
+                        return Err("end-if without matching multi-value if/else".into());
+                    };
+                    available[start.saturating_add(1)..].fill(false);
+                    let valid = values.len() == then_types.len()
+                        && instruction.ty == then_types[0]
+                        && values
+                            .iter()
+                            .zip(&then_types)
+                            .all(|(&reg, &ty)| types.get(reg) == Some(&ty));
+                    for (idx, &ty) in then_types.iter().enumerate().skip(1) {
+                        expected_phis.push_back((idx, ty));
+                    }
+                    valid
                 }
                 Operation::Loop(initial) => {
                     if branches.len() == 64 {
                         return Err("control nesting exceeds 64 regions".into());
                     }
                     branches.push(Region::Loop(types.len(), instruction.ty, false));
-                    !initializer && instruction.ty == state && types.get(initial) == Some(&state)
+                    allow_loops
+                        && allow_state
+                        && instruction.ty == state
+                        && types.get(initial) == Some(&state)
+                }
+                Operation::LoopValues(ref initials) => {
+                    if branches.len() == 64 {
+                        return Err("control nesting exceeds 64 regions".into());
+                    }
+                    if !allow_loops || initials.is_empty() || initials.len() > MAX_PARAMETERS {
+                        false
+                    } else {
+                        let phi_types: Vec<ValueType> =
+                            initials.iter().map(|&reg| types[reg]).collect();
+                        let valid = instruction.ty == phi_types[0];
+                        for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
+                            expected_phis.push_back((idx, ty));
+                        }
+                        branches.push(Region::LoopValues(types.len(), phi_types, false));
+                        valid
+                    }
                 }
                 Operation::While(condition) => {
-                    let Some(Region::Loop(_, _, tested)) = branches.last_mut() else {
-                        return Err("while without matching loop".into());
+                    let tested = match branches.last_mut() {
+                        Some(Region::Loop(_, _, tested) | Region::LoopValues(_, _, tested)) => {
+                            tested
+                        }
+                        _ => return Err("while without matching loop".into()),
                     };
                     if *tested {
                         return Err("duplicate while in loop".into());
@@ -741,6 +848,23 @@ impl Function {
                     available[start..].fill(false);
                     instruction.ty == state_type && types.get(value) == Some(&state_type)
                 }
+                Operation::EndLoopValues(ref values) => {
+                    let Some(Region::LoopValues(start, phi_types, true)) = branches.pop() else {
+                        return Err("end-loop without matching loop/while".into());
+                    };
+                    available[start..].fill(false);
+                    let valid = values.len() == phi_types.len()
+                        && instruction.ty == phi_types[0]
+                        && values
+                            .iter()
+                            .zip(&phi_types)
+                            .all(|(&reg, &ty)| types.get(reg) == Some(&ty));
+                    for (idx, &ty) in phi_types.iter().enumerate().skip(1) {
+                        expected_phis.push_back((idx, ty));
+                    }
+                    valid
+                }
+                Operation::PhiValue(_) => false,
             };
             if !valid {
                 return Err("invalid scalar IR operand, type or forward reference".into());
@@ -748,8 +872,14 @@ impl Function {
             types.push(instruction.ty);
             available.push(!matches!(
                 instruction.operation,
-                Operation::If(_) | Operation::Else(_) | Operation::While(_)
+                Operation::If(_)
+                    | Operation::Else(_)
+                    | Operation::ElseValues(_)
+                    | Operation::While(_)
             ));
+        }
+        if !expected_phis.is_empty() {
+            return Err("missing phi result instruction".into());
         }
         if !branches.is_empty() {
             return Err("unterminated conditional in scalar IR".into());
@@ -786,11 +916,17 @@ fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
         | Operation::BytesLen(value)
         | Operation::StringFromBytes(value)
         | Operation::StringBytes(value)
-        | Operation::StringLen(value) => ([Some(value), None], &[]),
+        | Operation::StringLen(value)
+        | Operation::IntToString(value)
+        | Operation::BoolToString(value) => ([Some(value), None], &[]),
         Operation::StringAt(value, index) => ([Some(value), Some(index)], &[]),
         Operation::Loop(value) | Operation::While(value) | Operation::EndLoop(value) => {
             ([Some(value), None], &[])
         }
+        Operation::ElseValues(ref values)
+        | Operation::EndIfValues(ref values)
+        | Operation::LoopValues(ref values)
+        | Operation::EndLoopValues(ref values) => ([None, None], values.as_slice()),
         Operation::Binary(_, left, right)
         | Operation::Compare(_, left, right)
         | Operation::FillBytes(left, right)

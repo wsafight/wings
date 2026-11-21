@@ -63,7 +63,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         worker
             .send_values(
                 pid,
-                &module.handler("Store").unwrap(),
+                &module.handler("store").unwrap(),
                 &values(&first, &second, &integers),
                 32768,
             )
@@ -74,7 +74,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         let read = worker
             .request_values(
                 pid,
-                &module.handler("Get").unwrap(),
+                &module.handler("get").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -91,7 +91,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         let query = worker
             .request_values(
                 pid,
-                &module.handler("Compute").unwrap(),
+                &module.handler("compute").unwrap(),
                 &values(&first, &second, &integers),
                 32768,
                 Duration::ZERO,
@@ -109,7 +109,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         let query = worker
             .request_values(
                 pid,
-                &module.handler("Compute").unwrap(),
+                &module.handler("compute").unwrap(),
                 &values(&first, &second, &integers),
                 32768,
                 remaining(deadline),
@@ -128,7 +128,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     let query = worker
         .request_values(
             failing,
-            &module.handler("Compute").unwrap(),
+            &module.handler("compute").unwrap(),
             &values(&[17; 8], &[23; 8], &[3, 5]),
             32768,
             remaining(deadline),
@@ -154,7 +154,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
     supervisor
         .send_values(
             pid,
-            &module.handler("Store").unwrap(),
+            &module.handler("store").unwrap(),
             &values(&[17; 8], &[23; 8], &[3, 5]),
             32768,
         )
@@ -162,7 +162,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
     let query = supervisor
         .request_values(
             pid,
-            &module.handler("Compute").unwrap(),
+            &module.handler("compute").unwrap(),
             &values(&[], &[], &[]),
             32768,
             remaining(deadline),
@@ -207,7 +207,7 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         handle
             .send_values(
                 pid,
-                &module.handler("Store").unwrap(),
+                &module.handler("store").unwrap(),
                 &values(&first, &second, &integers),
                 32768,
             )
@@ -215,7 +215,7 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         let mut read = handle
             .request_values(
                 pid,
-                &module.handler("Get").unwrap(),
+                &module.handler("get").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -232,7 +232,7 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         let mut query = handle
             .request_values(
                 pid,
-                &module.handler("Compute").unwrap(),
+                &module.handler("compute").unwrap(),
                 &values(&first, &second, &integers),
                 32768,
                 Duration::ZERO,
@@ -245,7 +245,7 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         let mut read = handle
             .request_values(
                 pid,
-                &module.handler("Get").unwrap(),
+                &module.handler("get").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -257,8 +257,8 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         );
     }
     for (name, argument, expected) in [
-        ("Echo", MessageValue::Bool(true), 1),
-        ("Ack", MessageValue::Bytes(&[]), 0),
+        ("echo", MessageValue::Bool(true), 1),
+        ("ack", MessageValue::Bytes(&[]), 0),
     ] {
         let mut query = handle
             .request_values(
@@ -276,14 +276,14 @@ fn scheduled(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     }
     assert!(
         handle
-            .send(pid, &module.handler("Store").unwrap(), &[0; 6], 32)
+            .send(pid, &module.handler("store").unwrap(), &[0; 6], 32)
             .is_err()
     );
     let failing = handle.spawn_with_heap(module, limits(), 1, 2).unwrap();
     let mut query = handle
         .request_values(
             failing,
-            &module.handler("Compute").unwrap(),
+            &module.handler("compute").unwrap(),
             &values(&[17; 8], &[23; 8], &[3, 5]),
             32768,
             remaining(deadline),

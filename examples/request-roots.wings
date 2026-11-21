@@ -1,15 +1,15 @@
-process RequestRoots {
-  state count: RecordInt = record_int(0)
-  on Start(value: Int, fail: Bool) -> Int {
+actor RequestRoots {
+  state count = box(0)
+  on start(value: int, fail: bool) -> int {
     let old = count;
-    count = record_int(9);
-    let child = spawn_self();
-    let id = request(child, Compute, Completed, 60000, value);
-    cancel_request(id);
-    collect();
-    (read_int(old) + read_int(count)) / if fail { 0 } else { 1 }
+    count = box(9);
+    let child = spawn();
+    let id = child.ask(compute(value), timeout: 60000, then: completed);
+    id.cancel();
+    gc();
+    (old.get() + count.get()) / if fail { 0 } else { 1 }
   }
-  on Compute(value: Int) -> Int { count = record_int(value); read_int(count) }
-  on Completed(id: RequestId, status: Int, value: Int) { count = record_int(status * 100 + value) }
-  on Read -> Int { read_int(count) }
+  on compute(value: int) -> int { count = box(value); count.get() }
+  on reply completed(id: req, status: int, value: int) { count = box(status * 100 + value) }
+  on read -> int { count.get() }
 }

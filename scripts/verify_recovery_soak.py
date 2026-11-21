@@ -19,7 +19,7 @@ def model(parent):
               "outcomes": [{"sender": sender, "seq": sequence,
                             "status": "timed_out" if sequence <= 2 else "cancelled", "consumed_once": True}
                            for sender in (1, 2) for sequence in range(1, 9)],
-              "failures": [{"attempt": attempt, "status": "cancelled", "handler": "Fail",
+              "failures": [{"attempt": attempt, "status": "cancelled", "handler": "fail",
                             "reason": "division_by_zero", "state_bytes": 4096, "committed": 0,
                             "restart": "restarted" if attempt == 1 else "intensity_exceeded",
                             "next_initial": 0 if attempt == 1 else None} for attempt in (1, 2)]}
@@ -93,7 +93,7 @@ def model(parent):
     change(["result", "outcomes", 2, "status"], "failed")
     change(["result", "failures"], result["failures"][:1])
     for index in (0, 1):
-        for key, value in [("attempt", True), ("status", "timed_out"), ("handler", "Add"),
+        for key, value in [("attempt", True), ("status", "timed_out"), ("handler", "add"),
                            ("reason", "cancelled"), ("state_bytes", 256), ("committed", 99),
                            ("restart", "disabled"), ("next_initial", 99)]:
             change(["result", "failures", index, key], value)
@@ -146,7 +146,7 @@ def beam_model(parent):
               "outcomes": [{"sender": sender, "seq": sequence,
                             "status": "timed_out" if sequence <= 2 else "cancelled", "consumed_once": True}
                            for sender in (1, 2) for sequence in range(1, 9)],
-              "failures": [{"attempt": attempt, "status": "failed", "handler": "Fail", "reason": "division_by_zero",
+              "failures": [{"attempt": attempt, "status": "failed", "handler": "fail", "reason": "division_by_zero",
                             "state_bytes": 4096, "committed": 0, "restart": "restarted" if attempt == 1 else "intensity_exceeded",
                             "next_initial": 0 if attempt == 1 else None} for attempt in (1, 2)]}
     start = {"version": 11, "event": "start", "mode": "verify", "epochs": 3,

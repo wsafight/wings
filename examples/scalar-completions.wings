@@ -1,39 +1,39 @@
-process ScalarCompletions {
-  state count: Int = 0
+actor ScalarCompletions {
+  state count = 0
 
-  on Start(kind: Bool, value: Bool, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
-    let target = if same { self_pid() } else { spawn_self() }
+  on start(kind: bool, value: bool, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
     let pending = if kind {
-      request(target, ComputeBool, CompletedBool, timeout, value, fail)
+      target.ask(compute_bool(value, fail), timeout: timeout, then: completed_bool)
     } else {
-      request(target, ComputeUnit, CompletedUnit, timeout, fail)
+      target.ask(compute_unit(fail), timeout: timeout, then: completed_unit)
     }
-    if cancel { cancel_request(pending) } else { () }
+    if cancel { pending.cancel() }
     count = 9
     count
   }
 
-  on ComputeBool(value: Bool, fail: Bool) -> Bool {
+  on compute_bool(value: bool, fail: bool) -> bool {
     count = count + 1
     if fail { 1 / 0 == 0 } else { value }
   }
 
-  on ComputeUnit(fail: Bool) -> Unit {
+  on compute_unit(fail: bool) -> () {
     count = count + 1
     let checked = 1 / if fail { 0 } else { 1 }
     ()
   }
 
-  on CompletedBool(id: RequestId, status: Int, value: Bool) {
+  on reply completed_bool(id: req, status: int, value: bool) {
     count = status * 1000 + if value { 11 } else { 7 }
-    send_self(Add, 10000)
+    self ! add(10000)
   }
 
-  on CompletedUnit(id: RequestId, status: Int, value: Unit) {
+  on reply completed_unit(id: req, status: int, value: ()) {
     count = status * 1000 + 13
-    send_self(Add, 10000)
+    self ! add(10000)
   }
 
-  on Add(value: Int) { count = count + value }
-  on Read -> Int { count }
+  on add(value: int) { count = count + value }
+  on read -> int { count }
 }

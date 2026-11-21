@@ -40,28 +40,28 @@ fn main() {
     );
     assert!(
         process
-            .start_controlled("Inc", &[], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[], 4, &cancellation, &preemption)
             .is_err()
     );
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(0)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(0)));
     {
         let mut execution = process
-            .start_controlled("Inc", &[3], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[3], 4, &cancellation, &preemption)
             .expect("start");
         assert!(execution.resume(0).unwrap_err().contains("at least one"));
         assert_eq!(finish(&mut execution, 1), (Some(3), 3));
         assert!(execution.resume(1).unwrap_err().contains("completed"));
     }
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(3)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(3)));
     for expected in 4..=131 {
         let mut execution = process
-            .start_controlled("Inc", &[1], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[1], 4, &cancellation, &preemption)
             .expect("start");
         assert_eq!(finish(&mut execution, 1), (Some(expected), 3));
     }
     {
         let mut execution = process
-            .start_controlled("Inc", &[1], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[1], 4, &cancellation, &preemption)
             .expect("start");
         preemption.request();
         assert_eq!(execution.resume(100), Ok(ExecutionStatus::Suspended));
@@ -78,10 +78,10 @@ fn main() {
     let mut other = load(counter);
     {
         let mut first = process
-            .start_controlled("Inc", &[8], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[8], 4, &cancellation, &preemption)
             .expect("start first");
         let mut second = other
-            .start_controlled("Inc", &[9], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[9], 4, &cancellation, &preemption)
             .expect("start second");
         for _ in 0..3 {
             assert_eq!(first.resume(1), Ok(ExecutionStatus::Suspended));
@@ -94,7 +94,7 @@ fn main() {
         let mut abandoned = load(counter);
         {
             let mut execution = abandoned
-                .start_controlled("Inc", &[3], 4, &cancellation, &preemption)
+                .start_controlled("inc", &[3], 4, &cancellation, &preemption)
                 .expect("start");
             if start {
                 for _ in 0..3 {
@@ -104,7 +104,7 @@ fn main() {
         }
         assert!(
             abandoned
-                .invoke("Get", &[])
+                .invoke("get", &[])
                 .unwrap_err()
                 .contains("terminated")
         );
@@ -113,7 +113,7 @@ fn main() {
     let cancellation = CancellationToken::default();
     {
         let mut execution = cancelled
-            .start_controlled("Inc", &[3], 4, &cancellation, &preemption)
+            .start_controlled("inc", &[3], 4, &cancellation, &preemption)
             .expect("start");
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
         let remote = cancellation.clone();
@@ -127,7 +127,7 @@ fn main() {
     }
     assert!(
         cancelled
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );
@@ -135,7 +135,7 @@ fn main() {
     let mut exhausted = load(counter);
     {
         let mut execution = exhausted
-            .start_controlled("Inc", &[3], 3, &cancellation, &preemption)
+            .start_controlled("inc", &[3], 3, &cancellation, &preemption)
             .expect("start");
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
@@ -146,7 +146,7 @@ fn main() {
     }
     assert!(
         exhausted
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );
@@ -159,7 +159,7 @@ fn main() {
         let pending = PreemptionToken::default();
         pending.request();
         let mut execution = process
-            .start_controlled("Inc", &[3], 0, &cancellation, &pending)
+            .start_controlled("inc", &[3], 0, &cancellation, &pending)
             .expect("start zero budget");
         let error = if cancelled {
             "managed execution cancelled"
@@ -172,16 +172,16 @@ fn main() {
     let mut live = load(arithmetic);
     {
         let mut execution = live
-            .start_controlled("Work", &[7], 147, &cancellation, &preemption)
+            .start_controlled("work", &[7], 147, &cancellation, &preemption)
             .expect("start live values");
         let (reply, suspensions) = finish(&mut execution, 1);
         assert_eq!(reply, Some(1464));
         assert_eq!(suspensions, 146);
     }
-    assert_eq!(live.invoke("Get", &[]), Ok(Some(1464)));
+    assert_eq!(live.invoke("get", &[]), Ok(Some(1464)));
     {
         let mut execution = live
-            .start_controlled("Fail", &[], 100, &cancellation, &preemption)
+            .start_controlled("fail", &[], 100, &cancellation, &preemption)
             .expect("start failure");
         loop {
             match execution.resume(1) {
@@ -194,6 +194,6 @@ fn main() {
             }
         }
     }
-    assert!(live.invoke("Get", &[]).unwrap_err().contains("terminated"));
+    assert!(live.invoke("get", &[]).unwrap_err().contains("terminated"));
     println!("Stackful resume verified: slices, live values, interleaving, cancellation and drop");
 }

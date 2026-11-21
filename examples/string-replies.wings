@@ -1,49 +1,49 @@
-process StringReplies {
-  state data: Bytes = fill_bytes(0, 0)
+actor StringReplies {
+  state data = bytes::fill(0, 0)
 
-  on Make(length: Int) -> String {
-    data = fill_bytes(length, 97)
-    collect()
-    string_from_bytes(data)
+  on make(length: int) -> str {
+    data = bytes::fill(length, 97)
+    gc()
+    data.to_str()
   }
-  on Echo(input: String) -> String { collect(); data = string_bytes(input); collect(); input }
-  on Current -> String { collect(); string_from_bytes(data) }
-  on Candidate -> String { let old = string_from_bytes(data); data = fill_bytes(1, 77); collect(); old }
-  on Fail -> String { data = fill_bytes(1, 99); let failed = 1 / 0; string_from_bytes(data) }
-  on Clear { data = fill_bytes(0, 0); collect() }
-  on Marker -> Int { if bytes_len(data) == 0 { -1 } else { byte_at(data, 0) } }
-  on Unicode -> String { "中😀\0\n\r\t\\\"" }
+  on echo(input: str) -> str { gc(); data = input.bytes(); gc(); input }
+  on current -> str { gc(); data.to_str() }
+  on candidate -> str { let old = data.to_str(); data = bytes::fill(1, 77); gc(); old }
+  on fail -> str { data = bytes::fill(1, 99); let failed = 1 / 0; data.to_str() }
+  on clear { data = bytes::fill(0, 0); gc() }
+  on marker -> int { if data.len() == 0 { -1 } else { data.at(0) } }
+  on unicode -> str { "中😀\0\n\r\t\\\"" }
 
-  on Start(length: Int, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
-    let target = if same { self_pid() } else { spawn_self() }
+  on start(length: int, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
     let pending = if fail {
-      request(target, Fail, Done, timeout)
+      target.ask(fail, timeout: timeout, then: done)
     } else {
-      request(target, Make, Done, timeout, length)
+      target.ask(make(length), timeout: timeout, then: done)
     }
-    if cancel { cancel_request(pending) } else { () }
-    data = fill_bytes(1, 9)
+    if cancel { pending.cancel() }
+    data = bytes::fill(1, 9)
     9
   }
-  on Done(id: RequestId, status: Int, result: String) {
-    collect()
-    let bytes = string_bytes(result)
-    let length = bytes_len(bytes)
-    let edges = if length == 0 { 0 } else { byte_at(bytes, 0) + byte_at(bytes, length - 1) }
-    data = replace_i64_be(replace_i64_be(replace_i64_be(fill_bytes(24, 0), 0, 9), 8, length), 16, edges)
-    collect()
-    send_self(Mark, status)
+  on reply done(id: req, status: int, result: str) {
+    gc()
+    let bytes = result.bytes()
+    let length = bytes.len()
+    let edges = if length == 0 { 0 } else { bytes.at(0) + bytes.at(length - 1) }
+    data = bytes::fill(24, 0).set_i64(0, 9).set_i64(8, length).set_i64(16, edges)
+    gc()
+    self ! mark(status)
   }
-  on Mark(status: Int) { data = replace_i64_be(data, 0, status) }
-  on CompletedStatus -> Int { read_i64_be(data, 0) }
-  on CompletedLength -> Int { read_i64_be(data, 8) }
-  on CompletedEdges -> Int { read_i64_be(data, 16) }
-  on Completed -> Int { if bytes_len(data) == 24 { read_i64_be(data, 0) } else { 9 } }
+  on mark(status: int) { data = data.set_i64(0, status) }
+  on completed_status -> int { data.i64_at(0) }
+  on completed_length -> int { data.i64_at(8) }
+  on completed_edges -> int { data.i64_at(16) }
+  on completed -> int { if data.len() == 24 { data.i64_at(0) } else { 9 } }
 
-  on Initial -> String { string_from_bytes(data) }
-  on StartImportFail -> Int {
-    let target = spawn_self()
-    let pending = request(target, Initial, Done, 60000)
+  on initial -> str { data.to_str() }
+  on start_import_fail -> int {
+    let target = spawn()
+    let pending = target.ask(initial, timeout: 60000, then: done)
     9
   }
 }

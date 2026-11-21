@@ -269,7 +269,7 @@ fn execute(
     let vm = ResourceAccount::vm_accounted(limits())?;
     let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
-    let configure = module.handler("Configure")?;
+    let configure = module.handler("configure")?;
     if module.manifest().state != ValueType::BytesRef
         || configure.schema().parameters.len() != 1
         || configure
@@ -281,8 +281,8 @@ fn execute(
     {
         return Err("fairness artifact schema mismatch".into());
     }
-    let cpu = module.handler("Cpu")?;
-    let pulse = module.handler("Pulse")?;
+    let cpu = module.handler("cpu")?;
+    let pulse = module.handler("pulse")?;
     if [&cpu, &pulse].iter().any(|handler| {
         handler.schema().parameters.len() != 4
             || handler

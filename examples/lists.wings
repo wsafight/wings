@@ -1,47 +1,47 @@
-process Lists {
-  fn singleton(value: Int) -> IntList { prepend_int(value, empty_ints()) }
-  fn first(values: IntList) -> Int { collect(); head_int(values) }
-  fn keep(flag: Bool, values: IntList) -> IntList {
-    if flag { values } else { prepend_int(99, values) }
+actor Lists {
+  fn singleton(value: int) -> [int] { [value] }
+  fn first(values: [int]) -> int { gc(); values.head() }
+  fn keep(flag: bool, values: [int]) -> [int] {
+    if flag { values } else { [99, ..values] }
   }
-  state values: IntList = empty_ints()
-  on Empty -> Bool { is_empty_ints(values) }
-  on Push(value: Int) -> Int {
-    values = prepend_int(value, values)
-    collect()
-    head_int(values)
+  state values: [int] = []
+  on empty -> bool { values.is_empty() }
+  on push(value: int) -> int {
+    values = [value, ..values]
+    gc()
+    values.head()
   }
-  on Pop -> Int {
-    let value = head_int(values)
-    values = tail_ints(values)
-    collect()
+  on pop -> int {
+    let value = values.head()
+    values = values.tail()
+    gc()
     value
   }
-  on Head -> Int { first(values) }
-  on Shared(flag: Bool) -> Int {
+  on head -> int { first(values) }
+  on shared(flag: bool) -> int {
     let one = singleton(7)
-    let two = prepend_int(11, one)
+    let two = [11, ..one]
     let chosen = keep(flag, two)
-    collect()
-    first(chosen) + first(tail_ints(two))
+    gc()
+    first(chosen) + first(two.tail())
   }
-  on Drain -> Unit {
-    while is_empty_ints(values) == false {
-      values = tail_ints(values)
-      collect()
+  on drain -> () {
+    while !values.is_empty() {
+      values = values.tail()
+      gc()
     }
   }
-  on Build(limit: Int) -> Int {
+  on build(limit: int) -> int {
     values = singleton(0)
-    while head_int(values) < limit {
-      values = prepend_int(head_int(values) + 1, values)
-      collect()
+    while values.head() < limit {
+      values = [values.head() + 1, ..values]
+      gc()
     }
-    head_int(values)
+    values.head()
   }
-  on Fail -> Int {
-    values = prepend_int(99, values)
-    collect()
+  on fail -> int {
+    values = [99, ..values]
+    gc()
     1 / 0
   }
 }

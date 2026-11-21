@@ -13,14 +13,14 @@ fn main() {
     let cancellation = CancellationToken::default();
     let mut process = load(directory);
     assert!(process.invoke("Missing", &[]).is_err());
-    assert!(process.invoke("Inc", &[]).is_err());
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(0)));
+    assert!(process.invoke("inc", &[]).is_err());
+    assert_eq!(process.invoke("get", &[]), Ok(Some(0)));
     assert_eq!(
-        process.invoke_controlled("Inc", &[3], 4, &cancellation),
+        process.invoke_controlled("inc", &[3], 4, &cancellation),
         Ok(Some(3))
     );
     assert_eq!(
-        process.invoke_controlled("Inc", &[4], 4, &cancellation),
+        process.invoke_controlled("inc", &[4], 4, &cancellation),
         Ok(Some(7))
     );
     let remote = cancellation.clone();
@@ -28,24 +28,24 @@ fn main() {
         .join()
         .expect("cancel thread");
     assert_eq!(
-        process.invoke_controlled("Inc", &[3], 0, &cancellation),
+        process.invoke_controlled("inc", &[3], 0, &cancellation),
         Err("managed execution cancelled".into())
     );
     assert!(
         process
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );
     let mut process = load(directory);
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(0)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(0)));
     assert_eq!(
-        process.invoke_controlled("Inc", &[3], 3, &CancellationToken::default()),
+        process.invoke_controlled("inc", &[3], 3, &CancellationToken::default()),
         Err("managed execution step budget exhausted".into())
     );
     assert!(
         process
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );

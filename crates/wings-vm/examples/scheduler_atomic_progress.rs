@@ -52,9 +52,9 @@ fn run(directory: &Path, workers: usize) -> Result<Value, String> {
     let healthy = (0..HEALTHY)
         .map(|_| handle.spawn(&module, limits(), 1))
         .collect::<Result<Vec<_>, _>>()?;
-    let hold = module.handler("Hold")?;
-    let work = module.handler("Work")?;
-    let read = module.handler("Read")?;
+    let hold = module.handler("hold")?;
+    let work = module.handler("work")?;
+    let read = module.handler("read")?;
     let started = Instant::now();
     for pid in &hot {
         handle.send(*pid, &hold, &[], u64::MAX)?;

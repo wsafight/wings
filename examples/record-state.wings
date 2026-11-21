@@ -1,31 +1,31 @@
-process RecordState {
-  state current: RecordInt = record_int(7)
+actor RecordState {
+  state current = box(7)
 
-  on Get -> Int {
-    collect()
-    read_int(current)
+  on get -> int {
+    gc()
+    current.get()
   }
 
-  on Set(value: Int) -> Int {
-    current = record_int(value)
-    collect()
-    read_int(current)
+  on set(value: int) -> int {
+    current = box(value)
+    gc()
+    current.get()
   }
 
-  on Replace(value: Int) {
-    current = record_int(value)
-    collect()
+  on replace(value: int) {
+    current = box(value)
+    gc()
   }
 
-  on Fail -> Int {
-    current = record_int(99)
-    collect()
+  on fail -> int {
+    current = box(99)
+    gc()
     1 / 0
   }
 
-  on Conditional(flag: Bool) -> Int {
-    let selected = if flag { read_int(record_int(11)) } else { read_int(current) }
-    collect()
-    read_int(current) + selected
+  on conditional(flag: bool) -> int {
+    let selected = if flag { box(11).get() } else { current.get() }
+    gc()
+    current.get() + selected
   }
 }

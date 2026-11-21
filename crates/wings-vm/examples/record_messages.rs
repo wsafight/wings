@@ -24,7 +24,7 @@ fn read(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid) -> i64 {
     let request = worker
         .request(
             pid,
-            &module.handler("Read").unwrap(),
+            &module.handler("read").unwrap(),
             &[],
             4096,
             Duration::from_secs(60),
@@ -42,12 +42,12 @@ fn main() {
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let module = unsafe { ScalarModule::load_trusted(Path::new(&arguments[1])) }.unwrap();
     for (entry, values, child_value, parent_value, heap_records) in [
-        ("Start", vec![7, 0], Some(7), Some(0), 16),
-        ("Start", vec![9, 1], Some(9), None, 16),
-        ("Self", vec![11], None, Some(11), 16),
-        ("Ask", vec![13], Some(0), Some(14), 16),
-        ("Pair", vec![17], Some(35), Some(0), 16),
-        ("Pair", vec![19], Some(39), Some(0), 4),
+        ("start", vec![7, 0], Some(7), Some(0), 16),
+        ("start", vec![9, 1], Some(9), None, 16),
+        ("self_msg", vec![11], None, Some(11), 16),
+        ("ask", vec![13], Some(0), Some(14), 16),
+        ("pair", vec![17], Some(35), Some(0), 16),
+        ("pair", vec![19], Some(39), Some(0), 4),
     ] {
         let vm = ResourceAccount::vm(limits());
         let tenant = vm.tenant(limits()).unwrap();
@@ -91,7 +91,7 @@ fn main() {
         worker
             .request(
                 pid,
-                &module.handler("Pair").unwrap(),
+                &module.handler("pair").unwrap(),
                 &[7],
                 4096,
                 Duration::from_secs(60),
@@ -107,13 +107,13 @@ fn main() {
     worker.enable_wait().unwrap();
     let pid = worker.spawn_with_heap(&module, limits(), 2, 2).unwrap();
     let baseline = vm.used();
-    let store = module.handler("Store").unwrap();
+    let store = module.handler("store").unwrap();
     assert!(worker.send(pid, &store, &[1], 4096).is_err());
     assert!(
         worker
             .request(
                 pid,
-                &module.handler("Compute").unwrap(),
+                &module.handler("compute").unwrap(),
                 &[1],
                 4096,
                 Duration::from_secs(60)
@@ -121,7 +121,7 @@ fn main() {
             .is_err()
     );
     assert_eq!(vm.used(), baseline);
-    for name in ["Store", "Compute"] {
+    for name in ["store", "compute"] {
         let mut probe = ScalarWorker::new(&tenant, 1).unwrap();
         probe.enable_wait().unwrap();
         let target = probe.spawn_with_heap(&module, limits(), 1, 2).unwrap();
@@ -143,7 +143,7 @@ fn main() {
     worker
         .request(
             pid,
-            &module.handler("Pair").unwrap(),
+            &module.handler("pair").unwrap(),
             &[7],
             4096,
             Duration::from_secs(60),

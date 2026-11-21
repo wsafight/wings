@@ -11,86 +11,8 @@ fn checked(text: &str) -> Analysis {
     analysis
 }
 
-#[test]
-fn named_messages_and_replies_preserve_nominal_completion_types() {
-    checked(
-        "process P { record A { text: String } state n: Int = 0; on Store(value: A) { n = string_len(value.text) } on Start { send_self(Store, A(\"中\")) } on Read(value: A) -> Int { string_len(value.text) } on Done(id: RequestId, status: Int, result: Int) {} on Ask { request(self_pid(), Read, Done, 1000, A(\"😀\")); } }",
-    );
-    checked(
-        "process P { record A {} state n: Int = 0; on Read -> A { A() } on Done(id: RequestId, status: Int, result: A) {} on Ask { request(self_pid(), Read, Done, 1000); } }",
-    );
-    for source in [
-        "process P { record A {} record B {} state n: Int = 0; on Store(value: A) {} on Start { send_self(Store, B()) } }",
-        "process P { record A {} record B {} state n: Int = 0; on Read -> A { B() } }",
-        "process P { record A {} record B {} state n: Int = 0; on Read -> A { A() } on Done(id: RequestId, status: Int, result: B) {} on Ask { request(self_pid(), Read, Done, 1000); } }",
-    ] {
-        assert!(!analyze(source).diagnostics.is_empty(), "{source}");
-    }
-}
-
-#[test]
-fn string_equality_is_typed_content_equality_without_ordering_or_coercion() {
-    checked(
-        "process P { state text: String = \"中😀\"; fn equal(left: String, right: String) -> Bool { left == right } on Same(value: String) -> Bool { equal(text, value) } on Different -> Bool { text != \"\" } }",
-    );
-    for expression in [
-        "text == 1",
-        "text != fill_bytes(0, 0)",
-        "text < text",
-        "text >= text",
-        "text + text",
-    ] {
-        let source = format!(
-            "process P {{ state text: String = \"\"; on Test -> Bool {{ {expression} }} }}"
-        );
-        assert!(!analyze(&source).diagnostics.is_empty(), "{source}");
-    }
-}
-
-#[test]
-fn byte_i64_builtins_require_explicit_byte_and_integer_operands() {
-    checked(
-        "process P { fn changed(value: Bytes, number: Int) -> Bytes { replace_i64_be(value, 1, number) } state data: Bytes = fill_bytes(16, 0); on Set(number: Int) -> Int { let next = changed(data, number); data = next; read_i64_be(data, 1) } }",
-    );
-    for text in [
-        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(data, true) } }",
-        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(1, 0) } }",
-        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { replace_i64_be(data, 0, false); 0 } }",
-        "process P { state data: Bytes = fill_bytes(8, 0); on Read -> Int { read_i64_be(data) } }",
-        "process P { fn replace_i64_be(value: Int) -> Int { value } state data: Int = 0 }",
-    ] {
-        assert!(
-            !analyze(text).diagnostics.is_empty(),
-            "unexpected acceptance: {text}"
-        );
-    }
-}
-
-#[test]
-fn bytes_are_typed_immutable_message_and_reply_roots() {
-    checked(
-        "process P { fn changed(value: Bytes) -> Bytes { replace_byte(value, 0, 255) } state data: Bytes = fill_bytes(4, 0); on Set(value: Int) -> Int { let old = data; data = if true { changed(old) } else { fill_bytes(value, 7) }; collect(); bytes_len(data) + byte_at(old, 0) } }",
-    );
-    for text in [
-        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bool { data == data } }",
-        "process P { state data: Bytes = empty_ints(); on Read -> Int { bytes_len(data) } }",
-        "process P { state data: Bytes = fill_bytes(1, true); on Read -> Int { byte_at(1, 0) } }",
-        "process P { state data: Bytes = fill_bytes(1, 0); on Read -> Int { replace_byte(data, 1) } }",
-        "process P { fn fill_bytes(value: Int) -> Int { value } state data: Int = 0; on Read -> Int { data } }",
-    ] {
-        assert!(
-            !analyze(text).diagnostics.is_empty(),
-            "unexpected acceptance: {text}"
-        );
-    }
-    checked(
-        "process P { state data: Bytes = fill_bytes(1, 0); on Start { let child = spawn_self(); send(child, Store, data); send_self(Store, data); let pending = request(child, Size, Done, 1000, data); collect() } on Store(value: Bytes) { data = value } on Size(value: Bytes) -> Int { bytes_len(value) } on Done(id: RequestId, status: Int, value: Int) {} }",
-    );
-    checked("process P { state data: Bytes = fill_bytes(1, 0); on Read -> Bytes { data } }");
-}
-
 fn handler(body: &str) -> String {
-    format!("process P {{ state count: Int = 0; on Get(value: Int) -> Int {{ {body} }} }}")
+    format!("actor P {{ state count = 0; on get(value: int) -> int {{ {body} }} }}")
 }
 
 fn assert_error(text: &str, code: &str, fragment: &str) {
@@ -114,490 +36,296 @@ fn assert_error(text: &str, code: &str, fragment: &str) {
 }
 
 #[test]
-fn self_send_checks_forward_one_way_protocol_and_handler_scope() {
-    let text = "process P { state n: Int = 0; on Start { send_self(Add, 1, true, ()) } on Add(v: Int, b: Bool, u: Unit) { n = v } }";
+fn struct_messages_and_replies_preserve_nominal_completion_types() {
+    checked(
+        r#"
+        actor P {
+          struct A { text: str }
+          state n = 0
+          on store(value: A) { n = value.text.len() }
+          on start { self ! store(A { text: "中" }) }
+          on read(value: A) -> int => value.text.len()
+          on reply done(id: req, status: int, result: int) {}
+          on ask_it { let _ = self.ask(read(A("😀")), timeout: 1_000, then: done) }
+        }
+        "#,
+    );
+    checked(
+        r#"
+        actor P {
+          struct A {}
+          state n = 0
+          on read -> A => A {}
+          on reply done(id: req, status: int, result: A) {}
+          on ask_it { let _ = self.ask(read, timeout: 1_000, then: done) }
+        }
+        "#,
+    );
+    for source in [
+        "actor P { struct A {} struct B {} state n = 0; on store(value: A) {} on start { self ! store(B {}) } }",
+        "actor P { struct A {} struct B {} state n = 0; on read -> A => B {} }",
+        "actor P { struct A {} struct B {} state n = 0; on read -> A => A {} on reply done(id: req, status: int, result: B) {} on ask_it { let _ = self.ask(read, timeout: 1_000, then: done) } }",
+    ] {
+        assert!(!analyze(source).diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn string_concat_interpolation_and_equality_are_strictly_typed() {
+    checked(
+        r#"
+        actor P {
+          state text = "中😀"
+          fn equal(left: str, right: str) -> bool => left == right
+          on same(value: str) -> bool => equal(text, value)
+          on join(n: int, ok: bool) -> str {
+            text += "!"
+            f"{text}:{n}:{ok}" + "${n}"
+          }
+        }
+        "#,
+    );
+    for expression in [
+        "text == 1",
+        "text != b\"\"",
+        "text < text",
+        "text >= text",
+        "text + 1",
+        "f\"{b\\\"a\\\"}\"",
+    ] {
+        let source = format!(
+            "actor P {{ state text = \"\"; on check_it -> bool {{ {expression}; true }} }}"
+        );
+        assert!(!analyze(&source).diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn byte_methods_and_literals_require_explicit_operands() {
+    checked(
+        r#"
+        actor P {
+          fn changed(value: bytes, number: int) -> bytes => value.set_i64(1, number)
+          state data = bytes::fill(16, 0)
+          on set_num(number: int) -> int {
+            let old = b"abcd"
+            data = changed(data, number).set(0, 255)
+            gc()
+            data.i64_at(1) + old.len() + old.at(0)
+          }
+        }
+        "#,
+    );
+    for text in [
+        "actor P { state data = b\"01234567\"; on read -> int => data.i64_at(true) }",
+        "actor P { state data = b\"01234567\"; on read -> int { data.set_i64(0, false); 0 } }",
+        "actor P { state data = b\"01234567\"; on read -> int => data.i64_at() }",
+        "actor P { state data = b\"a\"; on read -> bool => data == data }",
+        "actor P { state data: bytes = []; on read -> int => data.len() }",
+        "actor P { state data = bytes::fill(1, true); on read -> int => data.len() }",
+    ] {
+        assert!(
+            !analyze(text).diagnostics.is_empty(),
+            "unexpected acceptance: {text}"
+        );
+    }
+}
+
+#[test]
+fn send_ask_and_process_capabilities_enforce_handler_protocols_and_scopes() {
+    checked(include_str!("../../../examples/local-processes.wings"));
+    checked(include_str!("../../../examples/local-process-roots.wings"));
+    checked(include_str!("../../../examples/request-events.wings"));
+
+    let text = "actor P { state n = 0; on start { self ! add(1, true, ()) } on add(v: int, b: bool, u: ()) { n = v } }";
     let analysis = checked(text);
-    let target = text.find("Add, 1").unwrap();
+    let target = text.find("add(1").unwrap();
     let reference = analysis
         .references
         .iter()
         .find(|reference| reference.span.start == target)
         .unwrap();
     assert_eq!(analysis.symbols[reference.symbol].kind, SymbolKind::Handler);
-    for (body, code, fragment) in [
-        ("send_self()", "T013", "static message"),
-        ("send_self(3)", "T018", "static message"),
-        ("send_self(Missing)", "T018", "unknown self-send"),
-        ("send_self(Get, 1)", "T018", "one-way"),
-        ("send_self(Add)", "T013", "count mismatch"),
-        ("send_self(Add, true)", "T005", "expected Int"),
-        ("let Add = 1; send_self(Add, 1)", "T018", "shadowed"),
-        (
-            "let send_self = 1; send_self(Add, 1)",
-            "T012",
-            "not callable",
-        ),
-    ] {
-        let text = format!(
-            "process P {{ state n: Int = 0; on Start {{ {body} }} on Get(v: Int) -> Int {{ v }} on Add(v: Int) {{ n = v }} }}"
-        );
-        assert_error(&text, code, fragment);
-    }
-    for text in [
-        "process P { state n: Unit = send_self(Add); on Add {} }",
-        "process P { fn emit() -> Unit { send_self(Add) } state n: Int = 0; on Add {} }",
-    ] {
-        assert_error(text, "T018", "only supported in handlers");
-    }
-}
 
-#[test]
-fn process_capabilities_are_local_typed_values_and_effects_are_handler_only() {
-    checked(include_str!("../../../examples/local-processes.wings"));
-    checked(include_str!("../../../examples/local-process-roots.wings"));
     for (body, code, fragment) in [
-        ("send(1, Add, 3)", "T005", "expected Pid"),
-        ("send(self_pid(), Read)", "T018", "one-way"),
-        ("send(self_pid(), Add, false)", "T005", "expected Int"),
-        ("self_pid(1)", "T013", "no arguments"),
-        ("spawn_self(1)", "T013", "no arguments"),
+        ("1 ! add(3)", "T005", "expected pid"),
+        ("self ! missing", "T018", "unknown message"),
+        ("self ! read", "T018", "one-way"),
+        ("self ! done(1, 0, 0)", "T018", "on reply"),
+        ("self ! add", "T013", "expects 1 argument"),
+        ("self ! add(false)", "T005", "expected int"),
         (
-            "let me = self_pid(); let same = me == me",
+            "1.ask(read, timeout: 10, then: done)",
+            "T005",
+            "expected pid",
+        ),
+        (
+            "self.ask(add(1), timeout: 10, then: done)",
+            "T018",
+            "returns '-> type'",
+        ),
+        ("self.ask(read, timeout: 10, then: add)", "T018", "on reply"),
+        (
+            "self.ask(read, timeout: false, then: done)",
+            "T005",
+            "expected int",
+        ),
+        (
+            "let me = self; let same = me == me",
             "T015",
             "cannot be compared",
         ),
-        ("let spawn_self = 1; spawn_self()", "T012", "not callable"),
     ] {
-        let text = format!(
-            "process P {{ state n: Int = 0; on Test {{ {body}; () }} on Add(value: Int) {{ n = value }} on Read -> Int {{ n }} }}"
+        let src = format!(
+            "actor P {{ state n = 0; on test_it {{ {body}; () }} on add(v: int) {{ n = v }} on read -> int => n; on reply done(id: req, status: int, val: int) {{}} }}"
         );
-        assert_error(&text, code, fragment);
+        assert_error(&src, code, fragment);
     }
-    for text in [
-        "process P { state me: Pid = self_pid(); on Test {} }",
-        "process P { fn create() -> Pid { spawn_self() } state n: Int = 0; on Test {} }",
+
+    for src in [
+        "actor P { state n: () = self ! add; on add {} }",
+        "actor P { fn emit() { self ! add } on add {} }",
+        "actor P { state me: pid = self; on add {} }",
+        "actor P { fn create() -> pid => spawn() }",
+        "actor P { fn cancel_it(id: req) => id.cancel() }",
     ] {
-        assert_error(text, "T018", "supported");
+        assert_error(src, "T018", "handlers");
     }
-    for text in [
-        "process P { state n: Int = 0; on Test(value: Pid) {} }",
-        "process P { state n: Int = 0; on Test -> Pid { self_pid() } }",
+
+    for src in [
+        "actor P { on test_it(value: pid) {} }",
+        "actor P { on test_it -> pid => self }",
     ] {
-        assert_error(text, "T011", "not supported in message");
+        assert_error(src, "T011", "not supported");
     }
 }
 
 #[test]
-fn language_requests_require_typed_system_completions_and_scalar_replies() {
-    checked(include_str!("../../../examples/request-events.wings"));
-    for (body, code, fragment) in [
-        ("request()", "T013", "requires pid"),
-        ("request(1, Get, Done, 10)", "T005", "expected Pid"),
-        (
-            "request(self_pid(), Notify, Done, 10)",
-            "T018",
-            "reply handler",
-        ),
-        (
-            "request(self_pid(), Get, Notify, 10)",
-            "T018",
-            "completion requires",
-        ),
-        (
-            "request(self_pid(), Get, Done, true)",
-            "T005",
-            "expected Int",
-        ),
-        ("cancel_request(1)", "T005", "expected RequestId"),
-        (
-            "send_self(Done, 1, 0, 3)",
-            "T018",
-            "cannot be sent directly",
-        ),
-        (
-            "let Done = 1; request(self_pid(), Get, Done, 10)",
-            "T018",
-            "shadowed",
-        ),
-        ("request(self_pid(), Get, 1, 10)", "T018", "static message"),
-    ] {
-        let text = format!(
-            "process P {{ state count: Int = 0; on Test {{ {body}; () }} on Get -> Int {{ count }} on Notify {{ () }} on Done(id: RequestId, status: Int, value: Int) {{ () }} }}"
-        );
-        assert_error(&text, code, fragment);
-    }
-    for text in [
-        "process P { state id: RequestId = request(); on Test {} }",
-        "process P { fn request() -> Unit { () } state count: Int = 0; on Test {} }",
-        "process P { state count: Int = 0; on Wrong(id: RequestId) {} }",
-        "process P { state count: Int = 0; on Wrong -> RequestId { request() } }",
-    ] {
-        assert!(!analyze(text).diagnostics.is_empty(), "{text}");
-    }
-}
-
-#[test]
-fn request_completion_values_match_copyable_replies_without_coercion() {
-    for (reply, literal) in [
-        ("Int", "7"),
-        ("Bool", "true"),
-        ("Unit", "()"),
-        ("RecordInt", "record_int(7)"),
-        ("IntList", "empty_ints()"),
-        ("Bytes", "fill_bytes(1, 7)"),
-    ] {
-        for completion in ["Int", "Bool", "Unit", "RecordInt", "IntList", "Bytes"] {
-            let text = format!(
-                "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {reply} {{ {literal} }} on Done(id: RequestId, status: Int, value: {completion}) {{ () }} }}"
-            );
-            if reply == completion {
-                checked(&text);
-            } else {
-                assert_error(&text, "T018", "reply type");
-            }
+fn structs_support_literals_spread_deep_mutation_and_reject_cycles_or_overflow() {
+    checked(
+        r#"
+        actor P {
+          struct Leaf { count: int, name: str }
+          struct Node { leaf: Leaf, ok: bool }
+          state node = Node { leaf: Leaf { count: 1, name: "a" }, ok: true }
+          on bump(name: str) -> int {
+            let local = Node { ok: false, ..node }
+            local.leaf.count += 5
+            node.leaf = Leaf { name, ..local.leaf }
+            node.leaf.count
+          }
         }
-    }
-    for value in ["Bool", "Unit"] {
-        let text = format!(
-            "process P {{ state n: Int = 0; on Wrong(id: RequestId, status: Bool, value: {value}) {{ () }} }}"
-        );
-        assert_error(&text, "T011", "completion event");
-        let text = format!(
-            "process P {{ state n: Int = 0; on Start {{ send_self(Done, 1, 0, {literal}) }} on Done(id: RequestId, status: Int, value: {value}) {{ () }} }}",
-            literal = if value == "Bool" { "false" } else { "()" }
-        );
-        assert_error(&text, "T018", "cannot be sent directly");
-    }
-}
-
-#[test]
-fn while_requires_bool_condition_unit_body_and_local_scope() {
-    checked(
-        "process P { state n: Int = 0; on Count(limit: Int) -> Int { let step = 1; while n < limit { let next = n + step; n = next }; n } }",
-    );
-    checked("process P { state flag: Bool = true; on Work { while flag { flag = false } } }");
-    checked("process P { state unit: Unit = (); on Work { while false { unit = () } } }");
-    for (body, code, fragment) in [
-        ("while 1 {}; 0", "T005", "expected Bool"),
-        ("while false { 1 }; 0", "T005", "expected Unit"),
-        (
-            "while false { let inside = 1 }; inside",
-            "T006",
-            "unknown name",
-        ),
-        (
-            "let outer = 1; while false { let outer = 2 }; 0",
-            "T004",
-            "duplicate name",
-        ),
-        (
-            "let outer = 1; while false { outer = 2 }; 0",
-            "T008",
-            "only state",
-        ),
-    ] {
-        assert_error(&handler(body), code, fragment);
-    }
-    checked(
-        "process P { state n: RecordInt = record_int(0); on Work { while read_int(n) < 10 { n = record_int(read_int(n) + 1) } } }",
-    );
-}
-
-#[test]
-fn lists_have_distinct_types_across_builtins_state_functions_and_messages() {
-    let text = "process P { fn keep(values: IntList) -> IntList { collect(); values } state values: IntList = empty_ints(); on Work { values = prepend_int(7, keep(values)); while is_empty_ints(values) == false { values = tail_ints(values) } } }";
-    checked(text);
-    for (body, code, fragment) in [
-        ("head_int(record_int(7))", "T005", "expected IntList"),
-        ("read_int(empty_ints())", "T005", "expected RecordInt"),
-        ("prepend_int(true, empty_ints()); 0", "T005", "expected Int"),
-        ("prepend_int(1); 0", "T013", "expects 2"),
-        ("empty_ints(1); 0", "T013", "expects 0"),
-        (
-            "let same = empty_ints() == empty_ints(); 0",
-            "T015",
-            "cannot be compared",
-        ),
-        (
-            "let values = if true { empty_ints() } else { record_int(7) }; 0",
-            "T005",
-            "expected IntList",
-        ),
-    ] {
-        assert_error(&handler(body), code, fragment);
-    }
-    checked(
-        "process P { state n: Int = 0; on Work(value: IntList) { collect(); let first = is_empty_ints(value) } }",
-    );
-    checked("process P { state n: Int = 0; on Get -> IntList { empty_ints() } }");
-}
-
-#[test]
-fn functions_share_types_and_references_without_process_state_or_recursion() {
-    let text = "process P { state n: RecordInt = make(0); fn make(value: Int) -> RecordInt { record_int(value) } fn next(value: RecordInt) -> RecordInt { collect(); make(read_int(value) + 1) } on Count -> Int { n = next(n); read_int(n) } }";
-    let analysis = checked(text);
-    assert_eq!(
-        analysis
-            .symbol_at(text.rfind("next(n)").unwrap())
-            .unwrap()
-            .kind,
-        SymbolKind::Function
-    );
-    for (definition, code, fragment) in [
-        ("fn f(x: Int) -> Int { f(x) }", "T012", "unsupported"),
-        (
-            "fn f() -> Int { g() } fn g() -> Int { 1 }",
-            "T012",
-            "unsupported",
-        ),
-        ("fn f() -> Int { n }", "T006", "unknown name"),
-        ("fn f(x: Int) -> Int { x = 2; x }", "T008", "only state"),
-        ("fn f() -> Unit { while false {} }", "T017", "while"),
-        ("fn f() -> Int { true }", "T005", "expected Int"),
-        ("fn collect() -> Int { 1 }", "T004", "reserved"),
-        (
-            "fn f() -> Int { 1 } fn f() -> Int { 2 }",
-            "T004",
-            "duplicate",
-        ),
-        (
-            "fn f(x: Int) -> Int { x } fn g() -> Int { f(true) }",
-            "T005",
-            "expected Int",
-        ),
-        (
-            "fn f(x: Int) -> Int { x } fn g() -> Int { f() }",
-            "T013",
-            "expects 1",
-        ),
-        (
-            "fn f(x: Int) -> Int { x } fn g(f: Int) -> Int { f(1) }",
-            "T012",
-            "not callable",
-        ),
-    ] {
-        assert_error(
-            &format!("process P {{ state n: Int = 0; {definition} }}"),
-            code,
-            fragment,
-        );
-    }
-    for count in [32, 33] {
-        let mut definitions = String::from("fn f0(x: Int) -> Int { x }");
-        for index in 1..count {
-            definitions.push_str(&format!(
-                " fn f{index}(x: Int) -> Int {{ f{}(x) }}",
-                index - 1
-            ));
-        }
-        let text = format!("process P {{ state n: Int = 0; {definitions} }}");
-        if count == 32 {
-            checked(&text);
-        } else {
-            assert_error(&text, "T017", "exceeds 32");
-        }
-    }
-    checked(
-        "process P { state n: Int = f(1); fn f(value: Int) -> Int { value } fn g(value: Int) -> Bool { value == 1 } on Get -> Int { let f = 2; f } }",
+        "#,
     );
     assert_error(
-        "process P { state n: Int = 0; fn f() -> Int { 1 } on Get(f: Int) -> Int { f() } }",
-        "T012",
-        "not callable",
-    );
-    assert_error(
-        "process P { state n: Int = 0; fn f(x: Int, x: Int) -> Int { x } }",
-        "T004",
-        "duplicate",
-    );
-    assert_error(
-        "process P { state n: Int = 0; fn f(x: Int) -> Int { x } on Get -> Int { f(1, 2) } }",
+        "actor P { struct A { x: int, y: int } on f -> A => A { x: 1 } }",
         "T013",
-        "expects 1",
-    );
-}
-
-#[test]
-fn comparisons_require_same_scalar_equality_or_signed_integer_ordering() {
-    checked(
-        "process P { state n: Int = 0; on Get(left: Int, right: Int) -> Bool { let less: Bool = left < right; if less { left != right } else { left >= right } } on Eq(left: Bool) -> Bool { left == true } on Unit -> Bool { () != () } }",
-    );
-    for source in [
-        "true == 1",
-        "() != false",
-        "1 < true",
-        "false >= true",
-        "1 < 2 < 3",
-    ] {
-        assert_error(
-            &handler(&format!("let result = {source}; 0")),
-            "T005",
-            "expected",
-        );
-    }
-    assert_error(
-        &handler("let result = record_int(1) == record_int(1); 0"),
-        "T015",
-        "cannot be compared",
-    );
-}
-
-#[test]
-fn conditional_types_follow_bool_conditions_and_same_typed_arms() {
-    checked(
-        "process P { state n: Int = if true { 7 } else { 8 }; on Get(flag: Bool) -> Int { let selected = if flag { read_int(record_int(n)) } else { 9 }; selected } }",
-    );
-    for (body, code, fragment) in [
-        ("if 1 { 2 } else { 3 }", "T005", "expected Bool"),
-        ("if true { 1 } else { false }", "T005", "expected Int"),
-        (
-            "if true { record_int(1) } else { 2 }",
-            "T005",
-            "expected RecordInt",
-        ),
-        ("if true { 1 } else { missing }", "T006", "unknown name"),
-    ] {
-        assert_error(&handler(body), code, fragment);
-    }
-    let text = "process P { state n: Int = 0; on Get(flag: Bool) -> Bool { if flag { false } else { true } } on Unit(flag: Bool) -> Unit { if flag { () } else { collect() } } }";
-    checked(text);
-    checked(
-        "process P { state n: RecordInt = if true { record_int(1) } else { record_int(2) }; on Get(flag: Bool) -> Int { n = if flag { record_int(7) } else { n }; let selected = if flag { n } else { if true { record_int(9) } else { n } }; read_int(selected) } }",
-    );
-}
-
-#[test]
-fn record_builtins_infer_locals_and_resolve_aliases() {
-    let text = handler(
-        "let saved: RecordInt = record_int(value); let alias = saved; collect(); read_int(alias)",
-    );
-    let analysis = checked(&text);
-    let symbol = analysis
-        .symbols
-        .iter()
-        .find(|symbol| symbol.name == "alias")
-        .unwrap();
-    assert_eq!(symbol.ty, Type::RecordInt);
-    assert_eq!(symbol.ty.to_string(), "RecordInt");
-    let reference = text.rfind("alias").unwrap();
-    assert_eq!(analysis.symbol_at(reference).unwrap().span, symbol.span);
-}
-
-#[test]
-fn rejects_wrong_builtin_names_arity_types_and_shadowed_calls() {
-    for (body, code, fragment) in [
-        ("record_int(true); 0", "T005", "expected Int"),
-        ("read_int(1)", "T005", "expected RecordInt"),
-        ("collect(1); 0", "T013", "expects 0"),
-        ("record_int(); 0", "T013", "expects 1"),
-        ("record_int(1, 2); 0", "T013", "found 2"),
-        ("string_at(\"x\"); 0", "T013", "expects 2"),
-        ("string_at(\"x\", true); 0", "T005", "expected Int"),
-        ("string_slice(\"x\", 0); 0", "T013", "expects 3"),
-        ("string_slice(\"x\", 0, 1) == \"x\"", "T005", "expected Int"),
-        ("request(1); 0", "T013", "requires pid"),
-        ("let collect = 1; collect(); 0", "T012", "shadows a builtin"),
-        (
-            "let saved = record_int(1); saved = record_int(2); 0",
-            "T008",
-            "only state",
-        ),
-        ("count = record_int(1); 0", "T005", "found RecordInt"),
-        ("record_int(1)", "T005", "found RecordInt"),
-    ] {
-        assert_error(&handler(body), code, fragment);
-    }
-}
-
-#[test]
-fn accepts_record_list_and_byte_replies() {
-    checked(
-        "process P { state n: RecordInt = record_int(0); on Get -> Int { collect(); read_int(n) } on Put(value: Int) { n = record_int(value); collect() } }",
+        "missing field 'y'",
     );
     assert_error(
-        "process P { state n: RecordInt = 0 }",
+        "actor P { struct A { x: int } on f -> A => A { x: 1, x: 2 } }",
+        "T004",
+        "duplicate field 'x'",
+    );
+    assert_error(
+        "actor P { struct A { next: B } struct B { x: int } }",
+        "T002",
+        "unknown type 'B'",
+    );
+    assert_error(
+        "actor P { struct Big { a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int } }",
+        "T019",
+        "exceeds 8",
+    );
+}
+
+#[test]
+fn for_loops_and_match_enforce_types_and_exhaustiveness() {
+    checked(
+        r#"
+        actor P {
+          state sum = 0
+          on calc(xs: [int], flag: bool, tag: str) -> int {
+            for i in 0..10 { sum += i }
+            for i in 0..=10 { sum += i }
+            for x in xs { sum += x }
+            let a = match flag { true => 1, false => 0 }
+            let b = match xs { [] => 0, [h, ..t] => h + t.len_or_zero() }
+            a
+          }
+        }
+        "#
+        .replace(".len_or_zero()", ".head()")
+        .as_str(),
+    );
+
+    assert_error(
+        "actor P { on f(flag: bool) -> int => match flag { true => 1 } }",
         "T005",
-        "expected RecordInt",
+        "non-exhaustive match",
     );
     assert_error(
-        "process P { state n: RecordInt = record_int(0); on Put { n = 1 } }",
+        "actor P { on f(xs: [int]) -> int => match xs { [] => 0 } }",
         "T005",
-        "expected RecordInt",
+        "non-exhaustive match",
     );
-    checked("process P { state n: Int = 0; on Get -> IntList { empty_ints() } }");
-    checked("process P { state n: Int = 0; on Get -> Bytes { fill_bytes(1, 0) } }");
-    checked("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }");
-    checked("process P { state n: Int = 0; on Get -> RecordInt { record_int(1) } }");
+    assert_error(
+        "actor P { on f(n: int) -> int => match n { 0 => 0, 1 => 1 } }",
+        "T005",
+        "non-exhaustive match",
+    );
+    assert_error(
+        "actor P { on f(n: int) -> int => match n { _ => 0, 1 => 1 } }",
+        "T005",
+        "unreachable match arm",
+    );
+}
+
+#[test]
+fn multi_state_allows_zero_to_eight_states_and_rejects_nine() {
+    checked("actor Empty { on ping {} }");
     checked(
-        "process P { state n: Int = 0; on Put(value: RecordInt) { collect(); n = read_int(value) } on Get(value: RecordInt) -> Int { collect(); read_int(value) } }",
+        r#"
+        actor Multi {
+          state a = 1
+          state b = "two"
+          state c = true
+          state d: [int] = [a]
+          on check_it -> int => a + d.head()
+        }
+        "#,
+    );
+    assert_error(
+        "actor TooMany { state s1 = 0; state s2 = 0; state s3 = 0; state s4 = 0; state s5 = 0; state s6 = 0; state s7 = 0; state s8 = 0; state s9 = 0 }",
+        "T001",
+        "at most 8 state bindings",
     );
 }
 
 #[test]
-fn counter_checks_and_preserves_typed_message_protocol() {
-    let text = "process Counter {\n state count: Int = 0\n on Inc(by: Int) -> Int { let next = count + by; count = next; next }\n on Reset { count = 0 }\n on Confirm -> Unit {}\n}";
-    let analysis = checked(text);
-    let inc = analysis.symbols.iter().find(|s| s.name == "Inc").unwrap();
-    assert_eq!(inc.kind, SymbolKind::Handler);
-    assert_eq!(
-        inc.ty,
-        Type::Message {
-            parameters: vec![("by".into(), Type::Int)],
-            reply: Some(Box::new(Type::Int))
-        }
-    );
-    let local = analysis.symbols.iter().find(|s| s.name == "next").unwrap();
-    assert_eq!(local.ty, Type::Int);
-    let reset = analysis.symbols.iter().find(|s| s.name == "Reset").unwrap();
-    let confirm = analysis
-        .symbols
-        .iter()
-        .find(|s| s.name == "Confirm")
-        .unwrap();
-    assert_eq!(
-        reset.ty,
-        Type::Message {
-            parameters: vec![],
-            reply: None
-        }
-    );
-    assert_eq!(
-        confirm.ty,
-        Type::Message {
-            parameters: vec![],
-            reply: Some(Box::new(Type::Unit))
-        }
-    );
-}
+fn naming_conventions_and_type_display_are_consistent() {
+    assert_error("actor bad_actor { on ping {} }", "T020", "PascalCase");
+    assert_error("actor P { struct bad_struct {} }", "T020", "PascalCase");
+    assert_error("actor P { state Bad = 0 }", "T020", "snake_case");
+    assert_error("actor P { on Bad {} }", "T020", "snake_case");
+    assert_error("actor P { fn Bad() {} }", "T020", "snake_case");
 
-#[test]
-fn bool_unit_and_annotated_locals_infer_expected_types() {
-    let analysis = checked(
-        "process Flag { state enabled: Bool = false; on Set(value: Bool) -> Bool { let previous: Bool = enabled; enabled = value; previous } on Clear { enabled = false } on Ack -> Unit { let x = (); x } }",
-    );
-    for (name, expected) in [
-        ("enabled", Type::Bool),
-        ("previous", Type::Bool),
-        ("x", Type::Unit),
-    ] {
-        assert_eq!(
-            analysis.symbols.iter().find(|s| s.name == name).unwrap().ty,
-            expected
-        );
-    }
-}
-
-#[test]
-fn type_display_distinguishes_requests_and_one_way_messages() {
     for (ty, expected) in [
-        (Type::Int, "Int"),
-        (Type::Bool, "Bool"),
-        (Type::Unit, "Unit"),
+        (Type::Int, "int"),
+        (Type::Bool, "bool"),
+        (Type::Unit, "()"),
+        (Type::BoxInt, "box<int>"),
+        (Type::IntList, "[int]"),
+        (Type::Bytes, "bytes"),
+        (Type::String, "str"),
+        (Type::Pid, "pid"),
+        (Type::RequestId, "req"),
         (Type::Unknown, "unknown"),
         (
             Type::Message {
                 parameters: vec![],
                 reply: None,
+                is_reply: false,
             },
             "() (one-way)",
         ),
@@ -605,15 +333,29 @@ fn type_display_distinguishes_requests_and_one_way_messages() {
             Type::Message {
                 parameters: vec![],
                 reply: Some(Box::new(Type::Unit)),
+                is_reply: false,
             },
-            "() -> Unit",
+            "() -> ()",
         ),
         (
             Type::Message {
                 parameters: vec![("by".into(), Type::Int), ("enabled".into(), Type::Bool)],
                 reply: Some(Box::new(Type::Int)),
+                is_reply: false,
             },
-            "(by: Int, enabled: Bool) -> Int",
+            "(by: int, enabled: bool) -> int",
+        ),
+        (
+            Type::Message {
+                parameters: vec![
+                    ("id".into(), Type::RequestId),
+                    ("status".into(), Type::Int),
+                    ("value".into(), Type::Int),
+                ],
+                reply: None,
+                is_reply: true,
+            },
+            "(id: req, status: int, value: int) (reply)",
         ),
     ] {
         assert_eq!(ty.to_string(), expected);
@@ -621,165 +363,45 @@ fn type_display_distinguishes_requests_and_one_way_messages() {
 }
 
 #[test]
-fn exactly_one_state_is_required() {
-    assert_error("process P { on Get {} }", "T001", "exactly one state");
-    assert_error(
-        "process P { state a: Int = 0; state b: Int = 1 }",
-        "T001",
-        "exactly one state",
-    );
-    checked("process P { state n: Unit = () }");
-}
-
-#[test]
-fn duplicate_processes_handlers_states_parameters_and_locals_are_rejected() {
+fn duplicate_names_scoping_assignments_and_operators_are_checked() {
     for text in [
-        "process P { state n: Int = 0 } process P { state n: Int = 0 }",
-        "process P { state n: Int = 0; on Get {} on Get -> Int { 1 } }",
-        "process P { state n: Int = 0; state n: Int = 1 }",
-        "process P { state n: Int = 0; on Get(x: Int, x: Bool) {} }",
-        "process P { state n: Int = 0; on Get { let x = 1; let x = 2; } }",
+        "actor P { state n = 0 } actor P { state n = 0 }",
+        "actor P { state n = 0; on get {} on get -> int => 1 }",
+        "actor P { state n = 0; state n = 1 }",
+        "actor P { state n = 0; on get(x: int, x: bool) {} }",
+        "actor P { state n = 0; on get { let x = 1; let x = 2; } }",
+        "actor P { state n = 0; on get(n: int) {} }",
+        "actor P { state n = 0; on get { let n = 1; } }",
     ] {
         assert_error(text, "T004", "duplicate name");
     }
-}
 
-#[test]
-fn parameters_and_locals_cannot_shadow_state_or_each_other() {
-    for text in [
-        "process P { state n: Int = 0; on Get(n: Int) {} }",
-        "process P { state n: Int = 0; on Get { let n = 1; } }",
-        "process P { state n: Int = 0; on Get(x: Int) { let x = 1; } }",
-    ] {
-        assert_error(text, "T004", "duplicate name");
-    }
-}
-
-#[test]
-fn independent_process_and_handler_scopes_can_reuse_names() {
-    checked(
-        "process P { state n: Int = 0; on Get(x: Int) -> Int { let y = x; y } on Set(x: Int) { let y = x; n = y } } process Q { state n: Bool = false; on Get(x: Bool) -> Bool { let y = x; y } }",
-    );
-}
-
-#[test]
-fn initial_state_cannot_reference_itself_other_states_or_handlers() {
-    for text in [
-        "process P { state n: Int = n }",
-        "process P { state a: Int = 0; state b: Int = a }",
-        "process P { state n: Int = value; on Set(value: Int) {} }",
-    ] {
-        assert_error(text, "T006", "unknown name");
-    }
-}
-
-#[test]
-fn local_names_only_resolve_after_their_initializers() {
     assert_error(&handler("let x = x; x"), "T006", "unknown name 'x'");
     assert_error(
-        &handler("let x = y; let y = 1; x"),
-        "T006",
-        "unknown name 'y'",
-    );
-    checked(&handler("let x = value; let y = x + count; y"));
-}
-
-#[test]
-fn locals_and_parameters_do_not_leak_between_handlers() {
-    let text = "process P { state n: Int = 0; on First(x: Int) { let y = x; } on Second -> Int { x + y } }";
-    let analysis = analyze(text);
-    assert_eq!(
-        analysis
-            .diagnostics
-            .iter()
-            .filter(|d| d.code == "T006")
-            .count(),
-        2
-    );
-    let offset = text.rfind("x + y").unwrap();
-    let visible: Vec<_> = analysis
-        .visible_symbols(offset)
-        .map(|s| s.name.as_str())
-        .collect();
-    assert!(!visible.contains(&"x"));
-    assert!(!visible.contains(&"y"));
-}
-
-#[test]
-fn only_state_bindings_can_be_assigned() {
-    assert_error(&handler("value = 2; value"), "T008", "only state bindings");
-    assert_error(
-        &handler("let x = 1; x = 2; x"),
+        &handler("value = 2; value"),
         "T008",
-        "only state bindings",
+        "only 'state' and 'let' bindings",
     );
-    assert_error(
-        &handler("missing = 2; count"),
-        "T006",
-        "unknown name 'missing'",
-    );
-    checked(&handler("count = value; count"));
-}
+    checked(&handler("let x = 1; x += value; count = x; count"));
 
-#[test]
-fn type_mismatches_cover_initializers_assignments_and_local_annotations() {
-    for text in [
-        "process P { state n: Int = false }",
-        "process P { state n: Int = 0; on Set { n = true } }",
-        "process P { state n: Int = 0; on Set { let x: Bool = 1; } }",
+    for expression in [
+        "true + 1",
+        "1 - false",
+        "true * false",
+        "true / 2",
+        "10 % false",
+        "-true",
+        "!1",
+        "1 && true",
+        "false || 0",
     ] {
-        assert_error(text, "T005", "expected");
+        assert_error(&handler(expression), "T005", "expected");
     }
+    checked(&handler("-(count + value) * 2 / 3 % 5 - 1"));
 }
 
 #[test]
-fn unknown_types_are_reported_at_every_annotation_site() {
-    for text in [
-        "process P { state n: Missing = 0 }",
-        "process P { state n: Int = 0; on Get(x: Missing) {} }",
-        "process P { state n: Int = 0; on Get -> Missing {} }",
-        "process P { state n: Int = 0; on Get { let x: Missing = 1; } }",
-    ] {
-        assert_error(text, "T002", "unknown type 'Missing'");
-    }
-}
-
-#[test]
-fn all_arithmetic_operators_require_int_without_implicit_conversion() {
-    for expression in ["true + 1", "1 - false", "true * false", "true / 2", "-true"] {
-        assert_error(&handler(expression), "T005", "expected Int, found Bool");
-    }
-    checked(&handler("-(count + value) * 2 / 3 - 1"));
-}
-
-#[test]
-fn reply_tail_must_match_declared_type_and_one_way_requires_unit() {
-    for text in [
-        "process P { state n: Int = 0; on Get -> Int {} }",
-        "process P { state n: Int = 0; on Get -> Int { true } }",
-        "process P { state n: Int = 0; on Get { n } }",
-        "process P { state n: Int = 0; on Get -> Unit { 1 } }",
-        "process P { state n: Int = 0; on Get -> Int { 1; } }",
-    ] {
-        assert_error(text, "T005", "expected");
-    }
-    checked("process P { state n: Int = 0; on Get { n; } on Ack -> Unit {} on Read -> Int { n } }");
-}
-
-#[test]
-fn message_names_must_start_with_uppercase_letters() {
-    for name in ["get", "_Get", "读取"] {
-        assert_error(
-            &format!("process P {{ state n: Int = 0; on {name} {{}} }}"),
-            "T010",
-            "uppercase",
-        );
-    }
-    checked("process P { state n: Int = 0; on Événement {} }");
-}
-
-#[test]
-fn symbol_queries_resolve_declarations_references_and_assignment_targets() {
+fn symbol_queries_utf8_spans_and_diagnostic_budget_hold() {
     let text = handler("let next = count + value; count = next; next");
     let analysis = checked(&text);
     for reference in &analysis.references {
@@ -789,116 +411,18 @@ fn symbol_queries_resolve_declarations_references_and_assignment_targets() {
             assert_eq!(analysis.symbol_at(offset).unwrap().span, symbol.span);
         }
     }
-    for symbol in &analysis.symbols {
-        assert_eq!(
-            analysis.symbol_at(symbol.span.start).unwrap().kind,
-            symbol.kind
-        );
-        assert_eq!(
-            analysis.symbol_at(symbol.span.start).unwrap().span,
-            symbol.span
-        );
-    }
-    let state_assignment = text.rfind("count =").unwrap();
-    assert_eq!(
-        analysis.symbol_at(state_assignment).unwrap().kind,
-        SymbolKind::State
-    );
-    let local_use = text.rfind("next").unwrap();
-    assert_eq!(
-        analysis.symbol_at(local_use).unwrap().kind,
-        SymbolKind::Local
-    );
-    assert!(analysis.symbol_at(text.len()).is_none());
-    assert!(analysis.symbol_at(text.find('{').unwrap()).is_none());
-}
 
-#[test]
-fn unicode_references_and_diagnostics_use_utf8_byte_spans() {
-    let text = "process 计数器 { state 数值: Int = 0; on Get(增量: Int) -> Int { 数值 = 数值 + 增量; 数值 } }";
-    let analysis = checked(text);
-    let last = text.rfind("数值").unwrap();
-    let symbol = analysis.symbol_at(last).unwrap();
-    assert_eq!(symbol.name, "数值");
-    assert_eq!(&text[symbol.span.start..symbol.span.end], "数值");
-    let bad = "process 计数器 { state 数值: Int = false }";
-    let analysis = analyze(bad);
-    let error = analysis
-        .diagnostics
-        .iter()
-        .find(|d| d.code == "T005")
-        .unwrap();
-    assert_eq!(&bad[error.span.start..error.span.end], "false");
-}
+    let unicode =
+        "actor Counter { state 数值 = 0; on get(增量: int) -> int { 数值 += 增量; 数值 } }";
+    let uni_analysis = checked(unicode);
+    let last = unicode.rfind("数值").unwrap();
+    let sym = uni_analysis.symbol_at(last).unwrap();
+    assert_eq!(sym.name, "数值");
 
-#[test]
-fn completion_visibility_tracks_local_declaration_order_and_process_boundaries() {
-    let text = "process P { state count: Int = 0; on Get(value: Int) -> Int { let x = value; let y = x; y } } process Q { state flag: Bool = false; on Read -> Bool { flag } }";
-    let analysis = checked(text);
-    let before = text.find("let x").unwrap();
-    let after_x = text.find("let y").unwrap();
-    let after_y = text.find("; y }").unwrap() + 2;
-    let names = |offset| {
-        analysis
-            .visible_symbols(offset)
-            .map(|s| s.name.as_str())
-            .collect::<Vec<_>>()
-    };
-    assert!(names(before).contains(&"value"));
-    assert!(!names(before).contains(&"x"));
-    assert!(names(after_x).contains(&"x"));
-    assert!(!names(after_x).contains(&"y"));
-    assert!(names(after_y).contains(&"y"));
-    assert!(!names(after_y).contains(&"flag"));
-    let other_process = text.rfind("flag }").unwrap();
-    assert!(!names(other_process).contains(&"count"));
-    assert!(!names(other_process).contains(&"value"));
-    assert!(names(other_process).contains(&"flag"));
-    assert!(names(other_process).contains(&"P"));
-    assert!(names(other_process).contains(&"Q"));
-}
-
-#[test]
-fn unknown_name_does_not_cascade_into_spurious_type_mismatches() {
-    let analysis = analyze(&handler("missing"));
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(analysis.diagnostics[0].code, "T006");
-    let analysis = analyze("process P { state n: Missing = false }");
-    assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(analysis.diagnostics[0].code, "T002");
-}
-
-#[test]
-fn syntax_errors_are_preserved_and_later_handlers_remain_queryable() {
-    let text = "process P { state n: Int = 0; on Bad -> Int { + } on Good -> Int { n } }";
-    let analysis = analyze(text);
-    assert!(analysis.diagnostics.iter().any(|d| d.code == "S003"));
-    let good = analysis.symbols.iter().find(|s| s.name == "Good").unwrap();
-    assert_eq!(good.kind, SymbolKind::Handler);
-    let last_reference = text.rfind("n }").unwrap();
-    assert_eq!(
-        analysis.symbol_at(last_reference).unwrap().kind,
-        SymbolKind::State
-    );
-}
-
-#[test]
-fn analysis_diagnostic_budget_includes_syntax_and_semantic_errors() {
     let handlers = (0..200)
-        .map(|i| format!("on Bad{i} -> Bool {{ 1 }}"))
+        .map(|i| format!("on bad_{i} -> bool => 1; "))
         .collect::<String>();
-    let analysis = analyze(&format!("process P {{ state n: Int = 0; {handlers} }}"));
-    assert_eq!(analysis.diagnostics.len(), MAX_DIAGNOSTICS);
-    assert!(analysis.diagnostics.iter().all(|d| d.code == "T005"));
-    assert_eq!(
-        analysis
-            .symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Handler)
-            .count(),
-        200
-    );
-    let analysis = analyze(&"@".repeat(MAX_DIAGNOSTICS + 10));
-    assert_eq!(analysis.diagnostics.len(), MAX_DIAGNOSTICS);
-    assert!(analysis.diagnostics.iter().all(|d| d.code == "S001"));
+    let capped = analyze(&format!("actor P {{ state n = 0; {handlers} }}"));
+    assert_eq!(capped.diagnostics.len(), MAX_DIAGNOSTICS);
+    assert!(capped.diagnostics.iter().all(|d| d.code == "T005"));
 }

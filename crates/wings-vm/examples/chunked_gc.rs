@@ -27,7 +27,7 @@ fn main() {
         .unwrap();
     let mut execution = process
         .start_controlled(
-            "Sweep",
+            "sweep",
             &[],
             4096,
             &CancellationToken::default(),
@@ -52,7 +52,7 @@ fn main() {
     assert!(suspended > 256);
     assert_eq!(execution.snapshot().heap.unwrap().collections, 2);
     drop(execution);
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(8));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(8));
     drop(process);
     assert_eq!(vm.used(), baseline);
     for checkpoints in [1, 16, 64, 80, 128, 160, 256] {
@@ -63,7 +63,7 @@ fn main() {
             let cancellation = CancellationToken::default();
             let mut execution = process
                 .start_controlled(
-                    "Sweep",
+                    "sweep",
                     &[],
                     4096,
                     &cancellation,
@@ -89,7 +89,7 @@ fn main() {
             .unwrap();
         let mut execution = process
             .start_controlled(
-                "Sweep",
+                "sweep",
                 &[],
                 budget,
                 &CancellationToken::default(),
@@ -109,7 +109,7 @@ fn main() {
     let mut process = module.instantiate_with_heap(&bound, &account, 32).unwrap();
     let mut execution = process
         .start_controlled(
-            "Allocate",
+            "allocate",
             &[100],
             4096,
             &CancellationToken::default(),
@@ -134,10 +134,10 @@ fn main() {
     let cold = worker.spawn_with_heap(&module, limits, 1, 2).unwrap();
     let timeout = Duration::from_secs(60);
     let sweep = worker
-        .request(hot, &module.handler("Sweep").unwrap(), &[], 4096, timeout)
+        .request(hot, &module.handler("sweep").unwrap(), &[], 4096, timeout)
         .unwrap();
     let heartbeat = worker
-        .request(cold, &module.handler("Get").unwrap(), &[], 128, timeout)
+        .request(cold, &module.handler("get").unwrap(), &[], 128, timeout)
         .unwrap();
     let mut heart_done = false;
     let mut sweep_done = false;

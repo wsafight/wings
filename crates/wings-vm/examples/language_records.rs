@@ -29,7 +29,7 @@ fn main() {
     let second = worker
         .spawn_with_heap(&module, limits(), 2, 2)
         .expect("second heap actor");
-    let work = module.handler("Work").expect("Work");
+    let work = module.handler("work").expect("work");
     let request = worker
         .request(first, &work, &[11], 128, Duration::from_secs(60))
         .expect("request first");
@@ -59,7 +59,7 @@ fn main() {
     let full = worker
         .request(
             first,
-            &module.handler("Full").expect("Full"),
+            &module.handler("full").expect("full"),
             &[],
             128,
             Duration::from_secs(60),

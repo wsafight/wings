@@ -57,7 +57,7 @@ struct CompletedEpoch {
 impl CompletedEpoch {
     fn reject_stale(&self, module: &ScalarModule, supervisor: &SchedulerSupervisor) -> usize {
         let handle = supervisor.handle();
-        let add = module.handler("Add").unwrap();
+        let add = module.handler("add").unwrap();
         for child in &self.children {
             assert!(supervisor.current_pid(*child).is_err());
         }
@@ -114,10 +114,10 @@ fn epoch(
         previous.reject_stale(module, supervisor);
         assert!(pids.iter().all(|pid| !previous.pids.contains(pid)));
     }
-    let add = module.handler("Add").unwrap();
+    let add = module.handler("add").unwrap();
     assert_eq!(value(&handle, pid), 0);
     handle
-        .send(pid, &module.handler("Hold").unwrap(), &[], u64::MAX)
+        .send(pid, &module.handler("hold").unwrap(), &[], u64::MAX)
         .unwrap();
     while handle.snapshot(pid).unwrap().execution.is_none() {
         remaining(deadline);
@@ -245,7 +245,7 @@ fn epoch(
         let mut failure = handle
             .request(
                 current,
-                &module.handler("Fail").unwrap(),
+                &module.handler("fail").unwrap(),
                 &[],
                 4096,
                 remaining(deadline),
@@ -264,7 +264,7 @@ fn epoch(
         let SchedulerTermination::Failed(exit) = failed.termination else {
             panic!("cancelled result must not retract the failing message")
         };
-        assert_eq!(exit.handler(), "Fail");
+        assert_eq!(exit.handler(), "fail");
         assert_eq!(
             exit.reason,
             SchedulerExitReason::Managed(ExecutionFault::DivisionByZero)

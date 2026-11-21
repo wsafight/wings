@@ -23,10 +23,10 @@ fn main() {
     assert!(arguments.len() == 3 && arguments[0] == "--trusted");
     let module = load(Path::new(&arguments[1]));
     let work_module = load(Path::new(&arguments[2]));
-    let increment = module.handler("Inc").expect("handler");
-    let get = module.handler("Get").expect("handler");
-    let work = work_module.handler("Work").expect("handler");
-    let fail = work_module.handler("Fail").expect("handler");
+    let increment = module.handler("inc").expect("handler");
+    let get = module.handler("get").expect("handler");
+    let work = work_module.handler("work").expect("handler");
+    let fail = work_module.handler("fail").expect("handler");
     let pool = StackPool::new(8, 0).expect("pool");
     let cancellation = CancellationToken::default();
     let preemption = PreemptionToken::default();
@@ -62,7 +62,7 @@ fn main() {
         .expect("next call");
     assert_eq!(finish(&mut task, 1), Some(3));
     let mut process = task.into_process();
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(3)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(3)));
 
     let mut tasks = Vec::new();
     for seed in 0..8 {
@@ -94,7 +94,7 @@ fn main() {
             Ok(ExecutionStatus::Complete(Some(expected)))
         );
         let mut process = task.into_process();
-        assert_eq!(process.invoke("Get", &[]), Ok(Some(expected)));
+        assert_eq!(process.invoke("get", &[]), Ok(Some(expected)));
     }
     assert_eq!(pool.stats().active, 0);
     waiting
@@ -113,7 +113,7 @@ fn main() {
         assert_eq!(pool.stats().active, 0);
         assert!(
             process
-                .invoke("Get", &[])
+                .invoke("get", &[])
                 .unwrap_err()
                 .contains("terminated")
         );
@@ -174,7 +174,7 @@ fn main() {
     let mut process = task.into_process();
     assert!(
         process
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );

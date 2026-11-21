@@ -28,7 +28,7 @@ fn main() {
     let index = manifest
         .handlers
         .iter()
-        .position(|handler| handler.name == "Work")
+        .position(|handler| handler.name == "work")
         .unwrap();
     let library = unsafe { Library::new(directory.join(library_name())) }.unwrap();
     let handler = unsafe {

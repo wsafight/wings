@@ -1,20 +1,20 @@
-process ChunkedGc {
-  fn refresh(value: RecordInt) -> RecordInt {
-    collect()
-    record_int(read_int(value) + 1)
+actor ChunkedGc {
+  fn refresh(value: box<int>) -> box<int> {
+    gc()
+    box(value.get() + 1)
   }
-  state value: RecordInt = record_int(7)
-  on Get -> Int { read_int(value) }
-  on Sweep -> Int {
-    let outer = record_int(11)
+  state value = box(7)
+  on get -> int { value.get() }
+  on sweep -> int {
+    let outer = box(11)
     value = refresh(value)
-    collect()
-    read_int(outer) + read_int(value)
+    gc()
+    outer.get() + value.get()
   }
-  on Allocate(limit: Int) -> Int {
-    while read_int(value) < limit {
-      value = record_int(read_int(value) + 1)
+  on allocate(limit: int) -> int {
+    while value.get() < limit {
+      value = box(value.get() + 1)
     }
-    read_int(value)
+    value.get()
   }
 }

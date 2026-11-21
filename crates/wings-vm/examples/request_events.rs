@@ -17,7 +17,7 @@ fn read(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid) -> i64 {
     let request = worker
         .request(
             pid,
-            &module.handler("Read").unwrap(),
+            &module.handler("read").unwrap(),
             &[],
             128,
             Duration::from_secs(60),
@@ -43,7 +43,7 @@ fn verify_early_completion_lifetime(module: &ScalarModule) {
             let request = worker
                 .request(
                     owner,
-                    &module.handler("Start").unwrap(),
+                    &module.handler("start").unwrap(),
                     &[0, 0, 0],
                     256,
                     Duration::from_secs(60),
@@ -61,7 +61,7 @@ fn verify_early_completion_lifetime(module: &ScalarModule) {
                 worker
                     .request(
                         target,
-                        &module.handler("Read").unwrap(),
+                        &module.handler("read").unwrap(),
                         &[],
                         128,
                         Duration::ZERO
@@ -121,7 +121,7 @@ fn main() {
         let reply = worker
             .request(
                 pid,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[timeout, cancel, fail],
                 256,
                 Duration::from_secs(60),
@@ -147,7 +147,7 @@ fn main() {
         assert_eq!(vm.used().messages, 0);
         assert!(
             worker
-                .send(pid, &module.handler("Completed").unwrap(), &[1, 0, 3], 128)
+                .send(pid, &module.handler("completed").unwrap(), &[1, 0, 3], 128)
                 .is_err()
         );
         drop(worker);
@@ -161,7 +161,7 @@ fn main() {
         worker
             .request(
                 pid,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[60000, 0, 0],
                 256,
                 Duration::from_secs(60),
@@ -182,7 +182,7 @@ fn main() {
     let reply = worker
         .request(
             pid,
-            &module.handler("Self").unwrap(),
+            &module.handler("self_msg").unwrap(),
             &[],
             256,
             Duration::from_secs(60),

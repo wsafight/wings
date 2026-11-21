@@ -66,10 +66,10 @@ fn main() {
     let mut process = module.instantiate().expect("instance");
     assert!(
         process
-            .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &pool)
+            .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &pool)
             .is_err()
     );
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(0)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(0)));
     let fill = vm
         .reserve(Resources {
             bytes: vm.limit().bytes - charged,
@@ -79,7 +79,7 @@ fn main() {
     let before = pool.stats();
     assert!(
         process
-            .start_in_pool("Inc", &[3], 4, &cancellation, &preemption, &owner_pool)
+            .start_in_pool("inc", &[3], 4, &cancellation, &preemption, &owner_pool)
             .is_err()
     );
     assert_eq!(pool.stats(), before);
@@ -94,7 +94,7 @@ fn main() {
         .expect("leave exact execution control capacity");
     {
         let mut execution = process
-            .start_in_pool("Inc", &[3], 4, &cancellation, &preemption, &owner_pool)
+            .start_in_pool("inc", &[3], 4, &cancellation, &preemption, &owner_pool)
             .expect("net transfer with full VM");
         assert_eq!(process_account.used().bytes, slot_bytes + CONTROL_BYTES);
         assert_eq!(tenant.used().bytes, charged + CONTROL_BYTES);
@@ -117,17 +117,17 @@ fn main() {
     let before = pool.stats();
     assert!(
         process
-            .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &denied_pool)
+            .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &denied_pool)
             .is_err()
     );
     assert_eq!(pool.stats(), before);
     assert_eq!(denied.used(), Resources::default());
-    assert_eq!(process.invoke("Get", &[]), Ok(Some(3)));
+    assert_eq!(process.invoke("get", &[]), Ok(Some(3)));
     for started in [false, true] {
         let mut process = module.instantiate().expect("abandoned instance");
         {
             let mut execution = process
-                .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &owner_pool)
+                .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &owner_pool)
                 .expect("abandoned call");
             if started {
                 assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
@@ -141,7 +141,7 @@ fn main() {
     let cancelled = CancellationToken::default();
     {
         let mut execution = process
-            .start_in_pool("Inc", &[1], 4, &cancelled, &preemption, &owner_pool)
+            .start_in_pool("inc", &[1], 4, &cancelled, &preemption, &owner_pool)
             .expect("cancelled call");
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
         cancelled.cancel();
@@ -152,7 +152,7 @@ fn main() {
     drop(pool);
     let mut process = module.instantiate().expect("survivor");
     let mut execution = process
-        .start_in_pool("Inc", &[7], 4, &cancellation, &preemption, &owner_pool)
+        .start_in_pool("inc", &[7], 4, &cancellation, &preemption, &owner_pool)
         .expect("live ownership");
     assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
     drop(owner_pool);

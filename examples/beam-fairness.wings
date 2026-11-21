@@ -1,5 +1,5 @@
-process BeamFairness {
-  fn ten(value: Int) -> Int {
+actor BeamFairness {
+  fn ten(value: int) -> int {
     let first = value + 1
     let second = first + 1
     let third = second + 1
@@ -11,37 +11,37 @@ process BeamFairness {
     let ninth = eighth + 1
     ninth + 1
   }
-  fn hundred(value: Int) -> Int {
+  fn hundred(value: int) -> int {
     ten(ten(ten(ten(ten(ten(ten(ten(ten(ten(value))))))))))
   }
-  fn thousand(value: Int) -> Int {
+  fn thousand(value: int) -> int {
     hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(hundred(value))))))))))
   }
-  fn ten_thousand(value: Int) -> Int {
+  fn ten_thousand(value: int) -> int {
     thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(thousand(value))))))))))
   }
-  fn hundred_thousand(value: Int) -> Int {
+  fn hundred_thousand(value: int) -> int {
     ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(ten_thousand(value))))))))))
   }
-  fn million(value: Int) -> Int {
+  fn million(value: int) -> int {
     hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(hundred_thousand(value))))))))))
   }
 
-  state data: Bytes = fill_bytes(256, 0)
+  state data = bytes::fill(256, 0)
 
-  on Configure(identity: Int) -> Int {
-    data = replace_i64_be(data, 8, identity)
-    read_i64_be(data, 0)
+  on configure(identity: int) -> int {
+    data = data.set_i64(8, identity)
+    data.i64_at(0)
   }
 
-  on Pulse(sequence: Int, operation: Int, delta: Int, reserved: Int) -> Int {
-    data = replace_i64_be(data, 0, read_i64_be(data, 0) + 1)
-    read_i64_be(data, 0)
+  on pulse(sequence: int, operation: int, delta: int, reserved: int) -> int {
+    data = data.set_i64(0, data.i64_at(0) + 1)
+    data.i64_at(0)
   }
 
-  on Cpu(sequence: Int, operation: Int, delta: Int, reserved: Int) -> Int {
+  on cpu(sequence: int, operation: int, delta: int, reserved: int) -> int {
     let result = million(0)
-    data = replace_i64_be(data, 0, read_i64_be(data, 0) + 1)
+    data = data.set_i64(0, data.i64_at(0) + 1)
     result
   }
 }

@@ -116,7 +116,7 @@ def main():
         source = parent / "live.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
         total = " + ".join(f"value_{index}" for index in range(48))
-        source.write_text(f"process Live {{ state count: Int = 0; on Work(seed: Int) -> Int {{ {bindings}\n let total = {total}; count = count + total; total }} on Get -> Int {{ count }} }}")
+        source.write_text(f"actor Live {{ state count = 0; on work(seed: int) -> int {{ {bindings}\n let total = {total}; count += total; total }} on get -> int => count }}")
         artifact = parent / "artifact"
         subprocess.run([str(COMPILER), "build", str(source), "-o", str(artifact)], check=True, timeout=30, preexec_fn=limit_child)
         cases = []

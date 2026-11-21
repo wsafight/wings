@@ -57,9 +57,9 @@ fn main() {
     let tenant = vm.tenant(limits()).unwrap();
     let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
     let pid = worker.spawn(&module, limits(), 4).unwrap();
-    let reply = request(&mut worker, &module, pid, "Start", &[1], 128);
+    let reply = request(&mut worker, &module, pid, "start", &[1], 128);
     worker
-        .send(pid, &module.handler("Add").unwrap(), &[2], 128)
+        .send(pid, &module.handler("add").unwrap(), &[2], 128)
         .unwrap();
     assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
     let snapshot = worker.snapshot(pid).unwrap();
@@ -74,7 +74,7 @@ fn main() {
     deliver(&mut worker, pid);
     deliver(&mut worker, pid);
     assert_eq!(worker.committed_state(pid).unwrap(), 921);
-    let reply = request(&mut worker, &module, pid, "Flags", &[], 128);
+    let reply = request(&mut worker, &module, pid, "flags", &[], 128);
     deliver(&mut worker, pid);
     assert_eq!(
         worker.take_reply(reply).unwrap(),
@@ -83,12 +83,12 @@ fn main() {
     deliver(&mut worker, pid);
     assert_eq!(worker.committed_state(pid).unwrap(), 7);
     worker
-        .send(pid, &module.handler("Ping").unwrap(), &[], 128)
+        .send(pid, &module.handler("ping").unwrap(), &[], 128)
         .unwrap();
     deliver(&mut worker, pid);
     deliver(&mut worker, pid);
     assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Idle);
-    let reply = request(&mut worker, &module, pid, "WideStart", &[], 512);
+    let reply = request(&mut worker, &module, pid, "wide_start", &[], 512);
     deliver(&mut worker, pid);
     assert_eq!(
         worker.take_reply(reply).unwrap(),
@@ -99,9 +99,9 @@ fn main() {
     worker.stop(pid).unwrap();
 
     for (name, arguments, budget, fault) in [
-        ("Fail", vec![0], 128, ExecutionFault::DivisionByZero),
-        ("Budget", vec![], 3, ExecutionFault::BudgetExhausted),
-        ("Twice", vec![], 128, ExecutionFault::SendRejected),
+        ("fail", vec![0], 128, ExecutionFault::DivisionByZero),
+        ("budget", vec![], 3, ExecutionFault::BudgetExhausted),
+        ("twice", vec![], 128, ExecutionFault::SendRejected),
     ] {
         let pid = worker.spawn(&module, limits(), 1).unwrap();
         let reply = request(&mut worker, &module, pid, name, &arguments, budget);
@@ -128,7 +128,7 @@ fn main() {
     }
 
     let pid = worker.spawn(&module, limits(), 1).unwrap();
-    let reply = request(&mut worker, &module, pid, "Start", &[1], 128);
+    let reply = request(&mut worker, &module, pid, "start", &[1], 128);
     assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
     worker.stop(pid).unwrap();
     assert_eq!(
@@ -139,7 +139,7 @@ fn main() {
     assert_eq!(vm.used().messages, 0);
 
     let pid = worker.spawn_with_heap(&roots, limits(), 2, 3).unwrap();
-    let reply = request(&mut worker, &roots, pid, "Start", &[], 128);
+    let reply = request(&mut worker, &roots, pid, "start", &[], 128);
     assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
     assert_eq!(worker.snapshot(pid).unwrap().queued, 1);
     deliver(&mut worker, pid);
@@ -148,7 +148,7 @@ fn main() {
         Some(RequestOutcome::Reply(9))
     );
     deliver(&mut worker, pid);
-    let reply = request(&mut worker, &roots, pid, "Read", &[], 128);
+    let reply = request(&mut worker, &roots, pid, "read", &[], 128);
     deliver(&mut worker, pid);
     assert_eq!(
         worker.take_reply(reply).unwrap(),
@@ -171,7 +171,7 @@ fn main() {
         let tenant = vm.tenant(middle).unwrap();
         let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
         let pid = worker.spawn(&module, inner, 2).unwrap();
-        let reply = request(&mut worker, &module, pid, "Start", &[1], 128);
+        let reply = request(&mut worker, &module, pid, "start", &[1], 128);
         assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
         assert_eq!(worker.snapshot(pid).unwrap().queued, 0);
         assert_eq!(vm.used().messages, 1);
@@ -196,7 +196,7 @@ fn main() {
         let tenant = vm.tenant(limits()).unwrap();
         let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
         let pid = worker.spawn(&module, limits(), 2).unwrap();
-        let reply = request(&mut worker, &module, pid, "Start", &[1], 128);
+        let reply = request(&mut worker, &module, pid, "start", &[1], 128);
         assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
         let used = worker.resources(pid).unwrap().bytes;
         if level == 2 {
@@ -208,7 +208,7 @@ fn main() {
             let mut bounded = limits();
             bounded.bytes = used;
             let pid = worker.spawn(&module, bounded, 2).unwrap();
-            let reply = request(&mut worker, &module, pid, "Start", &[1], 128);
+            let reply = request(&mut worker, &module, pid, "start", &[1], 128);
             assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(pid));
             assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
             assert_eq!(worker.queued(pid).unwrap(), 0);
@@ -252,14 +252,14 @@ fn main() {
     let tenant = vm.tenant(limits()).unwrap();
     let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
     let pid = worker.spawn(&module, limits(), 1).unwrap();
-    request(&mut worker, &module, pid, "Start", &[1], 128);
+    request(&mut worker, &module, pid, "start", &[1], 128);
     assert_eq!(worker.tick(128).unwrap(), WorkerEvent::Suspended(pid));
     drop(worker);
     assert_eq!(vm.used(), Resources::default());
     let mut process = module.instantiate().unwrap();
     let mut execution = process
         .start_controlled(
-            "Start",
+            "start",
             &[1],
             128,
             &CancellationToken::default(),

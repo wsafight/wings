@@ -24,24 +24,24 @@ fn main() {
     let bound = pool.for_process(&account).unwrap();
     let baseline = vm.used();
     let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
-    assert_eq!(process.invoke("Count", &[0]).unwrap(), Some(0));
-    assert_eq!(process.invoke("Count", &[30]).unwrap(), Some(30));
+    assert_eq!(process.invoke("count", &[0]).unwrap(), Some(0));
+    assert_eq!(process.invoke("count", &[30]).unwrap(), Some(30));
     assert!(process.heap_stats().unwrap().collections >= 30);
-    assert_eq!(process.invoke("Advance", &[12, 8]).unwrap(), Some(12));
-    assert_eq!(process.invoke("Advance", &[5, 9]).unwrap(), Some(9));
-    assert_eq!(process.invoke("Preserve", &[0, 10]).unwrap(), Some(10));
-    assert_eq!(process.invoke("Nested", &[15]).unwrap(), Some(27));
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(17));
-    assert_eq!(process.invoke("Retain", &[20]).unwrap(), Some(20));
+    assert_eq!(process.invoke("advance", &[12, 8]).unwrap(), Some(12));
+    assert_eq!(process.invoke("advance", &[5, 9]).unwrap(), Some(9));
+    assert_eq!(process.invoke("preserve", &[0, 10]).unwrap(), Some(10));
+    assert_eq!(process.invoke("nested", &[15]).unwrap(), Some(27));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(17));
+    assert_eq!(process.invoke("retain", &[20]).unwrap(), Some(20));
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
-    assert_eq!(process.invoke("Count", &[30]).unwrap(), Some(30));
+    assert_eq!(process.invoke("count", &[30]).unwrap(), Some(30));
     drop(process);
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
     assert!(
         process
-            .invoke("Retain", &[30])
+            .invoke("retain", &[30])
             .unwrap_err()
             .contains("heap exhausted")
     );
@@ -51,7 +51,7 @@ fn main() {
         let mut task = ScalarTask::new(module.instantiate_with_heap(&bound, &account, 3).unwrap());
         let cancellation = CancellationToken::default();
         task.start(
-            &module.handler("Count").unwrap(),
+            &module.handler("count").unwrap(),
             &[30],
             2048,
             &cancellation,
@@ -95,7 +95,7 @@ fn main() {
         let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
         let mut execution = process
             .start_controlled(
-                "Preserve",
+                "preserve",
                 &[1, 19],
                 budget,
                 &CancellationToken::default(),
@@ -120,7 +120,7 @@ fn main() {
     let pending = worker
         .request(
             pid,
-            &module.handler("Nested").unwrap(),
+            &module.handler("nested").unwrap(),
             &[15],
             4096,
             Duration::from_secs(60),
@@ -150,7 +150,7 @@ fn main() {
     let failed = worker
         .request(
             pid,
-            &module.handler("Fail").unwrap(),
+            &module.handler("fail").unwrap(),
             &[20],
             4096,
             Duration::from_secs(60),
@@ -161,7 +161,7 @@ fn main() {
     );
     assert!(worker.snapshot(pid).is_err());
     let exit = *worker.last_exit().unwrap();
-    assert_eq!(exit.handler(), "Fail");
+    assert_eq!(exit.handler(), "fail");
     assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
     assert_eq!(exit.committed_state, None);
     assert!(exit.execution.heap.unwrap().collections > 0);
@@ -179,7 +179,7 @@ fn main() {
         let request = worker
             .request(
                 pid,
-                &module.handler("Count").unwrap(),
+                &module.handler("count").unwrap(),
                 &[30],
                 budget,
                 Duration::from_secs(60),
@@ -191,7 +191,7 @@ fn main() {
         ));
         let exit = worker.last_exit().unwrap();
         assert_eq!(exit.pid, pid);
-        assert_eq!(exit.handler(), "Count");
+        assert_eq!(exit.handler(), "count");
         assert_eq!(exit.execution.fault, Some(fault));
         assert_eq!(exit.execution.heap.unwrap().capacity, capacity);
         assert_eq!(exit.committed_state, None);

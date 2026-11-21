@@ -33,24 +33,24 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     let mut process = module.instantiate_with_heap(&pool, &account, 16).unwrap();
     for length in [0, 1, 255, 256, 257, 65535, 65536] {
         remaining(deadline);
-        assert_eq!(process.invoke("Fill", &[length]).unwrap(), Some(length));
-        assert_eq!(process.invoke("Equal", &[length]).unwrap(), Some(1));
-        assert_eq!(process.invoke("Different", &[length]).unwrap(), Some(0));
-        assert_eq!(process.invoke("Self", &[]).unwrap(), Some(1));
+        assert_eq!(process.invoke("fill", &[length]).unwrap(), Some(length));
+        assert_eq!(process.invoke("equal", &[length]).unwrap(), Some(1));
+        assert_eq!(process.invoke("different", &[length]).unwrap(), Some(0));
+        assert_eq!(process.invoke("self_msg", &[]).unwrap(), Some(1));
         assert_eq!(
             process
-                .invoke("Equal", &[if length == 0 { 1 } else { length - 1 }])
+                .invoke("equal", &[if length == 0 { 1 } else { length - 1 }])
                 .unwrap(),
             Some(0)
         );
     }
-    for handler in ["Unicode", "NotNormalized", "LastByte"] {
+    for handler in ["unicode", "not_normalized", "last_byte"] {
         assert_eq!(process.invoke(handler, &[]).unwrap(), Some(1));
     }
-    assert_eq!(process.invoke("Fill", &[65536]).unwrap(), Some(65536));
+    assert_eq!(process.invoke("fill", &[65536]).unwrap(), Some(65536));
     let mut execution = process
         .start_controlled(
-            "Equal",
+            "equal",
             &[65536],
             32768,
             &CancellationToken::default(),
@@ -71,7 +71,7 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     }
     assert!(suspensions >= 256);
     drop(execution);
-    assert_eq!(process.invoke("Read", &[]).unwrap(), Some(65536));
+    assert_eq!(process.invoke("read", &[]).unwrap(), Some(65536));
     drop((process, pool, account));
     assert_eq!(tenant.used(), baseline);
 
@@ -83,11 +83,11 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
             .for_process(&account)
             .unwrap();
         let mut process = module.instantiate_with_heap(&pool, &account, 8).unwrap();
-        process.invoke("Fill", &[65536]).unwrap();
+        process.invoke("fill", &[65536]).unwrap();
         let token = CancellationToken::new_accounted(&account).unwrap();
         let mut execution = process
             .start_controlled(
-                "Self",
+                "self_msg",
                 &[],
                 if cancel { 32768 } else { 128 },
                 &token,
@@ -146,7 +146,7 @@ fn messages(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
         let mut request = handle
             .request_values(
                 pid,
-                &module.handler("Compare").unwrap(),
+                &module.handler("compare").unwrap(),
                 &[MessageValue::String(&first), MessageValue::String(&second)],
                 32768,
                 remaining(deadline),
@@ -160,7 +160,7 @@ fn messages(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     let mut failed = handle
         .request(
             pid,
-            &module.handler("FailedCandidate").unwrap(),
+            &module.handler("failed_candidate").unwrap(),
             &[],
             32768,
             remaining(deadline),
@@ -187,7 +187,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request_values(
             pid,
-            &module.handler("Compare").unwrap(),
+            &module.handler("compare").unwrap(),
             &[MessageValue::String("中😀"), MessageValue::String("中😀")],
             32768,
             remaining(deadline),

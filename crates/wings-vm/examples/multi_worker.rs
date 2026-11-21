@@ -46,8 +46,8 @@ fn main() {
         )
         .unwrap();
         let handle = scheduler.handle();
-        let begin = module.handler("Begin").unwrap();
-        let read = module.handler("Read").unwrap();
+        let begin = module.handler("begin").unwrap();
+        let read = module.handler("read").unwrap();
         let parents: Vec<_> = (0..6)
             .map(|_| handle.spawn_with_heap(&module, limits(), 8, 16).unwrap())
             .collect();
@@ -95,7 +95,7 @@ fn main() {
         }
         let busy = handle.spawn(&loops, limits(), 1).unwrap();
         handle
-            .send(busy, &loops.handler("Forever").unwrap(), &[], u64::MAX)
+            .send(busy, &loops.handler("forever").unwrap(), &[], u64::MAX)
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while handle.snapshot(busy).unwrap().execution.is_none() {
@@ -116,7 +116,7 @@ fn main() {
             .map(|_| {
                 let pid = handle.spawn(&loops, limits(), 1).unwrap();
                 handle
-                    .send(pid, &loops.handler("Forever").unwrap(), &[], u64::MAX)
+                    .send(pid, &loops.handler("forever").unwrap(), &[], u64::MAX)
                     .unwrap();
                 pid
             })
@@ -153,7 +153,7 @@ fn main() {
                 handle
                     .request(
                         failing,
-                        &loops.handler("Count").unwrap(),
+                        &loops.handler("count").unwrap(),
                         &[10],
                         4096,
                         Duration::from_secs(5)
@@ -166,7 +166,7 @@ fn main() {
         let mut failure = handle
             .request(
                 failing,
-                &loops.handler("Fail").unwrap(),
+                &loops.handler("fail").unwrap(),
                 &[20],
                 4096,
                 Duration::from_secs(5),
@@ -178,7 +178,7 @@ fn main() {
         );
         let diagnostic = handle.last_exit().unwrap();
         assert_eq!(diagnostic.pid, failing);
-        assert_eq!(diagnostic.handler(), "Fail");
+        assert_eq!(diagnostic.handler(), "fail");
         assert_eq!(diagnostic.worker, (last_worker + 1) % workers);
         assert_eq!(diagnostic.committed_state, Some(10));
         assert_eq!(
@@ -228,7 +228,7 @@ fn main() {
                 handle
                     .request(
                         pid,
-                        &module.handler("Read").unwrap(),
+                        &module.handler("read").unwrap(),
                         &[],
                         4096,
                         Duration::from_secs(5)
@@ -240,7 +240,7 @@ fn main() {
         let mut failed = handle
             .request(
                 pid,
-                &module.handler("Fail").unwrap(),
+                &module.handler("fail").unwrap(),
                 &[],
                 4096,
                 Duration::from_secs(5),

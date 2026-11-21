@@ -1,55 +1,55 @@
-process StringEquality {
-  state text: String = "";
+actor StringEquality {
+  state text = "";
 
-  fn copy(value: String) -> String {
-    let result = string_from_bytes(string_bytes(value));
-    collect();
+  fn copy(value: str) -> str {
+    let result = value.bytes().to_str();
+    gc();
     result
   }
 
-  fn same(first: String, second: String) -> Bool {
-    collect();
+  fn same(first: str, second: str) -> bool {
+    gc();
     first == second
   }
 
-  on Fill(length: Int) -> Int {
-    text = string_from_bytes(fill_bytes(length, 97));
-    string_len(text)
+  on fill(length: int) -> int {
+    text = bytes::fill(length, 97).to_str();
+    text.len()
   }
 
-  on Equal(length: Int) -> Bool {
-    same(text, string_from_bytes(fill_bytes(length, 97)))
+  on equal(length: int) -> bool {
+    same(text, bytes::fill(length, 97).to_str())
   }
 
-  on Different(length: Int) -> Bool {
-    text != string_from_bytes(fill_bytes(length, 97))
+  on different(length: int) -> bool {
+    text != bytes::fill(length, 97).to_str()
   }
 
-  on Compare(first: String, second: String) -> Bool {
+  on compare(first: str, second: str) -> bool {
     same(first, copy(second))
   }
 
-  on Self -> Bool { text == text }
+  on self_msg -> bool { text == text }
 
-  on Unicode -> Bool {
+  on unicode -> bool {
     text = "中😀\0";
-    same(text, concat_strings("中", "😀\0"))
+    same(text, ("中" + "😀\0"))
   }
 
-  on NotNormalized -> Bool { "é" != "é" }
+  on not_normalized -> bool { "é" != "é" }
 
-  on LastByte -> Bool {
-    let first = string_from_bytes(fill_bytes(65536, 97));
-    let second = string_from_bytes(replace_byte(string_bytes(first), 65535, 98));
+  on last_byte -> bool {
+    let first = bytes::fill(65536, 97).to_str();
+    let second = first.bytes().set(65535, 98).to_str();
     first != second
   }
 
-  on FailedCandidate -> Bool {
+  on failed_candidate -> bool {
     text = "candidate";
     same(text, copy(text));
     1 / 0;
     true
   }
 
-  on Read -> Int { string_len(text) }
+  on read -> int { text.len() }
 }

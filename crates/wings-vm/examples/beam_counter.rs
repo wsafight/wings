@@ -116,8 +116,8 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
     let vm = ResourceAccount::vm_accounted(limits())?;
     let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
+    let configure = module.handler("configure")?;
+    let apply = module.handler("apply")?;
     if module.manifest().state != ValueType::BytesRef
         || configure.schema().parameters.len() != 2
         || configure
@@ -190,7 +190,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
                 WorkerEvent::Exited { pid: actual, .. } if actual == pid => {
                     let exit = worker.last_exit().ok_or("missing failure snapshot")?;
                     if exit.pid != pid
-                        || exit.handler() != "Apply"
+                        || exit.handler() != "apply"
                         || exit.queued != batch.len() - index - 1
                     {
                         return Err("failure identity or queue mismatch".into());

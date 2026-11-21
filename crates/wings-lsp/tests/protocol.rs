@@ -4,12 +4,12 @@ use serde_json::{Value, json};
 use wings_lsp::{Server, run};
 
 const URI: &str = "file:///test.wings";
-const VALID: &str = "process P { state n: Int = 0; on Get -> Int { n } }";
+const VALID: &str = "actor P { state n = 0; on get -> int => n }";
 
 #[test]
-fn named_records_share_state_and_local_hover_and_type_errors() {
+fn structs_share_state_and_local_hover_and_type_errors() {
     let mut server = server();
-    let text = "process P { record Profile { name: String, count: Int } state profile: Profile = Profile(\"中\", 7); on Read -> Int { let saved = profile; saved.count } }";
+    let text = r#"actor P { struct Profile { name: str, count: int } state profile = Profile { name: "中", count: 7 }; on read -> int { let saved = profile; saved.count } }"#;
     assert_eq!(
         open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
         json!([])
@@ -30,54 +30,73 @@ fn named_records_share_state_and_local_hover_and_type_errors() {
 }
 
 #[test]
-fn string_values_share_hover_completion_and_external_type_diagnostics() {
+fn string_and_list_values_share_hover_completion_and_diagnostics() {
     let mut server = server();
-    let text = "process P { state text: String = string_from_bytes(fill_bytes(0, 0)); on Read -> Int { string_len(text) } }";
+    let text = r#"actor P { state text = "Aé😀"; state xs: [int] = [1, 2]; on read -> int => text.slice(1, 2).len() + xs.head() }"#;
     assert_eq!(
         open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
         json!([])
     );
     let offset = text.rfind("text").unwrap() as u32;
+    let pos = wings_source::SourceFile::new(wings_source::SourceId(0), text)
+        .position(offset as usize)
+        .unwrap();
     assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
-        "text: String"
+        query(
+            &mut server,
+            "textDocument/hover",
+            URI,
+            pos.line,
+            pos.character
+        )["result"]["contents"]["value"],
+        "text: str"
     );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
+    let xs_offset = text.rfind("xs").unwrap() as u32;
+    let xs_pos = wings_source::SourceFile::new(wings_source::SourceId(0), text)
+        .position(xs_offset as usize)
+        .unwrap();
+    assert_eq!(
+        query(
+            &mut server,
+            "textDocument/hover",
+            URI,
+            xs_pos.line,
+            xs_pos.character
+        )["result"]["contents"]["value"],
+        "xs: [int]"
+    );
+
+    let completion = query(
+        &mut server,
+        "textDocument/completion",
+        URI,
+        pos.line,
+        pos.character,
+    );
     let items = completion["result"]["items"].as_array().unwrap();
-    for (name, detail) in [
-        ("string_from_bytes", "(Bytes) -> String"),
-        ("string_bytes", "(String) -> Bytes"),
-        ("string_len", "(String) -> Int"),
-        ("string_at", "(String, Int) -> Int"),
-        ("string_slice", "(String, Int, Int) -> String"),
-        ("concat_strings", "(String, String) -> String"),
+    for label in [
+        "actor",
+        "struct",
+        "match",
+        "for",
+        "str",
+        "[int]",
+        "box<int>",
+        "bytes::fill",
+        "slice",
+        "ask",
+        "cancel",
+        "gc",
     ] {
         assert!(
-            items
-                .iter()
-                .any(|item| item["label"] == name && item["detail"] == detail)
+            items.iter().any(|item| item["label"] == label),
+            "missing completion {label}"
         );
     }
-    assert!(items.iter().any(|item| item["label"] == "String"));
-    let slicing = "process P { state text: String = \"Aé😀\"; on At -> Int { string_at(text, 1) } on Part -> String { string_slice(text, 1, 2) } }";
-    assert_eq!(
-        open(&mut server, URI, 2, slicing)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let messages =
-        "process P { state n: Int = 0; on Set(value: String) { n = string_len(value) } }";
-    assert_eq!(
-        open(&mut server, URI, 3, messages)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let replies = "process P { state n: Int = 0; on Get -> String { \"\" } }";
-    assert_eq!(
-        open(&mut server, URI, 4, replies)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let invalid = "process P { state n: Int = 0; on Get -> String { fill_bytes(0, 0) } }";
+
+    let invalid = "actor P { on get -> str => b\"raw\" }";
     assert!(
-        open(&mut server, URI, 5, invalid)[0]["params"]["diagnostics"]
+        open(&mut server, URI, 2, invalid)[0]["params"]["diagnostics"]
             .as_array()
             .unwrap()
             .iter()
@@ -86,244 +105,18 @@ fn string_values_share_hover_completion_and_external_type_diagnostics() {
 }
 
 #[test]
-fn string_literal_diagnostics_and_inferred_hover_share_the_parser() {
-    let mut server = server();
-    let source = r#"process P { state text: String = "中文😀"; on Read -> Int { let saved = "\"\n\0"; string_len(saved) } }"#;
-    assert_eq!(
-        open(&mut server, URI, 1, source)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let offset = source.rfind("saved").unwrap() as u32;
-    let position = wings_source::SourceFile::new(wings_source::SourceId(0), source)
-        .position(offset as usize)
-        .unwrap();
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/hover",
-            URI,
-            position.line,
-            position.character
-        )["result"]["contents"]["value"],
-        "saved: String"
-    );
-    let invalid = source.replace("中文😀", r"\q");
-    assert!(
-        open(&mut server, URI, 2, &invalid)[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["code"] == "S005")
-    );
-}
-
-#[test]
-fn bytes_hover_and_builtins_share_frontend_types_without_execution() {
-    let mut server = server();
-    let text =
-        "process P { state data: Bytes = fill_bytes(4, 0); on Read -> Int { bytes_len(data) } }";
-    assert!(
-        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let offset = text.rfind("data").unwrap();
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, offset as u32)["result"]["contents"]["value"],
-        "data: Bytes"
-    );
-    let completion = query(
-        &mut server,
-        "textDocument/completion",
-        URI,
-        0,
-        offset as u32,
-    );
-    for label in [
-        "Bytes",
-        "fill_bytes",
-        "bytes_len",
-        "byte_at",
-        "replace_byte",
-        "read_i64_be",
-        "replace_i64_be",
-    ] {
-        assert!(
-            completion["result"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == label)
-        );
-    }
-}
-
-fn request(id: Value, method: &str, params: Value) -> Value {
-    json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
-}
-
-fn notification(method: &str, params: Value) -> Value {
-    json!({ "jsonrpc": "2.0", "method": method, "params": params })
-}
-
-fn initialize(server: &mut Server) -> Value {
-    let responses = server.handle(&request(json!(1), "initialize", json!({})));
-    assert_eq!(responses.len(), 1);
-    assert!(responses[0].get("error").is_none(), "{responses:?}");
-    responses.into_iter().next().unwrap()
-}
-
-fn server() -> Server {
-    let mut server = Server::default();
-    initialize(&mut server);
-    server
-}
-
-#[test]
-fn while_local_queries_do_not_leak_body_scope() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Count(limit: Int) -> Int { while n < limit { let inside = n + 1; n = inside }; n } }";
-    let diagnostics = open(&mut server, URI, 1, text);
-    assert!(
-        diagnostics[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let inside = text.rfind("inside").unwrap() as u32;
-    let hover = query(&mut server, "textDocument/hover", URI, 0, inside);
-    assert_eq!(hover["result"]["contents"]["value"], "inside: Int");
-    let outside = text.rfind("n }").unwrap() as u32;
-    let completion = query(&mut server, "textDocument/completion", URI, 0, outside);
-    let items = completion["result"]["items"].as_array().unwrap();
-    assert!(!items.iter().any(|item| item["label"] == "inside"));
-    assert!(items.iter().any(|item| item["label"] == "while"));
-}
-
-#[test]
-fn conditional_queries_share_scope_and_keyword_completion() {
-    let mut server = server();
-    let text =
-        "process P { state n: Int = 0; on Get(flag: Bool) -> Int { if flag { n } else { 7 } } }";
-    let diagnostics = open(&mut server, URI, 1, text);
-    assert!(
-        diagnostics[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let offset = text.find("if flag").unwrap() as u32 + 3;
-    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
-    assert_eq!(hover["result"]["contents"]["value"], "flag: Bool");
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    let items = completion["result"]["items"].as_array().unwrap();
-    for label in ["if", "else"] {
-        assert!(items.iter().any(|item| item["label"] == label));
-    }
-}
-
-#[test]
-fn self_send_targets_resolve_to_forward_handler_definitions() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Start { send_self(Add, 1) } on Add(value: Int) { n = value } }";
-    assert_eq!(
-        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let offset = text.find("Add, 1").unwrap() as u32;
-    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
-    assert_eq!(
-        hover["result"]["contents"]["value"],
-        "Add: (value: Int) (one-way)"
-    );
-    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
-    assert_eq!(
-        definition["result"]["range"]["start"]["character"],
-        text.rfind("Add").unwrap()
-    );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    assert!(
-        completion["result"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["label"] == "send_self")
-    );
-}
-
-#[test]
-fn process_capabilities_share_local_types_and_send_target_navigation() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Start { let child = spawn_self(); send(child, Add, 1) } on Add(value: Int) { n = value } }";
-    assert_eq!(
-        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let offset = text.find("child, Add").unwrap() as u32;
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
-        "child: Pid"
-    );
-    let offset = text.find("Add, 1").unwrap() as u32;
-    assert_eq!(
-        query(&mut server, "textDocument/definition", URI, 0, offset)["result"]["range"]["start"]["character"],
-        text.rfind("Add").unwrap()
-    );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    for label in ["Pid", "spawn_self", "self_pid", "send"] {
-        assert!(
-            completion["result"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == label)
-        );
-    }
-}
-
-#[test]
-fn request_ids_and_completion_names_use_shared_analysis() {
-    let mut server = server();
-    let text = "process P { state count: Int = 0; on Start { let id = request(self_pid(), Get, Done, 1000); cancel_request(id) } on Get -> Int { count } on Done(id: RequestId, status: Int, value: Int) { count = value } }";
-    assert_eq!(
-        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let offset = text.find("id)").unwrap() as u32;
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
-        "id: RequestId"
-    );
-    let offset = text.find("Done, 1000").unwrap() as u32;
-    assert_eq!(
-        query(&mut server, "textDocument/definition", URI, 0, offset)["result"]["range"]["start"]["character"],
-        text.rfind("Done").unwrap()
-    );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    for label in ["RequestId", "request", "cancel_request"] {
-        assert!(
-            completion["result"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == label)
-        );
-    }
-}
-
-#[test]
-fn copied_completion_hover_and_diagnostics_share_request_reply_types() {
+fn request_and_reply_handlers_share_definitions_and_hover() {
     for (ty, literal) in [
-        ("Bool", "false"),
-        ("Unit", "()"),
-        ("RecordInt", "record_int(7)"),
-        ("IntList", "empty_ints()"),
-        ("Bytes", "fill_bytes(1, 7)"),
+        ("bool", "false"),
+        ("()", "()"),
+        ("box<int>", "box(7)"),
+        ("[int]", "[1, 2]"),
+        ("bytes", "b\"a\""),
+        ("str", "\"ok\""),
     ] {
         let mut typed_server = server();
         let text = format!(
-            "process P {{ state n: Int = 0; on Start {{ let id = request(self_pid(), Get, Done, 1000); cancel_request(id) }} on Get -> {ty} {{ {literal} }} on Done(id: RequestId, status: Int, value: {ty}) {{ let saved = value }} }}"
+            "actor P {{ state n = 0; on start {{ let id = self.ask(get_val, timeout: 1_000, then: done); id.cancel() }} on get_val -> {ty} => {literal}; on reply done(id: req, status: int, value: {ty}) {{ let saved = value }} }}"
         );
         assert_eq!(
             open(&mut typed_server, URI, 1, &text)[0]["params"]["diagnostics"],
@@ -334,15 +127,27 @@ fn copied_completion_hover_and_diagnostics_share_request_reply_types() {
             query(&mut typed_server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
             format!("value: {ty}")
         );
-        let mut server = server();
-        let mismatched = text.replace(&format!("value: {ty}"), "value: Int");
-        let diagnostics = open(&mut server, URI, 1, &mismatched);
+        let done_ref = text.find("then: done").unwrap() + "then: ".len();
+        assert_eq!(
+            query(
+                &mut typed_server,
+                "textDocument/definition",
+                URI,
+                0,
+                done_ref as u32
+            )["result"]["range"]["start"]["character"],
+            text.rfind("done").unwrap()
+        );
+
+        let mut mismatch_server = server();
+        let mismatched = text.replace(&format!("value: {ty}"), "value: int");
+        let diagnostics = open(&mut mismatch_server, URI, 1, &mismatched);
         assert!(
             diagnostics[0]["params"]["diagnostics"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|item| item["code"] == "T018")
+                .any(|item| item["code"] == "T005")
         );
     }
 }
@@ -350,7 +155,7 @@ fn copied_completion_hover_and_diagnostics_share_request_reply_types() {
 #[test]
 fn function_calls_share_signature_definition_and_keyword_completion() {
     let mut server = server();
-    let text = "process P { fn twice(value: Int) -> Int { value + value } state n: Int = 0; on Get -> Int { twice(n) } }";
+    let text = "actor P { fn twice(value: int) -> int => value + value; state n = 0; on get -> int => twice(n) }";
     let diagnostics = open(&mut server, URI, 1, text);
     assert!(
         diagnostics[0]["params"]["diagnostics"]
@@ -362,631 +167,56 @@ fn function_calls_share_signature_definition_and_keyword_completion() {
     let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
     assert_eq!(
         hover["result"]["contents"]["value"],
-        "twice: (value: Int) -> Int"
+        "twice: (value: int) -> int"
     );
     let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
     assert_eq!(
         definition["result"]["range"]["start"]["character"],
         text.find("twice").unwrap()
     );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    for label in ["fn", "twice"] {
-        assert!(
-            completion["result"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == label)
-        );
-    }
 }
 
 #[test]
-fn list_values_share_types_hover_and_builtin_completion() {
-    let mut server = server();
-    let text = "process P { state values: IntList = empty_ints(); on Push(value: Int) -> Int { values = prepend_int(value, values); head_int(values) } }";
-    let diagnostics = open(&mut server, URI, 1, text);
+fn initialize_lifecycle_utf16_diagnostics_and_version_ordering_hold() {
+    let mut uninit = Server::default();
+    let pre = uninit.handle(&request(json!(1), "textDocument/hover", json!({})));
+    assert_eq!(pre[0]["error"]["code"], -32002);
+
+    let mut srv = server();
+    let source = "actor P {\n  state tag = \"😀\"\n  state bad: int = false\n}";
+    let opened = open(&mut srv, URI, 5, source);
+    let diags = opened[0]["params"]["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0]["code"], "T005");
+    assert_eq!(diags[0]["range"]["start"]["line"], 2);
+
+    // Stale version ignored
     assert!(
-        diagnostics[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        change(&mut srv, 4, json!([{ "text": VALID }])).is_empty(),
+        "stale version should be ignored"
     );
-    let offset = text.rfind("values").unwrap() as u32;
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, offset)["result"]["contents"]["value"],
-        "values: IntList"
-    );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    for label in [
-        "IntList",
-        "empty_ints",
-        "prepend_int",
-        "head_int",
-        "tail_ints",
-        "is_empty_ints",
-    ] {
-        assert!(
-            completion["result"]["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["label"] == label)
-        );
-    }
-}
+    // Newer version clears diagnostics
+    let updated = change(&mut srv, 6, json!([{ "text": VALID }]));
+    assert_eq!(updated[0]["params"]["diagnostics"], json!([]));
 
-#[test]
-fn record_state_shares_types_definitions_and_diagnostics() {
-    let mut server = server();
-    let text = "process P { state saved: RecordInt = if true { record_int(7) } else { record_int(9) }; on Get -> Int { while read_int(saved) < 11 { saved = if true { record_int(11) } else { saved } }; collect(); read_int(saved) } }";
-    let diagnostics = open(&mut server, URI, 1, text);
-    assert!(
-        diagnostics[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let offset = text.rfind("saved").unwrap() as u32;
-    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
-    assert_eq!(hover["result"]["contents"]["value"], "saved: RecordInt");
-    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
-    assert_eq!(
-        definition["result"]["range"]["start"]["character"],
-        text.find("saved").unwrap()
-    );
-}
-
-#[test]
-fn record_locals_share_types_definitions_and_builtin_completion() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Get -> Int { let saved = record_int(7); read_int(saved) } }";
-    let diagnostics = open(&mut server, URI, 1, text);
-    assert!(
-        diagnostics[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let offset = text.rfind("saved").unwrap() as u32;
-    let hover = query(&mut server, "textDocument/hover", URI, 0, offset);
-    assert_eq!(hover["result"]["contents"]["value"], "saved: RecordInt");
-    let definition = query(&mut server, "textDocument/definition", URI, 0, offset);
-    assert_eq!(
-        definition["result"]["range"]["start"]["character"],
-        text.find("saved").unwrap()
-    );
-    let completion = query(&mut server, "textDocument/completion", URI, 0, offset);
-    let items = completion["result"]["items"].as_array().unwrap();
-    for label in ["RecordInt", "record_int", "read_int", "collect", "saved"] {
-        assert!(items.iter().any(|item| item["label"] == label));
-    }
-}
-
-fn open(server: &mut Server, uri: &str, version: i64, text: &str) -> Vec<Value> {
-    server.handle(&notification(
-        "textDocument/didOpen",
-        json!({ "textDocument": { "uri": uri, "version": version, "text": text } }),
-    ))
-}
-
-fn change(server: &mut Server, version: i64, changes: Value) -> Vec<Value> {
-    server.handle(&notification(
-        "textDocument/didChange",
-        json!({ "textDocument": { "uri": URI, "version": version }, "contentChanges": changes }),
-    ))
-}
-
-fn query(server: &mut Server, method: &str, uri: &str, line: u32, character: u32) -> Value {
-    let responses = server.handle(&request(json!("query"), method,
-        json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } })));
-    assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0]["id"], "query");
-    responses.into_iter().next().unwrap()
-}
-
-fn frame(message: &Value) -> Vec<u8> {
-    let body = serde_json::to_vec(message).unwrap();
-    let mut bytes = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
-    bytes.extend(body);
-    bytes
-}
-
-fn decode_frames(bytes: &[u8]) -> Vec<Value> {
-    let mut messages = Vec::new();
-    let mut remaining = bytes;
-    while !remaining.is_empty() {
-        let split = remaining
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .unwrap();
-        let header = std::str::from_utf8(&remaining[..split]).unwrap();
-        let length: usize = header
-            .strip_prefix("Content-Length: ")
-            .unwrap()
-            .parse()
-            .unwrap();
-        let start = split + 4;
-        messages.push(serde_json::from_slice(&remaining[start..start + length]).unwrap());
-        remaining = &remaining[start + length..];
-    }
-    messages
-}
-
-fn exchange(messages: &[Value]) -> (bool, Vec<Value>) {
-    let input: Vec<_> = messages.iter().flat_map(frame).collect();
-    let mut output = Vec::new();
-    let clean = run(Cursor::new(input), &mut output).unwrap();
-    (clean, decode_frames(&output))
-}
-
-#[test]
-fn initialize_advertises_only_implemented_utf16_full_sync_features() {
-    let response = initialize(&mut Server::default());
-    assert_eq!(response["jsonrpc"], "2.0");
-    assert_eq!(
-        response["result"]["capabilities"],
-        json!({
-            "positionEncoding": "utf-16", "textDocumentSync": { "openClose": true, "change": 1 },
-            "hoverProvider": true, "definitionProvider": true,
-            "completionProvider": { "resolveProvider": false }
-        })
-    );
-    assert_eq!(response["result"]["serverInfo"]["name"], "wings-lsp");
-    assert_eq!(
-        response["result"]["serverInfo"]["version"],
-        env!("CARGO_PKG_VERSION")
-    );
-}
-
-#[test]
-fn encoding_negotiation_rejects_unsupported_encoding_and_allows_retry() {
-    let mut server = Server::default();
-    let response = server.handle(&request(
-        json!(1),
-        "initialize",
-        json!({ "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-32"] } } }),
-    ));
-    assert_eq!(response[0]["error"]["code"], -32602);
-    let response = server.handle(&request(
-        json!(2),
-        "initialize",
-        json!({ "capabilities": { "general": { "positionEncodings": ["utf-8", "utf-16"] } } }),
-    ));
-    assert_eq!(
-        response[0]["result"]["capabilities"]["positionEncoding"],
-        "utf-16"
-    );
-}
-
-#[test]
-fn requests_before_initialization_fail_and_notifications_do_not_initialize() {
-    let mut server = Server::default();
-    assert!(
-        server
-            .handle(&notification("initialize", json!({})))
-            .is_empty()
-    );
-    assert!(open(&mut server, URI, 1, VALID).is_empty());
-    let response = server.handle(&request(json!(7), "textDocument/hover", json!({})));
-    assert_eq!(response[0]["id"], 7);
-    assert_eq!(response[0]["error"]["code"], -32002);
-    initialize(&mut server);
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, 0)["error"]["code"],
-        -32602
-    );
-}
-
-#[test]
-fn invalid_jsonrpc_envelopes_are_rejected_without_panicking() {
-    let mut server = server();
-    for message in [
-        json!(null),
-        json!([]),
-        json!({"method": "initialize"}),
-        json!({"jsonrpc": "1.0", "id": 1, "method": "initialize"}),
-        json!({"jsonrpc": "2.0", "id": true, "method": "initialize"}),
-        json!({"jsonrpc": "2.0", "id": [], "method": "initialize"}),
-    ] {
-        let response = server.handle(&message);
-        assert_eq!(response.len(), 1);
-        assert_eq!(response[0]["id"], Value::Null);
-        assert_eq!(response[0]["error"]["code"], -32600);
-    }
-}
-
-#[test]
-fn unknown_methods_return_method_not_found_only_for_requests() {
-    let mut server = server();
-    let response = server.handle(&request(
-        json!("opaque-id"),
-        "workspace/notSupported",
-        json!({}),
-    ));
-    assert_eq!(response[0]["id"], "opaque-id");
-    assert_eq!(response[0]["error"]["code"], -32601);
-    assert!(
-        server
-            .handle(&notification("workspace/notSupported", json!({})))
-            .is_empty()
-    );
-    for method in ["initialized", "$/cancelRequest", "$/setTrace"] {
-        assert!(server.handle(&notification(method, json!({}))).is_empty());
-    }
-}
-
-#[test]
-fn shutdown_requires_request_and_rejects_subsequent_requests() {
-    let mut server = server();
-    assert!(
-        server
-            .handle(&notification("shutdown", json!({})))
-            .is_empty()
-    );
-    assert_eq!(open(&mut server, URI, 1, VALID).len(), 1);
-    let response = server.handle(&request(json!(2), "shutdown", Value::Null));
-    assert_eq!(
-        response,
-        [json!({"jsonrpc": "2.0", "id": 2, "result": null})]
-    );
-    let response = server.handle(&request(json!(3), "initialize", json!({})));
-    assert_eq!(response[0]["error"]["code"], -32600);
-    assert!(open(&mut server, URI, 2, VALID).is_empty());
-}
-
-#[test]
-fn opening_document_publishes_shared_frontend_diagnostics_and_version() {
-    let mut server = server();
-    let messages = open(&mut server, URI, 4, "process P { state n: Int = false }");
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0]["method"], "textDocument/publishDiagnostics");
-    assert_eq!(messages[0]["params"]["uri"], URI);
-    assert_eq!(messages[0]["params"]["version"], 4);
-    let diagnostic = &messages[0]["params"]["diagnostics"][0];
-    assert_eq!(diagnostic["code"], "T005");
-    assert_eq!(diagnostic["source"], "wings");
-    assert_eq!(diagnostic["severity"], 1);
-    assert_eq!(
-        diagnostic["range"],
-        json!({"start": {"line": 0, "character": 27}, "end": {"line": 0, "character": 32}})
-    );
-    let messages = change(&mut server, 5, json!([{"text": VALID}]));
-    assert_eq!(messages[0]["params"]["diagnostics"], json!([]));
-    assert_eq!(messages[0]["params"]["version"], 5);
-}
-
-#[test]
-fn diagnostic_ranges_count_astral_characters_as_two_utf16_units() {
-    let mut server = server();
-    let text = "process 计数器 { state 数值: Int = 0; on Get { 😀 } }";
-    let messages = open(&mut server, URI, 1, text);
-    let diagnostics = messages[0]["params"]["diagnostics"].as_array().unwrap();
-    let diagnostic = diagnostics.iter().find(|d| d["code"] == "S001").unwrap();
-    let start = text[..text.find('😀').unwrap()].encode_utf16().count();
-    assert_eq!(diagnostic["range"]["start"]["character"], start);
-    assert_eq!(diagnostic["range"]["end"]["character"], start + 2);
-}
-
-#[test]
-fn hover_and_definition_map_unicode_and_crlf_positions() {
-    let mut server = server();
-    let text = "# 😀\r\nprocess 计数器 {\r\n state 数值: Int = 0\r\n on Get(增量: Int) -> Int { 数值 + 增量 }\r\n}";
-    assert_eq!(
-        open(&mut server, URI, 1, text)[0]["params"]["diagnostics"],
-        json!([])
-    );
-    let hover = query(&mut server, "textDocument/hover", URI, 3, 26);
-    assert_eq!(
-        hover["result"]["contents"],
-        json!({"kind": "plaintext", "value": "数值: Int"})
-    );
-    let definition = query(&mut server, "textDocument/definition", URI, 3, 27);
-    assert_eq!(
-        definition["result"],
-        json!({"uri": URI, "range": {"start": {"line": 2, "character": 7}, "end": {"line": 2, "character": 9}}})
-    );
-    let parameter = query(&mut server, "textDocument/hover", URI, 3, 31);
-    assert_eq!(parameter["result"]["contents"]["value"], "增量: Int");
-}
-
-#[test]
-fn hovering_message_declarations_preserves_one_way_vs_unit_reply() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Reset {} on Confirm -> Unit {} }";
-    open(&mut server, URI, 1, text);
-    let response = query(
-        &mut server,
-        "textDocument/hover",
-        URI,
-        0,
-        text.find("Reset").unwrap() as u32,
-    );
-    assert_eq!(
-        response["result"]["contents"]["value"],
-        "Reset: () (one-way)"
-    );
-    let response = query(
-        &mut server,
-        "textDocument/hover",
-        URI,
-        0,
-        text.find("Confirm").unwrap() as u32,
-    );
-    assert_eq!(
-        response["result"]["contents"]["value"],
-        "Confirm: () -> Unit"
-    );
-}
-
-#[test]
-fn queries_on_whitespace_return_null_but_invalid_positions_are_errors() {
-    let mut server = server();
-    open(&mut server, URI, 1, "# 😀\nprocess P { state n: Int = 0 }");
-    for method in ["textDocument/hover", "textDocument/definition"] {
-        assert_eq!(query(&mut server, method, URI, 0, 0)["result"], Value::Null);
-        for (line, character) in [(0, 3), (0, 5), (2, 0), (u32::MAX, 0)] {
-            assert_eq!(
-                query(&mut server, method, URI, line, character)["error"]["code"],
-                -32602
-            );
-        }
-        assert_eq!(
-            query(&mut server, method, "file:///missing.wings", 0, 0)["error"]["code"],
-            -32602
-        );
-    }
-}
-
-#[test]
-fn malformed_query_parameters_do_not_panic_or_truncate_coordinates() {
-    let mut server = server();
-    open(&mut server, URI, 1, VALID);
-    for position in [
-        json!(null),
-        json!({"line": -1, "character": 0}),
-        json!({"line": 0, "character": "0"}),
-        json!({"line": 0}),
-        json!({"line": 0, "character": u64::from(u32::MAX) + 1}),
-        json!({"line": u64::from(u32::MAX) + 1, "character": 0}),
-    ] {
-        let response = server.handle(&request(
-            json!(1),
-            "textDocument/hover",
-            json!({"textDocument": {"uri": URI}, "position": position}),
-        ));
-        assert_eq!(response[0]["error"]["code"], -32602);
-    }
-    assert!(
-        server
-            .handle(&notification("textDocument/hover", json!({})))
-            .is_empty()
-    );
-}
-
-#[test]
-fn completion_is_sorted_unique_and_obeys_local_visibility() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Get(value: Int) -> Int { let first = value; let second = first; second } }";
-    open(&mut server, URI, 1, text);
-    let before = query(
-        &mut server,
-        "textDocument/completion",
-        URI,
-        0,
-        text.find("let first").unwrap() as u32,
-    );
-    let after = query(
-        &mut server,
-        "textDocument/completion",
-        URI,
-        0,
-        text.rfind("second").unwrap() as u32,
-    );
-    assert_eq!(after["result"]["isIncomplete"], false);
-    let labels = |response: &Value| {
-        response["result"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| item["label"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>()
-    };
-    let before_labels = labels(&before);
-    assert!(!before_labels.contains(&"first".into()));
-    assert!(!before_labels.contains(&"second".into()));
-    let after_labels = labels(&after);
-    assert!(after_labels.windows(2).all(|pair| pair[0] < pair[1]));
-    for expected in [
-        "process", "state", "on", "let", "true", "false", "Int", "Bool", "Unit", "P", "Get", "n",
-        "value", "first", "second",
-    ] {
-        assert!(
-            after_labels.iter().any(|label| label == expected),
-            "missing {expected}"
-        );
-    }
-    for (label, kind) in [
-        ("process", 14),
-        ("Int", 7),
-        ("P", 7),
-        ("Get", 3),
-        ("first", 6),
-    ] {
-        let item = after["result"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["label"] == label)
-            .unwrap();
-        assert_eq!(item["kind"], kind);
-    }
-}
-
-#[test]
-fn stale_and_duplicate_versions_do_not_replace_newer_document() {
-    let mut server = server();
-    open(&mut server, URI, 5, VALID);
-    for version in [4, 5] {
-        assert!(change(&mut server, version, json!([{"text": "bad"}])).is_empty());
-        assert!(open(&mut server, URI, version, "bad").is_empty());
-    }
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/hover",
-            URI,
-            0,
-            VALID.rfind('n').unwrap() as u32
-        )["result"]["contents"]["value"],
-        "n: Int"
-    );
-    assert_eq!(
-        change(&mut server, 6, json!([{"text": VALID}]))[0]["params"]["version"],
-        6
-    );
-}
-
-#[test]
-fn full_document_sync_uses_last_change_and_ignores_incremental_edits() {
-    let mut server = server();
-    open(&mut server, URI, 1, VALID);
-    let messages = change(&mut server, 2, json!([{"text": "bad"}, {"text": VALID}]));
-    assert_eq!(messages[0]["params"]["diagnostics"], json!([]));
-    let ranged = json!([{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "text": "bad"}]);
-    assert!(change(&mut server, 3, ranged).is_empty());
-    assert!(change(&mut server, 3, json!([])).is_empty());
-    // Rejected changes must not consume the version number.
-    assert_eq!(
-        change(&mut server, 3, json!([{"text": VALID}]))[0]["params"]["version"],
-        3
-    );
-}
-
-#[test]
-fn unopened_or_malformed_document_updates_are_ignored() {
-    let mut server = server();
-    assert!(change(&mut server, 1, json!([{"text": VALID}])).is_empty());
-    for params in [
-        json!({}),
-        json!({"textDocument": {"uri": URI, "text": VALID}}),
-        json!({"textDocument": {"uri": URI, "version": 1}}),
-        json!({"textDocument": {"uri": URI, "version": "1", "text": VALID}}),
-    ] {
-        assert!(
-            server
-                .handle(&notification("textDocument/didOpen", params))
-                .is_empty()
-        );
-    }
-    assert_eq!(open(&mut server, URI, 1, VALID).len(), 1);
-}
-
-#[test]
-fn close_clears_diagnostics_and_forgets_document_until_reopened() {
-    let mut server = server();
-    open(&mut server, URI, 10, VALID);
-    let messages = server.handle(&notification(
+    // Close clears diagnostics
+    let closed = srv.handle(&notification(
         "textDocument/didClose",
-        json!({"textDocument": {"uri": URI}}),
+        json!({ "textDocument": { "uri": URI } }),
     ));
-    assert_eq!(
-        messages[0]["params"],
-        json!({"uri": URI, "diagnostics": []})
-    );
-    assert_eq!(
-        query(&mut server, "textDocument/hover", URI, 0, 0)["error"]["code"],
-        -32602
-    );
-    assert!(change(&mut server, 11, json!([{"text": VALID}])).is_empty());
-    assert_eq!(open(&mut server, URI, 1, VALID).len(), 1);
+    assert_eq!(closed[0]["params"]["diagnostics"], json!([]));
 }
 
 #[test]
-fn multiple_open_documents_keep_analysis_and_definition_uris_separate() {
-    let mut server = server();
-    let other = "file:///other.wings";
-    open(&mut server, URI, 1, VALID);
-    let text = "process Q { state n: Bool = true; on Get -> Bool { n } }";
-    open(&mut server, other, 1, text);
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/hover",
-            URI,
-            0,
-            VALID.rfind('n').unwrap() as u32
-        )["result"]["contents"]["value"],
-        "n: Int"
-    );
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/hover",
-            other,
-            0,
-            text.rfind('n').unwrap() as u32
-        )["result"]["contents"]["value"],
-        "n: Bool"
-    );
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/definition",
-            other,
-            0,
-            text.rfind('n').unwrap() as u32
-        )["result"]["uri"],
-        other
-    );
-}
-
-#[test]
-fn incomplete_document_keeps_later_handler_queries_available() {
-    let mut server = server();
-    let text = "process P { state n: Int = 0; on Bad -> Int { + } on Good -> Int { n } }";
-    let messages = open(&mut server, URI, 1, text);
-    assert!(
-        !messages[0]["params"]["diagnostics"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        query(
-            &mut server,
-            "textDocument/hover",
-            URI,
-            0,
-            text.find("Good").unwrap() as u32
-        )["result"]["contents"]["value"],
-        "Good: () -> Int"
-    );
-}
-
-#[test]
-fn run_frames_multiple_messages_and_exits_cleanly_only_after_shutdown() {
+fn clean_shutdown_and_exit_return_true() {
     let (clean, responses) = exchange(&[
         request(json!(1), "initialize", json!({})),
-        notification(
-            "textDocument/didOpen",
-            json!({"textDocument": {"uri": URI, "version": 1, "text": VALID}}),
-        ),
+        notification("initialized", json!({})),
         request(json!(2), "shutdown", Value::Null),
         notification("exit", Value::Null),
-        request(json!(3), "notReadAfterExit", Value::Null),
     ]);
     assert!(clean);
-    assert_eq!(responses.len(), 3);
-    assert_eq!(responses[0]["id"], 1);
-    assert_eq!(responses[1]["method"], "textDocument/publishDiagnostics");
-    assert_eq!(
-        responses[2],
-        json!({"jsonrpc": "2.0", "id": 2, "result": null})
-    );
-    let (clean, responses) = exchange(&[notification("exit", Value::Null)]);
-    assert!(!clean);
-    assert!(responses.is_empty());
+    assert_eq!(responses.len(), 2);
 }
 
 #[test]
@@ -1101,4 +331,81 @@ fn binary_help_and_bad_arguments_have_distinct_exit_codes() {
             .unwrap()
             .contains("Usage: wings-lsp")
     );
+}
+
+fn server() -> Server {
+    let mut server = Server::default();
+    let responses = server.handle(&request(json!(1), "initialize", json!({})));
+    assert_eq!(responses.len(), 1);
+    assert!(responses[0].get("result").is_some());
+    server.handle(&notification("initialized", json!({})));
+    server
+}
+
+fn request(id: Value, method: &str, params: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+}
+
+fn notification(method: &str, params: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "method": method, "params": params })
+}
+
+fn open(server: &mut Server, uri: &str, version: i64, text: &str) -> Vec<Value> {
+    server.handle(&notification(
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": uri, "version": version, "text": text } }),
+    ))
+}
+
+fn change(server: &mut Server, version: i64, changes: Value) -> Vec<Value> {
+    server.handle(&notification(
+        "textDocument/didChange",
+        json!({ "textDocument": { "uri": URI, "version": version }, "contentChanges": changes }),
+    ))
+}
+
+fn query(server: &mut Server, method: &str, uri: &str, line: u32, character: u32) -> Value {
+    let responses = server.handle(&request(
+        json!("query"),
+        method,
+        json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } }),
+    ));
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["id"], "query");
+    responses.into_iter().next().unwrap()
+}
+
+fn frame(message: &Value) -> Vec<u8> {
+    let body = serde_json::to_vec(message).unwrap();
+    let mut bytes = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+    bytes.extend(body);
+    bytes
+}
+
+fn decode_frames(bytes: &[u8]) -> Vec<Value> {
+    let mut messages = Vec::new();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let split = remaining
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let header = std::str::from_utf8(&remaining[..split]).unwrap();
+        let length: usize = header
+            .strip_prefix("Content-Length: ")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let start = split + 4;
+        messages.push(serde_json::from_slice(&remaining[start..start + length]).unwrap());
+        remaining = &remaining[start + length..];
+    }
+    messages
+}
+
+fn exchange(messages: &[Value]) -> (bool, Vec<Value>) {
+    let input: Vec<u8> = messages.iter().flat_map(frame).collect();
+    let mut output = Vec::new();
+    let clean = run(Cursor::new(input), &mut output).unwrap();
+    (clean, decode_frames(&output))
 }

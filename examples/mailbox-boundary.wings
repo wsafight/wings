@@ -1,16 +1,16 @@
-process MailboxBoundary {
-  state data: Bytes = fill_bytes(4096, 0)
+actor MailboxBoundary {
+  state data = bytes::fill(4096, 0)
 
-  on Add(delta: Int) -> Int {
-    data = replace_i64_be(data, 0, read_i64_be(data, 0) + delta)
-    read_i64_be(data, 0)
+  on add(delta: int) -> int {
+    data = data.set_i64(0, data.i64_at(0) + delta)
+    data.i64_at(0)
   }
 
-  on Notify(delta: Int) {
-    data = replace_i64_be(data, 0, read_i64_be(data, 0) + delta)
+  on notify(delta: int) {
+    data = data.set_i64(0, data.i64_at(0) + delta)
   }
 
-  on Hold {
+  on hold {
     while true {}
   }
 }

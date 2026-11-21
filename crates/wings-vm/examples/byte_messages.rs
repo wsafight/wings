@@ -58,75 +58,81 @@ fn score(length: i64, value: i64) -> i64 {
 fn single(module: &ScalarModule) {
     for (entry, arguments, parent_result, child_result, heap) in [
         (
-            "Start",
+            "start",
             vec![0, 7, 0],
             Some(score(0, 7)),
             Some(score(0, 7)),
             10,
         ),
         (
-            "Start",
+            "start",
             vec![65536, 255, 0],
             Some(score(65536, 255)),
             Some(score(65536, 255)),
             10,
         ),
         (
-            "Start",
+            "start",
             vec![65536, 201, 1],
             None,
             Some(score(65536, 201)),
             10,
         ),
-        ("Self", vec![65536, 17], Some(score(65536, 17)), None, 10),
-        ("Self", vec![1, 255], Some(score(1, 255)), None, 10),
         (
-            "Ask",
+            "self_msg",
+            vec![65536, 17],
+            Some(score(65536, 17)),
+            None,
+            10,
+        ),
+        ("self_msg", vec![1, 255], Some(score(1, 255)), None, 10),
+        (
+            "ask",
             vec![65536, 91, 60000],
             Some(score(65536, 91)),
             Some(score(65536, 91)),
             10,
         ),
         (
-            "Ask",
+            "ask",
             vec![65536, 77, 0],
             Some(score(65536, 77)),
             Some(score(65536, 77)),
             10,
         ),
         (
-            "Mixed",
+            "mixed",
             vec![32768, 13],
             Some(score(32768, 13)),
             Some(score(8, 0)),
             10,
         ),
         (
-            "Repeat",
+            "repeat",
             vec![32768],
             Some(score(32768, 23)),
             Some(score(8, 0)),
             10,
         ),
-        ("Mixed", vec![0, 13], Some(0), Some(score(8, 0)), 10),
+        ("mixed", vec![0, 13], Some(0), Some(score(8, 0)), 10),
         (
-            "Mixed",
+            "mixed",
             vec![65536, 13],
             Some(score(65536, 13)),
             Some(score(8, 0)),
             10,
         ),
-        ("Repeat", vec![0], Some(0), Some(score(8, 0)), 10),
-        ("Over", vec![], None, Some(score(8, 0)), 10),
-        ("Repeat", vec![32769], None, Some(score(8, 0)), 10),
-        ("Repeat", vec![32768], Some(score(32768, 23)), None, 2),
+        ("repeat", vec![0], Some(0), Some(score(8, 0)), 10),
+        ("over", vec![], None, Some(score(8, 0)), 10),
+        ("repeat", vec![32769], None, Some(score(8, 0)), 10),
+        ("repeat", vec![32768], Some(score(32768, 23)), None, 2),
     ] {
         let deadline = Instant::now() + Duration::from_secs(3);
         let vm = ResourceAccount::vm(limits());
         let tenant = vm.tenant_accounted(limits()).unwrap();
         let mut worker = ScalarWorker::new(&tenant, 3).unwrap();
         let parent = worker.spawn_with_heap(module, limits(), 2, heap).unwrap();
-        for name in ["Store", "Compute", "StorePair", "StoreMixed"] {
+        for name in ["store", "compute", "store_pair", "store_mixed"] {
             assert!(
                 worker
                     .send(parent, &module.handler(name).unwrap(), &[0], 4096)
@@ -144,7 +150,7 @@ fn single(module: &ScalarModule) {
             assert_eq!(exit.handler(), entry);
             assert_eq!(
                 exit.execution.fault,
-                Some(if entry == "Start" {
+                Some(if entry == "start" {
                     ExecutionFault::DivisionByZero
                 } else {
                     ExecutionFault::SendRejected
@@ -157,8 +163,8 @@ fn single(module: &ScalarModule) {
         if let Some(expected) = child_result {
             let child = worker.pids().find(|pid| *pid != parent);
             if let Some(child) = child {
-                if matches!(entry, "Mixed" | "Repeat") && parent_result.is_some() {
-                    let expected = if entry == "Mixed" {
+                if matches!(entry, "mixed" | "repeat") && parent_result.is_some() {
+                    let expected = if entry == "mixed" {
                         score(arguments[0], arguments[1])
                             + score(65536 - arguments[0], arguments[1] + 1)
                             + 16
@@ -166,38 +172,38 @@ fn single(module: &ScalarModule) {
                         score(arguments[0], 23) * 2
                     };
                     assert_eq!(
-                        request(&mut worker, module, child, "Result", &[], deadline),
+                        request(&mut worker, module, child, "result", &[], deadline),
                         RequestOutcome::Reply(expected)
                     );
                 } else {
                     assert_eq!(
-                        request(&mut worker, module, child, "Read", &[], deadline),
+                        request(&mut worker, module, child, "read", &[], deadline),
                         RequestOutcome::Reply(expected)
                     );
                 }
             } else {
                 panic!("accepted child must remain alive")
             }
-        } else if entry == "Self" {
+        } else if entry == "self_msg" {
             assert_eq!(
-                request(&mut worker, module, parent, "Read", &[], deadline),
+                request(&mut worker, module, parent, "read", &[], deadline),
                 RequestOutcome::Reply(score(arguments[0], arguments[1]))
             );
         }
-        if entry == "Ask" {
+        if entry == "ask" {
             let expected = if arguments[2] == 0 {
                 1000000001
             } else {
                 score(arguments[0], arguments[1]) + 1
             };
             assert_eq!(
-                request(&mut worker, module, parent, "Result", &[], deadline),
+                request(&mut worker, module, parent, "result", &[], deadline),
                 RequestOutcome::Reply(expected)
             );
         }
-        if entry == "Repeat" && heap == 2 {
+        if entry == "repeat" && heap == 2 {
             let exit = worker.last_exit().unwrap();
-            assert_eq!(exit.handler(), "StorePair");
+            assert_eq!(exit.handler(), "store_pair");
             assert_eq!(exit.execution.fault, Some(ExecutionFault::HeapExhausted));
             assert_eq!(exit.byte_state.unwrap().prefix[..8], [0; 8]);
             assert_eq!(worker.process_count(), 1);
@@ -236,7 +242,7 @@ fn scheduled(module: &ScalarModule) {
             let mut pending = handle
                 .request(
                     parent,
-                    &module.handler("Ask").unwrap(),
+                    &module.handler("ask").unwrap(),
                     &[length, value, timeout],
                     32768,
                     remaining(deadline),
@@ -256,7 +262,7 @@ fn scheduled(module: &ScalarModule) {
                 let mut result = handle
                     .request(
                         parent,
-                        &module.handler("Result").unwrap(),
+                        &module.handler("result").unwrap(),
                         &[],
                         4096,
                         remaining(deadline),
@@ -286,7 +292,7 @@ fn cancellation(module: &ScalarModule) {
         let id = worker
             .request(
                 parent,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[65536, 17, 0],
                 32768,
                 Duration::from_secs(60),

@@ -253,7 +253,7 @@ failure(Broker, Actor, Gate, Monitor, Attempt, Deadline) ->
     after remaining(Deadline) -> error(deadline) end,
     ok = beam_bounded_mailbox:close(Gate),
     empty(Broker, Deadline),
-    #{attempt => Attempt, status => atom_to_binary(Status), handler => <<"Fail">>,
+    #{attempt => Attempt, status => atom_to_binary(Status), handler => <<"fail">>,
       reason => <<"division_by_zero">>, state_bytes => 4096, committed => 0,
       restart => case Attempt of 1 -> <<"restarted">>; 2 -> <<"intensity_exceeded">> end,
       next_initial => case Attempt of 1 -> 0; 2 -> null end}.

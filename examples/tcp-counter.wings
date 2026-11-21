@@ -1,7 +1,7 @@
-process TcpCounter {
-  state count: Int = 0
+actor TcpCounter {
+  state count = 0
 
-  on Apply(delta: Int, fail: Bool) -> Int {
+  on apply(delta: int, fail: bool) -> int {
     let next = count + delta
     count = next
     if fail { 1 / 0 } else { count }

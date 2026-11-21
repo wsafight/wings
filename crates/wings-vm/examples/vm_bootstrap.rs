@@ -34,18 +34,18 @@ fn tool_execution(directory: &Path) {
     assert_eq!(bound.stats(), slots);
     let tools = StackPool::new(1, 0).unwrap();
     let mut process = module.instantiate_in_pool(&tools).unwrap();
-    assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+    assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
     let cancellation = CancellationToken::default();
     let preemption = PreemptionToken::default();
     assert!(
         process
-            .start_in_pool("Inc", &[99], 128, &cancellation, &preemption, &bound)
+            .start_in_pool("inc", &[99], 128, &cancellation, &preemption, &bound)
             .is_err()
     );
     let mut task = ScalarTask::new(process);
     assert!(
         task.start(
-            &module.handler("Inc").unwrap(),
+            &module.handler("inc").unwrap(),
             &[99],
             128,
             &cancellation,
@@ -61,7 +61,7 @@ fn tool_execution(directory: &Path) {
     assert_eq!(bound.stats(), slots);
     let mut process = image.attach(&tools).unwrap();
     assert!(image.attach(&tools).is_err());
-    assert_eq!(process.invoke("Inc", &[2]).unwrap(), Some(9));
+    assert_eq!(process.invoke("inc", &[2]).unwrap(), Some(9));
     drop((process, image, module, tools, bound, pool, account, tenant));
     assert_eq!(vm.used(), bootstrap);
 }
@@ -107,19 +107,19 @@ fn direct_entries(directory: &Path) {
         assert!(error.contains(&format!("resource_exhausted at {level:?} account")));
         assert_eq!(vm.used(), before);
         assert_eq!(pool.stats(), slots);
-        let error = process.invoke("Inc", &[7]).unwrap_err();
+        let error = process.invoke("inc", &[7]).unwrap_err();
         assert!(error.contains(&format!("resource_exhausted at {level:?} account")));
         assert_eq!(vm.used(), before);
         assert_eq!(pool.stats(), slots);
         drop(fill);
-        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
-        assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+        assert_eq!(process.invoke("get", &[]).unwrap(), Some(0));
+        assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
         let baseline = vm.used();
         let stack_bytes =
             (pool.stats().usable_bytes_per_stack + pool.stats().guard_bytes_per_stack) as u64;
         let mut execution = process
             .start_controlled(
-                "Inc",
+                "inc",
                 &[2],
                 128,
                 &CancellationToken::default(),
@@ -181,7 +181,7 @@ fn scalar(directory: &Path) {
         );
         assert_eq!(vm.used(), before);
         let pid = worker.spawn(&module, limits(), 2).unwrap();
-        let handler = module.handler("Inc").unwrap();
+        let handler = module.handler("inc").unwrap();
         let request = worker
             .request(pid, &handler, &[5], 128, Duration::ZERO)
             .unwrap();
@@ -242,8 +242,8 @@ fn heap(directory: &Path) {
     assert_eq!(vm.used(), before);
     let pid = worker.spawn_with_heap(&module, limits(), 1, 4).unwrap();
     for (name, arguments, expected) in [
-        ("Fill", &[4096, 7][..], RequestOutcome::Reply(4096)),
-        ("Fail", &[][..], RequestOutcome::Failed),
+        ("fill", &[4096, 7][..], RequestOutcome::Reply(4096)),
+        ("fail", &[][..], RequestOutcome::Failed),
     ] {
         let handler = module.handler(name).unwrap();
         let request = worker
@@ -258,7 +258,7 @@ fn heap(directory: &Path) {
                 break;
             }
         }
-        if name == "Fill" {
+        if name == "fill" {
             let state = worker.byte_state_snapshot(pid).unwrap().unwrap();
             assert_eq!(state.length, 4096);
             assert_eq!(state.prefix, [7; 32]);
@@ -307,9 +307,9 @@ fn scheduler(directory: &Path, heap: bool) {
         }
         .unwrap();
         let (handler, arguments, steps, expected) = if heap {
-            ("Fill", &[4096, 7][..], 8192, 4096)
+            ("fill", &[4096, 7][..], 8192, 4096)
         } else {
-            ("Inc", &[3][..], 128, 3)
+            ("inc", &[3][..], 128, 3)
         };
         let mut request = handle
             .request(

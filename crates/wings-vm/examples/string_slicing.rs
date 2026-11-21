@@ -25,7 +25,7 @@ fn assert_invalid(
     let pool = StackPool::new_accounted(tenant, 1, 0)?.for_process(&account)?;
     let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
     let result = match handler {
-        "NegativeIndex" => process.invoke(handler, &[]).map(|_| ()),
+        "negative_index" => process.invoke(handler, &[]).map(|_| ()),
         _ => process
             .invoke_string(handler, &[], 1_000_000, &CancellationToken::default())
             .map(|_| ()),
@@ -49,7 +49,7 @@ fn main() -> Result<(), String> {
     let mut process = module.instantiate_with_heap(&pool, &account, 1024)?;
 
     for (index, expected) in [65, 233, 20013, 128512, 90].into_iter().enumerate() {
-        assert_eq!(process.invoke("At", &[index as i64])?, Some(expected));
+        assert_eq!(process.invoke("at", &[index as i64])?, Some(expected));
     }
     for (start, length, expected) in [
         (0, 5, "Aé中😀Z"),
@@ -61,7 +61,7 @@ fn main() -> Result<(), String> {
         assert_eq!(
             process
                 .invoke_string(
-                    "Slice",
+                    "slice",
                     &[start, length],
                     1_000_000,
                     &CancellationToken::default()
@@ -72,21 +72,21 @@ fn main() -> Result<(), String> {
     }
     assert_eq!(
         process
-            .invoke_string("Boundary", &[], 1_000_000, &CancellationToken::default())?
+            .invoke_string("boundary", &[], 1_000_000, &CancellationToken::default())?
             .as_str(),
         "😀"
     );
-    assert_eq!(process.invoke("Fill", &[])?, Some(65536));
+    assert_eq!(process.invoke("fill", &[])?, Some(65536));
     assert_eq!(
         process
-            .invoke_string("Last", &[], 1_000_000, &CancellationToken::default())?
+            .invoke_string("last", &[], 1_000_000, &CancellationToken::default())?
             .as_str(),
         "a"
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut execution = process.start_controlled(
-        "Slice",
+        "slice",
         &[0, 65536],
         1_000_000,
         &CancellationToken::default(),
@@ -106,8 +106,8 @@ fn main() -> Result<(), String> {
     }
     assert!(suspensions >= 256);
     drop(execution);
-    process.invoke("Clear", &[])?;
-    process.invoke("Sweep", &[])?;
+    process.invoke("clear", &[])?;
+    process.invoke("sweep", &[])?;
     assert_eq!(process.heap_stats().unwrap().allocated, 1);
     drop((process, pool, account));
     assert_eq!(tenant.used(), baseline);
@@ -115,10 +115,10 @@ fn main() -> Result<(), String> {
     let account = tenant.process_accounted(limits(64 << 20))?;
     let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
     let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
-    process.invoke("Fill", &[])?;
+    process.invoke("fill", &[])?;
     let cancellation = CancellationToken::default();
     let mut execution = process.start_controlled(
-        "Slice",
+        "slice",
         &[0, 65536],
         1_000_000,
         &cancellation,
@@ -137,15 +137,15 @@ fn main() -> Result<(), String> {
         let account = tenant.process_accounted(limits(32 << 20))?;
         let pool = StackPool::new_accounted(&tenant, 1, 0)?.for_process(&account)?;
         let mut process = module.instantiate_with_heap(&pool, &account, 16)?;
-        process.invoke("Fill", &[])?;
-        process.invoke("Sweep", &[])?;
-        assert_eq!(process.invoke("Length", &[])?, Some(65536));
+        process.invoke("fill", &[])?;
+        process.invoke("sweep", &[])?;
+        assert_eq!(process.invoke("length", &[])?, Some(65536));
         let heap = process.heap_stats().unwrap();
         assert_eq!(heap.allocated, 1);
         let before = account.used();
         let mut task = ScalarTask::new(process);
         task.start(
-            &module.handler("Slice")?,
+            &module.handler("slice")?,
             &[0, 65536],
             1_000_000,
             &CancellationToken::default(),
@@ -174,7 +174,7 @@ fn main() -> Result<(), String> {
         assert_eq!(tenant.used(), baseline);
     }
 
-    for handler in ["NegativeIndex", "PastEnd", "NegativeLength", "Overflow"] {
+    for handler in ["negative_index", "past_end", "negative_length", "overflow"] {
         assert_invalid(&module, &tenant, baseline, handler)?;
     }
     println!(

@@ -27,14 +27,14 @@ fn main() {
     let bound = pool.for_process(&account).unwrap();
     let baseline = vm.used();
     let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
-    assert_eq!(process.invoke("Order", &[]).unwrap(), Some(12));
-    assert_eq!(process.invoke("Count", &[30]).unwrap(), Some(30));
-    assert_eq!(process.invoke("Choose", &[0]).unwrap(), Some(30));
-    assert_eq!(process.invoke("Choose", &[1]).unwrap(), Some(31));
-    assert_eq!(process.invoke("Once", &[]).unwrap(), Some(61));
+    assert_eq!(process.invoke("order", &[]).unwrap(), Some(12));
+    assert_eq!(process.invoke("count", &[30]).unwrap(), Some(30));
+    assert_eq!(process.invoke("choose", &[0]).unwrap(), Some(30));
+    assert_eq!(process.invoke("choose", &[1]).unwrap(), Some(31));
+    assert_eq!(process.invoke("once", &[]).unwrap(), Some(61));
     let mut execution = process
         .start_controlled(
-            "Count",
+            "count",
             &[60],
             4096,
             &CancellationToken::default(),
@@ -52,14 +52,14 @@ fn main() {
     assert!(done);
     assert_eq!(execution.snapshot().phase, ExecutionPhase::Complete);
     drop(execution);
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(60));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(60));
     drop(process);
     assert_eq!(vm.used(), baseline);
     for checkpoints in 0..48 {
         let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
         let mut execution = process
             .start_controlled(
-                "Order",
+                "order",
                 &[],
                 4096,
                 &CancellationToken::default(),
@@ -76,10 +76,10 @@ fn main() {
         assert_eq!(vm.used(), baseline);
     }
     for (name, arguments, budget, fault) in [
-        ("Count", vec![30], 16, ExecutionFault::BudgetExhausted),
-        ("Fail", vec![], 128, ExecutionFault::DivisionByZero),
-        ("FirstFailure", vec![], 128, ExecutionFault::DivisionByZero),
-        ("SecondFailure", vec![], 128, ExecutionFault::Overflow),
+        ("count", vec![30], 16, ExecutionFault::BudgetExhausted),
+        ("fail", vec![], 128, ExecutionFault::DivisionByZero),
+        ("first_failure", vec![], 128, ExecutionFault::DivisionByZero),
+        ("second_failure", vec![], 128, ExecutionFault::Overflow),
     ] {
         let mut process = module.instantiate_with_heap(&bound, &account, 3).unwrap();
         let mut execution = process
@@ -101,7 +101,7 @@ fn main() {
     let cancellation = CancellationToken::default();
     let mut execution = process
         .start_controlled(
-            "Count",
+            "count",
             &[100],
             4096,
             &cancellation,

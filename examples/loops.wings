@@ -1,22 +1,22 @@
-process Loops {
-  state count: Int = 0
-  on Get -> Int { count }
-  on Count(limit: Int) -> Int {
+actor Loops {
+  state count = 0
+  on get -> int { count }
+  on count(limit: int) -> int {
     while count < limit {
       count = count + 1
     }
     count
   }
-  on Heap(limit: Int) -> Int {
-    let saved = record_int(3)
+  on heap(limit: int) -> int {
+    let saved = box(3)
     while count < limit {
-      let temporary = record_int(count)
-      collect()
-      count = read_int(temporary) + read_int(saved)
+      let temporary = box(count)
+      gc()
+      count = temporary.get() + saved.get()
     }
     count
   }
-  on Nested(limit: Int) -> Int {
+  on nested(limit: int) -> int {
     while count < limit {
       let next = count + 2
       while count < next {
@@ -25,32 +25,32 @@ process Loops {
     }
     count
   }
-  on NestedHeap(limit: Int) -> Int {
-    let saved = record_int(3)
+  on nested_heap(limit: int) -> int {
+    let saved = box(3)
     while count < limit {
       let next = count + 2
       while count < next {
-        let temporary = record_int(count)
-        let selected = if count < limit { read_int(saved) } else { read_int(temporary) }
-        collect()
-        count = read_int(temporary) + if selected == 3 { 1 } else { 2 }
+        let temporary = box(count)
+        let selected = if count < limit { saved.get() } else { temporary.get() }
+        gc()
+        count = temporary.get() + if selected == 3 { 1 } else { 2 }
       }
     }
     count
   }
-  on Forever {
+  on forever {
     while true {}
   }
-  on BranchHeap(limit: Int) -> Int {
-    let saved = record_int(3)
+  on branch_heap(limit: int) -> int {
+    let saved = box(3)
     while count < limit {
-      let selected = if count < 6 { record_int(1) } else { saved }
-      collect()
-      count = count + read_int(selected)
+      let selected = if count < 6 { box(1) } else { saved }
+      gc()
+      count = count + selected.get()
     }
     count
   }
-  on Fail(limit: Int) -> Int {
+  on fail(limit: int) -> int {
     while count < limit {
       count = count + 1
     }

@@ -1,23 +1,23 @@
-process Counter {
-  state count: Int = 0
+actor Counter {
+  state count = 0
 
-  on Inc(by: Int) -> Int {
+  on inc(by: int) -> int {
     let next = count + by
     count = next
     next
   }
 
-  on Reset {
+  on reset {
     count = 0
   }
 
-  on Set(value: Int) {
+  on set(value: int) {
     count = value
   }
 
-  on Get -> Int {
+  on get -> int {
     count
   }
 
-  on Confirm -> Unit {}
+  on confirm -> () {}
 }

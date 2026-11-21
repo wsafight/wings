@@ -1,17 +1,17 @@
-process Profiles {
-  record Label { text: String, code: Int }
-  record Profile { label: Label, enabled: Bool, values: IntList, data: Bytes, saved: RecordInt, nothing: Unit }
-  record Empty {}
-  record Wide { empty: Empty, minimum: Int, maximum: Int, flag: Bool, unit: Unit, text: String, data: Bytes, values: IntList }
-  state profile: Profile = Profile(Label("初始😀", 7), true, prepend_int(3, empty_ints()), fill_bytes(1, 9), record_int(11), ())
-  fn label(value: Label) -> Label { Label(concat_strings(value.text, "!"), value.code + 1) }
-  fn update(value: Profile) -> Profile { Profile(label(value.label), value.enabled, value.values, value.data, value.saved, value.nothing) }
-  on Read -> Int { collect(); profile.label.code + string_len(profile.label.text) + head_int(profile.values) + byte_at(profile.data, 0) + read_int(profile.saved) }
-  on Advance -> Int { profile = update(profile); collect(); profile.label.code }
-  on Select(flag: Bool) -> Int { let selected = if flag { profile } else { update(profile) }; collect(); selected.label.code }
-  on Count(limit: Int) -> Int { while profile.label.code < limit { profile = update(profile) }; profile.label.code }
-  on EmptyValue -> Int { let empty = Empty(); collect(); 1 }
-  on WideValue -> Int { let value = Wide(Empty(), -9223372036854775808, 9223372036854775807, true, (), "wide", fill_bytes(0, 0), empty_ints()); collect(); if value.flag { value.minimum + value.maximum + string_len(value.text) + bytes_len(value.data) } else { 1 / 0 } }
-  on Text -> String { profile.label.text }
-  on Fail -> Int { profile = update(profile); 1 / 0 }
+actor Profiles {
+  struct Label { text: str, code: int }
+  struct Profile { label: Label, enabled: bool, values: [int], data: bytes, saved: box<int>, nothing: () }
+  struct Empty {}
+  struct Wide { empty: Empty, minimum: int, maximum: int, flag: bool, unit: (), text: str, data: bytes, values: [int] }
+  state profile: Profile = Profile(Label("初始😀", 7), true, [3], bytes::fill(1, 9), box(11), ())
+  fn label(value: Label) -> Label { Label { text: value.text + "!", code: value.code + 1 } }
+  fn update(value: Profile) -> Profile { Profile { label: label(value.label), ..value } }
+  on read -> int { gc(); profile.label.code + profile.label.text.len() + profile.values.head() + profile.data.at(0) + profile.saved.get() }
+  on advance -> int { profile = update(profile); gc(); profile.label.code }
+  on select(flag: bool) -> int { let selected = if flag { profile } else { update(profile) }; gc(); selected.label.code }
+  on count(limit: int) -> int { while profile.label.code < limit { profile = update(profile) }; profile.label.code }
+  on empty_value -> int { let empty = Empty(); gc(); 1 }
+  on wide_value -> int { let value = Wide(Empty(), -9223372036854775808, 9223372036854775807, true, (), "wide", bytes::fill(0, 0), []); gc(); if value.flag { value.minimum + value.maximum + value.text.len() + value.data.len() } else { 1 / 0 } }
+  on text -> str { profile.label.text }
+  on fail -> int { profile = update(profile); 1 / 0 }
 }

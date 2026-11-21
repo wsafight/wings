@@ -34,11 +34,11 @@ fn main() {
     let bound = pool.for_process(&account).unwrap();
     let baseline = vm.used();
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
     for value in 0..128 {
         let mut execution = process
             .start_controlled(
-                "Replace",
+                "replace",
                 &[value],
                 128,
                 &CancellationToken::default(),
@@ -66,16 +66,16 @@ fn main() {
         }
         assert!(complete);
         drop(execution);
-        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(value));
+        assert_eq!(process.invoke("get", &[]).unwrap(), Some(value));
         assert_eq!(process.heap_stats().unwrap().allocated, 1);
     }
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut single = module.instantiate_with_heap(&bound, &account, 1).unwrap();
-    assert_eq!(single.invoke("Get", &[]).unwrap(), Some(7));
+    assert_eq!(single.invoke("get", &[]).unwrap(), Some(7));
     assert!(
         single
-            .invoke("Replace", &[9])
+            .invoke("replace", &[9])
             .unwrap_err()
             .contains("heap exhausted")
     );
@@ -85,7 +85,7 @@ fn main() {
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
     let mut execution = process
         .start_controlled(
-            "Set",
+            "set",
             &[10],
             128,
             &CancellationToken::default(),
@@ -98,7 +98,7 @@ fn main() {
     drop(execution);
     assert!(
         process
-            .invoke("Get", &[])
+            .invoke("get", &[])
             .unwrap_err()
             .contains("terminated")
     );
@@ -119,7 +119,7 @@ fn main() {
             .unwrap_err()
             .contains("not exposed")
     );
-    let set = module.handler("Set").unwrap();
+    let set = module.handler("set").unwrap();
     let first_reply = worker
         .request(first, &set, &[11], 128, Duration::from_secs(60))
         .unwrap();
@@ -149,7 +149,7 @@ fn main() {
     let fail = worker
         .request(
             first,
-            &module.handler("Fail").unwrap(),
+            &module.handler("fail").unwrap(),
             &[],
             128,
             Duration::from_secs(60),
@@ -165,7 +165,7 @@ fn main() {
     let get = worker
         .request(
             second,
-            &module.handler("Get").unwrap(),
+            &module.handler("get").unwrap(),
             &[],
             128,
             Duration::from_secs(60),
@@ -177,7 +177,7 @@ fn main() {
         Some(RequestOutcome::Reply(22))
     );
     worker
-        .send(second, &module.handler("Replace").unwrap(), &[33], 128)
+        .send(second, &module.handler("replace").unwrap(), &[33], 128)
         .unwrap();
     assert_eq!(worker.tick(1).unwrap(), WorkerEvent::Suspended(second));
     worker.stop(second).unwrap();

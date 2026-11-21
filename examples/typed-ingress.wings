@@ -1,22 +1,22 @@
-process TypedIngress {
-  state saved: Int = 0
+actor TypedIngress {
+  state saved = 0
 
-  on Store(text: String, blob: Bytes, numbers: IntList, item: RecordInt, flag: Bool, unit: Unit) {
-    collect()
-    saved = string_len(text) * 1000000 + bytes_len(blob) + read_int(item) +
-      if is_empty_ints(numbers) { 0 } else { head_int(numbers) } +
+  on store(text: str, blob: bytes, numbers: [int], item: box<int>, flag: bool, unit: ()) {
+    gc()
+    saved = text.len() * 1000000 + blob.len() + item.get() +
+      if numbers.is_empty() { 0 } else { numbers.head() } +
       if flag { 1 } else { 0 }
-    collect()
+    gc()
   }
 
-  on Compute(text: String, blob: Bytes, numbers: IntList, item: RecordInt, flag: Bool, unit: Unit) -> Int {
-    collect()
-    saved = string_len(text) * 1000000 + bytes_len(blob) + read_int(item) +
-      if is_empty_ints(numbers) { 0 } else { head_int(numbers) } +
+  on compute(text: str, blob: bytes, numbers: [int], item: box<int>, flag: bool, unit: ()) -> int {
+    gc()
+    saved = text.len() * 1000000 + blob.len() + item.get() +
+      if numbers.is_empty() { 0 } else { numbers.head() } +
       if flag { 1 } else { 0 }
-    collect()
+    gc()
     saved
   }
 
-  on Get -> Int { saved }
+  on get -> int { saved }
 }

@@ -30,7 +30,7 @@ fn main() {
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
     let bound = pool.for_process(&account).unwrap();
     let mut process = module.instantiate_with_heap(&bound, &account, 16).unwrap();
-    assert_eq!(process.invoke("Build", &[3]).unwrap(), Some(3));
+    assert_eq!(process.invoke("build", &[3]).unwrap(), Some(3));
     let original_collections = process.heap_stats().unwrap().collections;
     let mut image = process.detach();
     drop((bound, pool));
@@ -70,8 +70,8 @@ fn main() {
                 assert_eq!(account.used(), baseline);
                 let mut process = image.attach(&bound).unwrap();
                 assert!(image.attach(&bound).is_err());
-                assert_eq!(process.invoke("Head", &[]).unwrap(), Some(expected - 1));
-                assert_eq!(process.invoke("Push", &[expected]).unwrap(), Some(expected));
+                assert_eq!(process.invoke("head", &[]).unwrap(), Some(expected - 1));
+                assert_eq!(process.invoke("push", &[expected]).unwrap(), Some(expected));
                 assert!(process.heap_stats().unwrap().collections > original_collections);
                 process.detach()
             })
@@ -82,11 +82,11 @@ fn main() {
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
     let bound = pool.for_process(&account).unwrap();
     let mut process = image.attach(&bound).unwrap();
-    assert_eq!(process.invoke("Head", &[]).unwrap(), Some(6));
+    assert_eq!(process.invoke("head", &[]).unwrap(), Some(6));
     let cancellation = CancellationToken::default();
     let mut execution = process
         .start_in_pool(
-            "Build",
+            "build",
             &[10],
             4096,
             &cancellation,
@@ -102,13 +102,13 @@ fn main() {
     let mut process = failed.attach(&bound).unwrap();
     assert!(
         process
-            .invoke("Head", &[])
+            .invoke("head", &[])
             .unwrap_err()
             .contains("terminated")
     );
     drop(process);
     let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
-    assert_eq!(process.invoke("Push", &[9]).unwrap(), Some(9));
+    assert_eq!(process.invoke("push", &[9]).unwrap(), Some(9));
     let discarded = process.detach();
     drop((bound, pool, module, tenant, account));
     assert!(vm.used().bytes > control.amount().bytes);

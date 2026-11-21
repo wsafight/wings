@@ -56,11 +56,11 @@ fn main() {
         .spawn(&module, limits(), 1, RestartPolicy::Never)
         .expect("sibling");
     let sibling_pid = supervisor.current_pid(sibling).expect("sibling Pid");
-    let bump = module.handler("Bump").expect("Bump");
-    let fail = module.handler("FailRequest").expect("FailRequest");
+    let bump = module.handler("bump").expect("bump");
+    let fail = module.handler("fail_request").expect("fail_request");
     let timeout = Duration::from_secs(60);
     supervisor
-        .send(sibling_pid, &module.handler("Add").expect("Add"), &[11], 64)
+        .send(sibling_pid, &module.handler("add").expect("add"), &[11], 64)
         .expect("seed sibling");
     deliver(&mut supervisor, sibling_pid, 0, 11);
 

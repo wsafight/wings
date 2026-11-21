@@ -26,21 +26,21 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
         .unwrap();
     assert!(module.instantiate_in_pool(&pool).is_err());
     let mut process = module.instantiate_with_heap(&pool, &account, 16).unwrap();
-    assert_eq!(process.invoke("Unicode", &[]).unwrap(), Some(207));
-    assert_eq!(process.invoke("Literal", &[]).unwrap(), Some(813));
-    assert_eq!(process.invoke("Unicode", &[]).unwrap(), Some(207));
-    assert_eq!(process.invoke("Copy", &[]).unwrap(), Some(2));
-    assert_eq!(process.invoke("Choose", &[1]).unwrap(), Some(2));
-    assert_eq!(process.invoke("Choose", &[0]).unwrap(), Some(0));
-    assert_eq!(process.invoke("Grow", &[20]).unwrap(), Some(20));
+    assert_eq!(process.invoke("unicode", &[]).unwrap(), Some(207));
+    assert_eq!(process.invoke("literal", &[]).unwrap(), Some(813));
+    assert_eq!(process.invoke("unicode", &[]).unwrap(), Some(207));
+    assert_eq!(process.invoke("copy", &[]).unwrap(), Some(2));
+    assert_eq!(process.invoke("choose", &[1]).unwrap(), Some(2));
+    assert_eq!(process.invoke("choose", &[0]).unwrap(), Some(0));
+    assert_eq!(process.invoke("grow", &[20]).unwrap(), Some(20));
     for length in [0, 1, 255, 256, 257, 32768, 65536] {
-        assert_eq!(process.invoke("Fill", &[length]).unwrap(), Some(length));
-        assert_eq!(process.invoke("Copy", &[]).unwrap(), Some(length));
-        assert_eq!(process.invoke("ByteLength", &[]).unwrap(), Some(length));
+        assert_eq!(process.invoke("fill", &[length]).unwrap(), Some(length));
+        assert_eq!(process.invoke("copy", &[]).unwrap(), Some(length));
+        assert_eq!(process.invoke("byte_length", &[]).unwrap(), Some(length));
     }
     let mut execution = process
         .start_controlled(
-            "Copy",
+            "copy",
             &[],
             32768,
             &CancellationToken::default(),
@@ -61,8 +61,8 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
     }
     assert!(suspensions >= 1024);
     drop(execution);
-    process.invoke("Clear", &[]).unwrap();
-    process.invoke("Sweep", &[]).unwrap();
+    process.invoke("clear", &[]).unwrap();
+    process.invoke("sweep", &[]).unwrap();
     assert_eq!(process.heap_stats().unwrap().allocated, 1);
     drop((process, pool, account));
     assert_eq!(tenant.used(), baseline);
@@ -74,11 +74,11 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
             .for_process(&account)
             .unwrap();
         let mut process = module.instantiate_with_heap(&pool, &account, 16).unwrap();
-        process.invoke("Fill", &[65536]).unwrap();
+        process.invoke("fill", &[65536]).unwrap();
         let cancellation = CancellationToken::default();
         let mut execution = process
             .start_controlled(
-                "Copy",
+                "copy",
                 &[],
                 32768,
                 &cancellation,
@@ -116,14 +116,14 @@ fn scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     )
     .unwrap();
     let handle = scheduler.handle();
-    for failure in ["Invalid", "Double"] {
+    for failure in ["invalid", "double"] {
         let pid = handle.spawn_with_heap(module, limits(), 2, 16).unwrap();
         for (name, arguments, expected) in [
-            ("Literal", vec![], 813),
-            ("Unicode", vec![], 207),
-            ("Copy", vec![], 2),
-            ("Fill", vec![65536], 65536),
-            ("Copy", vec![], 65536),
+            ("literal", vec![], 813),
+            ("unicode", vec![], 207),
+            ("copy", vec![], 2),
+            ("fill", vec![65536], 65536),
+            ("copy", vec![], 65536),
         ] {
             let mut request = handle
                 .request(
@@ -215,7 +215,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request_values(
                 pid,
-                &module.handler("Echo").unwrap(),
+                &module.handler("echo").unwrap(),
                 &[MessageValue::String(&source)],
                 32768,
                 remaining(deadline),
@@ -232,7 +232,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
             let request = worker
                 .request_values(
                     pid,
-                    &module.handler("CountText").unwrap(),
+                    &module.handler("count_text").unwrap(),
                     &[MessageValue::String(&text)],
                     32768,
                     if terminal == 0 {
@@ -257,7 +257,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
             let read = worker
                 .request(
                     pid,
-                    &module.handler("Read").unwrap(),
+                    &module.handler("read").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -282,7 +282,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request(
                 parent,
-                &module.handler("SendText").unwrap(),
+                &module.handler("send_text").unwrap(),
                 &[length],
                 32768,
                 remaining(deadline),
@@ -297,7 +297,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
         let read = worker
             .request(
                 child,
-                &module.handler("Read").unwrap(),
+                &module.handler("read").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -311,7 +311,7 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
         drop(worker);
         assert_eq!(tenant.used(), baseline);
     }
-    for failure in ["OverText", "SendThenFail"] {
+    for failure in ["over_text", "send_then_fail"] {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut worker = ScalarWorker::new(tenant, 2).unwrap();
         let pid = worker.spawn_with_heap(module, limits(), 2, 16).unwrap();
@@ -321,18 +321,18 @@ fn message_single(module: &ScalarModule, tenant: &ResourceAccount) {
         drain(&mut worker, deadline);
         assert_eq!(
             worker.last_exit().unwrap().execution.fault,
-            Some(if failure == "OverText" {
+            Some(if failure == "over_text" {
                 ExecutionFault::SendRejected
             } else {
                 ExecutionFault::DivisionByZero
             })
         );
-        if failure == "SendThenFail" {
+        if failure == "send_then_fail" {
             let child = worker.pids().next().unwrap();
             let read = worker
                 .request(
                     child,
-                    &module.handler("Read").unwrap(),
+                    &module.handler("read").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),
@@ -375,7 +375,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
         let mut request = handle
             .request_values(
                 pid,
-                &module.handler("Mixed").unwrap(),
+                &module.handler("mixed").unwrap(),
                 &[
                     MessageValue::String(&text),
                     MessageValue::Bytes(&data),
@@ -401,7 +401,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
             handle
                 .send_values(
                     pid,
-                    &module.handler("Store").unwrap(),
+                    &module.handler("store").unwrap(),
                     &[MessageValue::Bytes(text.as_bytes())],
                     32768
                 )
@@ -409,13 +409,13 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
         );
         assert!(
             handle
-                .send(pid, &module.handler("Store").unwrap(), &[0], 32768)
+                .send(pid, &module.handler("store").unwrap(), &[0], 32768)
                 .is_err()
         );
         let mut request = handle
             .request_values(
                 pid,
-                &module.handler("Echo").unwrap(),
+                &module.handler("echo").unwrap(),
                 &[MessageValue::String(&text)],
                 32768,
                 remaining(deadline),
@@ -430,7 +430,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
         handle
             .send_values(
                 pid,
-                &module.handler("SelfText").unwrap(),
+                &module.handler("self_text").unwrap(),
                 &[MessageValue::String(&source)],
                 32768,
             )
@@ -439,7 +439,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
         let mut read = handle
             .request(
                 pid,
-                &module.handler("Read").unwrap(),
+                &module.handler("read").unwrap(),
                 &[],
                 32768,
                 remaining(deadline),
@@ -474,7 +474,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
         let mut request = handle
             .request_values(
                 pid,
-                &module.handler("AskText").unwrap(),
+                &module.handler("ask_text").unwrap(),
                 &[MessageValue::String("中😀"), MessageValue::Int(timeout)],
                 32768,
                 remaining(deadline),
@@ -489,7 +489,7 @@ fn message_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: u
             let mut read = handle
                 .request(
                     pid,
-                    &module.handler("Read").unwrap(),
+                    &module.handler("read").unwrap(),
                     &[],
                     32768,
                     remaining(deadline),

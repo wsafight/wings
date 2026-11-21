@@ -35,7 +35,7 @@ fn verify_execution_binding(directory: &Path) {
         assert_eq!(invalid.stats(), slots);
     }
     let mut process = module.instantiate_in_pool(&bound).unwrap();
-    assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+    assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
     let cancellation = CancellationToken::default();
     let preemption = PreemptionToken::default();
     for owner in [&account, &tenant, &vm] {
@@ -46,13 +46,13 @@ fn verify_execution_binding(directory: &Path) {
             })
             .unwrap();
         let full = vm.used();
-        assert!(process.invoke("Inc", &[99]).is_err());
+        assert!(process.invoke("inc", &[99]).is_err());
         for invalid in [&tools, &pool] {
             let slots = invalid.stats();
             assert!(module.instantiate_in_pool(invalid).is_err());
             assert!(
                 process
-                    .start_in_pool("Inc", &[99], 128, &cancellation, &preemption, invalid)
+                    .start_in_pool("inc", &[99], 128, &cancellation, &preemption, invalid)
                     .is_err()
             );
             assert_eq!(vm.used(), full);
@@ -61,18 +61,18 @@ fn verify_execution_binding(directory: &Path) {
         let slots = foreign.stats();
         assert!(
             process
-                .start_in_pool("Inc", &[99], 128, &cancellation, &preemption, &foreign)
+                .start_in_pool("inc", &[99], 128, &cancellation, &preemption, &foreign)
                 .is_err()
         );
         assert_eq!(vm.used(), full);
         assert_eq!(foreign.stats(), slots);
         drop(fill);
-        assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+        assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
     }
     let mut task = ScalarTask::new(process);
     assert!(
         task.start(
-            &module.handler("Inc").unwrap(),
+            &module.handler("inc").unwrap(),
             &[99],
             128,
             &cancellation,
@@ -89,7 +89,7 @@ fn verify_execution_binding(directory: &Path) {
     }
     let mut process = image.attach(&bound).unwrap();
     assert!(image.attach(&bound).is_err());
-    assert_eq!(process.invoke("Inc", &[2]).unwrap(), Some(9));
+    assert_eq!(process.invoke("inc", &[2]).unwrap(), Some(9));
     drop((
         process, image, module, bound, pool, tools, foreign, other, account, tenant,
     ));
@@ -170,7 +170,7 @@ fn main() {
     );
     assert_eq!(tenant.used(), Resources::default());
     let duplicate = module.clone();
-    let handler = module.handler("Inc").unwrap();
+    let handler = module.handler("inc").unwrap();
     let pool = StackPool::new_accounted(&tenant, 1, 0)
         .unwrap()
         .for_process(&account)
@@ -179,7 +179,7 @@ fn main() {
     let baseline = vm.used();
     drop((module, duplicate));
     assert_eq!(vm.used(), baseline);
-    assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+    assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
     drop((process, pool));
     assert_eq!(vm.used().bytes, bytes);
     drop(handler);
@@ -199,7 +199,7 @@ fn main() {
         let module = unsafe { ScalarModule::load_accounted(directory, &vm) }.unwrap();
         let mut task = ScalarTask::new(module.instantiate_in_pool(&pool).unwrap());
         task.start(
-            &module.handler("Inc").unwrap(),
+            &module.handler("inc").unwrap(),
             &[1],
             128,
             &CancellationToken::default(),
@@ -248,7 +248,7 @@ fn main() {
     assert!(
         process
             .start_in_pool(
-                "Inc",
+                "inc",
                 &[1],
                 128,
                 &CancellationToken::default(),
@@ -257,7 +257,7 @@ fn main() {
             )
             .is_err()
     );
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(0));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(0));
     drop((foreign_pool, foreign_worker));
     assert_eq!(foreign_vm.used(), Resources::default());
     drop((process, pool));
@@ -266,7 +266,7 @@ fn main() {
     worker
         .request(
             pid,
-            &module.handler("Inc").unwrap(),
+            &module.handler("inc").unwrap(),
             &[1],
             128,
             Duration::from_secs(60),
@@ -287,7 +287,7 @@ fn main() {
     drop(module);
     let cancellation = CancellationToken::default();
     let mut execution = process
-        .start_controlled("Inc", &[7], 128, &cancellation, &PreemptionToken::default())
+        .start_controlled("inc", &[7], 128, &cancellation, &PreemptionToken::default())
         .unwrap();
     assert_eq!(execution.resume(1).unwrap(), ExecutionStatus::Suspended);
     assert_eq!(vm.used().bytes, baseline.bytes + 4352);

@@ -26,7 +26,7 @@ fn main() {
     for (flag, expected) in [(1, 18), (0, 29), (1, 18), (0, 29)] {
         let mut execution = process
             .start_controlled(
-                "Heap",
+                "heap",
                 &[flag],
                 128,
                 &CancellationToken::default(),
@@ -59,7 +59,7 @@ fn main() {
     let cancellation = CancellationToken::default();
     let mut execution = process
         .start_controlled(
-            "Heap",
+            "heap",
             &[0],
             128,
             &cancellation,
@@ -78,7 +78,7 @@ fn main() {
         let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
         let mut execution = process
             .start_controlled(
-                "Heap",
+                "heap",
                 &[flag],
                 128,
                 &CancellationToken::default(),
@@ -91,7 +91,7 @@ fn main() {
         drop(execution);
         assert!(
             process
-                .invoke("Guard", &[1])
+                .invoke("guard", &[1])
                 .unwrap_err()
                 .contains("terminated")
         );

@@ -169,7 +169,7 @@ fn invocation(module: &ScalarModule, accounts: [&ResourceAccount; 3], pool: &Sta
     let preemption = PreemptionToken::new_accounted(accounts[2]).unwrap();
     let process = module.instantiate_with_heap(pool, accounts[2], 8).unwrap();
     let mut task = ScalarTask::new(process);
-    let handler = module.handler("Touch").unwrap();
+    let handler = module.handler("touch").unwrap();
     let before = accounts.map(ResourceAccount::used);
     let heap = task.heap_stats();
     let stack = pool.stats();
@@ -210,7 +210,7 @@ fn managed_buffer(module: &ScalarModule, tenant: &ResourceAccount, failures: usi
     let request = worker
         .request(
             failing,
-            &module.handler("Replace").unwrap(),
+            &module.handler("replace").unwrap(),
             &[65536],
             4096,
             Duration::from_secs(3),
@@ -252,7 +252,7 @@ fn managed_buffer(module: &ScalarModule, tenant: &ResourceAccount, failures: usi
     let request = worker
         .request(
             healthy,
-            &module.handler("Touch").unwrap(),
+            &module.handler("touch").unwrap(),
             &[1],
             4096,
             Duration::from_secs(3),
@@ -283,7 +283,7 @@ fn managed_buffer(module: &ScalarModule, tenant: &ResourceAccount, failures: usi
 fn host_payload(module: &ScalarModule, accounts: [&ResourceAccount; 3]) {
     let mut worker = ScalarWorker::new(accounts[1], 1).unwrap();
     let pid = worker.spawn_with_heap(module, limits(), 1, 8).unwrap();
-    let handler = module.handler("Echo").unwrap();
+    let handler = module.handler("echo").unwrap();
     let payload = vec![5; 65536];
     let before = accounts.map(ResourceAccount::used);
     let snapshot = worker.byte_state_snapshot(pid).unwrap();
@@ -339,7 +339,7 @@ fn reply_payload(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             pid,
-            &module.handler("ReplyCandidate").unwrap(),
+            &module.handler("reply_candidate").unwrap(),
             &[],
             4096,
             Duration::from_secs(3),

@@ -1,82 +1,81 @@
-process ByteMessages {
-  state saved: Bytes = fill_bytes(8, 0)
+actor ByteMessages {
+  state saved = bytes::fill(8, 0)
 
-  fn score(value: Bytes) -> Int {
-    bytes_len(value) * 512 + if bytes_len(value) == 0 { 0 } else {
-      byte_at(value, 0) + byte_at(value, bytes_len(value) - 1)
+  fn score(value: bytes) -> int {
+    value.len() * 512 + if value.len() == 0 { 0 } else {
+      value.at(0) + value.at(value.len() - 1)
     }
   }
 
-  on Start(length: Int, value: Int, fail: Bool) -> Int {
-    let child = spawn_self()
-    let data = fill_bytes(length, value)
-    send(child, Store, data)
-    saved = fill_bytes(8, 9)
-    collect()
+  on start(length: int, value: int, fail: bool) -> int {
+    let child = spawn()
+    let data = bytes::fill(length, value)
+    child ! store(data)
+    saved = bytes::fill(8, 9)
+    gc()
     if fail { 1 / 0 } else { score(data) }
   }
 
-  on Self(length: Int, value: Int) -> Int {
-    let data = fill_bytes(length, value)
-    send_self(Store, data)
-    collect()
+  on self_msg(length: int, value: int) -> int {
+    let data = bytes::fill(length, value)
+    self ! store(data)
+    gc()
     score(data)
   }
 
-  on Ask(length: Int, value: Int, timeout: Int) -> Int {
-    let child = spawn_self()
-    let data = fill_bytes(length, value)
-    let pending = request(child, Compute, Completed, timeout, data)
-    collect()
+  on ask(length: int, value: int, timeout: int) -> int {
+    let child = spawn()
+    let data = bytes::fill(length, value)
+    let pending = child.ask(compute(data), timeout: timeout, then: completed)
+    gc()
     score(data)
   }
 
-  on Mixed(length: Int, value: Int) -> Int {
-    let child = spawn_self()
-    let first = fill_bytes(length, value)
-    let second = fill_bytes(65536 - length, value + 1)
-    send(child, StoreMixed, first, record_int(7), prepend_int(3, prepend_int(5, empty_ints())),
-      second, true, fill_bytes(0, 0))
-    collect()
+  on mixed(length: int, value: int) -> int {
+    let child = spawn()
+    let first = bytes::fill(length, value)
+    let second = bytes::fill(65536 - length, value + 1)
+    child ! store_mixed(first, box(7), [3, 5], second, true, bytes::fill(0, 0))
+    gc()
     score(first)
   }
 
-  on Repeat(length: Int) -> Int {
-    let child = spawn_self()
-    let data = fill_bytes(length, 23)
-    send(child, StorePair, data, data)
-    collect()
+  on repeat(length: int) -> int {
+    let child = spawn()
+    let data = bytes::fill(length, 23)
+    child ! store_pair(data, data)
+    gc()
     score(data)
   }
 
-  on Store(value: Bytes) { collect(); saved = value; collect() }
+  on store(value: bytes) { gc(); saved = value; gc() }
 
-  on Over -> Int {
-    let child = spawn_self()
-    send(child, StorePair, fill_bytes(65536, 17), fill_bytes(1, 19))
+  on over -> int {
+    let child = spawn()
+    child ! store_pair(bytes::fill(65536, 17), bytes::fill(1, 19))
     0
   }
 
-  on StorePair(first: Bytes, second: Bytes) {
-    collect()
-    saved = replace_i64_be(fill_bytes(8, 0), 0, score(first) + score(second))
-    collect()
+  on store_pair(first: bytes, second: bytes) {
+    gc()
+    saved = bytes::fill(8, 0).set_i64(0, score(first) + score(second))
+    gc()
   }
 
-  on StoreMixed(first: Bytes, record: RecordInt, values: IntList, second: Bytes, flag: Bool, empty: Bytes) {
-    collect()
-    saved = replace_i64_be(fill_bytes(8, 0), 0, score(first) + score(second) + read_int(record)
-      + head_int(values) + head_int(tail_ints(values)) + if flag { 1 } else { 0 } + bytes_len(empty))
-    collect()
+  on store_mixed(first: bytes, record: box<int>, values: [int], second: bytes, flag: bool, empty: bytes) {
+    gc()
+    saved = bytes::fill(8, 0).set_i64(0, score(first) + score(second) + record.get()
+      + values.head() + values.tail().head() + if flag { 1 } else { 0 } + empty.len())
+    gc()
   }
 
-  on Compute(value: Bytes) -> Int { collect(); saved = value; score(value) }
+  on compute(value: bytes) -> int { gc(); saved = value; score(value) }
 
-  on Completed(id: RequestId, status: Int, value: Int) {
-    saved = replace_i64_be(fill_bytes(8, 0), 0, status * 1000000000 + value + 1)
-    collect()
+  on reply completed(id: req, status: int, value: int) {
+    saved = bytes::fill(8, 0).set_i64(0, status * 1000000000 + value + 1)
+    gc()
   }
 
-  on Read -> Int { collect(); score(saved) }
-  on Result -> Int { collect(); read_i64_be(saved, 0) }
+  on read -> int { gc(); score(saved) }
+  on result -> int { gc(); saved.i64_at(0) }
 }

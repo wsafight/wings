@@ -62,7 +62,7 @@ def result(value, runtime="wings"):
         counts[outcome["status"]] += 1
     require(type(value["failures"]) is list and len(value["failures"]) == 2, "recovery failure count")
     for attempt, failure in enumerate(value["failures"], 1):
-        expected = {"attempt": attempt, "handler": "Fail", "reason": "division_by_zero", "state_bytes": 4096,
+        expected = {"attempt": attempt, "handler": "fail", "reason": "division_by_zero", "state_bytes": 4096,
                     "committed": 0, "restart": "restarted" if attempt == 1 else "intensity_exceeded",
                     "next_initial": 0 if attempt == 1 else None}
         require(type(failure) is dict and set(failure) == {*expected, "status"}, "recovery failure fields")

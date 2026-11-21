@@ -46,7 +46,7 @@ fn verify(module: &ScalarModule, tenant: &ResourceAccount, request_mode: bool) {
     worker.enable_wait().unwrap();
     let pid = worker.spawn_with_heap(module, limits(), 1, 72).unwrap();
     let handler = module
-        .handler(if request_mode { "Compute" } else { "Store" })
+        .handler(if request_mode { "compute" } else { "store" })
         .unwrap();
     let sender = if request_mode {
         worker
@@ -187,7 +187,7 @@ fn verify_import_failure(module: &ScalarModule, tenant: &ResourceAccount) {
             .spawn_with_heap(module, limits(), 1, if stop { 72 } else { 2 })
             .unwrap();
         let sender = worker
-            .open_request_ingress(pid, &module.handler("Compute").unwrap(), 1, 32768)
+            .open_request_ingress(pid, &module.handler("compute").unwrap(), 1, 32768)
             .unwrap();
         let (mut request, _) = sender
             .request_values(

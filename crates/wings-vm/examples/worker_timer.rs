@@ -74,7 +74,7 @@ fn enqueue(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid, seed: i64
     worker
         .request(
             pid,
-            &module.handler("Work").expect("Work"),
+            &module.handler("work").expect("work"),
             &[seed],
             WORK_STEPS,
             REQUEST_TIMEOUT,
@@ -97,13 +97,13 @@ fn assert_reply(worker: &mut ScalarWorker, pid: Pid, id: RequestId, state: i64, 
 fn verify_schema(module: &ScalarModule) {
     assert_eq!(module.manifest().process, "Timer");
     assert_eq!(module.manifest().state, ValueType::Int);
-    let work = module.handler("Work").expect("Work");
+    let work = module.handler("work").expect("work");
     assert_eq!(
         work.schema().parameters,
         [("seed".to_string(), ValueType::Int)]
     );
     assert_eq!(work.schema().reply, Some(ValueType::Int));
-    for name in ["Get", "Fail"] {
+    for name in ["get", "fail"] {
         let handler = module.handler(name).expect("request handler");
         assert!(handler.schema().parameters.is_empty());
         assert_eq!(handler.schema().reply, Some(ValueType::Int));
@@ -259,7 +259,7 @@ fn verify_timed_resume(module: &ScalarModule) {
     let get = worker
         .request(
             pid,
-            &module.handler("Get").expect("Get"),
+            &module.handler("get").expect("get"),
             &[],
             2,
             REQUEST_TIMEOUT,
@@ -277,7 +277,7 @@ fn verify_budget(module: &ScalarModule) {
     worker.enable_timer().expect("enable timer");
     let empty = tenant.used();
     let pid = worker.spawn(module, limits(), 1).expect("actor");
-    let work = module.handler("Work").expect("Work");
+    let work = module.handler("work").expect("work");
     let id = worker
         .request(pid, &work, &[1], WORK_STEPS - 1, REQUEST_TIMEOUT)
         .expect("insufficient total budget");

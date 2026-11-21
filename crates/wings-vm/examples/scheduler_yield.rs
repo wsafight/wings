@@ -39,7 +39,7 @@ fn main() {
         .collect();
     for pid in &actors {
         handle
-            .send(*pid, &module.handler("Hold").unwrap(), &[], u64::MAX)
+            .send(*pid, &module.handler("hold").unwrap(), &[], u64::MAX)
             .unwrap();
     }
     for worker in 0..2 {

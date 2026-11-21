@@ -36,10 +36,10 @@ fn main() {
     worker.enable_wait().unwrap();
     let pid = worker.spawn(&module, limit, 1).unwrap();
     let sender = worker
-        .open_ingress(pid, &module.handler("Set").unwrap(), 2, 128)
+        .open_ingress(pid, &module.handler("set").unwrap(), 2, 128)
         .unwrap();
     worker
-        .send(pid, &module.handler("Set").unwrap(), &[10], 128)
+        .send(pid, &module.handler("set").unwrap(), &[10], 128)
         .unwrap();
     let producer = sender.clone();
     std::thread::spawn(move || {

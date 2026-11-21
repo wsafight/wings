@@ -291,7 +291,7 @@ def verify(artifact, compare_beam, output):
         require(code == 2 and result == {"version": 7, "status": "invalid"}, "invalid observed config")
     for budget, expected in ((100, 1), (10000000, 0)):
         result = aot.command([aot.VM, "run", "--trusted", artifact, "--heap-records", 4, "--max-steps", budget],
-                             '{"message":"Cpu","args":[1,2,0,0]}\n', expected=expected)
+                             '{"message":"cpu","args":[1,2,0,0]}\n', expected=expected)
         require("budget" in result.stderr if expected else json.loads(result.stdout) == {"reply": 1000000}, "CPU budget bypass/value")
     code, observed = invoke([aot.TARGET / aot.PROFILE / "examples/observed_yield", "--trusted", artifact], b"")
     require(code == 0, f"observed yield exit {code}: {observed}")

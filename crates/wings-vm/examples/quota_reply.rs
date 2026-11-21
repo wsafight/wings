@@ -66,10 +66,10 @@ fn main() {
         let cancellation = CancellationToken::new_accounted(&account).unwrap();
         let preemption = PreemptionToken::new_accounted(&account).unwrap();
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
-        assert_eq!(process.invoke("Read", &[]).unwrap(), Some(7));
+        assert_eq!(process.invoke("read", &[]).unwrap(), Some(7));
         let mut task = ScalarTask::new(process);
         task.start(
-            &module.handler("Value").unwrap(),
+            &module.handler("value").unwrap(),
             &[],
             4096,
             &cancellation,
@@ -102,11 +102,11 @@ fn main() {
     let bound = pool.for_process(&account).unwrap();
     let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
     let reply = process
-        .invoke_record("Value", &[], 4096, &CancellationToken::default())
+        .invoke_record("value", &[], 4096, &CancellationToken::default())
         .unwrap();
     assert_eq!(reply.schema().name, "Empty");
     assert_eq!(reply.values().count(), 0);
-    assert_eq!(process.invoke("Read", &[]).unwrap(), Some(99));
+    assert_eq!(process.invoke("read", &[]).unwrap(), Some(99));
     drop((reply, process, bound, pool, account));
     assert_eq!(vm.used(), baseline);
     drop((module, tenant));

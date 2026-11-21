@@ -1,12 +1,12 @@
-process SelfSendRoots {
-  state n: RecordInt = record_int(0)
-  on Start -> Int {
+actor SelfSendRoots {
+  state n = box(0)
+  on start -> int {
     let old = n;
-    n = record_int(9);
-    send_self(Add, 3);
-    collect();
-    read_int(old) + read_int(n)
+    n = box(9);
+    self ! add(3);
+    gc();
+    old.get() + n.get()
   }
-  on Add(value: Int) { n = record_int(read_int(n) + value) }
-  on Read -> Int { read_int(n) }
+  on add(value: int) { n = box(n.get() + value) }
+  on read -> int { n.get() }
 }

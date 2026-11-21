@@ -33,11 +33,11 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     let mut worker = ScalarWorker::new(tenant, 4).unwrap();
     let pid = worker.spawn_with_heap(module, limits(), 4, 32).unwrap();
     for (handler, arguments, expected) in [
-        ("Start", vec![257], 276),
-        ("Ask", vec![255], 274),
-        ("Cross", vec![256], 275),
-        ("EmptyMessage", vec![], 276),
-        ("Start", vec![65535], 65554),
+        ("start", vec![257], 276),
+        ("ask", vec![255], 274),
+        ("cross", vec![256], 275),
+        ("empty_message", vec![], 276),
+        ("start", vec![65535], 65554),
     ] {
         let request = worker
             .request(
@@ -58,7 +58,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     let failed = worker
         .request(
             pid,
-            &module.handler("PublishedThenFail").unwrap(),
+            &module.handler("published_then_fail").unwrap(),
             &[9],
             131072,
             remaining(deadline),
@@ -91,7 +91,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request_values(
             pid,
-            &module.handler("Query").unwrap(),
+            &module.handler("query").unwrap(),
             &[
                 MessageValue::String(&text),
                 MessageValue::Bool(true),
@@ -118,7 +118,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         worker
             .send_values(
                 pid,
-                &module.handler("Pair").unwrap(),
+                &module.handler("pair").unwrap(),
                 &[
                     MessageValue::IntList(&values),
                     MessageValue::IntList(&values),
@@ -131,7 +131,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
     drop(worker);
     assert_eq!(tenant.used(), baseline);
 
-    for (handler, capacity) in [("TooManyBytes", 32), ("EmptyMessage", 1)] {
+    for (handler, capacity) in [("too_many_bytes", 32), ("empty_message", 1)] {
         let mut worker = ScalarWorker::new(tenant, 1).unwrap();
         let pid = worker
             .spawn_with_heap(module, limits(), 2, capacity)
@@ -140,7 +140,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
             let request = worker
                 .request(
                     pid,
-                    &module.handler("EmptyMessage").unwrap(),
+                    &module.handler("empty_message").unwrap(),
                     &[],
                     4096,
                     remaining(deadline),
@@ -185,7 +185,7 @@ fn single(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request_values(
                 pid,
-                &module.handler("Query").unwrap(),
+                &module.handler("query").unwrap(),
                 &[
                     MessageValue::String("中😀"),
                     MessageValue::Bool(true),
@@ -237,7 +237,7 @@ fn host_and_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
     let mut request = handle
         .request_values(
             pid,
-            &module.handler("Query").unwrap(),
+            &module.handler("query").unwrap(),
             &[
                 MessageValue::String("中😀\0"),
                 MessageValue::Bool(true),
@@ -255,7 +255,7 @@ fn host_and_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
         Some(RequestOutcome::Reply(22))
     );
     drop(request);
-    for (handler, length) in [("Ask", 257), ("Cross", 258)] {
+    for (handler, length) in [("ask", 257), ("cross", 258)] {
         let mut request = handle
             .request(
                 pid,
@@ -273,7 +273,7 @@ fn host_and_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
             let mut read = handle
                 .request(
                     pid,
-                    &module.handler("Read").unwrap(),
+                    &module.handler("read").unwrap(),
                     &[],
                     4096,
                     remaining(deadline),
@@ -305,7 +305,7 @@ fn host_and_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
     let mut request = handle
         .request_values(
             pid,
-            &module.handler("Query").unwrap(),
+            &module.handler("query").unwrap(),
             &[
                 MessageValue::String("x"),
                 MessageValue::Bool(true),

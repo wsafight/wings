@@ -37,14 +37,14 @@ fn synchronous(module: &ScalarModule, tenant: &ResourceAccount) {
         assert_eq!(tenant.used(), baseline);
     }
     let mut process = module.instantiate_with_heap(&bound, &account, 16).unwrap();
-    assert_eq!(process.invoke("Read", &[]).unwrap(), Some(33));
-    assert_eq!(process.invoke("Select", &[0]).unwrap(), Some(8));
-    assert_eq!(process.invoke("Select", &[1]).unwrap(), Some(7));
-    assert_eq!(process.invoke("Read", &[]).unwrap(), Some(33));
+    assert_eq!(process.invoke("read", &[]).unwrap(), Some(33));
+    assert_eq!(process.invoke("select", &[0]).unwrap(), Some(8));
+    assert_eq!(process.invoke("select", &[1]).unwrap(), Some(7));
+    assert_eq!(process.invoke("read", &[]).unwrap(), Some(33));
     for expected in 8..40 {
         let mut execution = process
             .start_controlled(
-                "Advance",
+                "advance",
                 &[],
                 4096,
                 &CancellationToken::default(),
@@ -64,20 +64,20 @@ fn synchronous(module: &ScalarModule, tenant: &ResourceAccount) {
         }
         drop(execution);
         assert_eq!(
-            process.invoke("Read", &[]).unwrap(),
+            process.invoke("read", &[]).unwrap(),
             Some(33 + (expected - 7) * 2)
         );
         assert_eq!(process.heap_stats().unwrap().allocated, 7);
     }
-    assert_eq!(process.invoke("Count", &[43]).unwrap(), Some(43));
-    assert_eq!(process.invoke("EmptyValue", &[]).unwrap(), Some(1));
-    assert_eq!(process.invoke("WideValue", &[]).unwrap(), Some(3));
+    assert_eq!(process.invoke("count", &[43]).unwrap(), Some(43));
+    assert_eq!(process.invoke("empty_value", &[]).unwrap(), Some(1));
+    assert_eq!(process.invoke("wide_value", &[]).unwrap(), Some(3));
     drop(process);
     assert_eq!(tenant.used(), baseline);
     let mut process = module.instantiate_with_heap(&bound, &account, 7).unwrap();
     assert!(
         process
-            .invoke("Advance", &[])
+            .invoke("advance", &[])
             .unwrap_err()
             .contains("heap exhausted")
     );
@@ -87,7 +87,7 @@ fn synchronous(module: &ScalarModule, tenant: &ResourceAccount) {
         let mut process = module.instantiate_with_heap(&bound, &account, 16).unwrap();
         let mut execution = process
             .start_controlled(
-                "Fail",
+                "fail",
                 &[],
                 budget,
                 &CancellationToken::default(),
@@ -112,7 +112,7 @@ fn synchronous(module: &ScalarModule, tenant: &ResourceAccount) {
         let cancellation = CancellationToken::new_accounted(&account).unwrap();
         let mut execution = process
             .start_controlled(
-                "Advance",
+                "advance",
                 &[],
                 4096,
                 &cancellation,
@@ -136,9 +136,9 @@ fn worker(module: &ScalarModule, tenant: &ResourceAccount) {
     let first = worker.spawn_with_heap(module, limits(), 2, 16).unwrap();
     let healthy = worker.spawn_with_heap(module, limits(), 2, 16).unwrap();
     for (owner, name, expected) in [
-        (first, "Advance", Some(RequestOutcome::Reply(8))),
-        (first, "Fail", Some(RequestOutcome::Failed)),
-        (healthy, "Read", Some(RequestOutcome::Reply(33))),
+        (first, "advance", Some(RequestOutcome::Reply(8))),
+        (first, "fail", Some(RequestOutcome::Failed)),
+        (healthy, "read", Some(RequestOutcome::Reply(33))),
     ] {
         let request = worker
             .request(
@@ -177,9 +177,9 @@ fn scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: usize) {
     let first = handle.spawn_with_heap(module, limits(), 2, 16).unwrap();
     let healthy = handle.spawn_with_heap(module, limits(), 2, 16).unwrap();
     for (owner, name, expected) in [
-        (first, "Advance", RequestOutcome::Reply(8)),
-        (first, "Fail", RequestOutcome::Failed),
-        (healthy, "Read", RequestOutcome::Reply(33)),
+        (first, "advance", RequestOutcome::Reply(8)),
+        (first, "fail", RequestOutcome::Failed),
+        (healthy, "read", RequestOutcome::Reply(33)),
     ] {
         let mut request = handle
             .request(
@@ -212,7 +212,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
         .unwrap();
     for attempt in 0..2 {
         let owner = supervisor.current_pid(child).unwrap();
-        for (name, expected) in [("Read", 33), ("Advance", 8)] {
+        for (name, expected) in [("read", 33), ("advance", 8)] {
             let request = supervisor
                 .request(
                     owner,
@@ -241,7 +241,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = supervisor
             .request(
                 owner,
-                &module.handler("Fail").unwrap(),
+                &module.handler("fail").unwrap(),
                 &[],
                 4096,
                 remaining(deadline),
@@ -265,7 +265,7 @@ fn supervised(module: &ScalarModule, tenant: &ResourceAccount) {
                         assert_eq!(restart, RestartStatus::Restarted(next));
                         assert!(
                             supervisor
-                                .send(owner, &module.handler("Advance").unwrap(), &[], 4096)
+                                .send(owner, &module.handler("advance").unwrap(), &[], 4096)
                                 .is_err()
                         );
                     } else {

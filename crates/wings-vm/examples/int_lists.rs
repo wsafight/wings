@@ -24,20 +24,20 @@ fn main() {
     let baseline = vm.used();
     assert!(module.instantiate_in_pool(&bound).is_err());
     let mut process = module.instantiate_with_heap(&bound, &account, 16).unwrap();
-    assert_eq!(process.invoke("Empty", &[]).unwrap(), Some(1));
+    assert_eq!(process.invoke("empty", &[]).unwrap(), Some(1));
     for value in [7, 11, 19] {
-        assert_eq!(process.invoke("Push", &[value]).unwrap(), Some(value));
+        assert_eq!(process.invoke("push", &[value]).unwrap(), Some(value));
     }
-    assert_eq!(process.invoke("Shared", &[1]).unwrap(), Some(18));
-    assert_eq!(process.invoke("Shared", &[0]).unwrap(), Some(106));
+    assert_eq!(process.invoke("shared", &[1]).unwrap(), Some(18));
+    assert_eq!(process.invoke("shared", &[0]).unwrap(), Some(106));
     for value in [19, 11, 7] {
-        assert_eq!(process.invoke("Pop", &[]).unwrap(), Some(value));
+        assert_eq!(process.invoke("pop", &[]).unwrap(), Some(value));
     }
-    assert_eq!(process.invoke("Empty", &[]).unwrap(), Some(1));
-    assert_eq!(process.invoke("Build", &[7]).unwrap(), Some(7));
+    assert_eq!(process.invoke("empty", &[]).unwrap(), Some(1));
+    assert_eq!(process.invoke("build", &[7]).unwrap(), Some(7));
     let mut execution = process
         .start_controlled(
-            "Drain",
+            "drain",
             &[],
             4096,
             &CancellationToken::default(),
@@ -54,15 +54,15 @@ fn main() {
     }
     assert!(done);
     drop(execution);
-    assert_eq!(process.invoke("Empty", &[]).unwrap(), Some(1));
+    assert_eq!(process.invoke("empty", &[]).unwrap(), Some(1));
     drop(process);
     assert_eq!(vm.used(), baseline);
     for (name, arguments, capacity, budget, fault) in [
-        ("Head", vec![], 4, 128, ExecutionFault::EmptyList),
-        ("Pop", vec![], 4, 128, ExecutionFault::EmptyList),
-        ("Build", vec![30], 4, 4096, ExecutionFault::HeapExhausted),
-        ("Build", vec![30], 64, 16, ExecutionFault::BudgetExhausted),
-        ("Fail", vec![], 4, 128, ExecutionFault::DivisionByZero),
+        ("head", vec![], 4, 128, ExecutionFault::EmptyList),
+        ("pop", vec![], 4, 128, ExecutionFault::EmptyList),
+        ("build", vec![30], 4, 4096, ExecutionFault::HeapExhausted),
+        ("build", vec![30], 64, 16, ExecutionFault::BudgetExhausted),
+        ("fail", vec![], 4, 128, ExecutionFault::DivisionByZero),
     ] {
         let mut process = module
             .instantiate_with_heap(&bound, &account, capacity)
@@ -86,7 +86,7 @@ fn main() {
     let cancellation = CancellationToken::default();
     let mut execution = process
         .start_controlled(
-            "Build",
+            "build",
             &[30],
             4096,
             &cancellation,
@@ -110,7 +110,7 @@ fn main() {
     let request = worker
         .request(
             pid,
-            &module.handler("Pop").unwrap(),
+            &module.handler("pop").unwrap(),
             &[],
             128,
             Duration::from_secs(60),

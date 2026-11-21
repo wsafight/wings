@@ -4,7 +4,7 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert_eq!(arguments.len(), 1);
     let directory = Path::new(&arguments[0]);
-    let source = "process Counter { state count: Int = 0; on Inc(by: Int) -> Int { count = count + by; count } }";
+    let source = "actor Counter { state count = 0; on inc(by: int) -> int { count += by; count } }";
     for limit in [0, wings_codegen::MAX_SCALAR_FRAME_BYTES + 1, u32::MAX] {
         let error = wings_compile::build_with_frame_limit(source, directory, limit).unwrap_err();
         assert!(error.contains("frame limit must be within"));
@@ -22,13 +22,13 @@ fn main() {
         .collect::<Vec<_>>()
         .join(" + ");
     let pressure = format!(
-        "process Pressure {{ state count: Int = 0; on Work(seed: Int) -> Int {{ {bindings}; {total} }} }}"
+        "actor Pressure {{ state count = 0; on work(seed: int) -> int {{ {bindings}; {total} }} }}"
     );
     let error = wings_compile::build_with_frame_limit(&pressure, directory, 512).unwrap_err();
     assert!(error.contains("wings_scalar_handler_0") && error.contains("limit is 512"));
     assert!(!directory.exists());
     let managed = format!(
-        "process Pressure {{ state count: Int = 0; fn work(seed: Int) -> Int {{ {bindings}; {total} }} on Work(seed: Int) -> Int {{ work(seed) }} }}"
+        "actor Pressure {{ state count = 0; fn work(seed: int) -> int {{ {bindings}; {total} }} on run(seed: int) -> int => work(seed) }}"
     );
     let error = wings_compile::build_with_frame_limit(&managed, directory, 512).unwrap_err();
     assert!(error.contains("wings_managed_function_0") && error.contains("limit is 512"));

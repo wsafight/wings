@@ -58,8 +58,8 @@ fn run(directory: &Path, count: usize) -> Result<(), String> {
     if handle.spawn(&module, limits(), 2).is_ok() || vm.used() != baseline {
         return Err("sparse scheduler full table admission mismatch".into());
     }
-    let increment = module.handler("Inc")?;
-    let get = module.handler("Get")?;
+    let increment = module.handler("inc")?;
+    let get = module.handler("get")?;
     let step = count / 100;
     for round in 0..3 {
         for start in (0..100).step_by(16) {

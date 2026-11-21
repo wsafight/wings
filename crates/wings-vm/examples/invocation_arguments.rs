@@ -66,11 +66,11 @@ fn main() {
     let mut expected = 0;
     let mut total_allocations = 0;
     for (name, count) in [
-        ("Read", 0),
-        ("Add1", 1),
-        ("Add8", 8),
-        ("Add9", 9),
-        ("Add64", 64),
+        ("read", 0),
+        ("add1", 1),
+        ("add8", 8),
+        ("add9", 9),
+        ("add64", 64),
     ] {
         let handler = module.handler(name).unwrap();
         let mut allocations = 0;
@@ -114,7 +114,7 @@ fn main() {
         assert_eq!(allocations, if count == 0 { 0 } else { 16 });
         total_allocations += allocations;
     }
-    let handler = module.handler("Add64").unwrap();
+    let handler = module.handler("add64").unwrap();
     assert!(
         task.start(&handler, &[0; 65], 4096, &cancellation, &preemption, &bound,)
             .is_err()

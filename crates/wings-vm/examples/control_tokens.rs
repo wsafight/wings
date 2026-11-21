@@ -38,7 +38,7 @@ fn main() {
         assert!(tokens.bytes > baseline.bytes);
         let retained = cancellation.clone();
         let mut execution = process
-            .start_controlled("Inc", &[7], 128, &cancellation, &preemption)
+            .start_controlled("inc", &[7], 128, &cancellation, &preemption)
             .unwrap();
         if mode == 1 {
             preemption.request();
@@ -63,9 +63,9 @@ fn main() {
         }
         drop(execution);
         if mode < 2 {
-            assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+            assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
         } else {
-            assert!(process.invoke("Get", &[]).is_err());
+            assert!(process.invoke("get", &[]).is_err());
         }
         drop(process);
         assert_eq!(account.used(), baseline);

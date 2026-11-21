@@ -64,7 +64,7 @@ fn single(
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut worker = ScalarWorker::with_request_capacity(tenant, 2, 3).unwrap();
     let owner = worker.spawn(module, limits(), 2).unwrap();
-    for name in ["CompletedBool", "CompletedUnit"] {
+    for name in ["completed_bool", "completed_unit"] {
         let baseline = tenant.used();
         assert!(
             worker
@@ -76,7 +76,7 @@ fn single(
     let request = worker
         .request(
             owner,
-            &module.handler("Start").unwrap(),
+            &module.handler("start").unwrap(),
             &arguments(kind, value, mode, same),
             4096,
             remaining(deadline),
@@ -93,7 +93,7 @@ fn single(
     if mode == 2 && !same && outcome == Some(RequestOutcome::Failed) {
         let exit = worker.last_exit().unwrap();
         assert_eq!(exit.pid, owner);
-        assert_eq!(exit.handler(), "Start");
+        assert_eq!(exit.handler(), "start");
         assert_eq!(exit.committed_state, Some(0));
         assert_eq!(exit.execution.fault, Some(ExecutionFault::RequestRejected));
         let child = worker.pids().find(|pid| *pid != owner).unwrap();
@@ -155,7 +155,7 @@ fn scheduled(
     .unwrap();
     let handle = scheduler.handle();
     let owner = handle.spawn(module, limits(), 2).unwrap();
-    for name in ["CompletedBool", "CompletedUnit"] {
+    for name in ["completed_bool", "completed_unit"] {
         let baseline = tenant.used();
         assert!(
             handle
@@ -167,7 +167,7 @@ fn scheduled(
     let mut request = handle
         .request(
             owner,
-            &module.handler("Start").unwrap(),
+            &module.handler("start").unwrap(),
             &arguments(kind, value, mode, same),
             4096,
             remaining(deadline),
@@ -180,7 +180,7 @@ fn scheduled(
             remaining(deadline);
             if let Some(exit) = handle.last_exit() {
                 assert_eq!(exit.pid, owner);
-                assert_eq!(exit.handler(), "Start");
+                assert_eq!(exit.handler(), "start");
                 assert_eq!(exit.committed_state, Some(0));
                 assert_eq!(
                     exit.reason,

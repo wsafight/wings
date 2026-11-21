@@ -1,25 +1,25 @@
-process AllocationFailures {
-  record Marker { value: Int }
-  state data: Bytes = replace_i64_be(fill_bytes(256, 0), 0, 7)
+actor AllocationFailures {
+  struct Marker { value: int }
+  state data = bytes::fill(256, 0).set_i64(0, 7)
 
-  on Touch(delta: Int) -> Int {
-    let marker = Marker(read_i64_be(data, 0) + delta)
-    data = replace_i64_be(data, 0, marker.value)
+  on touch(delta: int) -> int {
+    let marker = Marker(data.i64_at(0) + delta)
+    data = data.set_i64(0, marker.value)
     marker.value
   }
 
-  on Replace(length: Int) -> Int {
-    data = fill_bytes(length, 9)
-    bytes_len(data)
+  on replace(length: int) -> int {
+    data = bytes::fill(length, 9)
+    data.len()
   }
 
-  on Echo(input: Bytes) -> Int {
+  on echo(input: bytes) -> int {
     data = input
-    bytes_len(data)
+    data.len()
   }
 
-  on ReplyCandidate -> Bytes {
-    data = fill_bytes(4096, 9)
+  on reply_candidate -> bytes {
+    data = bytes::fill(4096, 9)
     data
   }
 }

@@ -1,96 +1,96 @@
-process RecordLoops {
-  state value: RecordInt = record_int(0)
-  on Get -> Int { read_int(value) }
-  on Count(limit: Int) -> Int {
-    while read_int(value) < limit {
-      value = record_int(read_int(value) + 1)
-      collect()
+actor RecordLoops {
+  state value = box(0)
+  on get -> int { value.get() }
+  on count(limit: int) -> int {
+    while value.get() < limit {
+      value = box(value.get() + 1)
+      gc()
     }
-    read_int(value)
+    value.get()
   }
-  on Preserve(flag: Bool, next: Int) -> Int {
-    value = record_int(next)
+  on preserve(flag: bool, next: int) -> int {
+    value = box(next)
     while flag {
-      value = record_int(read_int(value) + 1)
+      value = box(value.get() + 1)
     }
-    collect()
-    read_int(value)
+    gc()
+    value.get()
   }
-  on Advance(limit: Int, next: Int) -> Int {
-    value = record_int(next)
-    while read_int(value) < limit {
-      value = record_int(read_int(value) + 1)
-      collect()
+  on advance(limit: int, next: int) -> int {
+    value = box(next)
+    while value.get() < limit {
+      value = box(value.get() + 1)
+      gc()
     }
-    read_int(value)
+    value.get()
   }
-  on Retain(limit: Int) -> Int {
-    while read_int(value) < limit {
+  on retain(limit: int) -> int {
+    while value.get() < limit {
       let previous = value
-      value = record_int(read_int(value) + 1)
-      collect()
-      read_int(previous);
+      value = box(value.get() + 1)
+      gc()
+      previous.get();
     }
-    read_int(value)
+    value.get()
   }
-  on Sequential(first: Bool, second: Bool, next: Int) -> Int {
-    let left = if first { record_int(next) } else { record_int(next + 1) }
-    let right = if second { left } else { record_int(next + 2) }
-    collect()
-    read_int(left) + 10 * read_int(right)
+  on sequential(first: bool, second: bool, next: int) -> int {
+    let left = if first { box(next) } else { box(next + 1) }
+    let right = if second { left } else { box(next + 2) }
+    gc()
+    left.get() + 10 * right.get()
   }
-  on Backedges(limit: Int, next: Int) -> Int {
-    let saved = record_int(next)
-    value = record_int(0)
-    while read_int(value) < limit {
-      let until = read_int(value) + 2
-      let outer = if read_int(saved) < 0 { record_int(0) } else { saved }
-      while read_int(value) < until {
-        let inner = if read_int(value) < until - 1 { outer } else { record_int(next + 1) }
-        value = record_int(read_int(value) + 1)
-        collect()
-        read_int(inner);
-        read_int(outer);
+  on backedges(limit: int, next: int) -> int {
+    let saved = box(next)
+    value = box(0)
+    while value.get() < limit {
+      let until = value.get() + 2
+      let outer = if saved.get() < 0 { box(0) } else { saved }
+      while value.get() < until {
+        let inner = if value.get() < until - 1 { outer } else { box(next + 1) }
+        value = box(value.get() + 1)
+        gc()
+        inner.get();
+        outer.get();
       }
-      read_int(saved);
+      saved.get();
     }
-    collect()
-    read_int(value) + read_int(saved)
+    gc()
+    value.get() + saved.get()
   }
-  on ZeroExit(flag: Bool, next: Int) -> Int {
-    let saved = record_int(next)
+  on zero_exit(flag: bool, next: int) -> int {
+    let saved = box(next)
     while flag {
-      let selected = if read_int(value) < 0 { saved } else { record_int(next + 1) }
+      let selected = if value.get() < 0 { saved } else { box(next + 1) }
       value = selected
-      collect()
-      read_int(saved);
+      gc()
+      saved.get();
     }
-    collect()
-    read_int(saved) + read_int(value)
+    gc()
+    saved.get() + value.get()
   }
-  on EmptyBranches(flag: Bool, next: Int) -> Int {
-    let saved = record_int(next)
+  on empty_branches(flag: bool, next: int) -> int {
+    let saved = box(next)
     value = if flag { saved } else { value }
-    collect()
-    read_int(value)
+    gc()
+    value.get()
   }
-  on Nested(limit: Int) -> Int {
+  on nested(limit: int) -> int {
     let saved = value
-    while read_int(value) < limit {
-      let until = read_int(value) + 2
-      while read_int(value) < until {
-        value = if read_int(value) < limit {
-          record_int(read_int(value) + 1)
-        } else { record_int(read_int(value) + 2) }
-        collect()
+    while value.get() < limit {
+      let until = value.get() + 2
+      while value.get() < until {
+        value = if value.get() < limit {
+          box(value.get() + 1)
+        } else { box(value.get() + 2) }
+        gc()
       }
     }
-    read_int(value) + read_int(saved)
+    value.get() + saved.get()
   }
-  on Fail(limit: Int) -> Int {
-    while read_int(value) < limit {
-      value = record_int(read_int(value) + 1)
-      collect()
+  on fail(limit: int) -> int {
+    while value.get() < limit {
+      value = box(value.get() + 1)
+      gc()
     }
     1 / 0
   }

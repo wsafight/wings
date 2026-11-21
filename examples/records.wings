@@ -1,27 +1,27 @@
-process Records {
-  state count: Int = 0
+actor Records {
+  state count = 0
 
-  on Work(value: Int) -> Int {
-    let first: RecordInt = record_int(value)
-    record_int(value + 1)
-    record_int(value + 2)
-    collect()
-    count = read_int(first)
+  on work(value: int) -> int {
+    let first: box<int> = box(value)
+    box(value + 1)
+    box(value + 2)
+    gc()
+    count = first.get()
     count
   }
 
-  on Get -> Int { count }
+  on get -> int { count }
 
-  on Fail -> Int {
-    let candidate = record_int(99)
-    count = read_int(candidate)
+  on fail -> int {
+    let candidate = box(99)
+    count = candidate.get()
     1 / 0
   }
 
-  on Full -> Int {
-    let first = record_int(1)
-    let second = record_int(2)
-    let third = record_int(3)
-    read_int(first) + read_int(second) + read_int(third)
+  on full -> int {
+    let first = box(1)
+    let second = box(2)
+    let third = box(3)
+    first.get() + second.get() + third.get()
   }
 }

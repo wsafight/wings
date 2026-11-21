@@ -22,8 +22,8 @@ fn main() {
     let vm = ResourceAccount::vm(limits());
     let module = unsafe { ScalarModule::load_accounted(Path::new(&arguments[1]), &vm) }.unwrap();
     let module_bytes = vm.used().bytes;
-    let increment = module.handler("Inc").unwrap();
-    let get = module.handler("Get").unwrap();
+    let increment = module.handler("inc").unwrap();
+    let get = module.handler("get").unwrap();
     let threads_charge = vm
         .reserve(Resources {
             bytes: 4 * THREAD_BYTES,
@@ -120,7 +120,7 @@ fn main() {
     std::thread::Builder::new()
         .stack_size(STACK_BYTES)
         .spawn(move || {
-            assert_eq!(get.schema().name, "Get");
+            assert_eq!(get.schema().name, "get");
             drop(get);
         })
         .unwrap()

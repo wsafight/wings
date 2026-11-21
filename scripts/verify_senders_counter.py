@@ -189,9 +189,9 @@ def invalid_json():
 
 
 def reject_sequence(artifact, sender, sequence, after_success=False):
-    messages = [aot.message("Configure", 256, 0, 1), aot.message("Apply", sender, sequence, 7, 0)]
+    messages = [aot.message("configure", 256, 0, 1), aot.message("apply", sender, sequence, 7, 0)]
     if after_success:
-        messages.insert(1, aot.message("Apply", sender, 1, 7, 0))
+        messages.insert(1, aot.message("apply", sender, 1, 7, 0))
     child = subprocess.Popen([str(aot.VM), "run", "--trusted", str(artifact), "--heap-records", "4"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              cwd=aot.ROOT, start_new_session=True, preexec_fn=limit_child)

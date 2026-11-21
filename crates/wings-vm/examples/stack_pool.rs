@@ -37,20 +37,20 @@ fn main() {
     let mut third = load(directory);
     {
         let mut first_execution = first
-            .start_in_pool("Inc", &[3], 4, &cancellation, &preemption, &pool)
+            .start_in_pool("inc", &[3], 4, &cancellation, &preemption, &pool)
             .expect("first slot");
         assert_eq!(first_execution.resume(1), Ok(ExecutionStatus::Suspended));
         let mut second_execution = second
-            .start_in_pool("Inc", &[7], 4, &cancellation, &preemption, &pool)
+            .start_in_pool("inc", &[7], 4, &cancellation, &preemption, &pool)
             .expect("second slot");
         assert_eq!(second_execution.resume(1), Ok(ExecutionStatus::Suspended));
         assert_eq!(pool.stats().active, 2);
         assert!(
             third
-                .start_in_pool("Inc", &[11], 4, &cancellation, &preemption, &pool)
+                .start_in_pool("inc", &[11], 4, &cancellation, &preemption, &pool)
                 .is_err()
         );
-        assert_eq!(third.invoke("Get", &[]), Ok(Some(0)));
+        assert_eq!(third.invoke("get", &[]), Ok(Some(0)));
         pool.trim().expect("trim with active stacks");
         assert_eq!(pool.stats().active, 2);
         assert_eq!(
@@ -67,7 +67,7 @@ fn main() {
         );
         {
             let mut replacement = third
-                .start_in_pool("Inc", &[11], 4, &cancellation, &preemption, &pool)
+                .start_in_pool("inc", &[11], 4, &cancellation, &preemption, &pool)
                 .expect("reuse completed slot before dropping handle");
             assert_eq!(
                 replacement.resume(100),
@@ -94,7 +94,7 @@ fn main() {
         let mut process = load(directory);
         for expected in 1..=256 {
             let mut execution = process
-                .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &pool)
+                .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &pool)
                 .expect("reuse");
             assert_eq!(
                 execution.resume(4),
@@ -106,7 +106,7 @@ fn main() {
             let mut abandoned = load(directory);
             {
                 let mut execution = abandoned
-                    .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &pool)
+                    .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &pool)
                     .expect("abandoned");
                 if started {
                     assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
@@ -114,7 +114,7 @@ fn main() {
             }
             assert!(
                 abandoned
-                    .invoke("Get", &[])
+                    .invoke("get", &[])
                     .unwrap_err()
                     .contains("terminated")
             );
@@ -124,7 +124,7 @@ fn main() {
         let cancellation = CancellationToken::default();
         {
             let mut execution = process
-                .start_in_pool("Inc", &[1], 4, &cancellation, &preemption, &pool)
+                .start_in_pool("inc", &[1], 4, &cancellation, &preemption, &pool)
                 .expect("cancelled slot");
             assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
             cancellation.cancel();
@@ -138,7 +138,7 @@ fn main() {
     {
         let pool = StackPool::new(1, 0).expect("owned mapping");
         let mut execution = survivor
-            .start_in_pool("Inc", &[5], 4, &cancellation, &preemption, &pool)
+            .start_in_pool("inc", &[5], 4, &cancellation, &preemption, &pool)
             .expect("start");
         assert_eq!(execution.resume(1), Ok(ExecutionStatus::Suspended));
         drop(pool);
@@ -147,7 +147,7 @@ fn main() {
             Ok(ExecutionStatus::Complete(Some(5)))
         );
     }
-    assert_eq!(survivor.invoke("Get", &[]), Ok(Some(5)));
+    assert_eq!(survivor.invoke("get", &[]), Ok(Some(5)));
     assert_eq!(pool.stats().reset_failures, 0);
     println!(
         "Stack pool verified: admission, exclusive slots, reuse, immediate release, cancellation, trim and lifetime"

@@ -1,116 +1,85 @@
-process NamedRecordReplies {
-  record Empty {}
-  record Detail {
-    label: String,
-    accepted: Bool,
-    values: IntList,
-    bytes: Bytes,
-    saved: RecordInt,
+actor NamedRecordReplies {
+  struct Empty {}
+  struct Detail {
+    label: str,
+    accepted: bool,
+    values: [int],
+    bytes: bytes,
+    saved: box<int>,
     empty: Empty,
-    unit: Unit
+    unit: ()
   }
-  record Result { key: Int, detail: Detail }
+  struct Result { key: int, detail: Detail }
 
-  state count: Int = 0
+  state count = 0
 
-  fn make(value: Int) -> Result {
-    Result(
-      value,
-      Detail(
-        string_from_bytes(fill_bytes(3, 97)),
-        true,
-        prepend_int(value, empty_ints()),
-        fill_bytes(2, 255),
-        record_int(value + 1),
-        Empty(),
-        ()
-      )
-    )
+  fn make(value: int) -> Result {
+    Result(value, Detail(bytes::fill(3, 97).to_str(), true, [value], bytes::fill(2, 255), box(value + 1), Empty(), ()))
   }
 
-  fn empty_score(result: Result) -> Int {
+  fn empty_score(result: Result) -> int {
     let accepted = if result.detail.accepted { 1 } else { 0 }
-    let listed = if is_empty_ints(result.detail.values) { 0 } else { 1 }
-    result.key + string_len(result.detail.label) + accepted + listed + bytes_len(result.detail.bytes) + read_int(result.detail.saved)
+    let listed = if result.detail.values.is_empty() { 0 } else { 1 }
+    result.key + result.detail.label.len() + accepted + listed + result.detail.bytes.len() + result.detail.saved.get()
   }
 
-  on Value(value: Int) -> Result {
+  on value(value: int) -> Result {
     let result = make(value)
     count = count + 1
-    collect()
+    gc()
     result
   }
 
-  on Boundary -> Result {
+  on boundary -> Result {
     count = 42
-    Result(
-      7,
-      Detail(
-        string_from_bytes(fill_bytes(65535, 97)),
-        true,
-        empty_ints(),
-        fill_bytes(1, 255),
-        record_int(8),
-        Empty(),
-        ()
-      )
-    )
+    Result(7, Detail(bytes::fill(65535, 97).to_str(), true, [], bytes::fill(1, 255), box(8), Empty(), ()))
   }
 
-  on TooLarge -> Result {
+  on too_large -> Result {
     count = 99
-    Result(
-      7,
-      Detail(
-        string_from_bytes(fill_bytes(65536, 97)),
-        true,
-        empty_ints(),
-        fill_bytes(1, 255),
-        record_int(8),
-        Empty(),
-        ()
-      )
-    )
+    Result(7, Detail(bytes::fill(65536, 97).to_str(), true, [], bytes::fill(1, 255), box(8), Empty(), ()))
   }
 
-  on Fail -> Result {
+  on fail -> Result {
     count = 99
     let failed = 1 / 0
     make(failed)
   }
 
-  on Start(value: Int, timeout: Int, cancel: Bool, fail: Bool) -> Int {
-    let target = if cancel { self_pid() } else { spawn_self() }
+  on start(value: int, timeout: int, cancel: bool, fail: bool) -> int {
+    let target = if cancel { self } else { spawn() }
     let pending = if fail {
-      request(target, Fail, Done, timeout)
+      target.ask(fail, timeout: timeout, then: done)
     } else {
-      request(target, Value, Done, timeout, value)
+      target.ask(value(value), timeout: timeout, then: done)
     }
-    if cancel { cancel_request(pending) } else { () }
+    if cancel { pending.cancel() }
     count = 10
     count
   }
 
-  on Done(id: RequestId, status: Int, result: Result) {
-    collect()
+  on reply done(id: req, status: int, result: Result) {
+    gc()
     count = if status == 0 {
-      result.key + string_len(result.detail.label) + head_int(result.detail.values)
-        + byte_at(result.detail.bytes, 0) + read_int(result.detail.saved)
-        + if result.detail.accepted { 1 } else { 0 }
+      result.key + result.detail.label.len() + result.detail.values.head() +
+        result.detail.bytes.at(0) + result.detail.saved.get() +
+        if result.detail.accepted { 1 } else { 0 }
+    } else if empty_score(result) == 0 {
+      -status
     } else {
-      if empty_score(result) == 0 { -status } else { -100 - status }
+      -100 - status
     }
   }
 
-  on Read -> Int { count }
-  on EmptyValue -> Empty { Empty() }
-  on Text -> Detail {
-    Detail("中文😀\n\"\\", false, empty_ints(), fill_bytes(0, 0), record_int(0), Empty(), ())
+  on read -> int { count }
+  on empty_value -> Empty { Empty() }
+  on text -> Detail {
+    Detail("中文😀\n\"\\", false, [], bytes::fill(0, 0), box(0), Empty(), ())
   }
-  on EscapedBoundary -> Detail {
-    Detail(string_from_bytes(fill_bytes(65536, 0)), true, empty_ints(), fill_bytes(0, 0), record_int(0), Empty(), ())
+  on escaped_boundary -> Detail {
+    Detail(bytes::fill(65536, 0).to_str(), true, [], bytes::fill(0, 0), box(0), Empty(), ())
   }
-  on BinaryBoundary -> Detail {
-    Detail("", true, empty_ints(), fill_bytes(65536, 255), record_int(0), Empty(), ())
+  on binary_boundary -> Detail {
+    Detail("", true, [], bytes::fill(65536, 255), box(0), Empty(), ())
   }
 }

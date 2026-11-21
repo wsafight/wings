@@ -49,8 +49,8 @@ fn run(directory: &Path, capacity: usize) -> Result<Value, String> {
     if initial.length != 4096 || initial.prefix != [0; 32] {
         return Err("initial state mismatch".into());
     }
-    let add = module.handler("Add")?;
-    handle.send(busy, &module.handler("Hold")?, &[], u64::MAX)?;
+    let add = module.handler("add")?;
+    handle.send(busy, &module.handler("hold")?, &[], u64::MAX)?;
     while handle.snapshot(busy)?.execution.is_none() {
         remaining(deadline)?;
         std::thread::yield_now();
@@ -74,7 +74,7 @@ fn run(directory: &Path, capacity: usize) -> Result<Value, String> {
     {
         return Err("full mailbox admission mismatch".into());
     }
-    handle.send(healthy, &module.handler("Notify")?, &[7], 4096)?;
+    handle.send(healthy, &module.handler("notify")?, &[7], 4096)?;
     loop {
         remaining(deadline)?;
         let snapshot = handle.snapshot(healthy)?;

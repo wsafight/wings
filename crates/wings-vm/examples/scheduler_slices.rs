@@ -88,8 +88,8 @@ fn run(directory: &Path, workers: usize, capacity: usize) -> Result<Value, Strin
         handle.spawn(&module, limits(), 1)?,
         handle.spawn(&module, limits(), 1)?,
     ];
-    let work = module.handler("Work")?;
-    let read = module.handler("Read")?;
+    let work = module.handler("work")?;
+    let read = module.handler("read")?;
     let mut first = handle.request(actors[0], &work, &[64], 4096, remaining()?)?;
     let mut second = handle.request(actors[1], &work, &[64], 4096, remaining()?)?;
     if first.wait(remaining()?)? != Some(RequestOutcome::Reply(64))
@@ -119,7 +119,7 @@ fn run(directory: &Path, workers: usize, capacity: usize) -> Result<Value, Strin
             &mut samples[worker],
         )?;
     }
-    handle.send(actors[0], &module.handler("Hold")?, &[], u64::MAX)?;
+    handle.send(actors[0], &module.handler("hold")?, &[], u64::MAX)?;
     loop {
         remaining()?;
         if handle
@@ -137,7 +137,7 @@ fn run(directory: &Path, workers: usize, capacity: usize) -> Result<Value, Strin
     }
     drop(healthy);
     handle.stop(actors[0])?;
-    let mut failed = handle.request(actors[1], &module.handler("Fail")?, &[], 64, remaining()?)?;
+    let mut failed = handle.request(actors[1], &module.handler("fail")?, &[], 64, remaining()?)?;
     if failed.wait(remaining()?)? != Some(RequestOutcome::Failed)
         || handle
             .last_exit()

@@ -35,7 +35,7 @@ fn main() {
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
         let mut execution = process
             .start_controlled(
-                "Cpu",
+                "cpu",
                 &[1, 2, 0, 0],
                 10_000_000,
                 &CancellationToken::default(),
@@ -96,7 +96,7 @@ fn main() {
             }
         }
         drop(execution);
-        assert_eq!(process.invoke("Pulse", &[1, 1, 1, 0]), Ok(Some(2)));
+        assert_eq!(process.invoke("pulse", &[1, 1, 1, 0]), Ok(Some(2)));
         drop((process, token));
         assert_eq!(vm.used(), baseline);
         assert!(Instant::now() < deadline);

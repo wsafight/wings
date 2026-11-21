@@ -20,19 +20,19 @@ fn main() {
     let bound = pool.for_process(&account).unwrap();
     let baseline = vm.used();
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
-    assert_eq!(process.invoke("Replace", &[0, 99]).unwrap(), Some(7));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
+    assert_eq!(process.invoke("replace", &[0, 99]).unwrap(), Some(7));
     assert_eq!(process.heap_stats().unwrap().allocated, 1);
-    assert_eq!(process.invoke("Replace", &[1, 11]).unwrap(), Some(11));
-    assert_eq!(process.invoke("Nested", &[1, 0, 19]).unwrap(), Some(11));
-    assert_eq!(process.invoke("Nested", &[0, 1, 19]).unwrap(), Some(11));
-    assert_eq!(process.invoke("Nested", &[0, 0, 19]).unwrap(), Some(20));
-    assert_eq!(process.invoke("Local", &[0, 23]).unwrap(), Some(44));
-    assert_eq!(process.invoke("Discard", &[1]).unwrap(), Some(20));
+    assert_eq!(process.invoke("replace", &[1, 11]).unwrap(), Some(11));
+    assert_eq!(process.invoke("nested", &[1, 0, 19]).unwrap(), Some(11));
+    assert_eq!(process.invoke("nested", &[0, 1, 19]).unwrap(), Some(11));
+    assert_eq!(process.invoke("nested", &[0, 0, 19]).unwrap(), Some(20));
+    assert_eq!(process.invoke("local", &[0, 23]).unwrap(), Some(44));
+    assert_eq!(process.invoke("discard", &[1]).unwrap(), Some(20));
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut task = ScalarTask::new(module.instantiate_with_heap(&bound, &account, 2).unwrap());
-    let handler = module.handler("Nested").unwrap();
+    let handler = module.handler("nested").unwrap();
     let mut expected = 7;
     for (first, second) in [(1, 1), (1, 0), (0, 1), (0, 0)]
         .into_iter()
@@ -81,7 +81,7 @@ fn main() {
     assert!(task.heap_stats().unwrap().collections >= 40);
     drop(task);
     assert_eq!(vm.used(), baseline);
-    for (name, values) in [("Replace", vec![1, 99]), ("Fail", vec![1])] {
+    for (name, values) in [("replace", vec![1, 99]), ("fail", vec![1])] {
         for budget in 0..40 {
             let mut task =
                 ScalarTask::new(module.instantiate_with_heap(&bound, &account, 2).unwrap());
@@ -100,12 +100,12 @@ fn main() {
             match result {
                 Err(_) => {
                     assert_eq!(snapshot.phase, ExecutionPhase::Failed);
-                    assert!(process.invoke("Get", &[]).is_err());
+                    assert!(process.invoke("get", &[]).is_err());
                 }
                 Ok(status) => {
-                    assert_ne!(name, "Fail");
+                    assert_ne!(name, "fail");
                     assert_eq!(status, ExecutionStatus::Complete(Some(99)));
-                    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(99));
+                    assert_eq!(process.invoke("get", &[]).unwrap(), Some(99));
                 }
             }
             drop(process);

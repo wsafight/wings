@@ -71,7 +71,7 @@ fn main() {
         .spawn_with_heap(&module, limits(), 2, 2, RestartPolicy::Never)
         .unwrap();
     let sibling_pid = supervisor.current_pid(sibling).unwrap();
-    let seed = request(&mut supervisor, &module, sibling_pid, "Set", &[22]);
+    let seed = request(&mut supervisor, &module, sibling_pid, "set", &[22]);
     deliver(&mut supervisor, sibling_pid);
     assert_eq!(
         supervisor.take_reply(seed).unwrap(),
@@ -80,20 +80,20 @@ fn main() {
 
     for attempt in 0..3 {
         let pid = supervisor.current_pid(child).unwrap();
-        let initial = request(&mut supervisor, &module, pid, "Get", &[]);
+        let initial = request(&mut supervisor, &module, pid, "get", &[]);
         deliver(&mut supervisor, pid);
         assert_eq!(
             supervisor.take_reply(initial).unwrap(),
             Some(RequestOutcome::Reply(7))
         );
-        let set = request(&mut supervisor, &module, pid, "Set", &[11]);
+        let set = request(&mut supervisor, &module, pid, "set", &[11]);
         deliver(&mut supervisor, pid);
         assert_eq!(
             supervisor.take_reply(set).unwrap(),
             Some(RequestOutcome::Reply(11))
         );
-        let fail = request(&mut supervisor, &module, pid, "Fail", &[]);
-        let queued = request(&mut supervisor, &module, pid, "Set", &[999]);
+        let fail = request(&mut supervisor, &module, pid, "fail", &[]);
+        let queued = request(&mut supervisor, &module, pid, "set", &[999]);
         let mut exited = false;
         for _ in 0..128 {
             match supervisor.tick(1).unwrap() {
@@ -113,7 +113,7 @@ fn main() {
                         assert_eq!(supervisor.queued(next).unwrap(), 0);
                         assert!(
                             supervisor
-                                .send(pid, &module.handler("Replace").unwrap(), &[1], 128)
+                                .send(pid, &module.handler("replace").unwrap(), &[1], 128)
                                 .is_err()
                         );
                     } else {
@@ -134,14 +134,14 @@ fn main() {
             );
         }
         assert_eq!(supervisor.current_pid(sibling).unwrap(), sibling_pid);
-        let get = request(&mut supervisor, &module, sibling_pid, "Get", &[]);
+        let get = request(&mut supervisor, &module, sibling_pid, "get", &[]);
         deliver(&mut supervisor, sibling_pid);
         assert_eq!(
             supervisor.take_reply(get).unwrap(),
             Some(RequestOutcome::Reply(22))
         );
     }
-    let pending = request(&mut supervisor, &module, sibling_pid, "Set", &[44]);
+    let pending = request(&mut supervisor, &module, sibling_pid, "set", &[44]);
     assert_eq!(
         supervisor.tick(1).unwrap(),
         SupervisorEvent::Worker(WorkerEvent::Suspended(sibling_pid))

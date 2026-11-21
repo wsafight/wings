@@ -141,8 +141,8 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
         },
     )?;
     let handle = supervisor.handle();
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
+    let configure = module.handler("configure")?;
+    let apply = module.handler("apply")?;
     let deadline = Instant::now() + Duration::from_secs(3);
     let initializer_pool = StackPool::new_accounted(&tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);
@@ -238,7 +238,7 @@ fn execute(directory: &Path, workload: &Workload) -> Result<(i32, Value), String
                             let SchedulerTermination::Failed(exit) = event.termination else {
                                 return Err("unexpected multi Counter stop".into());
                             };
-                            if exit.handler() != "Apply" {
+                            if exit.handler() != "apply" {
                                 return Err("multi Counter failure handler".into());
                             }
                             let reason = match exit.reason {

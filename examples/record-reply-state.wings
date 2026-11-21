@@ -1,19 +1,19 @@
-process RecordReplyState {
-  state data: RecordInt = record_int(5)
+actor RecordReplyState {
+  state data = box(5)
 
-  on Current -> RecordInt { collect(); data }
-  on Put(value: Int) -> RecordInt { data = record_int(value); collect(); data }
-  on Read -> Int { collect(); read_int(data) }
+  on current -> box<int> { gc(); data }
+  on put(value: int) -> box<int> { data = box(value); gc(); data }
+  on read -> int { gc(); data.get() }
 
-  on StartImportFail -> Int {
-    let child = spawn_self()
-    let pending = request(child, Current, Done, 60000)
+  on start_import_fail -> int {
+    let child = spawn()
+    let pending = child.ask(current, timeout: 60000, then: done)
     9
   }
 
-  on Done(id: RequestId, status: Int, value: RecordInt) {
-    collect()
+  on reply done(id: req, status: int, value: box<int>) {
+    gc()
     data = value
-    collect()
+    gc()
   }
 }

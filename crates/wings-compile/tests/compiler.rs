@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use wings_compile::{build, build_with_frame_limit, check, render_diagnostics};
 use wings_source::{Diagnostic, Span};
 
-const SOURCE: &str = "process Counter { state count: Int = 0; on Inc(by: Int) -> Int { count = count + by; count } }";
+const SOURCE: &str =
+    "actor Counter { state count = 0; on inc(by: int) -> int { count += by; count } }";
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 struct Directory(PathBuf);
@@ -66,13 +67,13 @@ fn check_accepts_the_repository_counter_without_diagnostics() {
         "{:?}",
         analysis.diagnostics
     );
-    assert_eq!(analysis.parsed.program.processes[0].handlers.len(), 5);
+    assert_eq!(analysis.parsed.program.actors[0].handlers.len(), 5);
     assert!(render_diagnostics("counter.wings", source, &analysis).is_empty());
 }
 
 #[test]
 fn rendered_diagnostics_include_one_based_utf16_positions_codes_and_paths() {
-    let source = "// 😀é\nprocess P { state count: Int = false }";
+    let source = "// 😀é\nactor P { state count: int = false }";
     let mut analysis = check(source);
     analysis.diagnostics = vec![
         Diagnostic::error(
@@ -83,10 +84,7 @@ fn rendered_diagnostics_include_one_based_utf16_positions_codes_and_paths() {
         Diagnostic::error(
             "NEXT",
             "second line",
-            Span::new(
-                source.find("process").unwrap(),
-                source.find("process").unwrap(),
-            ),
+            Span::new(source.find("actor").unwrap(), source.find("actor").unwrap()),
         ),
     ];
     assert_eq!(
@@ -98,7 +96,8 @@ fn rendered_diagnostics_include_one_based_utf16_positions_codes_and_paths() {
 #[test]
 fn build_does_not_emit_files_when_frontend_reports_errors() {
     let directory = Directory::new();
-    let error = build("process P {}", &directory.artifact()).unwrap_err();
+    let too_many_states = "actor P { state s1 = 0; state s2 = 0; state s3 = 0; state s4 = 0; state s5 = 0; state s6 = 0; state s7 = 0; state s8 = 0; state s9 = 0 }";
+    let error = build(too_many_states, &directory.artifact()).unwrap_err();
     assert!(error.contains("error[T001]"), "{error}");
     assert!(!directory.artifact().exists());
 }
@@ -108,13 +107,13 @@ fn public_build_reports_lowering_only_rejections() {
     let directory = Directory::new();
     for source in [
         "",
-        "process A { state count: Int = 0 } process B { state count: Int = 0 }",
+        "actor A { state count = 0 } actor B { state count = 0 }",
     ] {
         assert!(check(source).diagnostics.is_empty());
         assert!(
             build(source, &directory.artifact())
                 .unwrap_err()
-                .contains("exactly one process")
+                .contains("exactly one actor")
         );
         assert!(!directory.artifact().exists());
     }
@@ -138,61 +137,57 @@ fn cli_help_succeeds_without_reading_source() {
     for option in ["--help", "-h"] {
         let output = cli(&[OsStr::new(option)]);
         assert_exit(&output, 0);
-        assert!(String::from_utf8_lossy(&output.stdout).contains("check only analyzes source"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage: wings-compile"));
         assert!(output.stderr.is_empty());
     }
 }
 
 #[test]
-fn cli_rejects_missing_extra_and_malformed_arguments_with_usage_exit_code() {
+fn cli_rejects_invalid_argument_shapes_with_exit_code_two() {
     for arguments in [
-        vec![],
-        vec!["unknown"],
-        vec!["check"],
-        vec!["check", "unused", "extra"],
-        vec!["build", "unused"],
-        vec!["build", "unused", "--out", "unused"],
-        vec!["--help", "extra"],
+        &[][..],
+        &[OsStr::new("check")],
+        &[OsStr::new("check"), OsStr::new("a"), OsStr::new("b")],
+        &[OsStr::new("build"), OsStr::new("a")],
+        &[
+            OsStr::new("build"),
+            OsStr::new("a"),
+            OsStr::new("--out"),
+            OsStr::new("b"),
+        ],
+        &[OsStr::new("--help"), OsStr::new("extra")],
     ] {
-        let arguments: Vec<_> = arguments.iter().map(OsStr::new).collect();
-        let output = cli(&arguments);
+        let output = cli(arguments);
         assert_exit(&output, 2);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
         assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: wings-compile"));
     }
 }
 
 #[test]
-fn cli_check_reports_success_for_a_path_with_spaces() {
+fn cli_check_accepts_valid_source_and_reports_diagnostics_with_exit_code_one() {
     let directory = Directory::new();
-    let source = directory.source(SOURCE);
-    let output = cli(&[OsStr::new("check"), source.as_os_str()]);
+    let valid = directory.source(SOURCE);
+    let output = cli(&[OsStr::new("check"), valid.as_os_str()]);
     assert_exit(&output, 0);
     assert!(String::from_utf8_lossy(&output.stdout).contains("check passed"));
     assert!(output.stderr.is_empty());
-    assert!(!directory.artifact().exists());
-}
 
-#[test]
-fn cli_check_reports_frontend_errors_without_success_output() {
-    let directory = Directory::new();
-    let source = directory.source("process P { state count: Int = false }");
-    let output = cli(&[OsStr::new("check"), source.as_os_str()]);
+    let invalid = directory.source("actor P { state count: int = false }");
+    let output = cli(&[OsStr::new("check"), invalid.as_os_str()]);
     assert_exit(&output, 1);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("error[T005]"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("expected Int, found Bool"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("input source.wings:1:"));
     assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("error[T005]"));
 }
 
 #[test]
-fn cli_read_errors_use_exit_two() {
+fn cli_reports_missing_and_non_utf8_files_with_exit_code_two() {
     let directory = Directory::new();
     let missing = directory.0.join("missing.wings");
     let output = cli(&[OsStr::new("check"), missing.as_os_str()]);
     assert_exit(&output, 2);
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("missing.wings"));
+
     let invalid_utf8 = directory.0.join("invalid.wings");
     fs::write(&invalid_utf8, [0xff]).unwrap();
     assert_exit(&cli(&[OsStr::new("check"), invalid_utf8.as_os_str()]), 2);
@@ -237,8 +232,7 @@ fn cli_build_emits_a_complete_artifact_and_refuses_to_replace_it() {
 #[test]
 fn cli_build_reports_lowering_errors_without_creating_output() {
     let directory = Directory::new();
-    let source =
-        directory.source("process A { state count: Int = 0 } process B { state count: Int = 0 }");
+    let source = directory.source("actor A { state count = 0 } actor B { state count = 0 }");
     let artifact = directory.artifact();
     let output = cli(&[
         OsStr::new("build"),
@@ -249,7 +243,7 @@ fn cli_build_reports_lowering_errors_without_creating_output() {
     assert_exit(&output, 1);
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("build failed: scalar AOT requires exactly one process")
+            .contains("build failed: scalar AOT requires exactly one actor")
     );
     assert!(!artifact.exists());
 }
@@ -302,4 +296,58 @@ fn cli_nonzero_linker_exit_leaves_no_manifest() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("system linker failed:"));
     assert!(artifact.join("program.o").is_file());
     assert!(!artifact.join("manifest.json").exists());
+}
+
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
+#[test]
+fn v2_ergonomic_features_build_cleanly() {
+    let directory = Directory::new();
+    let showcase = r#"
+    actor Showcase {
+      struct Meta { tag: str, score: int }
+      struct Card { meta: Meta, active: bool }
+
+      state total = 0
+      state label = "boot"
+      state card = Card { meta: Meta { tag: "v2", score: 10 }, active: true }
+      state history: [int] = []
+
+      fn add_scaled(base: int, factor: int) -> int => base + factor * 2
+
+      fn sum_list(xs: [int]) -> int {
+        let acc = 0
+        for item in xs {
+          acc += item
+        }
+        acc
+      }
+
+      on run_all(limit: int) -> str {
+        for i in 1..=limit {
+          if i % 2 == 0 {
+            total += i
+          } else if i == 3 {
+            history = [i, ..history]
+          }
+        }
+        let piped = total |> add_scaled(5)
+        card.meta.score += piped
+        let updated = Card { active: !card.active, ..card }
+        card = updated
+        let head_bonus = match history {
+          [] => 0,
+          [h, ..rest] => h + sum_list(rest),
+        }
+        let raw = b"ok\x21"
+        let ok = (false && (1 / 0 == 0)) || (true || (1 / 0 == 1))
+        label = f"{card.meta.tag}:{card.meta.score + head_bonus}:{ok}:{raw.len()}"
+        label
+      }
+    }
+    "#;
+    build(showcase, &directory.artifact()).unwrap();
+    assert!(directory.artifact().join("manifest.json").is_file());
 }

@@ -39,7 +39,7 @@ fn main() {
     worker.enable_wait().unwrap();
     let pid = worker.spawn(&module, limits(), 1).unwrap();
     let sender = worker
-        .open_request_ingress(pid, &module.handler("Bump").unwrap(), 16, 128)
+        .open_request_ingress(pid, &module.handler("bump").unwrap(), 16, 128)
         .unwrap();
     let producers: Vec<_> = (0..4)
         .map(|_| {
@@ -102,9 +102,9 @@ fn main() {
     assert_eq!(vm.used(), Resources::default());
 
     for (name, values, expected) in [
-        ("Ack", vec![], RequestOutcome::Reply(0)),
-        ("EchoBool", vec![1], RequestOutcome::Reply(1)),
-        ("FailRequest", vec![], RequestOutcome::Failed),
+        ("ack", vec![], RequestOutcome::Reply(0)),
+        ("echo_bool", vec![1], RequestOutcome::Reply(1)),
+        ("fail_request", vec![], RequestOutcome::Failed),
     ] {
         let mut worker = ScalarWorker::new(&tenant, 1).unwrap();
         worker.enable_wait().unwrap();

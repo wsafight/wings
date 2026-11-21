@@ -1,43 +1,43 @@
-process Functions {
-  fn twice(value: Int) -> Int { value + value }
-  fn fresh(value: Int) -> RecordInt { record_int(value) }
-  fn next(value: RecordInt) -> RecordInt {
-    collect()
-    fresh(read_int(value) + 1)
+actor Functions {
+  fn twice(value: int) -> int { value + value }
+  fn fresh(value: int) -> box<int> { box(value) }
+  fn next(value: box<int>) -> box<int> {
+    gc()
+    fresh(value.get() + 1)
   }
-  fn choose(flag: Bool, value: RecordInt) -> RecordInt {
+  fn choose(flag: bool, value: box<int>) -> box<int> {
     if flag { next(value) } else { value }
   }
-  fn count_value(first: RecordInt, second: RecordInt) -> Int {
-    collect()
-    read_int(first) * 10 + read_int(second)
+  fn count_value(first: box<int>, second: box<int>) -> int {
+    gc()
+    first.get() * 10 + second.get()
   }
-  fn unchanged(value: RecordInt) -> RecordInt { value }
-  fn fail(value: RecordInt) -> Int {
-    collect()
-    read_int(value) / 0
+  fn unchanged(value: box<int>) -> box<int> { value }
+  fn fail(value: box<int>) -> int {
+    gc()
+    value.get() / 0
   }
-  state value: RecordInt = fresh(twice(0))
-  on Get -> Int { read_int(value) }
-  on Count(limit: Int) -> Int {
-    while read_int(value) < limit {
+  state value = fresh(twice(0))
+  on get -> int { value.get() }
+  on count(limit: int) -> int {
+    while value.get() < limit {
       value = next(value)
     }
-    read_int(value)
+    value.get()
   }
-  on Choose(flag: Bool) -> Int {
+  on choose(flag: bool) -> int {
     value = choose(flag, value)
-    read_int(value)
+    value.get()
   }
-  on Order -> Int { count_value(fresh(1), fresh(2)) }
-  on Once -> Int { count_value(unchanged(fresh(3)), unchanged(value)) }
-  on FirstFailure -> Int {
+  on order -> int { count_value(fresh(1), fresh(2)) }
+  on once -> int { count_value(unchanged(fresh(3)), unchanged(value)) }
+  on first_failure -> int {
     count_value(fresh(1 / 0), fresh(9223372036854775807 + 1))
   }
-  on SecondFailure -> Int {
+  on second_failure -> int {
     count_value(fresh(9223372036854775807 + 1), fresh(1 / 0))
   }
-  on Fail -> Int {
+  on fail -> int {
     value = next(value)
     fail(value)
   }

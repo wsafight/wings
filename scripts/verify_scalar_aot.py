@@ -107,8 +107,8 @@ def message(name, *arguments):
 
 def verify_cli_record_replies(directory):
     arguments = [VM, "run", "--trusted", directory, "--heap-records", 16]
-    requests = [message("Value", -(2**63)), message("Read"), message("Value", 2**63 - 2),
-                message("Read"), message("EmptyValue"), message("Text")]
+    requests = [message("value", -(2**63)), message("read"), message("value", 2**63 - 2),
+                message("read"), message("empty_value"), message("text")]
     result = command(arguments, "".join(json.dumps(item) + "\n" for item in requests))
     values = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
     for value, expected in ((values[0], -(2**63)), (values[2], 2**63 - 2)):
@@ -118,44 +118,44 @@ def verify_cli_record_replies(directory):
     assert values[1] == 1 and values[3] == 2 and values[4] == {}, values
     assert values[5] == {"label": {"string": "中文😀\n\"\\"}, "accepted": False, "values": {"int_list": []},
                          "bytes": {"bytes": []}, "saved": {"record_int": 0}, "empty": {}, "unit": None}, values[5]
-    for name in ("Boundary", "EscapedBoundary", "BinaryBoundary"):
-        result = command(arguments, json.dumps(message(name)) + "\n" + json.dumps(message("Read")) + "\n")
+    for name in ("boundary", "escaped_boundary", "binary_boundary"):
+        result = command(arguments, json.dumps(message(name)) + "\n" + json.dumps(message("read")) + "\n")
         assert result.stdout.count("\n") == 2 and len(result.stdout.encode()) > 65536, name
         value, state = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
-        if name == "Boundary":
+        if name == "boundary":
             assert value["detail"]["label"] == {"string": "a" * 65535} and value["detail"]["bytes"] == {"bytes": [255]}
             assert state == 42, state
-        elif name == "EscapedBoundary":
+        elif name == "escaped_boundary":
             assert value["label"] == {"string": "\0" * 65536} and value["bytes"] == {"bytes": []}
             assert state == 0, state
         else:
             assert value["bytes"] == {"bytes": [255] * 65536} and value["label"] == {"string": ""}
             assert state == 0, state
-    for name, diagnostic in (("TooLarge", "65536 bytes"), ("Fail", "division by zero")):
+    for name, diagnostic in (("too_large", "65536 bytes"), ("fail", "division by zero")):
         result = command(arguments, json.dumps(message(name)) + "\n", expected=1)
         assert not result.stdout and diagnostic in result.stderr and "panicked" not in result.stderr, result
     for invalid in ({"value": 1}, [1], "raw", None):
-        result = command(arguments, json.dumps(message("Value", invalid)) + "\n", expected=1)
+        result = command(arguments, json.dumps(message("value", invalid)) + "\n", expected=1)
         assert not result.stdout and result.stderr.startswith("wings-vm: "), result
     reader, writer = os.pipe()
     os.close(reader)
     try:
-        result = subprocess.run([str(value) for value in arguments], input=json.dumps(message("Value", 7)),
+        result = subprocess.run([str(value) for value in arguments], input=json.dumps(message("value", 7)),
                                 text=True, stdout=writer, stderr=subprocess.PIPE, timeout=30,
                                 cwd=ROOT, preexec_fn=limit_child)
     finally:
         os.close(writer)
     assert result.returncode == 1 and "broken pipe" in result.stderr.lower() and "panicked" not in result.stderr, result
     source = directory.parent / "cli-deep-records.wings"
-    records = ["record R0 { value: Int }"]
-    expression = "R0(7)"
+    records = ["struct R0 { value: int }"]
+    expression = "R0 { value: 7 }"
     for index in range(1, 32):
-        records.append(f"record R{index} {{ inner: R{index - 1} }}")
-        expression = f"R{index}({expression})"
-    source.write_text("process P { " + " ".join(records) + " state n: Int = 0; on Read -> R31 { " + expression + " } }")
+        records.append(f"struct R{index} {{ inner: R{index - 1} }}")
+        expression = f"R{index} {{ inner: {expression} }}"
+    source.write_text("actor P { " + " ".join(records) + " state n = 0; on read -> R31 => " + expression + " }")
     deep = directory.parent / "cli-deep-records"
     command([COMPILER, "build", source, "-o", deep])
-    result = command([VM, "run", "--trusted", deep, "--heap-records", 64], json.dumps(message("Read")) + "\n")
+    result = command([VM, "run", "--trusted", deep, "--heap-records", 64], json.dumps(message("read")) + "\n")
     value = json.loads(result.stdout)["reply"]
     for _ in range(31):
         assert list(value) == ["inner"], value
@@ -238,7 +238,7 @@ def verify_cli_arguments(directory, parent):
         alias = os.fsencode(parent) + b"/counter-\xff"
         os.symlink(os.fsencode(directory), alias)
         for options in ([], ["--heap-records", "2"]):
-            result = run(["run", "--trusted", alias, *options], 0, (json.dumps(message("Inc", 7)) + "\n").encode())
+            result = run(["run", "--trusted", alias, *options], 0, (json.dumps(message("inc", 7)) + "\n").encode())
             assert json.loads(result.stdout) == {"reply": 7} and not result.stderr
     print("Bounded CLI startup verified: native argv, help/options, exact byte limit and non-UTF8 handling; not complete host accounting")
 
@@ -261,13 +261,13 @@ def verify_cli_stdio(directory):
             child = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      preexec_fn=limit_child, cwd=ROOT)
             try:
-                child.stdin.write((json.dumps(message("Inc", 3)) + "\n").encode())
+                child.stdin.write((json.dumps(message("inc", 3)) + "\n").encode())
                 child.stdin.flush()
                 assert flushed_reply(child) == {"reply": 3}
                 if broken_pipe:
                     child.stdout.close()
                     child.stdout = None
-                child.stdin.write((json.dumps(message("Inc", 4)) + "\n").encode())
+                child.stdin.write((json.dumps(message("inc", 4)) + "\n").encode())
                 child.stdin.flush()
                 if not broken_pipe:
                     assert flushed_reply(child) == {"reply": 7}
@@ -549,8 +549,8 @@ def verify_control_abi(directory):
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 22
-    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
+    assert manifest["abi"] == 23
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
     for function in [entry, initializer]:
@@ -640,7 +640,7 @@ def verify_control_abi(directory):
             assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
             assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
             assert observations == before
-    print("Scalar ABI v22 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+    print("Scalar ABI v23 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
 
 
 def cargo_example(package, name, *arguments):
@@ -770,6 +770,13 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                     return 9
                 else:
                     result[0] = node[1 if operation == 5 else 2]
+            elif operation == 26:
+                ptr, length, _ = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
+                if ptr == 0 or not 0 <= length <= 65536:
+                    return 13
+                sequence += 1
+                records[sequence] = ctypes.string_at(ptr, length)
+                result[0] = sequence
             elif operation in [8, 9, 10, 11, 12, 13]:
                 values = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
                 if operation == 8:
@@ -871,7 +878,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
                 assert current.target == (42 if current.operation == 4 else (43 if current.operation == 5 else 0))
                 if current.operation == 4:
                     assert current.timeout_ms == 60000
-                    assert manifest["handlers"][current.callback]["name"] == "Completed"
+                    assert manifest["handlers"][current.callback]["name"] == "completed"
                 effects.append((current.operation, list(current.arguments[:current.count])))
             elif local_processes:
                 assert current.operation in [2, 3]
@@ -890,23 +897,23 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 22 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
+    assert manifest["abi"] == 23 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else "Ref")))
     if self_send or local_processes or requests or record_messages:
-        name = "Start"
+        name = "start"
     elif byte_buffers:
-        name = "Fill"
+        name = "fill"
     elif lists:
-        name = "Build"
+        name = "build"
     elif record_loops or functions:
-        name = "Count"
+        name = "count"
     elif record_branches:
-        name = "Nested"
+        name = "nested"
     elif loops == "nested":
-        name = "NestedHeap"
+        name = "nested_heap"
     elif loops == "branch":
-        name = "BranchHeap"
+        name = "branch_heap"
     else:
-        name = "Heap" if branches or loops else "Replace"
+        name = "heap" if branches or loops else "replace"
     index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == name)
     flag = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(19)
@@ -932,13 +939,13 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             assert records[output.state] == b""
             committed = output.state
             for name, values, expected_state, expected_reply in [
-                ("Fill", [65536, 3], bytes([3]) * 65536, 65536),
-                ("Set", [65535, 255], bytes([3]) * 65535 + bytes([255]), 1023),
-                ("Branch", [0], bytes([3]) * 65535 + bytes([255]), 6),
-                ("Branch", [1], bytes([3]) * 65535 + bytes([255]), 10),
-                ("Read", [65535], bytes([3]) * 65535 + bytes([255]), 255),
-                ("Loop", [7], bytes([7]) + bytes(511), 7),
-                ("Length", [], bytes([7]) + bytes(511), 512),
+                ("fill", [65536, 3], bytes([3]) * 65536, 65536),
+                ("set", [65535, 255], bytes([3]) * 65535 + bytes([255]), 1023),
+                ("branch", [0], bytes([3]) * 65535 + bytes([255]), 6),
+                ("branch", [1], bytes([3]) * 65535 + bytes([255]), 10),
+                ("read", [65535], bytes([3]) * 65535 + bytes([255]), 255),
+                ("loop", [7], bytes([7]) + bytes(511), 7),
+                ("length", [], bytes([7]) + bytes(511), 512),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
@@ -947,19 +954,19 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             assert max(frame_depths) >= 2, frame_depths
             previous = 0
             for number in [-(1 << 63), -1, 0, 1, (1 << 63) - 1, 0]:
-                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "SetWord")
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "set_word")
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504, number])
                 assert output.reply == previous
                 committed = output.state
                 assert records[committed][504:] == number.to_bytes(8, "big", signed=True)
-                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "ReadWord")
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "read_word")
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504])
                 assert output.reply == number
                 previous = number
             for name, values, expected_status in [
-                ("Fill", [-1, 0], 13), ("Fill", [65537, 0], 13),
-                ("Fill", [1, 256], 13), ("Set", [512, 0], 13), ("Fail", [], 2),
-                ("ReadWord", [505], 13), ("SetWord", [-1, 0], 13), ("FailWord", [], 2),
+                ("fill", [-1, 0], 13), ("fill", [65537, 0], 13),
+                ("fill", [1, 256], 13), ("set", [512, 0], 13), ("fail", [], 2),
+                ("read_word", [505], 13), ("set_word", [-1, 0], 13), ("fail_word", [], 2),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 entry = getattr(library, f"wings_scalar_handler_{index}")
@@ -977,34 +984,34 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
         if list_messages:
             committed = output.state
             for name, values, expected_reply in [
-                ("Start", [23, 0], 23), ("Self", [29], 29),
-                ("Mixed", [31], 31), ("Ask", [37], -1), ("Empty", [], 0),
+                ("start", [23, 0], 23), ("self_msg", [29], 29),
+                ("mixed", [31], 31), ("ask", [37], -1), ("empty", [], 0),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
                 assert output.reply == expected_reply and records[output.state] is None
             assert effects == [
-                (2, None, 0, 0, []), (3, "Store", 0, 1, [[23, 24]]),
-                (0, "Store", 0, 1, [[29, 30]]),
-                (2, None, 0, 0, []), (3, "StoreMixed", 4, 25, [[31, 32], 1, 33, [32], []]),
-                (2, None, 0, 0, []), (4, "Compute", 0, 1, [[37, 38]]),
-                (0, "Store", 0, 1, [[]]),
+                (2, None, 0, 0, []), (3, "store", 0, 1, [[23, 24]]),
+                (0, "store", 0, 1, [[29, 30]]),
+                (2, None, 0, 0, []), (3, "store_mixed", 4, 25, [[31, 32], 1, 33, [32], []]),
+                (2, None, 0, 0, []), (4, "compute", 0, 1, [[37, 38]]),
+                (0, "store", 0, 1, [[]]),
             ], effects
             print("Compiler roots verified: list source graphs and mixed record/list last-use arguments at every effect")
             return
         if record_messages:
             committed = output.state
             for name, values, expected_reply in [
-                ("Start", [23, 0], 23), ("Self", [29], 29),
-                ("Pair", [31], 31), ("Ask", [37], 0),
+                ("start", [23, 0], 23), ("self_msg", [29], 29),
+                ("pair", [31], 31), ("ask", [37], 0),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
                 assert output.reply == expected_reply and records[output.state] == 0
             assert effects == [
-                (2, None, 0, []), (3, "Store", 1, [23]), (0, "Store", 1, [29]),
-                (2, None, 0, []), (3, "StorePair", 5, [31, 1, 32]),
-                (2, None, 0, []), (4, "Compute", 1, [37]),
+                (2, None, 0, []), (3, "store", 1, [23]), (0, "store", 1, [29]),
+                (2, None, 0, []), (3, "store_pair", 5, [31, 1, 32]),
+                (2, None, 0, []), (4, "compute", 1, [37]),
             ], effects
             print("Compiler roots verified: record message copies, mixed masks and last-use references at every effect")
             return
@@ -1040,7 +1047,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             committed = output.state
             output = execute(handler, [])
             assert records[output.state] == 9 and output.reply == 9
-            add = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Add")
+            add = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "add")
             assert effects == [(add, [3])], effects
             for effect_status in [3, 10]:
                 context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None, ctypes.cast(effect_call, ctypes.c_void_p).value)
@@ -1055,9 +1062,9 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             assert records[output.state] is None
             committed = output.state
             for name, values, expected_reply in [
-                ("Empty", [], 1), ("Push", [7], 7), ("Push", [11], 11),
-                ("Shared", [1], 18), ("Shared", [0], 106), ("Pop", [], 11), ("Pop", [], 7),
-                ("Empty", [], 1), ("Build", [7], 7), ("Drain", [], 0), ("Empty", [], 1),
+                ("empty", [], 1), ("push", [7], 7), ("push", [11], 11),
+                ("shared", [1], 18), ("shared", [0], 106), ("pop", [], 11), ("pop", [], 7),
+                ("empty", [], 1), ("build", [7], 7), ("drain", [], 0), ("empty", [], 1),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
@@ -1069,8 +1076,8 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
         committed = output.state
         if functions:
             for name, values, expected_state, expected_reply in [
-                ("Count", [7], 7, 7), ("Choose", [0], 7, 7),
-                ("Choose", [1], 8, 8), ("Order", [], 8, 12), ("Once", [], 8, 38),
+                ("count", [7], 7, 7), ("choose", [0], 7, 7),
+                ("choose", [1], 8, 8), ("order", [], 8, 12), ("once", [], 8, 38),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
@@ -1080,7 +1087,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             sentinel_slots = (ctypes.c_uint64 * 1)(committed)
             sentinel = Frame(None, sentinel_slots, 1)
             cancel_depth = 3
-            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Choose")
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "choose")
             entry = getattr(library, f"wings_scalar_handler_{index}")
             context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
             context.roots = ctypes.pointer(sentinel)
@@ -1090,7 +1097,7 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             assert (rejected.state, rejected.reply) == (71, 91)
             cancel_depth = None
             flag.value = 0
-            for name, values, expected_status in [("Fail", [], 2), ("FirstFailure", [], 2), ("SecondFailure", [], 1)]:
+            for name, values, expected_status in [("fail", [], 2), ("first_failure", [], 2), ("second_failure", [], 1)]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 entry = getattr(library, f"wings_scalar_handler_{index}")
                 entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
@@ -1108,26 +1115,26 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             return
         if record_loops:
             for name, values, expected_state, expected_reply in [
-                ("Count", [0], 0, 0), ("Count", [5], 5, 5), ("Count", [3], 5, 5),
-                ("Preserve", [0, 10], 10, 10), ("Nested", [15], 17, 27),
-                ("Advance", [12, 8], 12, 12), ("Advance", [5, 9], 9, 9),
-                ("Retain", [15], 15, 15),
-                ("Sequential", [1, 1, 10], 15, 110),
-                ("Sequential", [1, 0, 10], 15, 130),
-                ("Sequential", [0, 1, 10], 15, 121),
-                ("Sequential", [0, 0, 10], 15, 131),
-                ("Backedges", [0, 20], 0, 20),
-                ("Backedges", [1, 20], 2, 22),
-                ("Backedges", [5, 20], 6, 26),
-                ("ZeroExit", [0, 30], 6, 36),
-                ("EmptyBranches", [1, 40], 40, 40),
-                ("EmptyBranches", [0, 50], 40, 40),
+                ("count", [0], 0, 0), ("count", [5], 5, 5), ("count", [3], 5, 5),
+                ("preserve", [0, 10], 10, 10), ("nested", [15], 17, 27),
+                ("advance", [12, 8], 12, 12), ("advance", [5, 9], 9, 9),
+                ("retain", [15], 15, 15),
+                ("sequential", [1, 1, 10], 15, 110),
+                ("sequential", [1, 0, 10], 15, 130),
+                ("sequential", [0, 1, 10], 15, 121),
+                ("sequential", [0, 0, 10], 15, 131),
+                ("backedges", [0, 20], 0, 20),
+                ("backedges", [1, 20], 2, 22),
+                ("backedges", [5, 20], 6, 26),
+                ("zero_exit", [0, 30], 6, 36),
+                ("empty_branches", [1, 40], 40, 40),
+                ("empty_branches", [0, 50], 40, 40),
             ]:
                 index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
                 output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
                 assert records[output.state] == expected_state and output.reply == expected_reply, (name, records, output.reply)
                 committed = output.state
-            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Fail")
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "fail")
             entry = getattr(library, f"wings_scalar_handler_{index}")
             entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
             entry.restype = ctypes.c_uint32
@@ -1147,16 +1154,16 @@ def verify_persistent_roots(directory, branches=False, loops=False, record_branc
             expected = 19 if first and second else (20 if not first and not second else previous)
             assert output.reply == expected and records[output.state] == expected
             committed = output.state
-        for name in ["Local", "Discard", "Replace"]:
+        for name in ["local", "discard", "replace"]:
             index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
             entry = getattr(library, f"wings_scalar_handler_{index}")
             for chosen in [1, 0]:
                 previous = records[committed]
-                output = execute(entry, [chosen] if name == "Discard" else [chosen, 23])
-                expected = previous if name == "Discard" else ((23 if chosen else 24) + previous if name == "Local" else (23 if chosen else previous))
+                output = execute(entry, [chosen] if name == "discard" else [chosen, 23])
+                expected = previous if name == "discard" else ((23 if chosen else 24) + previous if name == "local" else (23 if chosen else previous))
                 assert output.reply == expected, (name, chosen, output.reply, expected)
                 committed = output.state
-        index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "Fail")
+        index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "fail")
         entry = getattr(library, f"wings_scalar_handler_{index}")
         entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
         entry.restype = ctypes.c_uint32
@@ -1217,28 +1224,28 @@ def verify_cli_module_admission(parent):
 
 
 def verify_cli_input(counter, parent):
-    prefix = json.dumps(message("Inc", 7)) + "\n"
+    prefix = json.dumps(message("inc", 7)) + "\n"
     invalid = [
-        '{"message":"Missing","message":"Inc","args":[99]}',
-        '{"message":"Inc","args":[99],"args":[1]}',
-        '{"message":"Inc","mess\\u0061ge":"Inc","args":[99]}',
-        '{"message":"Inc","args":[99],"extra":0}',
-        '{"message":"Inc"}',
+        '{"message":"Missing","message":"inc","args":[99]}',
+        '{"message":"inc","args":[99],"args":[1]}',
+        '{"message":"inc","mess\\u0061ge":"inc","args":[99]}',
+        '{"message":"inc","args":[99],"extra":0}',
+        '{"message":"inc"}',
         '{"args":[99]}',
-        '{"message":"Inc","args":[1.0]}',
-        '{"message":"Inc","args":[1e0]}',
-        '{"message":"Inc","args":[9223372036854775808]}',
-        '{"message":"Inc","args":[-9223372036854775809]}',
-        '{"message":"Inc","args":["99"]}',
-        '{"message":"Inc","args":[{}]}',
-        '{"message":"Inc","args":[[]]}',
-        '{"message":"Inc","args":[99]} {}',
-        '{"message":"Inc","args":[' + ",".join(["1"] * 65) + "]}",
+        '{"message":"inc","args":[1.0]}',
+        '{"message":"inc","args":[1e0]}',
+        '{"message":"inc","args":[9223372036854775808]}',
+        '{"message":"inc","args":[-9223372036854775809]}',
+        '{"message":"inc","args":["99"]}',
+        '{"message":"inc","args":[{}]}',
+        '{"message":"inc","args":[[]]}',
+        '{"message":"inc","args":[99]} {}',
+        '{"message":"inc","args":[' + ",".join(["1"] * 65) + "]}",
         '{"message":"' + "x" * 257 + '","args":[]}',
         '{"message":"' + "\\u0061" * 10000 + '","args":[]}',
-        '{"message":"Inc","args":[' + "[" * 2000 + "0" + "]" * 2000 + "]}",
+        '{"message":"inc","args":[' + "[" * 2000 + "0" + "]" * 2000 + "]}",
         '"' + "\x7f" * 60000 + '"',
-        '{"message":"Inc","args":"' + "\x7f" * 60000 + '"}',
+        '{"message":"inc","args":"' + "\x7f" * 60000 + '"}',
     ]
     for options in [[], ["--heap-records", 4]]:
         for text in invalid:
@@ -1246,20 +1253,20 @@ def verify_cli_input(counter, parent):
             assert result.stdout == '{"reply":7}\n', (options, text[:128], result.stdout, result.stderr)
             assert result.stderr
             assert len(result.stderr) < 1024, (options, len(result.stderr))
-        exact = '{"args":[],"mess\\u0061ge":"\\u0047et"}'
+        exact = '{"args":[],"mess\\u0061ge":"\\u0067et"}'
         line = exact + " " * (64 * 1024 - len(exact) - 1) + "\n"
         result = command([VM, "run", "--trusted", counter, *options], prefix + line + exact)
         assert [json.loads(item) for item in result.stdout.splitlines()] == [
             {"reply": 7}, {"reply": 7}, {"reply": 7},
         ]
     source = parent / "cli-many-arguments.wings"
-    parameters = ",".join(f"value_{index}: Int" for index in range(64))
-    source.write_text(f"process Many {{ state count: Int = 0; on Sum({parameters}) -> Int {{ value_0 + value_63 }} }}")
+    parameters = ",".join(f"value_{index}: int" for index in range(64))
+    source.write_text(f"actor Many {{ state count = 0; on sum({parameters}) -> int => value_0 + value_63 }}")
     artifact = parent / "cli-many-arguments"
     command([COMPILER, "build", source, "-o", artifact])
-    result = invoke(artifact, [message("Sum", *range(64))])
+    result = invoke(artifact, [message("sum", *range(64))])
     assert json.loads(result.stdout) == {"reply": 63}
-    assert not invoke(artifact, [message("Sum", *range(65))], expected=1).stdout
+    assert not invoke(artifact, [message("sum", *range(65))], expected=1).stdout
 
 
 def main():
@@ -1321,27 +1328,27 @@ def main():
             assert 0 < sparse["empty_bytes"] < sparse["populated_bytes"] <= 256 << 20
             assert sparse["resources_released"] is True
         print("Sparse scheduler verified: 1000/10000 actors, 100 active, FIFO, generation reuse and cleanup; not BEAM/performance")
-        messages = [message("Get"), message("Inc", 3), message("Inc", 4), message("Reset"), message("Set", 12), message("Get"), message("Confirm")]
+        messages = [message("get"), message("inc", 3), message("inc", 4), message("reset"), message("set", 12), message("get"), message("confirm")]
         actual = [json.loads(line) for line in invoke(counter, messages).stdout.splitlines()]
         assert actual == [{"reply": 0}, {"reply": 3}, {"reply": 7}, {"accepted": True}, {"accepted": True}, {"reply": 12}, {"reply": None}]
         controlled = [VM, "run", "--trusted", counter, "--max-steps"]
         for budget in range(4):
-            result = command(controlled + [budget], json.dumps(message("Inc", 3)) + "\n", expected=1)
+            result = command(controlled + [budget], json.dumps(message("inc", 3)) + "\n", expected=1)
             assert not result.stdout and "step budget exhausted" in result.stderr
         result = command(controlled + [4], "".join(json.dumps(item) + "\n" for item in messages[:3]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 3, 7]
-        result = command(controlled + [2], json.dumps(message("Get")) + "\n" + json.dumps(message("Inc", 3)) + "\n" + json.dumps(message("Get")) + "\n", expected=1)
+        result = command(controlled + [2], json.dumps(message("get")) + "\n" + json.dumps(message("inc", 3)) + "\n" + json.dumps(message("get")) + "\n", expected=1)
         assert result.stdout == '{"reply":0}\n' and "step budget exhausted" in result.stderr
         for invalid in ["-1", "1.5", "18446744073709551616", "not-a-number"]:
             assert "unsigned 64-bit" in command(controlled + [invalid], expected=2).stderr
         command([sys.executable, Path(__file__), "--check-control", counter])
         example("execution_control", counter)
         argument_source = parent / "invocation-arguments.wings"
-        argument_text = "process Arguments {\n state count: Int = 0\n on Read -> Int { count }\n"
+        argument_text = "actor Arguments {\n state count = 0\n on read -> int => count\n"
         for count in (1, 8, 9, 64):
             names = [f"value{index}" for index in range(count)]
-            parameters = ", ".join(f"{name}: Int" for name in names)
-            argument_text += f" on Add{count}({parameters}) -> Int {{ count = count + {' + '.join(names)}\n count }}\n"
+            parameters = ", ".join(f"{name}: int" for name in names)
+            argument_text += f" on add{count}({parameters}) -> int {{ count += {' + '.join(names)}\n count }}\n"
         argument_source.write_text(argument_text + "}\n")
         argument_artifact = parent / "invocation-arguments"
         command([COMPILER, "build", argument_source, "-o", argument_artifact])
@@ -1395,16 +1402,16 @@ def main():
         example("record_heap")
         example("worker_wakeup")
         worker_source = parent / "worker.wings"
-        worker_source.write_text("""process Queue {
-  state count: Int = 0
-  on Add(value: Int) { count = count + value }
-  on Set(value: Int) { count = value }
-  on Fail { count = 99; let failure = 1 / 0 }
-  on Get -> Int { count }
-  on Bump(value: Int) -> Int { count = count + value; count }
-  on Ack -> Unit { () }
-  on EchoBool(value: Bool) -> Bool { value }
-  on FailRequest -> Int { count = 99; 1 / 0 }
+        worker_source.write_text("""actor Queue {
+  state count = 0
+  on add(value: int) => count += value
+  on set(value: int) => count = value
+  on fail { count = 99; let failure = 1 / 0 }
+  on get -> int => count
+  on bump(value: int) -> int { count += value; count }
+  on ack -> () {}
+  on echo_bool(value: bool) -> bool => value
+  on fail_request -> int { count = 99; 1 / 0 }
 }
 """)
         worker_artifact = parent / "worker"
@@ -1418,7 +1425,7 @@ def main():
         command([sys.executable, Path(__file__), "--check-record-message-roots", record_messages])
         result = command(
             [VM, "run", "--trusted", record_messages, "--heap-records", 16],
-            json.dumps(message("Store", 1)) + "\n",
+            json.dumps(message("store", 1)) + "\n",
             expected=1,
         )
         assert "not JSON arguments" in result.stderr
@@ -1426,7 +1433,7 @@ def main():
         command([COMPILER, "build", ROOT / "examples/list-messages.wings", "-o", list_messages])
         example("list_messages", list_messages)
         command([sys.executable, Path(__file__), "--check-list-message-roots", list_messages])
-        for name in ["Store", "Compute"]:
+        for name in ["store", "compute"]:
             result = command(
                 [VM, "run", "--trusted", list_messages, "--heap-records", 16],
                 json.dumps(message(name, 2 << 32)) + "\n",
@@ -1437,7 +1444,7 @@ def main():
         command([COMPILER, "build", ROOT / "examples/byte-messages.wings", "-o", byte_messages])
         result = example("byte_messages", byte_messages)
         print(result.stdout.strip())
-        for name in ["Store", "Compute"]:
+        for name in ["store", "compute"]:
             result = command([VM, "run", "--trusted", byte_messages, "--heap-records", 10],
                              json.dumps(message(name, 65536 << 32)) + "\n", expected=1)
             assert "not JSON arguments" in result.stderr
@@ -1472,17 +1479,17 @@ def main():
             for group in range(2)
         )
         timer_total = " + ".join(f"group_{group}" for group in range(2))
-        timer_source.write_text(f"""process Timer {{
-  state count: Int = 0
-  on Work(seed: Int) -> Int {{
+        timer_source.write_text(f"""actor Timer {{
+  state count = 0
+  on work(seed: int) -> int {{
     {timer_bindings}
     {timer_groups}
     let total = {timer_total}
-    count = count + total
+    count += total
     total
   }}
-  on Get -> Int {{ count }}
-  on Fail -> Int {{ count = 99; 1 / 0 }}
+  on get -> int => count
+  on fail -> int {{ count = 99; 1 / 0 }}
 }}
 """)
         timer_artifact = parent / "timer"
@@ -1492,16 +1499,16 @@ def main():
         resume_source = parent / "resume.wings"
         bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
         total = " + ".join(f"value_{index}" for index in range(48))
-        resume_source.write_text(f"""process Resume {{
-  state count: Int = 0
-  on Work(seed: Int) -> Int {{
+        resume_source.write_text(f"""actor Resume {{
+  state count = 0
+  on work(seed: int) -> int {{
     {bindings}
     let total = {total}
-    count = count + total
+    count += total
     total
   }}
-  on Get -> Int {{ count }}
-  on Fail -> Int {{ count = 99; 1 / 0 }}
+  on get -> int => count
+  on fail -> int {{ count = 99; 1 / 0 }}
 }}
 """)
         resume_artifact = parent / "resume"
@@ -1509,10 +1516,10 @@ def main():
         pressure_source = parent / "pressure.wings"
         pressure_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
         pressure_total = " + ".join(f"value_{index}" for index in range(128))
-        pressure_source.write_text(f"process Pressure {{ state count: Int = 0; on Work(seed: Int) -> Int {{ {pressure_bindings}; {pressure_total} }} }}")
+        pressure_source.write_text(f"actor Pressure {{ state count = 0; on work(seed: int) -> int {{ {pressure_bindings}; {pressure_total} }} }}")
         pressure_artifact = parent / "pressure"
         command([COMPILER, "build", pressure_source, "-o", pressure_artifact])
-        assert json.loads(invoke(pressure_artifact, [message("Work", 2)]).stdout) == {"reply": 8384}
+        assert json.loads(invoke(pressure_artifact, [message("work", 2)]).stdout) == {"reply": 8384}
         example("stack_boundary", counter, pressure_artifact)
         records = parent / "aot-records"
         records.mkdir()
@@ -1525,57 +1532,57 @@ def main():
         command([COMPILER, "build", ROOT / "examples/named-record-messages.wings", "-o", named_messages])
         print(example("named_record_messages", named_messages).stdout, end="")
         named_run = [VM, "run", "--trusted", named_records, "--heap-records", 16]
-        result = command(named_run, "".join(json.dumps(request) + "\n" for request in [message("Read"), message("Advance"), message("Text"), message("Select", False), message("Select", True), message("Read")]))
+        result = command(named_run, "".join(json.dumps(request) + "\n" for request in [message("read"), message("advance"), message("text"), message("select", False), message("select", True), message("read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [33, 8, {"string": "初始😀!"}, 9, 8, 35]
         language_records = parent / "language-records"
         command([COMPILER, "build", ROOT / "examples/records.wings", "-o", language_records])
         heap_run = [VM, "run", "--trusted", language_records, "--heap-records", 2]
-        result = command(heap_run, json.dumps(message("Work", 11)) + "\n" + json.dumps(message("Get")) + "\n")
+        result = command(heap_run, json.dumps(message("work", 11)) + "\n" + json.dumps(message("get")) + "\n")
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 11]
-        for failure, expected in [(message("Full"), "heap exhausted"), (message("Fail"), "division by zero")]:
-            result = command(heap_run, json.dumps(message("Work", 7)) + "\n" + json.dumps(failure) + "\n", expected=1)
+        for failure, expected in [(message("full"), "heap exhausted"), (message("fail"), "division by zero")]:
+            result = command(heap_run, json.dumps(message("work", 7)) + "\n" + json.dumps(failure) + "\n", expected=1)
             assert result.stdout == '{"reply":7}\n' and expected in result.stderr
-        result = command([VM, "run", "--trusted", language_records, "--max-steps", 128, "--heap-records", 2], json.dumps(message("Work", 5)) + "\n")
+        result = command([VM, "run", "--trusted", language_records, "--max-steps", 128, "--heap-records", 2], json.dumps(message("work", 5)) + "\n")
         assert result.stdout == '{"reply":5}\n'
-        assert "callback" in invoke(language_records, [message("Work", 5)], expected=1).stderr
+        assert "callback" in invoke(language_records, [message("work", 5)], expected=1).stderr
         for invalid in ["0", "1025", "-1", "1.5", "not-a-number", "18446744073709551616"]:
             assert "1..=1024" in command([VM, "run", "--trusted", language_records, "--heap-records", invalid], expected=2).stderr
         for options in [["--heap-records", 2, "--heap-records", 2], ["--max-steps", 4, "--max-steps", 8], ["--unknown", 1]]:
             assert "option" in command([VM, "run", "--trusted", language_records, *options], expected=2).stderr
         initializer_source = parent / "record-initializer.wings"
-        initializer_source.write_text("process P { state n: Int = read_int(record_int(7)); on Get -> Int { n } }")
+        initializer_source.write_text("actor P { state n = box(7).get(); on get -> int => n }")
         initializer_artifact = parent / "record-initializer"
         command([COMPILER, "build", initializer_source, "-o", initializer_artifact])
         assert "callback" in invoke(initializer_artifact, [], expected=1).stderr
-        assert command([VM, "run", "--trusted", initializer_artifact, "--heap-records", 1], json.dumps(message("Get")) + "\n").stdout == '{"reply":7}\n'
+        assert command([VM, "run", "--trusted", initializer_artifact, "--heap-records", 1], json.dumps(message("get")) + "\n").stdout == '{"reply":7}\n'
         example("language_records", language_records)
         record_state = parent / "record-state"
         command([COMPILER, "build", ROOT / "examples/record-state.wings", "-o", record_state])
         state_run = [VM, "run", "--trusted", record_state, "--heap-records", 2]
-        messages = [message("Get"), message("Replace", 17), message("Get"), message("Set", 23), message("Get")]
+        messages = [message("get"), message("replace", 17), message("get"), message("set", 23), message("get")]
         result = command(state_run, "".join(json.dumps(item) + "\n" for item in messages))
         assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": 7}, {"accepted": True}, {"reply": 17}, {"reply": 23}, {"reply": 23}]
-        result = command(state_run, json.dumps(message("Conditional", True)) + "\n" + json.dumps(message("Conditional", False)) + "\n")
+        result = command(state_run, json.dumps(message("conditional", True)) + "\n" + json.dumps(message("conditional", False)) + "\n")
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [18, 14]
         assert "accounted heap" in invoke(record_state, [], expected=1).stderr
-        result = command(state_run, json.dumps(message("Fail")) + "\n", expected=1)
+        result = command(state_run, json.dumps(message("fail")) + "\n", expected=1)
         assert not result.stdout and "division by zero" in result.stderr
-        result = command([VM, "run", "--trusted", record_state, "--heap-records", 1], json.dumps(message("Set", 1)) + "\n", expected=1)
+        result = command([VM, "run", "--trusted", record_state, "--heap-records", 1], json.dumps(message("set", 1)) + "\n", expected=1)
         assert not result.stdout and "heap exhausted" in result.stderr
         example("persistent_records", record_state)
         example("record_supervisor", record_state)
         command([sys.executable, Path(__file__), "--check-record-roots", record_state])
         branches = parent / "branches"
         command([COMPILER, "build", ROOT / "examples/branches.wings", "-o", branches])
-        result = invoke(branches, [message("Select", True, 9), message("Select", False, 11), message("Guard", True), message("OptionalHeap", True), message("Unit", True), message("Bool", False), message("Overflow", False)])
+        result = invoke(branches, [message("select", True, 9), message("select", False, 11), message("guard", True), message("optional_heap", True), message("unit", True), message("bool", False), message("overflow", False)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [9, 9, 17, 9, None, True, 9]
-        result = invoke(branches, [message("Nested", first, second) for first in [True, False] for second in [True, False]])
+        result = invoke(branches, [message("nested", first, second) for first in [True, False] for second in [True, False]])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 22, 33, 44]
-        for request, reason in [(message("Guard", False), "division by zero"), (message("OptionalHeap", False), "callback"), (message("Overflow", True), "overflow")]:
+        for request, reason in [(message("guard", False), "division by zero"), (message("optional_heap", False), "callback"), (message("overflow", True), "overflow")]:
             result = invoke(branches, [request], expected=1)
             assert not result.stdout and reason in result.stderr
         for flag, budget in [(True, 7), (False, 6)]:
-            text = json.dumps(message("Select", flag, 17)) + "\n"
+            text = json.dumps(message("select", flag, 17)) + "\n"
             result = command([VM, "run", "--trusted", branches, "--max-steps", budget], text)
             assert json.loads(result.stdout)["reply"] == (17 if flag else 7)
             result = command([VM, "run", "--trusted", branches, "--max-steps", budget - 1], text, expected=1)
@@ -1624,11 +1631,11 @@ def main():
         command([sys.executable, ROOT / "scripts/verify_lock_statistics.py"])
         command([sys.executable, ROOT / "scripts/verify_lock_statistics.py", "--runtime"])
         command([sys.executable, ROOT / "scripts/verify_admission_counter.py", "--artifact", mailbox_boundary])
-        result = invoke(loops, [message("Count", 0), message("Count", 10), message("Count", 5), message("Count", 20), message("Nested", 25)])
+        result = invoke(loops, [message("count", 0), message("count", 10), message("count", 5), message("count", 20), message("nested", 25)])
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
-        result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("Heap", 30)) + "\n")
+        result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("heap", 30)) + "\n")
         assert json.loads(result.stdout) == {"reply": 30}
-        for request, budget, reason in [(message("Forever"), 128, "step budget exhausted"), (message("Count", 100), 32, "step budget exhausted"), (message("Fail", 10), 1024, "division by zero")]:
+        for request, budget, reason in [(message("forever"), 128, "step budget exhausted"), (message("count", 100), 32, "step budget exhausted"), (message("fail", 10), 1024, "division by zero")]:
             result = command([VM, "run", "--trusted", loops, "--max-steps", budget], json.dumps(request) + "\n", expected=1)
             assert not result.stdout and reason in result.stderr
         example("loop_execution", loops)
@@ -1648,10 +1655,10 @@ def main():
         managed_stack_source = parent / "managed-stack.wings"
         managed_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(32))
         managed_total = " + ".join(f"value_{index}" for index in range(32))
-        managed_functions = ["fn f0(seed: Int) -> Int { seed + 1 }"]
+        managed_functions = ["fn f0(seed: int) -> int => seed + 1"]
         for index in range(1, 32):
-            managed_functions.append(f"fn f{index}(seed: Int) -> Int {{ {managed_bindings}; let nested = f{index - 1}(seed); {managed_total} + nested }}")
-        managed_stack_source.write_text("process ManagedStack { state count: Int = 0; " + "\n".join(managed_functions) + " on Work(seed: Int) -> Int { count = 99; f31(seed) } }")
+            managed_functions.append(f"fn f{index}(seed: int) -> int {{ {managed_bindings}; let nested = f{index - 1}(seed); {managed_total} + nested }}")
+        managed_stack_source.write_text("actor ManagedStack { state count = 0; " + "\n".join(managed_functions) + " on work(seed: int) -> int { count = 99; f31(seed) } }")
         managed_stack = parent / "managed-stack"
         command([COMPILER, "build", managed_stack_source, "-o", managed_stack])
         example("managed_stack", managed_stack)
@@ -1684,7 +1691,7 @@ def main():
         result = example("scalar_completions", scalar_completions)
         assert "72 bounded Bool/Unit scenarios" in result.stdout
         print(result.stdout.strip())
-        for name, value in [("CompletedBool", False), ("CompletedUnit", None)]:
+        for name, value in [("completed_bool", False), ("completed_unit", None)]:
             result = invoke(scalar_completions, [message(name, 1, 0, value)], expected=1)
             assert not result.stdout and "not JSON arguments" in result.stderr
         record_replies = parent / "record-replies"
@@ -1706,14 +1713,14 @@ def main():
         print(result.stdout.strip())
         verify_cli_record_replies(named_record_replies)
         record_run = [VM, "run", "--trusted", record_replies, "--heap-records", 8]
-        result = command(record_run, "".join(json.dumps(request) + "\n" for request in [message("Value", -(2**63)), message("Value", 2**63 - 1), message("Current")]))
+        result = command(record_run, "".join(json.dumps(request) + "\n" for request in [message("value", -(2**63)), message("value", 2**63 - 1), message("current")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": 2**63 - 1}, {"record_int": 2}]
-        result = command(record_run, json.dumps(message("Echo", 0)) + "\n", expected=1)
+        result = command(record_run, json.dumps(message("echo", 0)) + "\n", expected=1)
         assert not result.stdout and "not JSON arguments" in result.stderr
-        result = command(record_run, json.dumps(message("Done", 1, 0, 0)) + "\n", expected=1)
+        result = command(record_run, json.dumps(message("done", 1, 0, 0)) + "\n", expected=1)
         assert not result.stdout and "not JSON arguments" in result.stderr
         state_run = [VM, "run", "--trusted", record_reply_state, "--heap-records", 8]
-        result = command(state_run, "".join(json.dumps(request) + "\n" for request in [message("Put", -(2**63)), message("Current"), message("Put", 2**63 - 1), message("Read")]))
+        result = command(state_run, "".join(json.dumps(request) + "\n" for request in [message("put", -(2**63)), message("current"), message("put", 2**63 - 1), message("read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [{"record_int": -(2**63)}, {"record_int": -(2**63)}, {"record_int": 2**63 - 1}, 2**63 - 1]
         list_replies = parent / "list-replies"
         command([COMPILER, "build", ROOT / "examples/list-replies.wings", "-o", list_replies])
@@ -1722,18 +1729,18 @@ def main():
         print(result.stdout.strip())
         list_run = [VM, "run", "--trusted", list_replies, "--heap-records", 140]
         for length in [0, 1, 64]:
-            result = command(list_run, "".join(json.dumps(request) + "\n" for request in [message("Make", 17, length), message("Current"), message("Candidate"), message("Marker")]))
+            result = command(list_run, "".join(json.dumps(request) + "\n" for request in [message("make", 17, length), message("current"), message("candidate"), message("marker")]))
             values = {"int_list": list(range(17, 17 + length))}
             assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
         for value in [-(2**63), 2**63 - 1]:
-            result = command(list_run, json.dumps(message("Make", value, 1)) + "\n")
+            result = command(list_run, json.dumps(message("make", value, 1)) + "\n")
             assert json.loads(result.stdout) == {"reply": {"int_list": [value]}}
-        result = command(list_run, json.dumps(message("Make", 17, 65)) + "\n", expected=1)
+        result = command(list_run, json.dumps(message("make", 17, 65)) + "\n", expected=1)
         assert not result.stdout and "exceeds 64" in result.stderr
-        for request in [message("Echo", 0), message("Done", 1, 0, 0)]:
+        for request in [message("echo", 0), message("done", 1, 0, 0)]:
             result = command(list_run, json.dumps(request) + "\n", expected=1)
             assert not result.stdout and "not JSON arguments" in result.stderr
-        result = invoke(list_replies, [message("Make", 17, 1)], expected=1)
+        result = invoke(list_replies, [message("make", 17, 1)], expected=1)
         assert not result.stdout and "heap" in result.stderr
         request_roots = parent / "request-roots"
         bytes_replies = parent / "bytes-replies"
@@ -1745,7 +1752,7 @@ def main():
         assert "72 language scenarios" in result.stdout
         print(result.stdout.strip())
         string_reply_run = [VM, "run", "--trusted", string_replies, "--heap-records", 8]
-        result = command(string_reply_run, json.dumps(message("Unicode")) + "\n")
+        result = command(string_reply_run, json.dumps(message("unicode")) + "\n")
         assert json.loads(result.stdout)["reply"] == {"string": "中😀\0\n\r\t\\\""}
         command([COMPILER, "build", ROOT / "examples/string-values.wings", "-o", strings])
         result = example("string_values", strings)
@@ -1758,16 +1765,16 @@ def main():
         assert "Unicode scalar indexing/slicing verified:" in result.stdout
         print(result.stdout.strip())
         slicing_run = [VM, "run", "--trusted", slicing, "--heap-records", 16]
-        requests = [message("At", index) for index in range(5)] + [
-            message("Slice", 0, 5), message("Slice", 1, 3), message("Slice", 2, 2),
-            message("Slice", 5, 0), message("Boundary"), message("Fill"), message("Last"),
+        requests = [message("at", index) for index in range(5)] + [
+            message("slice", 0, 5), message("slice", 1, 3), message("slice", 2, 2),
+            message("slice", 5, 0), message("boundary"), message("fill"), message("last"),
         ]
         result = command(slicing_run, "".join(json.dumps(request) + "\n" for request in requests))
         replies = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
         assert replies == [65, 233, 20013, 128512, 90, {"string": "Aé中😀Z"},
                            {"string": "é中😀"}, {"string": "中😀"}, {"string": ""},
                            {"string": "😀"}, 65536, {"string": "a"}]
-        for request in [message("NegativeIndex"), message("PastEnd"), message("NegativeLength"), message("Overflow")]:
+        for request in [message("negative_index"), message("past_end"), message("negative_length"), message("overflow")]:
             result = command(slicing_run, json.dumps(request) + "\n", expected=1)
             assert not result.stdout
             assert "string index or slice is out of bounds" in result.stderr
@@ -1778,11 +1785,11 @@ def main():
         assert "String content equality verified:" in result.stdout
         print(result.stdout.strip())
         equality_run = [VM, "run", "--trusted", equality, "--heap-records", 16]
-        result = command(equality_run, "".join(json.dumps(request) + "\n" for request in [message("Self"), message("Fill", 257), message("Equal", 257), message("Different", 256), message("Unicode"), message("NotNormalized"), message("LastByte")]))
+        result = command(equality_run, "".join(json.dumps(request) + "\n" for request in [message("self_msg"), message("fill", 257), message("equal", 257), message("different", 256), message("unicode"), message("not_normalized"), message("last_byte")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [True, 257, True, True, True, True, True]
-        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("Unicode"), message("Copy"), message("Grow", 20), message("Read")]))
+        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("unicode"), message("copy"), message("grow", 20), message("read")]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [207, 2, 20, 20]
-        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("Unicode"), message("Invalid")]), expected=1)
+        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("unicode"), message("invalid")]), expected=1)
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [207]
         assert "invalid UTF-8 string" in result.stderr
         result = example("bytes_replies", bytes_replies)
@@ -1790,10 +1797,10 @@ def main():
         print(result.stdout.strip())
         bytes_run = [VM, "run", "--trusted", bytes_replies, "--heap-records", 8]
         for length in [0, 1, 256, 257, 65536]:
-            result = command(bytes_run, "".join(json.dumps(request) + "\n" for request in [message("Make", length), message("Current"), message("Candidate"), message("Marker")]))
+            result = command(bytes_run, "".join(json.dumps(request) + "\n" for request in [message("make", length), message("current"), message("candidate"), message("marker")]))
             values = {"bytes": [255] * length}
             assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
-        result = command(bytes_run, json.dumps(message("Make", 65537)) + "\n", expected=1)
+        result = command(bytes_run, json.dumps(message("make", 65537)) + "\n", expected=1)
         assert not result.stdout
         command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
         command([sys.executable, Path(__file__), "--check-request-roots", request_roots])
@@ -1801,43 +1808,44 @@ def main():
         command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
         for limit, budget in [(0, 6), (1, 12), (10, 66)]:
             for exact in [True, False]:
-                result = command([VM, "run", "--trusted", loops, "--max-steps", budget if exact else budget - 1], json.dumps(message("Count", limit)) + "\n", expected=0 if exact else 1)
+                result = command([VM, "run", "--trusted", loops, "--max-steps", budget if exact else budget - 1], json.dumps(message("count", limit)) + "\n", expected=0 if exact else 1)
                 assert (json.loads(result.stdout)["reply"] == limit) if exact else (not result.stdout and "step budget exhausted" in result.stderr)
         comparisons = parent / "comparisons"
         command([COMPILER, "build", ROOT / "examples/comparisons.wings", "-o", comparisons])
         checks = []
         expected = []
         for left, right in [(-2**63, 2**63 - 1), (2**63 - 1, -2**63), (-1, 0), (0, -1), (-2**63, -2**63), (2**63 - 1, 2**63 - 1), (0, 0)]:
-            for name, value in [("Eq", left == right), ("Ne", left != right), ("Lt", left < right), ("Le", left <= right), ("Gt", left > right), ("Ge", left >= right), ("Max", max(left, right))]:
+            for name, value in [("eq", left == right), ("ne", left != right), ("lt", left < right), ("le", left <= right), ("gt", left > right), ("ge", left >= right), ("max", max(left, right))]:
                 checks.append(message(name, left, right))
                 expected.append(value)
         for left in [False, True]:
             for right in [False, True]:
-                checks.append(message("BoolEq", left, right))
+                checks.append(message("bool_eq", left, right))
                 expected.append(left == right)
-        checks.append(message("UnitEq", None, None))
+        checks.append(message("unit_eq", None, None))
         expected.append(True)
         result = invoke(comparisons, checks)
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == expected
-        result = command([VM, "run", "--trusted", comparisons, "--heap-records", 1], json.dumps(message("Heap", -2**63)) + "\n")
+        result = command([VM, "run", "--trusted", comparisons, "--heap-records", 1], json.dumps(message("heap", -2**63)) + "\n")
         assert json.loads(result.stdout) == {"reply": True}
         for budget, success in [(5, True), (4, False)]:
-            result = command([VM, "run", "--trusted", comparisons, "--max-steps", budget], json.dumps(message("Lt", -1, 0)) + "\n", expected=0 if success else 1)
+            result = command([VM, "run", "--trusted", comparisons, "--max-steps", budget], json.dumps(message("lt", -1, 0)) + "\n", expected=0 if success else 1)
             assert (json.loads(result.stdout)["reply"] is True) if success else (not result.stdout and "step budget exhausted" in result.stderr)
         example("stackful_resume", counter, resume_artifact)
         example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
-        source_path.write_text("""process Arithmetic {
-  state count: Int = 0
-  on Get -> Int { count }
-  on Add(value: Int) -> Int { count = count + value; count }
-  on Fail -> Int { count = 99; 1 / 0 }
-  on Sum(left: Int, right: Int) -> Int { left + right }
-  on Difference(left: Int, right: Int) -> Int { left - right }
-  on Product(left: Int, right: Int) -> Int { left * right }
-  on Divide(left: Int, right: Int) -> Int { left / right }
-  on Negate(value: Int) -> Int { -value }
-  on Previous(value: Int) -> Int {
+        source_path.write_text("""actor Arithmetic {
+  state count = 0
+  on get -> int => count
+  on add(value: int) -> int { count += value; count }
+  on fail -> int { count = 99; 1 / 0 }
+  on sum(left: int, right: int) -> int => left + right
+  on difference(left: int, right: int) -> int => left - right
+  on product(left: int, right: int) -> int => left * right
+  on divide(left: int, right: int) -> int => left / right
+  on remainder(left: int, right: int) -> int => left % right
+  on negate(value: int) -> int => -value
+  on previous(value: int) -> int {
     let previous = count
     count = value
     previous
@@ -1848,41 +1856,51 @@ def main():
         command([COMPILER, "build", source_path, "-o", arithmetic])
         minimum = -(2**63)
         maximum = 2**63 - 1
-        result = invoke(arithmetic, [message("Sum", 6, 7), message("Difference", 6, 7), message("Product", -6, 7), message("Divide", -7, 2), message("Negate", -6), message("Add", 4), message("Previous", 8), message("Get")])
-        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [13, -1, -42, -3, 6, 4, 4, 8]
+        result = invoke(arithmetic, [message("sum", 6, 7), message("difference", 6, 7), message("product", -6, 7), message("divide", -7, 2), message("remainder", -7, 3), message("remainder", 7, -3), message("negate", -6), message("add", 4), message("previous", 8), message("get")])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [13, -1, -42, -3, -1, 1, 6, 4, 4, 8]
         failing = [
-            message("Sum", maximum, 1),
-            message("Difference", minimum, 1),
-            message("Product", maximum, 2),
-            message("Divide", 1, 0),
-            message("Divide", minimum, -1),
-            message("Negate", minimum),
-            message("Fail"),
+            message("sum", maximum, 1),
+            message("difference", minimum, 1),
+            message("product", maximum, 2),
+            message("divide", 1, 0),
+            message("divide", minimum, -1),
+            message("remainder", 1, 0),
+            message("remainder", minimum, -1),
+            message("negate", minimum),
+            message("fail"),
         ]
         for failure in failing:
-            result = invoke(arithmetic, [message("Add", 7), failure, message("Get")], expected=1)
+            result = invoke(arithmetic, [message("add", 7), failure, message("get")], expected=1)
             assert result.stdout == '{"reply":7}\n'
             assert "managed" in result.stderr
-        for invalid in [message("Missing"), message("Add"), message("Add", True), message("Add", 2**63), message("Add", 1, 2)]:
+        showcase = parent / "showcase"
+        command([COMPILER, "build", ROOT / "examples/showcase.wings", "-o", showcase])
+        showcase_run = [VM, "run", "--trusted", showcase, "--heap-records", 64]
+        showcase_out = command(showcase_run, json.dumps(message("run_step", 6)) + "\n" + json.dumps(message("status")) + "\n")
+        assert [json.loads(line)["reply"] for line in showcase_out.stdout.splitlines()] == [
+            {"string": "v2:35:false:true:3"},
+            {"string": "v2:35:false:true:3|total=12"},
+        ], showcase_out.stdout
+        for invalid in [message("Missing"), message("add"), message("add", True), message("add", 2**63), message("add", 1, 2)]:
             assert not invoke(arithmetic, [invalid], expected=1).stdout
         assert "--trusted" in command([VM, "run", arithmetic], expected=2).stderr
         assert "64 KiB" in command([VM, "run", "--trusted", arithmetic], "x" * (64 * 1024 + 1), expected=1).stderr
         assert command([VM, "run", "--trusted", arithmetic], "not json\n", expected=1).stderr
         assert "new artifact directory" in command([COMPILER, "build", source_path, "-o", arithmetic], expected=1).stderr
         flag_source = parent / "flag.wings"
-        flag_source.write_text("""process Flag {
-  state enabled: Bool = false
-  on Set(value: Bool) -> Bool { let previous = enabled; enabled = value; previous }
-  on Get -> Bool { enabled }
-  on Confirm(value: Unit) -> Unit { value }
-  on Notify(value: Unit) { value }
+        flag_source.write_text("""actor Flag {
+  state enabled = false
+  on set(value: bool) -> bool { let previous = enabled; enabled = value; previous }
+  on get -> bool => enabled
+  on confirm(value: ()) -> () => value
+  on notify(value: ()) { value }
 }
 """)
         flag = parent / "flag"
         command([COMPILER, "build", flag_source, "-o", flag])
-        result = invoke(flag, [message("Set", True), message("Get"), message("Confirm", None), message("Notify", None)])
+        result = invoke(flag, [message("set", True), message("get"), message("confirm", None), message("notify", None)])
         assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": False}, {"reply": True}, {"reply": None}, {"accepted": True}]
-        assert not invoke(flag, [message("Set", 1)], expected=1).stdout
+        assert not invoke(flag, [message("set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
         for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 6), ("abi", 7), ("abi", 8), ("abi", 9), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
@@ -1903,17 +1921,17 @@ def main():
         library.symlink_to(saved_library)
         assert "regular file" in command([VM, "run", "--trusted", counter], expected=1).stderr
         failure_source = parent / "bad-initializer.wings"
-        failure_source.write_text("process Broken { state count: Int = 1 / 0; on Get -> Int { count } }")
+        failure_source.write_text("actor Broken { state count = 1 / 0; on get -> int => count }")
         failure_artifact = parent / "bad-initializer"
         command([COMPILER, "build", failure_source, "-o", failure_artifact])
         assert "division by zero" in invoke(failure_artifact, [], expected=1).stderr
         invalid_source = parent / "invalid.wings"
-        invalid_source.write_text("process Invalid { state count: Int = true }")
+        invalid_source.write_text("actor Invalid { state count: int = true }")
         invalid_artifact = parent / "invalid"
         command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1)
         assert not invalid_artifact.exists()
-        invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
-        assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
+        invalid_source.write_text("actor First { state value: () = () } actor Second { state value: () = () }")
+        assert "exactly one actor" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
     print("Scalar AOT verification passed: execution/stack boundaries, live stacks, quota accounting, compiler record roots/GC, worker mailboxes/requests/deadlines, bounded supervision, OS wakeup and artifact rejection")
 
 

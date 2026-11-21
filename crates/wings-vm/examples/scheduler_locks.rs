@@ -53,7 +53,7 @@ fn run(directory: &Path, workers: usize, enabled: bool) -> Result<Value, String>
     let handle = scheduler.handle();
     let first = handle.spawn(&module, limits(), 1)?;
     let second = handle.spawn(&module, limits(), 1)?;
-    let increment = module.handler("Inc")?;
+    let increment = module.handler("inc")?;
     for expected in 1..=8 {
         let mut first_reply = handle.request(first, &increment, &[1], 64, remaining()?)?;
         let mut second_reply = handle.request(second, &increment, &[1], 64, remaining()?)?;

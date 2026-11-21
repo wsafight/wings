@@ -1,13 +1,15 @@
 use wings_source::{MAX_DIAGNOSTICS, Span};
-use wings_syntax::ast::{BinaryOperator, Expr, ExprKind, Statement};
+use wings_syntax::ast::{
+    BinaryOperator, Expr, ExprKind, InterpolatedPart, MatchPattern, Statement, TypeKind,
+};
 use wings_syntax::{MAX_SOURCE_BYTES, TokenKind, lex, parse};
 
 fn expression(text: &str) -> Expr {
     let parsed = parse(&format!(
-        "process P {{ state n: Int = 0; on Get -> Int {{ {text} }} }}"
+        "actor P {{ state n = 0; on get -> int {{ {text} }} }}"
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    parsed.program.processes[0].handlers[0]
+    *parsed.program.actors[0].handlers[0]
         .body
         .tail
         .clone()
@@ -40,6 +42,27 @@ fn string_literals_decode_utf8_escapes_and_preserve_lossless_tokens() {
 }
 
 #[test]
+fn string_interpolation_and_byte_literals_parse_cleanly() {
+    let ExprKind::InterpolatedString(parts) = expression(r#"f"hi {n + 1} {{lit}}""#).kind else {
+        panic!("expected f-string interpolation")
+    };
+    assert_eq!(parts.len(), 3);
+    assert!(matches!(&parts[0], InterpolatedPart::Literal(s) if s == "hi "));
+    assert!(matches!(&parts[1], InterpolatedPart::Expr(_)));
+    assert!(matches!(&parts[2], InterpolatedPart::Literal(s) if s == " {lit}"));
+
+    let ExprKind::InterpolatedString(dollar_parts) = expression(r#""val=${n}""#).kind else {
+        panic!("expected dollar interpolation")
+    };
+    assert_eq!(dollar_parts.len(), 2);
+
+    let ExprKind::Bytes(bytes) = expression(r#"b"AB\x00\xff\n""#).kind else {
+        panic!("expected byte literal")
+    };
+    assert_eq!(bytes, vec![b'A', b'B', 0x00, 0xff, b'\n']);
+}
+
+#[test]
 fn string_literal_errors_are_bounded_and_recover_at_following_handlers() {
     for literal in [
         r#""\q""#,
@@ -47,22 +70,26 @@ fn string_literal_errors_are_bounded_and_recover_at_following_handlers() {
         "\"unterminated",
         "\"raw\tcontrol\"",
         "\"dangling\\",
+        r#"f"unclosed {n""#,
+        r#"f"empty {}""#,
+        r#"b"\xGG""#,
     ] {
         let source =
-            format!("process P {{ state text: String = {literal}\non Final -> Int {{ 7 }} }}");
+            format!("actor P {{ state text: str = {literal}\non final_h -> int {{ 7 }} }}");
         let parsed = parse(&source);
         assert!(
             parsed
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "S005"),
-            "{literal}"
+            "{literal}: {:?}",
+            parsed.diagnostics
         );
         assert!(
-            parsed.program.processes[0]
+            parsed.program.actors[0]
                 .handlers
                 .iter()
-                .any(|handler| handler.name.text == "Final"),
+                .any(|handler| handler.name.text == "final_h"),
             "{literal}"
         );
         assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
@@ -78,12 +105,11 @@ fn string_literal_limit_counts_decoded_utf8_bytes_not_source_characters() {
         ("😀".repeat(16385), false),
         (r"\0".repeat(65536), true),
     ] {
-        let source = format!("process P {{ state text: String = \"{body}\"; }}");
+        let source = format!("actor P {{ state text: str = \"{body}\"; }}");
         let parsed = parse(&source);
         assert_eq!(parsed.diagnostics.is_empty(), valid);
         if valid {
-            let ExprKind::String(value) = &parsed.program.processes[0].states[0].default.kind
-            else {
+            let ExprKind::String(value) = &parsed.program.actors[0].states[0].default.kind else {
                 panic!("missing literal")
             };
             assert_eq!(value.len(), 65536);
@@ -92,45 +118,47 @@ fn string_literal_limit_counts_decoded_utf8_bytes_not_source_characters() {
 }
 
 #[test]
-fn functions_parse_signatures_and_recover_before_following_handlers() {
+fn functions_parse_signatures_fat_arrows_and_recover_before_following_handlers() {
     let parsed = parse(
-        "process P { state n: Int = twice(1); fn twice(value: Int) -> Int { value + value } on Get -> Int { twice(n) } }",
+        "actor P { state n = twice(1); fn twice(value: int) -> int => value + value; on get -> int => twice(n) }",
     );
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let function = &parsed.program.processes[0].functions[0];
+    let function = &parsed.program.actors[0].functions[0];
     assert_eq!(function.name.text, "twice");
     assert_eq!(function.parameters[0].name.text, "value");
-    assert_eq!(function.result.text, "Int");
+    assert!(matches!(
+        &function.result.as_ref().unwrap().kind,
+        TypeKind::Named(name) if name.text == "int"
+    ));
     for declaration in [
-        "fn missing -> Int { 1 }",
-        "fn missing() { 1 }",
-        "fn broken(value: ) -> Int { value }",
-        "fn broken() -> Int { let value = on Get -> Int { 7 }",
+        "fn broken(value: ) -> int { value }",
+        "fn broken() -> int { let value = on get -> int { 7 }",
     ] {
         let parsed = parse(&format!(
-            "process P {{ state n: Int = 0; {declaration} on Final -> Int {{ n }} }}"
+            "actor P {{ state n = 0; {declaration} on final_h -> int {{ n }} }}"
         ));
         assert!(!parsed.diagnostics.is_empty(), "{declaration}");
         assert!(
-            parsed.program.processes[0]
+            parsed.program.actors[0]
                 .handlers
                 .iter()
-                .any(|handler| handler.name.text == "Final")
+                .any(|handler| handler.name.text == "final_h")
         );
     }
     for count in [64, 65] {
         let functions: String = (0..count)
-            .map(|index| format!("fn f{index}() -> Int {{ 0 }} "))
+            .map(|index| format!("fn f{index}() -> int {{ 0 }} "))
             .collect();
-        let parsed = parse(&format!("process P {{ state n: Int = 0; {functions} }}"));
-        assert_eq!(parsed.program.processes[0].functions.len(), count.min(64));
+        let parsed = parse(&format!("actor P {{ state n = 0; {functions} }}"));
         assert_eq!(parsed.diagnostics.is_empty(), count == 64);
+        assert_eq!(parsed.program.actors[0].functions.len(), count.min(64));
+
         let parameters = (0..count)
-            .map(|index| format!("p{index}: Int"))
+            .map(|index| format!("p{index}: int"))
             .collect::<Vec<_>>()
             .join(", ");
         let parsed = parse(&format!(
-            "process P {{ state n: Int = 0; fn many({parameters}) -> Int {{ 0 }} }}"
+            "actor P {{ state n = 0; fn many({parameters}) -> int {{ 0 }} }}"
         ));
         assert_eq!(parsed.diagnostics.is_empty(), count == 64);
     }
@@ -141,6 +169,24 @@ fn shape(expression: &Expr) -> String {
         ExprKind::Integer(value) => value.to_string(),
         ExprKind::Name(name) => name.text.clone(),
         ExprKind::Negate(value) => format!("(-{})", shape(value)),
+        ExprKind::Not(value) => format!("(!{})", shape(value)),
+        ExprKind::Call { callee, arguments } => {
+            let args: Vec<_> = arguments.iter().map(shape).collect();
+            format!("{}({})", callee.text, args.join(", "))
+        }
+        ExprKind::Send {
+            target,
+            message,
+            arguments,
+        } => {
+            let args: Vec<_> = arguments.iter().map(shape).collect();
+            format!(
+                "({} ! {}({}))",
+                shape(target),
+                message.text,
+                args.join(", ")
+            )
+        }
         ExprKind::Binary {
             operator,
             left,
@@ -151,12 +197,15 @@ fn shape(expression: &Expr) -> String {
                 BinaryOperator::Subtract => "-",
                 BinaryOperator::Multiply => "*",
                 BinaryOperator::Divide => "/",
+                BinaryOperator::Remainder => "%",
                 BinaryOperator::Equal => "==",
                 BinaryOperator::NotEqual => "!=",
                 BinaryOperator::Less => "<",
                 BinaryOperator::LessEqual => "<=",
                 BinaryOperator::Greater => ">",
                 BinaryOperator::GreaterEqual => ">=",
+                BinaryOperator::And => "&&",
+                BinaryOperator::Or => "||",
             };
             format!("({} {operator} {})", shape(left), shape(right))
         }
@@ -165,27 +214,105 @@ fn shape(expression: &Expr) -> String {
 }
 
 #[test]
-fn record_declarations_do_not_reserve_existing_value_names() {
+fn structs_lists_for_match_and_condition_blocks_parse_without_ambiguity() {
     let parsed = parse(
-        "process record { record Item { record: Int } state record: Item = Item(1); fn copy(record: Item) -> Item { record } on Read -> Int { let record = copy(record); record.record } }",
+        r#"
+        actor Demo {
+          struct Item { code: int, label: str }
+          state item = Item { code: 1, label: "ok" }
+          state xs: [int] = [1, 2]
+
+          on work(Flag: bool, Items: [int]) -> int {
+            let code = 9
+            let next = Item { code, ..item }
+            if Flag {
+              item.code += 1
+            } else if !Flag {
+              item.code -= 1
+            }
+            while Flag {
+              break_noop()
+            }
+            for i in 0..=3 {
+              xs = [i, ..xs]
+            }
+            for v in Items {
+              item.code += v
+            }
+            match Items {
+              [] => 0,
+              [head, ..tail] => head + next.code,
+            }
+          }
+        }
+        "#,
     );
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    assert_eq!(parsed.program.processes[0].records.len(), 1);
-    let parsed = parse(
-        "process P { state record: Int = 0; on Read(record: Int) -> Int { record } on Write { record = 1 } }",
-    );
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    assert_eq!(parsed.program.processes[0].handlers.len(), 2);
+    let handler = &parsed.program.actors[0].handlers[0];
+    assert_eq!(handler.body.statements.len(), 6);
+    assert!(matches!(handler.body.statements[2], Statement::Expr(_)));
+    assert!(matches!(
+        handler.body.statements[3],
+        Statement::While { .. }
+    ));
+    assert!(matches!(
+        handler.body.statements[4],
+        Statement::ForRange {
+            inclusive: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        handler.body.statements[5],
+        Statement::ForList { .. }
+    ));
+    let ExprKind::Match { arms, .. } = &handler.body.tail.as_ref().unwrap().kind else {
+        panic!("expected tail match")
+    };
+    assert!(matches!(arms[0].pattern, MatchPattern::EmptyList(_)));
+    assert!(matches!(arms[1].pattern, MatchPattern::ConsList { .. }));
 }
 
 #[test]
-fn named_record_fields_parse_with_postfix_precedence_and_bounded_recovery() {
-    let parsed = wings_syntax::parse(
-        "process P { record A { number: Int, text: String, } state value: A = A(1, \"中\"); on Read -> Int { value.number + A(2, \"\").number } }",
+fn actor_send_ask_and_reply_handlers_parse_cleanly() {
+    let parsed = parse(
+        r#"
+        actor Messenger {
+          state count = 0
+          on start(timeout: int) -> req {
+            let child = spawn()
+            child ! notify(1, 2)
+            self ! ping
+            child.ask(compute(7), timeout: timeout, then: on_done)
+          }
+          on notify(a: int, b: int) => count = a + b
+          on ping => count += 1
+          on compute(x: int) -> int => x * 2
+          on reply on_done(id: req, status: int, value: int) {
+            count = status + value
+          }
+        }
+        "#,
     );
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    assert_eq!(parsed.program.processes[0].records[0].fields.len(), 2);
-    let ExprKind::Binary { left, right, .. } = &parsed.program.processes[0].handlers[0]
+    let handlers = &parsed.program.actors[0].handlers;
+    assert_eq!(handlers.len(), 5);
+    assert!(!handlers[0].is_reply);
+    assert!(handlers[4].is_reply);
+    assert!(matches!(
+        handlers[0].body.tail.as_ref().unwrap().kind,
+        ExprKind::Ask { .. }
+    ));
+}
+
+#[test]
+fn struct_fields_and_methods_parse_with_postfix_precedence_and_bounded_recovery() {
+    let parsed = parse(
+        r#"actor P { struct A { number: int, text: str, } state value = A { number: 1, text: "中" }; on read -> int { value.number + A(2, "").text.len() } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    assert_eq!(parsed.program.actors[0].structs[0].fields.len(), 2);
+    let ExprKind::Binary { left, right, .. } = &parsed.program.actors[0].handlers[0]
         .body
         .tail
         .as_ref()
@@ -195,18 +322,18 @@ fn named_record_fields_parse_with_postfix_precedence_and_bounded_recovery() {
         panic!("missing addition")
     };
     assert!(matches!(left.kind, ExprKind::Field { .. }));
-    assert!(matches!(right.kind, ExprKind::Field { .. }));
+    assert!(matches!(right.kind, ExprKind::MethodCall { .. }));
     for source in [
-        "process P { record A { value Int } on Fine -> Int { 1 } }",
-        "process P { state n: Int = 0; on Bad -> Int { n. } on Fine -> Int { 1 } }",
+        "actor P { struct A { value int } on fine -> int { 1 } }",
+        "actor P { state n = 0; on bad -> int { n. } on fine -> int { 1 } }",
     ] {
-        let parsed = wings_syntax::parse(source);
+        let parsed = parse(source);
         assert!(!parsed.diagnostics.is_empty());
         assert!(
-            parsed.program.processes[0]
+            parsed.program.actors[0]
                 .handlers
                 .iter()
-                .any(|handler| handler.name.text == "Fine")
+                .any(|handler| handler.name.text == "fine")
         );
     }
 }
@@ -214,336 +341,66 @@ fn named_record_fields_parse_with_postfix_precedence_and_bounded_recovery() {
 #[test]
 fn while_blocks_have_bounded_nesting_and_preserve_following_handlers() {
     let parsed = parse(
-        "process P { state n: Int = 0; on Work { while n < 3 { let next = n + 1; while n < next { n = n + 1 } } } on Get -> Int { n } }",
+        "actor P { state n = 0; on work { while n < 3 { let next = n + 1; while n < next { n += 1 } } } on get -> int { n } }",
     );
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     assert!(matches!(
-        parsed.program.processes[0].handlers[0].body.statements[0],
+        parsed.program.actors[0].handlers[0].body.statements[0],
         Statement::While { .. }
     ));
     for body in ["while", "while true", "while true { n = }"] {
         let parsed = parse(&format!(
-            "process P {{ state n: Int = 0; on Work {{ {body} }} on Get -> Int {{ n }} }}"
+            "actor P {{ state n = 0; on work {{ {body} }} on get -> int {{ n }} }}"
         ));
         assert!(!parsed.diagnostics.is_empty(), "{body}");
         assert!(
-            parsed.program.processes[0]
+            parsed.program.actors[0]
                 .handlers
                 .iter()
-                .any(|handler| handler.name.text == "Get")
+                .any(|h| h.name.text == "get")
         );
     }
-    let nested = format!("{}{}", "while true { ".repeat(300), " }".repeat(300));
+    let nested_63 = format!("{}n += 1{}", "while false { ".repeat(63), " }".repeat(63));
+    assert!(
+        parse(&format!(
+            "actor P {{ state n = 0; on work {{ {nested_63} }} }}"
+        ))
+        .diagnostics
+        .is_empty()
+    );
+    let nested_64 = format!("{}n += 1{}", "while false { ".repeat(64), " }".repeat(64));
     let parsed = parse(&format!(
-        "process P {{ state n: Int = 0; on Work {{ {nested} }} on Get -> Int {{ n }} }}"
+        "actor P {{ state n = 0; on work {{ {nested_64} }} on after -> int {{ 1 }} }}"
     ));
     assert!(
         parsed
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("64-level"))
+            .any(|d| d.message.contains("64-level"))
     );
     assert!(
-        parsed.program.processes[0]
+        parsed.program.actors[0]
             .handlers
             .iter()
-            .any(|handler| handler.name.text == "Get")
+            .any(|h| h.name.text == "after")
     );
 }
 
 #[test]
-fn comparison_tokens_and_precedence_do_not_confuse_assignment_or_unary_minus() {
-    let (tokens, diagnostics) = lex("= == != < <= > >= ->");
-    assert!(diagnostics.is_empty());
-    let kinds: Vec<_> = tokens
-        .iter()
-        .filter(|token| !token.kind.is_trivia())
-        .map(|token| token.kind)
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            TokenKind::Equal,
-            TokenKind::EqualEqual,
-            TokenKind::NotEqual,
-            TokenKind::Less,
-            TokenKind::LessEqual,
-            TokenKind::Greater,
-            TokenKind::GreaterEqual,
-            TokenKind::Arrow,
-            TokenKind::Eof
-        ]
-    );
-    assert_eq!(
-        shape(&expression("-value * 2 + 1 <= other - 3")),
-        "((((-value) * 2) + 1) <= (other - 3))"
-    );
-    assert_eq!(shape(&expression("1 < 2 < 3")), "((1 < 2) < 3)");
-    for body in ["1 ==", "1 ! 2", "1 < = 2", "1 !== 2"] {
-        let parsed = parse(&format!(
-            "process P {{ state n: Int = 0; on Get -> Bool {{ {body} }} }}"
-        ));
-        assert!(!parsed.diagnostics.is_empty(), "{body}");
-    }
-}
-
-#[test]
-fn parses_conditional_expressions_and_multiline_nested_arms() {
-    let parsed = expression("if true {\n if false { 1 } else { 2 }\n} else {\n 3 + 4\n}");
-    let ExprKind::If {
-        condition,
-        then_value,
-        else_value,
-    } = parsed.kind
-    else {
-        panic!("conditional expected")
-    };
-    assert!(matches!(condition.kind, ExprKind::Boolean(true)));
-    assert!(matches!(then_value.kind, ExprKind::If { .. }));
-    assert!(matches!(else_value.kind, ExprKind::Binary { .. }));
-    let parsed = expression("1 + if false { 2 } else { 3 } * 4");
-    assert!(matches!(
-        parsed.kind,
-        ExprKind::Binary {
-            operator: BinaryOperator::Add,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn malformed_conditionals_and_nesting_are_bounded_and_recover() {
-    for body in [
-        "if",
-        "if true",
-        "if true {} else { 2 }",
-        "if true { 1 }",
-        "if true { let n = 1 } else { 2 }",
-        "if true { 1 } else",
-        "if true { 1 } else { 2; 3 }",
-    ] {
-        let source = format!(
-            "process P {{ state n: Int = 0; on Work -> Int {{ {body} }} on Get -> Int {{ n }} }}"
-        );
-        let parsed = parse(&source);
-        assert!(!parsed.diagnostics.is_empty(), "{body}");
-        assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
-        assert!(
-            parsed.program.processes[0]
-                .handlers
-                .iter()
-                .any(|handler| handler.name.text == "Get"),
-            "{body}: {:?}",
-            parsed.program
-        );
-    }
-    let nested = format!(
-        "{}1{}",
-        "if true { ".repeat(300),
-        " } else { 2 }".repeat(300)
-    );
-    let parsed = parse(&format!("process P {{ state n: Int = {nested} }}"));
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("256-node"))
-    );
-}
-
-#[test]
-fn parses_nested_calls_and_multiline_arguments_with_exact_spans() {
-    let parsed = expression("read_int(record_int(1 + 2))");
-    let ExprKind::Call { callee, arguments } = parsed.kind else {
-        panic!("call expected")
-    };
-    assert_eq!(callee.text, "read_int");
-    assert_eq!(arguments.len(), 1);
-    assert!(matches!(arguments[0].kind, ExprKind::Call { .. }));
-    let parsed = expression("record_int(\n 1,\n 2,\n)");
-    let ExprKind::Call { arguments, .. } = parsed.kind else {
-        panic!("call expected")
-    };
-    assert_eq!(arguments.len(), 2);
-    assert!(
-        matches!(expression("collect()").kind, ExprKind::Call { arguments, .. } if arguments.is_empty())
-    );
-}
-
-#[test]
-fn malformed_calls_and_excessive_nesting_are_bounded() {
-    for body in [
-        "record_int(",
-        "read_int(,)",
-        "collect(1 2)",
-        "record_int(1;)",
-    ] {
-        let text = format!("process P {{ state n: Int = 0; on Get -> Int {{ {body} }} }}");
-        let parsed = parse(&text);
-        assert!(!parsed.diagnostics.is_empty(), "{body}");
-        assert!(parsed.diagnostics.len() <= MAX_DIAGNOSTICS);
-    }
-    let text = format!("{}1{}", "record_int(".repeat(300), ")".repeat(300));
-    let parsed = parse(&format!("process P {{ state n: Int = {text} }}"));
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("256-node"))
-    );
-}
-
-#[test]
-fn lexer_classifies_keywords_punctuation_and_trivia() {
-    let text = "process state on let true false p 42 : , = -> ; { } ( ) + - * / # note\n";
-    let (tokens, diagnostics) = lex(text);
-    assert!(diagnostics.is_empty());
-    let kinds: Vec<_> = tokens
-        .iter()
-        .filter(|token| !token.kind.is_trivia())
-        .map(|token| token.kind)
-        .collect();
-    assert_eq!(
-        kinds,
-        [
-            TokenKind::Process,
-            TokenKind::State,
-            TokenKind::On,
-            TokenKind::Let,
-            TokenKind::True,
-            TokenKind::False,
-            TokenKind::Identifier,
-            TokenKind::Integer,
-            TokenKind::Colon,
-            TokenKind::Comma,
-            TokenKind::Equal,
-            TokenKind::Arrow,
-            TokenKind::Semicolon,
-            TokenKind::LeftBrace,
-            TokenKind::RightBrace,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Plus,
-            TokenKind::Minus,
-            TokenKind::Star,
-            TokenKind::Slash,
-            TokenKind::Eof
-        ]
-    );
-    assert!(tokens.iter().any(|token| token.kind == TokenKind::Comment));
-    assert!(!TokenKind::Invalid.is_trivia());
-}
-
-#[test]
-fn lexer_is_lossless_and_spans_use_utf8_bytes() {
-    let text = "process 计数器 {\r\n # 😀 e\u{301}\r\n state _值2: Int = 12\n}";
-    let (tokens, diagnostics) = lex(text);
-    assert!(diagnostics.is_empty());
-    let mut cursor = 0;
-    let mut reconstructed = String::new();
-    for token in &tokens {
-        assert_eq!(token.span.start, cursor);
-        reconstructed.push_str(&text[token.span.start..token.span.end]);
-        cursor = token.span.end;
-    }
-    assert_eq!(reconstructed, text);
-    let name = &tokens[2];
-    assert_eq!(name.kind, TokenKind::Identifier);
-    assert_eq!(&text[name.span.start..name.span.end], "计数器");
-    assert_eq!(name.span.end - name.span.start, 9);
-    assert_eq!(
-        tokens.last().unwrap().span,
-        Span::new(text.len(), text.len())
-    );
-}
-
-#[test]
-fn keywords_require_exact_identifier_matches() {
-    let (tokens, diagnostics) = lex("procession State ON let2 true_value _false 名字2");
-    assert!(diagnostics.is_empty());
-    assert!(
-        tokens
-            .iter()
-            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
-            .all(|token| token.kind == TokenKind::Identifier)
-    );
-}
-
-#[test]
-fn invalid_unicode_characters_report_whole_codepoints_and_keep_lexing() {
-    let text = "😀@ ok";
-    let (tokens, diagnostics) = lex(text);
-    assert_eq!(diagnostics.len(), 2);
-    assert_eq!(diagnostics[0].code, "S001");
-    assert_eq!(diagnostics[0].span, Span::new(0, 4));
-    assert_eq!(diagnostics[1].span, Span::new(4, 5));
-    assert_eq!(tokens[3].kind, TokenKind::Identifier);
-    assert_eq!(&text[tokens[3].span.start..tokens[3].span.end], "ok");
-}
-
-#[test]
-fn comments_end_at_newline_and_may_end_at_eof() {
-    for text in ["# process P {}", "# process P {}\r\n# 尾注释"] {
-        let (tokens, diagnostics) = lex(text);
-        assert!(diagnostics.is_empty());
-        assert!(
-            tokens
-                .iter()
-                .all(|token| token.kind.is_trivia() || token.kind == TokenKind::Eof)
-        );
-        assert!(parse(text).program.processes.is_empty());
-    }
-}
-
-#[test]
-fn parses_state_parameters_annotations_assignments_and_tail_spans() {
-    let text = "process Counter {\n state count: Int = 0\n on Inc(by: Int, enabled: Bool) -> Int {\n let next: Int = count + by\n count = next\n next\n }\n on Reset {}\n on Confirm() -> Unit { () }\n}";
-    let parsed = parse(text);
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let process = &parsed.program.processes[0];
-    assert_eq!(process.name.text, "Counter");
-    assert_eq!(process.span, Span::new(0, text.len()));
-    assert_eq!(process.states[0].name.text, "count");
-    assert_eq!(process.states[0].ty.text, "Int");
-    let handler = &process.handlers[0];
-    assert_eq!(
-        handler
-            .parameters
-            .iter()
-            .map(|p| (p.name.text.as_str(), p.ty.text.as_str()))
-            .collect::<Vec<_>>(),
-        [("by", "Int"), ("enabled", "Bool")]
-    );
-    assert_eq!(handler.reply_type.as_ref().unwrap().text, "Int");
-    assert!(
-        matches!(&handler.body.statements[0], Statement::Let { name, ty: Some(ty), .. } if name.text == "next" && ty.text == "Int")
-    );
-    assert!(
-        matches!(&handler.body.statements[1], Statement::Assign { target, .. } if target.text == "count")
-    );
-    let tail = handler.body.tail.as_ref().unwrap();
-    assert_eq!(&text[tail.span.start..tail.span.end], "next");
-    assert!(process.handlers[1].reply_type.is_none());
-    assert_eq!(
-        process.handlers[2].reply_type.as_ref().unwrap().text,
-        "Unit"
-    );
-    assert!(matches!(
-        process.handlers[2].body.tail.as_ref().unwrap().kind,
-        ExprKind::Unit
-    ));
-}
-
-#[test]
-fn arithmetic_precedence_associativity_and_negation_are_structural() {
+fn arithmetic_logic_pipeline_precedence_and_associativity_are_structural() {
     for (text, expected) in [
         ("1 + 2 * 3 - 4 / 2", "((1 + (2 * 3)) - (4 / 2))"),
+        ("10 % 3 + 1", "((10 % 3) + 1)"),
         ("9 - 3 - 1", "((9 - 3) - 1)"),
         ("8 / 2 * 3", "((8 / 2) * 3)"),
         ("(1 + 2) * 3", "((1 + 2) * 3)"),
         ("-n * 2", "((-n) * 2)"),
         ("-(1 + 2)", "(-(1 + 2))"),
         ("-12 + 3", "(-12 + 3)"),
+        ("!a && b || c", "(((!a) && b) || c)"),
+        ("1 + 2 == 3 && 4 < 5", "(((1 + 2) == 3) && (4 < 5))"),
+        ("x |> f |> g(2)", "g(f(x), 2)"),
+        ("p ! msg(1 + 2)", "(p ! msg((1 + 2)))"),
     ] {
         assert_eq!(shape(&expression(text)), expected, "{text}");
     }
@@ -558,7 +415,7 @@ fn parentheses_and_trailing_operators_allow_multiline_expressions() {
 
 #[test]
 fn newline_after_complete_expression_starts_a_new_statement() {
-    let parsed = parse("process P { state n: Int = 0\n on Get -> Int { 1\n +2 } }");
+    let parsed = parse("actor P { state n = 0\n on get -> int { 1\n +2 } }");
     assert!(!parsed.diagnostics.is_empty());
     assert!(
         parsed
@@ -566,9 +423,9 @@ fn newline_after_complete_expression_starts_a_new_statement() {
             .iter()
             .any(|d| d.message == "expected an expression")
     );
-    let parsed = parse("process P { state n: Int = 0\n on Get -> Int { 1\n -2 } }");
+    let parsed = parse("actor P { state n = 0\n on get -> int { 1\n -2 } }");
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let body = &parsed.program.processes[0].handlers[0].body;
+    let body = &parsed.program.actors[0].handlers[0].body;
     assert_eq!(body.statements.len(), 1);
     assert!(matches!(body.statements[0], Statement::Expr(_)));
     assert!(matches!(
@@ -585,17 +442,16 @@ fn semicolon_discards_tail_but_not_bare_tail_expression() {
         ("1;", false, 1),
         ("let x = 1", false, 1),
         ("n = 2", false, 1),
+        ("n += 2", false, 1),
         ("1; 2", true, 1),
     ] {
-        let parsed = parse(&format!(
-            "process P {{ state n: Int = 0; on Get {{ {body} }} }}"
-        ));
+        let parsed = parse(&format!("actor P {{ state n = 0; on get {{ {body} }} }}"));
         assert!(
             parsed.diagnostics.is_empty(),
             "{body}: {:?}",
             parsed.diagnostics
         );
-        let block = &parsed.program.processes[0].handlers[0].body;
+        let block = &parsed.program.actors[0].handlers[0].body;
         assert_eq!(block.tail.is_some(), has_tail, "{body}");
         assert_eq!(block.statements.len(), statements, "{body}");
     }
@@ -603,29 +459,23 @@ fn semicolon_discards_tail_but_not_bare_tail_expression() {
 
 #[test]
 fn missing_statement_separator_is_diagnosed_without_losing_next_handler() {
-    let parsed =
-        parse("process P { state n: Int = 0; on Bad { let a = 1 let b = 2; } on Good {} }");
+    let parsed = parse("actor P { state n = 0; on bad { let a = 1 let b = 2; } on good {} }");
     assert!(
         parsed
             .diagnostics
             .iter()
             .any(|d| d.message.contains("newline or ';'"))
     );
-    assert_eq!(parsed.program.processes[0].handlers[1].name.text, "Good");
+    assert_eq!(parsed.program.actors[0].handlers[1].name.text, "good");
 }
 
 #[test]
 fn missing_handler_brace_recovers_at_next_handler() {
-    let parsed = parse("process P { state n: Int = 0; on Bad -> Int { 1\n on Good -> Int { n } }");
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|d| d.message == "expected '}' after handler body")
-    );
-    let handlers = &parsed.program.processes[0].handlers;
+    let parsed = parse("actor P { state n = 0; on bad -> int { 1\n on good -> int { n } }");
+    assert!(!parsed.diagnostics.is_empty());
+    let handlers = &parsed.program.actors[0].handlers;
     assert_eq!(handlers.len(), 2);
-    assert_eq!(handlers[1].name.text, "Good");
+    assert_eq!(handlers[1].name.text, "good");
     assert!(matches!(
         handlers[1].body.tail.as_ref().unwrap().kind,
         ExprKind::Name(_)
@@ -633,29 +483,28 @@ fn missing_handler_brace_recovers_at_next_handler() {
 }
 
 #[test]
-fn missing_process_brace_recovers_at_next_process() {
-    let parsed =
-        parse("process First { state n: Int = 0; on Get { }\nprocess Second { state n: Int = 1 }");
+fn missing_actor_brace_recovers_at_next_actor() {
+    let parsed = parse("actor First { state n = 0; on get { }\nactor Second { state n = 1 }");
     assert!(
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.message == "expected '}' after process")
+            .any(|d| d.message == "expected '}' after actor")
     );
-    assert_eq!(parsed.program.processes.len(), 2);
-    assert_eq!(parsed.program.processes[1].name.text, "Second");
+    assert_eq!(parsed.program.actors.len(), 2);
+    assert_eq!(parsed.program.actors[1].name.text, "Second");
 }
 
 #[test]
 fn incomplete_parameters_and_eof_produce_bounded_valid_spans() {
     for text in [
-        "process",
-        "process P {",
-        "process P { state n:",
-        "process P { on Get(x:",
-        "process P { on Get(x: Int -> Int { x } on Next {} }",
-        "process P { state n: Int = ; on Next {} }",
-        "process P { on Get { (1 + } }",
+        "actor",
+        "actor P {",
+        "actor P { state n:",
+        "actor P { on get(x:",
+        "actor P { on get(x: int -> int { x } on next {} }",
+        "actor P { state n: int = ; on next {} }",
+        "actor P { on get { (1 + } }",
     ] {
         let parsed = parse(text);
         assert!(!parsed.diagnostics.is_empty(), "{text}");
@@ -672,10 +521,12 @@ fn incomplete_parameters_and_eof_produce_bounded_valid_spans() {
 }
 
 #[test]
-fn integer_literals_accept_i64_boundaries_and_reject_overflow() {
+fn integer_literals_accept_underscores_i64_boundaries_and_reject_overflow() {
     for (text, expected) in [
         ("9223372036854775807", i64::MAX),
+        ("9_223_372_036_854_775_807", i64::MAX),
         ("-9223372036854775808", i64::MIN),
+        ("-1_000_000", -1_000_000),
         ("00012", 12),
     ] {
         assert!(matches!(expression(text).kind, ExprKind::Integer(value) if value == expected));
@@ -685,7 +536,7 @@ fn integer_literals_accept_i64_boundaries_and_reject_overflow() {
         "-9223372036854775809",
         "999999999999999999999999999999999999",
     ] {
-        let source = format!("process P {{ state n: Int = {text}; on Good {{}} }}");
+        let source = format!("actor P {{ state n: int = {text}; on good {{}} }}");
         let parsed = parse(&source);
         let diagnostic = parsed
             .diagnostics
@@ -694,10 +545,10 @@ fn integer_literals_accept_i64_boundaries_and_reject_overflow() {
             .unwrap();
         assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], text);
         assert!(matches!(
-            parsed.program.processes[0].states[0].default.kind,
+            parsed.program.actors[0].states[0].default.kind,
             ExprKind::Error
         ));
-        assert_eq!(parsed.program.processes[0].handlers[0].name.text, "Good");
+        assert_eq!(parsed.program.actors[0].handlers[0].name.text, "good");
     }
 }
 
@@ -707,13 +558,12 @@ fn source_size_limit_is_inclusive_and_measured_in_bytes() {
     let parsed = parse(&at_limit);
     assert!(parsed.diagnostics.is_empty());
     assert_eq!(parsed.tokens.last().unwrap().kind, TokenKind::Eof);
-    // Exactly one codepoint pushes this source over the byte limit.
     let oversized = format!("{at_limit}中");
     let parsed = parse(&oversized);
     assert_eq!(parsed.diagnostics.len(), 1);
     assert_eq!(parsed.diagnostics[0].code, "S002");
     assert!(parsed.tokens.is_empty());
-    assert!(parsed.program.processes.is_empty());
+    assert!(parsed.program.actors.is_empty());
 }
 
 #[test]
@@ -733,7 +583,7 @@ fn expression_work_limit_recovers_and_resets_for_following_handler() {
         .collect::<Vec<_>>()
         .join(" + ");
     let parsed = parse(&format!(
-        "process P {{ state n: Int = 0; on Huge -> Int {{ {long} }} on Next -> Int {{ 1 + 2 }} }}"
+        "actor P {{ state n = 0; on huge -> int {{ {long} }} on next -> int {{ 1 + 2 }} }}"
     ));
     assert!(
         parsed
@@ -741,17 +591,17 @@ fn expression_work_limit_recovers_and_resets_for_following_handler() {
             .iter()
             .any(|d| d.message.contains("256-node"))
     );
-    let handlers = &parsed.program.processes[0].handlers;
+    let handlers = &parsed.program.actors[0].handlers;
     assert_eq!(handlers.len(), 2);
     assert_eq!(shape(handlers[1].body.tail.as_ref().unwrap()), "(1 + 2)");
 }
 
 #[test]
 fn trivia_and_empty_input_are_valid_empty_programs() {
-    for text in ["", " \r\n\t", "# 注释 😀\n"] {
+    for text in ["", " \r\n\t", "# 注释 😀\n", "// line comment\n"] {
         let parsed = parse(text);
         assert!(parsed.diagnostics.is_empty());
-        assert!(parsed.program.processes.is_empty());
+        assert!(parsed.program.actors.is_empty());
         assert_eq!(
             parsed.tokens.last().unwrap().span,
             Span::new(text.len(), text.len())

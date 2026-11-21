@@ -35,7 +35,7 @@ fn main() {
     let ticket = worker
         .request(
             pid,
-            &module.handler("Start").unwrap(),
+            &module.handler("start").unwrap(),
             &[0, 0, 0],
             256,
             Duration::from_secs(60),

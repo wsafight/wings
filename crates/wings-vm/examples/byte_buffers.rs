@@ -29,35 +29,35 @@ fn main() {
     let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
     for length in [0, 256, 4096, 65536] {
         assert_eq!(
-            process.invoke("Fill", &[length, 255]).unwrap(),
+            process.invoke("fill", &[length, 255]).unwrap(),
             Some(length)
         );
-        assert_eq!(process.invoke("Length", &[]).unwrap(), Some(length));
+        assert_eq!(process.invoke("length", &[]).unwrap(), Some(length));
         if length != 0 {
             assert_eq!(
-                process.invoke("Set", &[length - 1, 17]).unwrap(),
+                process.invoke("set", &[length - 1, 17]).unwrap(),
                 Some(255 * 256 + 17)
             );
-            assert_eq!(process.invoke("Read", &[length - 1]).unwrap(), Some(17));
-            assert_eq!(process.invoke("Branch", &[1]).unwrap(), Some(262));
-            assert_eq!(process.invoke("Branch", &[0]).unwrap(), Some(510));
+            assert_eq!(process.invoke("read", &[length - 1]).unwrap(), Some(17));
+            assert_eq!(process.invoke("branch", &[1]).unwrap(), Some(262));
+            assert_eq!(process.invoke("branch", &[0]).unwrap(), Some(510));
         }
     }
-    assert_eq!(process.invoke("Loop", &[20]).unwrap(), Some(20));
-    process.invoke("Fill", &[65536, 0]).unwrap();
+    assert_eq!(process.invoke("loop", &[20]).unwrap(), Some(20));
+    process.invoke("fill", &[65536, 0]).unwrap();
     let mut previous = 0;
     for number in [i64::MIN, -1, 0, 1, i64::MAX] {
         assert_eq!(
-            process.invoke("SetWord", &[65528, number]).unwrap(),
+            process.invoke("set_word", &[65528, number]).unwrap(),
             Some(previous)
         );
-        assert_eq!(process.invoke("ReadWord", &[65528]).unwrap(), Some(number));
-        assert_eq!(process.invoke("Read", &[0]).unwrap(), Some(0));
+        assert_eq!(process.invoke("read_word", &[65528]).unwrap(), Some(number));
+        assert_eq!(process.invoke("read", &[0]).unwrap(), Some(0));
         previous = number;
     }
     let mut execution = process
         .start_controlled(
-            "SetWord",
+            "set_word",
             &[65528, -7],
             4096,
             &CancellationToken::default(),
@@ -80,7 +80,7 @@ fn main() {
     }
     assert!(suspensions >= 256);
     drop(execution);
-    assert_eq!(process.invoke("ReadWord", &[65528]).unwrap(), Some(-7));
+    assert_eq!(process.invoke("read_word", &[65528]).unwrap(), Some(-7));
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut observed_unpublished_bytes = false;
@@ -90,7 +90,7 @@ fn main() {
             let cancellation = CancellationToken::default();
             let mut execution = process
                 .start_controlled(
-                    "Fill",
+                    "fill",
                     &[65536, 7],
                     4096,
                     &cancellation,
@@ -114,19 +114,19 @@ fn main() {
     }
     assert!(observed_unpublished_bytes);
     for (handler, arguments) in [
-        ("Fill", vec![-1, 0]),
-        ("Fill", vec![65537, 0]),
-        ("Fill", vec![1, 256]),
-        ("Set", vec![-1, 3]),
-        ("Set", vec![4, 3]),
-        ("Set", vec![0, -1]),
-        ("Read", vec![4]),
-        ("ReadWord", vec![0]),
-        ("SetWord", vec![0, i64::MAX]),
-        ("SetWord", vec![i64::MAX, i64::MIN]),
+        ("fill", vec![-1, 0]),
+        ("fill", vec![65537, 0]),
+        ("fill", vec![1, 256]),
+        ("set", vec![-1, 3]),
+        ("set", vec![4, 3]),
+        ("set", vec![0, -1]),
+        ("read", vec![4]),
+        ("read_word", vec![0]),
+        ("set_word", vec![0, i64::MAX]),
+        ("set_word", vec![i64::MAX, i64::MIN]),
     ] {
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
-        process.invoke("Fill", &[4, 8]).unwrap();
+        process.invoke("fill", &[4, 8]).unwrap();
         let mut execution = process
             .start_controlled(
                 handler,
@@ -147,10 +147,10 @@ fn main() {
     }
     for budget in [0, 4, 64, 128, 255] {
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
-        process.invoke("Fill", &[65536, 9]).unwrap();
+        process.invoke("fill", &[65536, 9]).unwrap();
         let mut execution = process
             .start_controlled(
-                "Set",
+                "set",
                 &[128, 7],
                 budget,
                 &CancellationToken::default(),
@@ -168,10 +168,10 @@ fn main() {
     }
     for budget in [0, 4, 64, 128, 255] {
         let mut process = module.instantiate_with_heap(&bound, &account, 4).unwrap();
-        process.invoke("Fill", &[65536, 0]).unwrap();
+        process.invoke("fill", &[65536, 0]).unwrap();
         let mut execution = process
             .start_controlled(
-                "SetWord",
+                "set_word",
                 &[65528, i64::MIN],
                 budget,
                 &CancellationToken::default(),
@@ -217,7 +217,7 @@ fn main() {
     let mut fill = handle
         .request(
             pid,
-            &module.handler("Fill").unwrap(),
+            &module.handler("fill").unwrap(),
             &[65536, 9],
             4096,
             timeout,
@@ -231,7 +231,7 @@ fn main() {
         let mut read = handle
             .request(
                 pid,
-                &module.handler("Read").unwrap(),
+                &module.handler("read").unwrap(),
                 &[65535],
                 4096,
                 timeout,
@@ -241,7 +241,7 @@ fn main() {
     }
     assert_eq!(handle.snapshot(pid).unwrap().migrations, 4);
     let mut failed = handle
-        .request(pid, &module.handler("Fail").unwrap(), &[], 4096, timeout)
+        .request(pid, &module.handler("fail").unwrap(), &[], 4096, timeout)
         .unwrap();
     assert_eq!(failed.wait(timeout).unwrap(), Some(RequestOutcome::Failed));
     let deadline = Instant::now() + timeout;
@@ -258,7 +258,7 @@ fn main() {
     let mut length = handle
         .request(
             replacement,
-            &module.handler("Length").unwrap(),
+            &module.handler("length").unwrap(),
             &[],
             4096,
             timeout,

@@ -90,13 +90,13 @@ fn verify_schema(module: &ScalarModule) {
     assert_eq!(manifest.process, "Queue");
     assert_eq!(manifest.state, ValueType::Int);
     for (name, parameter, reply) in [
-        ("Add", true, None),
-        ("Set", true, None),
-        ("Fail", false, None),
-        ("Get", false, Some(ValueType::Int)),
-        ("Bump", true, Some(ValueType::Int)),
-        ("Ack", false, Some(ValueType::Unit)),
-        ("FailRequest", false, Some(ValueType::Int)),
+        ("add", true, None),
+        ("set", true, None),
+        ("fail", false, None),
+        ("get", false, Some(ValueType::Int)),
+        ("bump", true, Some(ValueType::Int)),
+        ("ack", false, Some(ValueType::Unit)),
+        ("fail_request", false, Some(ValueType::Int)),
     ] {
         let handler = module.handler(name).expect("expected Queue handler");
         let expected = if parameter {
@@ -144,24 +144,24 @@ fn verify_fifo(module: &ScalarModule) {
     let empty = tenant.used();
     let pid = worker.spawn(module, limits(), 6).expect("actor");
     let baseline = worker.resources(pid).expect("baseline");
-    let add = module.handler("Add").expect("Add");
-    let set = module.handler("Set").expect("Set");
-    let bump = module.handler("Bump").expect("Bump");
-    let get = module.handler("Get").expect("Get");
-    let ack = module.handler("Ack").expect("Ack");
-    worker.send(pid, &add, &[2], MAX_STEPS).expect("Add");
+    let add = module.handler("add").expect("add");
+    let set = module.handler("set").expect("set");
+    let bump = module.handler("bump").expect("bump");
+    let get = module.handler("get").expect("get");
+    let ack = module.handler("ack").expect("ack");
+    worker.send(pid, &add, &[2], MAX_STEPS).expect("add");
     let mut arguments = [3];
     let first = worker
         .request(pid, &bump, &arguments, MAX_STEPS, TIMEOUT)
-        .expect("Bump");
+        .expect("bump");
     arguments[0] = 999;
-    worker.send(pid, &set, &[9], MAX_STEPS).expect("Set");
+    worker.send(pid, &set, &[9], MAX_STEPS).expect("set");
     let second = worker
         .request(pid, &get, &[], MAX_STEPS, TIMEOUT)
-        .expect("Get");
+        .expect("get");
     let unit = worker
         .request(pid, &ack, &[], MAX_STEPS, TIMEOUT)
-        .expect("Ack");
+        .expect("ack");
     let last = worker
         .request(pid, &bump, &[-2], MAX_STEPS, TIMEOUT)
         .expect("last Bump");
@@ -224,7 +224,7 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 1).expect("rejection worker");
     let pid = worker.spawn(module, limits(), 1).expect("actor");
-    for (name, values) in [("Add", &[1][..]), ("Set", &[1][..]), ("Fail", &[][..])] {
+    for (name, values) in [("add", &[1][..]), ("set", &[1][..]), ("fail", &[][..])] {
         let handler = module.handler(name).expect("one-way handler");
         let before = snapshot(&worker, &[pid], &vm, &tenant);
         assert!(
@@ -235,17 +235,17 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
         assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
     }
     for (name, values) in [
-        ("Bump", &[1][..]),
-        ("Get", &[][..]),
-        ("Ack", &[][..]),
-        ("FailRequest", &[][..]),
+        ("bump", &[1][..]),
+        ("get", &[][..]),
+        ("ack", &[][..]),
+        ("fail_request", &[][..]),
     ] {
         let handler = module.handler(name).expect("request handler");
         let before = snapshot(&worker, &[pid], &vm, &tenant);
         assert!(worker.send(pid, &handler, values, MAX_STEPS).is_err());
         assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
     }
-    let bump = module.handler("Bump").expect("Bump");
+    let bump = module.handler("bump").expect("bump");
     for values in [&[][..], &[1, 2][..], &[0; 65][..]] {
         let before = snapshot(&worker, &[pid], &vm, &tenant);
         assert!(
@@ -255,7 +255,7 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
         );
         assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
     }
-    for name in ["Get", "Ack", "FailRequest"] {
+    for name in ["get", "ack", "fail_request"] {
         let handler = module.handler(name).expect("zero-argument request");
         let before = snapshot(&worker, &[pid], &vm, &tenant);
         assert!(
@@ -265,7 +265,7 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
         );
         assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
     }
-    let foreign_bump = foreign.handler("Bump").expect("foreign Bump");
+    let foreign_bump = foreign.handler("bump").expect("foreign Bump");
     let before = snapshot(&worker, &[pid], &vm, &tenant);
     assert!(
         worker
@@ -278,7 +278,7 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
             .is_err()
     );
     assert_eq!(snapshot(&worker, &[pid], &vm, &tenant), before);
-    let add = module.handler("Add").expect("Add");
+    let add = module.handler("add").expect("add");
     worker
         .send(pid, &add, &[2], MAX_STEPS)
         .expect("fill mailbox");
@@ -311,7 +311,7 @@ fn verify_pending_capacity(module: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::new(&tenant, 1).expect("default pending capacity");
     let pid = worker.spawn(module, limits(), 2).expect("actor");
-    let bump = module.handler("Bump").expect("Bump");
+    let bump = module.handler("bump").expect("bump");
     let first = worker
         .request(pid, &bump, &[1], MAX_STEPS, TIMEOUT)
         .expect("first request");
@@ -353,7 +353,7 @@ fn verify_pending_capacity(module: &ScalarModule) {
 }
 
 fn verify_limits(module: &ScalarModule) {
-    let bump = module.handler("Bump").expect("Bump");
+    let bump = module.handler("bump").expect("bump");
     for level in [
         ResourceLevel::Vm,
         ResourceLevel::Tenant,
@@ -415,7 +415,7 @@ fn verify_zero_timeout(module: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::with_request_capacity(&tenant, 1, 1).expect("timeout worker");
     let pid = worker.spawn(module, limits(), 2).expect("actor");
-    let bump = module.handler("Bump").expect("Bump");
+    let bump = module.handler("bump").expect("bump");
     let expired = worker
         .request(pid, &bump, &[4], MAX_STEPS, Duration::ZERO)
         .expect("zero timeout request");
@@ -462,7 +462,7 @@ fn verify_zero_timeout(module: &ScalarModule) {
 }
 
 fn verify_suspended_terminal(module: &ScalarModule) {
-    let bump = module.handler("Bump").expect("Bump");
+    let bump = module.handler("bump").expect("bump");
     for cancel in [false, true] {
         let (vm, tenant) = accounts();
         let mut worker =
@@ -525,7 +525,7 @@ fn verify_worker_ids(module: &ScalarModule) {
     let mut second = ScalarWorker::with_request_capacity(&tenant, 1, 1).expect("second worker");
     let first_pid = first.spawn(module, limits(), 1).expect("first actor");
     let second_pid = second.spawn(module, limits(), 1).expect("second actor");
-    let get = module.handler("Get").expect("Get");
+    let get = module.handler("get").expect("get");
     let first_id = first
         .request(first_pid, &get, &[], MAX_STEPS, TIMEOUT)
         .expect("first request");
@@ -572,10 +572,10 @@ fn verify_worker_ids(module: &ScalarModule) {
 }
 
 fn verify_exit(module: &ScalarModule) {
-    let bump = module.handler("Bump").expect("Bump");
-    let get = module.handler("Get").expect("Get");
-    let fail = module.handler("Fail").expect("Fail");
-    let fail_request = module.handler("FailRequest").expect("FailRequest");
+    let bump = module.handler("bump").expect("bump");
+    let get = module.handler("get").expect("get");
+    let fail = module.handler("fail").expect("fail");
+    let fail_request = module.handler("fail_request").expect("fail_request");
     for scenario in [
         "request failure",
         "budget failure",
@@ -731,8 +731,8 @@ fn verify_drop(module: &ScalarModule) {
     let mut worker = ScalarWorker::with_request_capacity(&tenant, 2, 4).expect("drop worker");
     let first = worker.spawn(module, limits(), 1).expect("first actor");
     let second = worker.spawn(module, limits(), 1).expect("second actor");
-    let get = module.handler("Get").expect("Get");
-    let bump = module.handler("Bump").expect("Bump");
+    let get = module.handler("get").expect("get");
+    let bump = module.handler("bump").expect("bump");
     worker
         .request(first, &get, &[], MAX_STEPS, TIMEOUT)
         .expect("held completed reply");

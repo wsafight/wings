@@ -43,8 +43,8 @@ fn main() {
                     .for_process(&account)
                     .unwrap();
                 let mut process = module.instantiate_in_pool(&pool).unwrap();
-                assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
-                assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+                assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
+                assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
                 drop((process, pool, module, account, tenant));
                 accepted += 1;
             } else {

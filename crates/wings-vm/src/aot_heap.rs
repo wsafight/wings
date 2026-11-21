@@ -1294,6 +1294,128 @@ unsafe fn string_literal(context: &mut ScalarContext, arguments: [i64; 3]) -> Re
     Err(STATUS_HEAP_EXHAUSTED)
 }
 
+fn format_i64_decimal(value: i64, out: &mut [u8; 24]) -> &[u8] {
+    let negative = value < 0;
+    let mut magnitude = value.unsigned_abs();
+    let mut cursor = out.len();
+    loop {
+        cursor -= 1;
+        out[cursor] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if negative {
+        cursor -= 1;
+        out[cursor] = b'-';
+    }
+    &out[cursor..]
+}
+
+unsafe fn allocate_short_string(context: &mut ScalarContext, text: &[u8]) -> Result<u64, u32> {
+    let length = text.len();
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut buffer = if !unsafe { &*pointer }.heap.has_free_slot() {
+        match unsafe { collect_managed_recycling(context, length) }? {
+            Some(recycled) => recycled,
+            None => unsafe { &*pointer }
+                .heap
+                .prepare_bytes(length)
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+        }
+    } else {
+        match unsafe { &*pointer }.heap.prepare_bytes(length) {
+            Ok(buffer) => buffer,
+            Err(_) => match unsafe { collect_managed_recycling(context, length) }? {
+                Some(recycled) => recycled,
+                None => unsafe { &*pointer }
+                    .heap
+                    .prepare_bytes(length)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+            },
+        }
+    };
+    crate::execution::runtime_checkpoint(context, true)?;
+    buffer.data.extend_from_slice(text);
+    let mut buffer = Some(buffer);
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            match unsafe { &mut *pointer }
+                .heap
+                .allocate_string_chunk(&mut buffer, &mut cursor)
+            {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
+}
+
+unsafe fn bytes_literal(context: &mut ScalarContext, arguments: [i64; 3]) -> Result<u64, u32> {
+    let length = usize::try_from(arguments[1])
+        .ok()
+        .filter(|length| *length <= crate::heap::MAX_BYTES)
+        .ok_or(wings_abi::STATUS_INVALID_BYTES)?;
+    if arguments[0] == 0 {
+        return Err(wings_abi::STATUS_INVALID_BYTES);
+    }
+    let pointer = context.heap_data.cast::<AotHeap>();
+    let mut buffer = if !unsafe { &*pointer }.heap.has_free_slot() {
+        match unsafe { collect_managed_recycling(context, length) }? {
+            Some(recycled) => recycled,
+            None => unsafe { &*pointer }
+                .heap
+                .prepare_bytes(length)
+                .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+        }
+    } else {
+        match unsafe { &*pointer }.heap.prepare_bytes(length) {
+            Ok(buffer) => buffer,
+            Err(_) => match unsafe { collect_managed_recycling(context, length) }? {
+                Some(recycled) => recycled,
+                None => unsafe { &*pointer }
+                    .heap
+                    .prepare_bytes(length)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?,
+            },
+        }
+    };
+    for offset in (0..length).step_by(256) {
+        crate::execution::runtime_checkpoint(context, true)?;
+        let data =
+            unsafe { std::slice::from_raw_parts(arguments[0] as usize as *const u8, length) };
+        let end = (offset + 256).min(length);
+        buffer.data.extend_from_slice(&data[offset..end]);
+    }
+    let mut buffer = Some(buffer);
+    for attempt in 0..2 {
+        let mut cursor = 0;
+        loop {
+            crate::execution::runtime_checkpoint(context, true)?;
+            match unsafe { &mut *pointer }
+                .heap
+                .allocate_bytes_chunk(&mut buffer, &mut cursor)
+            {
+                Ok(Some(reference)) => return Ok(reference.encoded()),
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if attempt == 0 {
+            unsafe { collect_managed(context) }?;
+        }
+    }
+    Err(STATUS_HEAP_EXHAUSTED)
+}
+
 unsafe fn equal_strings(context: &mut ScalarContext, arguments: [i64; 3]) -> Result<u64, u32> {
     let pointer = context.heap_data.cast::<AotHeap>();
     let references = {
@@ -1443,6 +1565,38 @@ pub(crate) unsafe extern "C" fn heap_call(
             unsafe { string_call(context, operation, arguments) }
         };
         return match result {
+            Ok(value) => {
+                unsafe { *output = value };
+                STATUS_OK
+            }
+            Err(status) => status,
+        };
+    }
+    if operation == wings_abi::HEAP_BYTES_LITERAL {
+        let arguments = unsafe { *(argument as usize as *const [i64; 3]) };
+        return match unsafe { bytes_literal(context, arguments) } {
+            Ok(value) => {
+                unsafe { *output = value };
+                STATUS_OK
+            }
+            Err(status) => status,
+        };
+    }
+    if matches!(
+        operation,
+        wings_abi::HEAP_INT_TO_STRING | wings_abi::HEAP_BOOL_TO_STRING
+    ) {
+        let mut decimal = [0u8; 24];
+        let text: &[u8] = if operation == wings_abi::HEAP_INT_TO_STRING {
+            format_i64_decimal(argument as i64, &mut decimal)
+        } else {
+            match argument {
+                0 => b"false",
+                1 => b"true",
+                _ => return STATUS_INVALID_ROOT,
+            }
+        };
+        return match unsafe { allocate_short_string(context, text) } {
             Ok(value) => {
                 unsafe { *output = value };
                 STATUS_OK

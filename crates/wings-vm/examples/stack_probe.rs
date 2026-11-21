@@ -139,7 +139,7 @@ fn probe_vm(mode: &str, count: usize, directory: &Path) {
     let preemption = PreemptionToken::default();
     let module = unsafe { ScalarModule::load_trusted(directory) }.expect("trusted probe module");
     let mut warmup = module.instantiate().expect("trusted probe");
-    assert_eq!(warmup.invoke("Work", &[7]), Ok(Some(1464)));
+    assert_eq!(warmup.invoke("work", &[7]), Ok(Some(1464)));
     drop(warmup);
     phase("baseline", 0, 0.0);
     let started = Instant::now();
@@ -162,7 +162,7 @@ fn probe_vm(mode: &str, count: usize, directory: &Path) {
     if !mode.ends_with("idle") {
         for process in &mut processes {
             let mut execution = process
-                .start_in_pool("Work", &[7], 147, &cancellation, &preemption, &pool)
+                .start_in_pool("work", &[7], 147, &cancellation, &preemption, &pool)
                 .expect("start probe");
             assert_eq!(execution.resume(98), Ok(ExecutionStatus::Suspended));
             executions.push(execution);
@@ -179,7 +179,7 @@ fn probe_vm(mode: &str, count: usize, directory: &Path) {
     drop(executions);
     for process in &mut processes {
         if !mode.ends_with("idle") {
-            assert_eq!(process.invoke("Get", &[]), Ok(Some(1464)));
+            assert_eq!(process.invoke("get", &[]), Ok(Some(1464)));
         }
     }
     drop(processes);

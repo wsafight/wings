@@ -42,15 +42,15 @@ fn main() {
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let module = unsafe { ScalarModule::load_trusted(Path::new(&arguments[1])) }.unwrap();
     for (entry, values, child_value, parent_value, heap_records) in [
-        ("Start", vec![7, 0], Some(7), Some(-1), 16),
-        ("Start", vec![9, 1], Some(9), None, 16),
-        ("Self", vec![11], None, Some(11), 16),
-        ("Ask", vec![13], Some(-1), Some(27), 16),
-        ("Mixed", vec![17], Some(55), Some(-1), 16),
-        ("Mixed", vec![19], Some(61), Some(-1), 9),
-        ("Empty", vec![], None, Some(-1), 2),
-        ("Fill", vec![64, 0], Some(64), Some(64), 96),
-        ("Fill", vec![32, 1], Some(32), Some(32), 96),
+        ("start", vec![7, 0], Some(7), Some(-1), 16),
+        ("start", vec![9, 1], Some(9), None, 16),
+        ("self_msg", vec![11], None, Some(11), 16),
+        ("ask", vec![13], Some(-1), Some(27), 16),
+        ("mixed", vec![17], Some(55), Some(-1), 16),
+        ("mixed", vec![19], Some(61), Some(-1), 9),
+        ("empty", vec![], None, Some(-1), 2),
+        ("fill", vec![64, 0], Some(64), Some(64), 96),
+        ("fill", vec![32, 1], Some(32), Some(32), 96),
     ] {
         let vm = ResourceAccount::vm(limits());
         let tenant = vm.tenant_accounted(limits()).unwrap();
@@ -78,18 +78,18 @@ fn main() {
             );
         }
         if let Some(value) = parent_value {
-            assert_eq!(read(&mut worker, &module, parent, "Read"), value, "{entry}");
+            assert_eq!(read(&mut worker, &module, parent, "read"), value, "{entry}");
         }
         if let Some(value) = child_value {
             let child = worker.pids().find(|pid| *pid != parent).unwrap();
-            assert_eq!(read(&mut worker, &module, child, "Read"), value, "{entry}");
-            if entry == "Start" || entry == "Fill" {
-                let next = if entry == "Fill" {
+            assert_eq!(read(&mut worker, &module, child, "read"), value, "{entry}");
+            if entry == "start" || entry == "fill" {
+                let next = if entry == "fill" {
                     value - 1
                 } else {
                     value + 1
                 };
-                assert_eq!(read(&mut worker, &module, child, "Next"), next);
+                assert_eq!(read(&mut worker, &module, child, "next"), next);
             }
         }
         assert_eq!(vm.used().messages, 0);
@@ -106,7 +106,7 @@ fn main() {
         let request = worker
             .request(
                 parent,
-                &module.handler("Fill").unwrap(),
+                &module.handler("fill").unwrap(),
                 &[count, twice],
                 32768,
                 Duration::from_secs(60),
@@ -125,12 +125,12 @@ fn main() {
             Some(RequestOutcome::Failed)
         );
         let child = worker.pids().next().unwrap();
-        assert_eq!(read(&mut worker, &module, child, "Read"), -1);
+        assert_eq!(read(&mut worker, &module, child, "read"), -1);
         drop(worker);
         drop(tenant);
         assert_eq!(vm.used(), Resources::default());
     }
-    for entry in ["Start", "Mixed", "Fill"] {
+    for entry in ["start", "mixed", "fill"] {
         for boundary in 0..160 {
             let vm = ResourceAccount::vm(limits());
             let tenant = vm.tenant_accounted(limits()).unwrap();
@@ -140,7 +140,7 @@ fn main() {
                 .request(
                     pid,
                     &module.handler(entry).unwrap(),
-                    if entry == "Mixed" { &[7] } else { &[16, 0] },
+                    if entry == "mixed" { &[7] } else { &[16, 0] },
                     32768,
                     Duration::from_secs(60),
                 )
@@ -165,7 +165,7 @@ fn main() {
         let prepare = worker
             .request(
                 parent,
-                &module.handler("Prepare").unwrap(),
+                &module.handler("prepare").unwrap(),
                 &[64],
                 32768,
                 Duration::from_secs(60),
@@ -179,7 +179,7 @@ fn main() {
         let request = worker
             .request(
                 parent,
-                &module.handler("Copy").unwrap(),
+                &module.handler("copy").unwrap(),
                 &[],
                 4096,
                 Duration::from_secs(60),
@@ -187,7 +187,7 @@ fn main() {
             .unwrap();
         drive(&mut worker, boundary);
         let parent_snapshot = worker.snapshot(parent).unwrap();
-        observed_source_copy |= parent_snapshot.active_handler == Some("Copy")
+        observed_source_copy |= parent_snapshot.active_handler == Some("copy")
             && parent_snapshot
                 .execution
                 .is_some_and(|execution| execution.consumed_steps() > 16)
@@ -198,7 +198,7 @@ fn main() {
         let child = worker.pids().find(|pid| *pid != parent);
         if let Some(child) = child {
             let snapshot = worker.snapshot(child).unwrap();
-            let importing = snapshot.active_handler == Some("Store")
+            let importing = snapshot.active_handler == Some("store")
                 && snapshot
                     .heap
                     .is_some_and(|heap| (2..65).contains(&heap.allocated));
@@ -222,7 +222,7 @@ fn main() {
     worker.enable_wait().unwrap();
     let parent = worker.spawn_with_heap(&module, limits(), 2, 7).unwrap();
     let baseline = vm.used();
-    for name in ["Store", "Compute"] {
+    for name in ["store", "compute"] {
         let handler = module.handler(name).unwrap();
         for argument in [1, 2i64 << 32, -1] {
             assert!(worker.send(parent, &handler, &[argument], 8192).is_err());
@@ -259,7 +259,7 @@ fn main() {
     worker
         .request(
             parent,
-            &module.handler("Mixed").unwrap(),
+            &module.handler("mixed").unwrap(),
             &[7],
             8192,
             Duration::from_secs(60),

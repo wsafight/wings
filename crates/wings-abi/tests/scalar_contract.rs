@@ -237,12 +237,15 @@ fn process_effect_request_is_a_fixed_native_c_layout() {
 
 #[test]
 fn scalar_status_codes_and_version_remain_wire_compatible() {
-    assert_eq!(SCALAR_ABI_VERSION, 22);
+    assert_eq!(SCALAR_ABI_VERSION, 23);
     assert_eq!(wings_abi::MAX_RECORD_REPLY_NODES, 64);
     assert_eq!(wings_abi::HEAP_STRING_LITERAL, 18);
     assert_eq!(wings_abi::HEAP_EQUAL_STRINGS, 21);
     assert_eq!(wings_abi::HEAP_STRING_AT, 22);
     assert_eq!(wings_abi::HEAP_STRING_SLICE, 23);
+    assert_eq!(wings_abi::HEAP_INT_TO_STRING, 24);
+    assert_eq!(wings_abi::HEAP_BOOL_TO_STRING, 25);
+    assert_eq!(wings_abi::HEAP_BYTES_LITERAL, 26);
     assert_eq!(STATUS_OK, 0);
     assert_eq!(STATUS_OVERFLOW, 1);
     assert_eq!(STATUS_DIVISION_BY_ZERO, 2);

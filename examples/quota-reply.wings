@@ -1,12 +1,12 @@
-process QuotaReply {
-  record Empty {}
+actor QuotaReply {
+  struct Empty {}
 
-  state count: Int = 7
+  state count = 7
 
-  on Value -> Empty {
+  on value -> Empty {
     count = 99
     Empty()
   }
 
-  on Read -> Int { count }
+  on read -> int { count }
 }

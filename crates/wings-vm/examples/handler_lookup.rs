@@ -59,9 +59,9 @@ fn main() {
     let pool = StackPool::new_accounted(&tenant, 1, 0).unwrap();
     let bound = pool.for_process(&account).unwrap();
     let mut process = module.instantiate_in_pool(&bound).unwrap();
-    assert_eq!(process.invoke("Inc", &[7]).unwrap(), Some(7));
+    assert_eq!(process.invoke("inc", &[7]).unwrap(), Some(7));
     MAX_ALLOCATION.store(0, Ordering::SeqCst);
-    let handler = module.handler("Get").unwrap();
+    let handler = module.handler("get").unwrap();
     assert_eq!(MAX_ALLOCATION.load(Ordering::SeqCst), 0);
     drop(handler);
     let names = [
@@ -113,7 +113,7 @@ fn main() {
                 assert_eq!(vm.used(), before);
             }
             drop(held);
-            assert_eq!(process.invoke("Get", &[]).unwrap(), Some(7));
+            assert_eq!(process.invoke("get", &[]).unwrap(), Some(7));
         }
         assert_eq!(vm.used(), baseline);
     }

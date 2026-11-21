@@ -1,73 +1,73 @@
-process ListReplies {
-  state values: IntList = empty_ints()
+actor ListReplies {
+  state values: [int] = []
 
-  on Make(seed: Int, length: Int) -> IntList {
-    values = prepend_int(length, empty_ints())
-    while head_int(values) > 0 {
-      let next = head_int(values) - 1
-      values = prepend_int(next, prepend_int(seed + next, tail_ints(values)))
+  on make(seed: int, length: int) -> [int] {
+    values = [length]
+    while values.head() > 0 {
+      let next = values.head() - 1
+      values = [next, seed + next, ..values.tail()]
     }
-    collect()
-    tail_ints(values)
+    gc()
+    values.tail()
   }
 
-  on Current -> IntList {
-    collect()
-    if is_empty_ints(values) { values } else { tail_ints(values) }
+  on current -> [int] {
+    gc()
+    if values.is_empty() { values } else { values.tail() }
   }
 
-  on Echo(input: IntList) -> IntList {
-    collect()
-    values = prepend_int(0, input)
-    collect()
+  on echo(input: [int]) -> [int] {
+    gc()
+    values = [0, ..input]
+    gc()
     input
   }
 
-  on Candidate -> IntList {
-    let result = if is_empty_ints(values) { values } else { tail_ints(values) }
-    values = prepend_int(77, empty_ints())
-    collect()
+  on candidate -> [int] {
+    let result = if values.is_empty() { values } else { values.tail() }
+    values = [77]
+    gc()
     result
   }
 
-  on Fail -> IntList {
-    values = prepend_int(999, empty_ints())
-    collect()
+  on fail -> [int] {
+    values = [999]
+    gc()
     let failed = 1 / 0
     values
   }
 
-  on Start(length: Int, timeout: Int, cancel: Bool, fail: Bool, same: Bool) -> Int {
-    let target = if same { self_pid() } else { spawn_self() }
+  on start(length: int, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
     let pending = if fail {
-      request(target, Fail, Done, timeout)
+      target.ask(fail, timeout: timeout, then: done)
     } else {
-      request(target, Make, Done, timeout, 17, length)
+      target.ask(make(17, length), timeout: timeout, then: done)
     }
-    if cancel { cancel_request(pending) } else { () }
-    values = prepend_int(9, empty_ints())
+    if cancel { pending.cancel() }
+    values = [9]
     9
   }
 
-  on Done(id: RequestId, status: Int, result: IntList) {
-    collect()
-    values = prepend_int(status, result)
-    collect()
-    send_self(Mark)
+  on reply done(id: req, status: int, result: [int]) {
+    gc()
+    values = [status, ..result]
+    gc()
+    self ! mark
   }
 
-  on Mark { values = prepend_int(999, values); collect() }
-  on CompletedStatus -> Int { head_int(tail_ints(values)) }
-  on CompletedValues -> IntList { tail_ints(tail_ints(values)) }
-  on Clear { values = empty_ints(); collect() }
-  on Pulse -> Int { 1 }
-  on Marker -> Int { if is_empty_ints(values) { -1 } else { head_int(values) } }
+  on mark { values = [999, ..values]; gc() }
+  on completed_status -> int { values.tail().head() }
+  on completed_values -> [int] { values.tail().tail() }
+  on clear { values = []; gc() }
+  on pulse -> int { 1 }
+  on marker -> int { if values.is_empty() { -1 } else { values.head() } }
 
-  on StartImportFail -> Int {
-    let child = spawn_self()
-    let pending = request(child, Initial, Done, 60000)
-    values = prepend_int(9, empty_ints())
+  on start_import_fail -> int {
+    let child = spawn()
+    let pending = child.ask(initial, timeout: 60000, then: done)
+    values = [9]
     9
   }
-  on Initial -> IntList { prepend_int(5, empty_ints()) }
+  on initial -> [int] { [5] }
 }

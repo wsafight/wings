@@ -29,7 +29,7 @@ fn main() {
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
     let mut execution = process
         .start_controlled(
-            "Heap",
+            "heap",
             &[30],
             1024,
             &CancellationToken::default(),
@@ -66,12 +66,12 @@ fn main() {
     }
     assert!(completed);
     drop(execution);
-    assert_eq!(process.invoke("Get", &[]).unwrap(), Some(30));
+    assert_eq!(process.invoke("get", &[]).unwrap(), Some(30));
     assert!(process.heap_stats().unwrap().collections >= 10);
     drop(process);
     assert_eq!(vm.used(), baseline);
     let mut process = module.instantiate_with_heap(&bound, &account, 2).unwrap();
-    assert_eq!(process.invoke("BranchHeap", &[30]).unwrap(), Some(30));
+    assert_eq!(process.invoke("branch_heap", &[30]).unwrap(), Some(30));
     assert!(process.heap_stats().unwrap().collections >= 14);
     drop(process);
     assert_eq!(vm.used(), baseline);
@@ -80,7 +80,7 @@ fn main() {
         let cancellation = CancellationToken::default();
         let mut execution = process
             .start_controlled(
-                "Heap",
+                "heap",
                 &[3000],
                 65536,
                 &cancellation,
@@ -98,7 +98,7 @@ fn main() {
         drop(execution);
         assert!(
             process
-                .invoke("Get", &[])
+                .invoke("get", &[])
                 .unwrap_err()
                 .contains("terminated")
         );
@@ -112,7 +112,7 @@ fn main() {
     let pending = worker
         .request(
             pid,
-            &module.handler("Heap").unwrap(),
+            &module.handler("heap").unwrap(),
             &[60],
             2048,
             Duration::from_secs(60),
@@ -162,14 +162,14 @@ fn main() {
     let long = worker
         .request(
             first,
-            &module.handler("Count").unwrap(),
+            &module.handler("count").unwrap(),
             &[100],
             4096,
             timeout,
         )
         .unwrap();
     let quick = worker
-        .request(second, &module.handler("Get").unwrap(), &[], 128, timeout)
+        .request(second, &module.handler("get").unwrap(), &[], 128, timeout)
         .unwrap();
     let mut quick_done = false;
     let mut long_done = false;
@@ -208,7 +208,7 @@ fn main() {
     let failing = worker
         .request(
             first,
-            &module.handler("Fail").unwrap(),
+            &module.handler("fail").unwrap(),
             &[110],
             4096,
             timeout,
@@ -227,7 +227,7 @@ fn main() {
     );
     let exit = *worker.last_exit().unwrap();
     assert_eq!(exit.pid, first);
-    assert_eq!(exit.handler(), "Fail");
+    assert_eq!(exit.handler(), "fail");
     assert_eq!(exit.execution.fault, Some(ExecutionFault::DivisionByZero));
     assert_eq!(exit.committed_state, Some(100));
     assert!(exit.execution.consumed_steps() > 25);
@@ -235,7 +235,7 @@ fn main() {
     let timed = worker
         .request(
             second,
-            &module.handler("Count").unwrap(),
+            &module.handler("count").unwrap(),
             &[1_000_000],
             20_000_000,
             timeout,

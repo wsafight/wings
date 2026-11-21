@@ -1,41 +1,41 @@
-process ByteState {
-  fn changed(value: Bytes, index: Int, byte: Int) -> Bytes { replace_byte(value, index, byte) }
-  fn changed_word(value: Bytes, offset: Int, number: Int) -> Bytes { replace_i64_be(value, offset, number) }
+actor ByteState {
+  fn changed(value: bytes, index: int, byte: int) -> bytes { value.set(index, byte) }
+  fn changed_word(value: bytes, offset: int, number: int) -> bytes { value.set_i64(offset, number) }
 
-  state data: Bytes = fill_bytes(0, 0)
+  state data = bytes::fill(0, 0)
 
-  on Fill(length: Int, byte: Int) -> Int { data = fill_bytes(length, byte); bytes_len(data) }
-  on Set(index: Int, byte: Int) -> Int {
+  on fill(length: int, byte: int) -> int { data = bytes::fill(length, byte); data.len() }
+  on set(index: int, byte: int) -> int {
     let old = data
     let next = changed(data, index, byte)
-    collect()
+    gc()
     data = next
-    byte_at(old, index) * 256 + byte_at(data, index)
+    old.at(index) * 256 + data.at(index)
   }
-  on Read(index: Int) -> Int { collect(); byte_at(data, index) }
-  on Length -> Int { collect(); bytes_len(data) }
-  on SetWord(offset: Int, number: Int) -> Int {
+  on read(index: int) -> int { gc(); data.at(index) }
+  on length -> int { gc(); data.len() }
+  on set_word(offset: int, number: int) -> int {
     let old = data
     let next = changed_word(data, offset, number)
-    collect()
+    gc()
     data = next
-    read_i64_be(old, offset)
+    old.i64_at(offset)
   }
-  on ReadWord(offset: Int) -> Int { collect(); read_i64_be(data, offset) }
-  on FailWord -> Int { data = changed_word(data, 0, 99); 1 / 0 }
-  on Branch(flag: Bool) -> Int {
+  on read_word(offset: int) -> int { gc(); data.i64_at(offset) }
+  on fail_word -> int { data = changed_word(data, 0, 99); 1 / 0 }
+  on branch(flag: bool) -> int {
     let selected = if flag { changed(data, 0, 7) } else { data }
-    collect()
-    byte_at(selected, 0) + byte_at(data, 0)
+    gc()
+    selected.at(0) + data.at(0)
   }
-  on Loop(limit: Int) -> Int {
-    data = fill_bytes(512, 0)
-    while byte_at(data, 0) < limit {
-      let next = changed(data, 0, byte_at(data, 0) + 1)
-      collect()
+  on loop(limit: int) -> int {
+    data = bytes::fill(512, 0)
+    while data.at(0) < limit {
+      let next = changed(data, 0, data.at(0) + 1)
+      gc()
       data = next
     }
-    byte_at(data, 0)
+    data.at(0)
   }
-  on Fail -> Int { data = fill_bytes(4096, 99); 1 / 0 }
+  on fail -> int { data = bytes::fill(4096, 99); 1 / 0 }
 }

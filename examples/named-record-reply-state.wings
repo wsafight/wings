@@ -1,15 +1,15 @@
-process NamedRecordReplyState {
-  record Reply { text: String, saved: RecordInt }
-  state data: Reply = Reply("saved", record_int(7))
+actor NamedRecordReplyState {
+  struct Reply { text: str, saved: box<int> }
+  state data: Reply = Reply("saved", box(7))
 
-  on Current -> Reply { collect(); data }
-  on Read -> Int { string_len(data.text) + read_int(data.saved) }
-  on Start -> Int {
-    let target = spawn_self()
-    request(target, Current, Done, 1000)
+  on current -> Reply { gc(); data }
+  on read -> int { data.text.len() + data.saved.get() }
+  on start -> int {
+    let target = spawn()
+    target.ask(current, timeout: 1000, then: done)
     9
   }
-  on Done(id: RequestId, status: Int, value: Reply) {
+  on reply done(id: req, status: int, value: Reply) {
     data = value
   }
 }

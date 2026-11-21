@@ -448,7 +448,7 @@ fn run(
     let bootstrap = vm.used();
     let tenant = vm.tenant_accounted(limits)?;
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
-    let handler = module.handler("Apply")?;
+    let handler = module.handler("apply")?;
     if module.manifest().state != state_bytes.map_or(ValueType::Int, |_| ValueType::BytesRef)
         || handler.schema().reply != Some(ValueType::Int)
         || handler.schema().parameters.len() != 2
@@ -460,8 +460,8 @@ fn run(
     let mut worker = ScalarWorker::new(&tenant, 1)?;
     worker.enable_wait()?;
     let pid = if let Some(length) = state_bytes {
-        let configure = module.handler("Configure")?;
-        let read = module.handler("Read")?;
+        let configure = module.handler("configure")?;
+        let read = module.handler("read")?;
         if configure.schema().parameters.len() != 1
             || configure.schema().parameters[0].1 != ValueType::Int
             || configure.schema().reply != Some(ValueType::Int)
@@ -518,7 +518,7 @@ fn run(
         }
         let value = i64::from_be_bytes(snapshot.prefix[..8].try_into().unwrap());
         if worker.process_count() == 1 {
-            let outcome = finish_request(&mut worker, pid, &module.handler("Read")?, &[])?;
+            let outcome = finish_request(&mut worker, pid, &module.handler("read")?, &[])?;
             let RequestOutcome::ReplyBytes(bytes) = outcome else {
                 return Err("missing TCP Bytes full state reply".into());
             };

@@ -89,8 +89,8 @@ fn verify_fifo(module: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::new(&tenant, 2).expect("worker");
     let empty = tenant.used();
-    let add = module.handler("Add").expect("Add");
-    let set = module.handler("Set").expect("Set");
+    let add = module.handler("add").expect("add");
+    let set = module.handler("set").expect("set");
     let first = worker.spawn(module, limits(), 3).expect("first actor");
     let second = worker.spawn(module, limits(), 3).expect("second actor");
     let pids = [first, second];
@@ -98,13 +98,13 @@ fn verify_fifo(module: &ScalarModule) {
     let mut arguments = [10];
     worker
         .send(first, &set, &arguments, MAX_STEPS)
-        .expect("Set");
+        .expect("set");
     arguments[0] = 999;
-    worker.send(first, &add, &[3], MAX_STEPS).expect("Add");
-    worker.send(first, &set, &[7], MAX_STEPS).expect("Set");
-    worker.send(second, &add, &[2], MAX_STEPS).expect("Add");
-    worker.send(second, &set, &[20], MAX_STEPS).expect("Set");
-    worker.send(second, &add, &[-4], MAX_STEPS).expect("Add");
+    worker.send(first, &add, &[3], MAX_STEPS).expect("add");
+    worker.send(first, &set, &[7], MAX_STEPS).expect("set");
+    worker.send(second, &add, &[2], MAX_STEPS).expect("add");
+    worker.send(second, &set, &[20], MAX_STEPS).expect("set");
+    worker.send(second, &add, &[-4], MAX_STEPS).expect("add");
     assert_eq!(arguments, [999]);
     assert_eq!(tenant.used().messages, 6);
     let expected = [[10, 13, 7], [2, 20, 16]];
@@ -183,9 +183,9 @@ fn verify_rejections(module: &ScalarModule, foreign: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::new(&tenant, 1).expect("worker");
     let pid = worker.spawn(module, limits(), 1).expect("actor");
-    let add = module.handler("Add").expect("Add");
-    let get = module.handler("Get").expect("Get");
-    let foreign_add = foreign.handler("Add").expect("foreign Add");
+    let add = module.handler("add").expect("add");
+    let get = module.handler("get").expect("get");
+    let foreign_add = foreign.handler("add").expect("foreign Add");
     for (handler, values, reason) in [
         (&add, &[][..], "argument"),
         (&add, &[1, 2][..], "argument"),
@@ -224,7 +224,7 @@ fn verify_stop_and_pids(module: &ScalarModule) {
     let mut worker = ScalarWorker::new(&tenant, 1).expect("worker");
     let mut other = ScalarWorker::new(&tenant, 1).expect("other worker");
     let empty = tenant.used();
-    let add = module.handler("Add").expect("Add");
+    let add = module.handler("add").expect("add");
     let old = worker.spawn(module, limits(), 1).expect("actor");
     let outsider = other.spawn(module, limits(), 1).expect("outsider");
     worker.send(old, &add, &[1], MAX_STEPS).expect("start");
@@ -264,8 +264,8 @@ fn verify_stop_and_pids(module: &ScalarModule) {
 }
 
 fn verify_failure_and_drop(module: &ScalarModule) {
-    let add = module.handler("Add").expect("Add");
-    let fail = module.handler("Fail").expect("Fail");
+    let add = module.handler("add").expect("add");
+    let fail = module.handler("fail").expect("fail");
     for (handler, arguments, budget, reason) in [
         (&fail, &[][..], MAX_STEPS, "division by zero"),
         (&add, &[7][..], 0, "budget"),
@@ -346,7 +346,7 @@ fn verify_limits(module: &ScalarModule) {
     let (vm, tenant) = accounts();
     let mut worker = ScalarWorker::new(&tenant, 2).expect("limits worker");
     let empty = tenant.used();
-    let add = module.handler("Add").expect("Add");
+    let add = module.handler("add").expect("add");
 
     let before = snapshot(&worker, &[], &vm, &tenant);
     assert!(

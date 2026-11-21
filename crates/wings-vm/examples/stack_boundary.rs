@@ -98,8 +98,8 @@ fn verify(directory: &Path, name: &str, argument: i64, expected: i64) {
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     assert!(arguments.len() == 3 && arguments[0] == "--trusted");
-    verify(Path::new(&arguments[1]), "Inc", 3, 3);
-    verify(Path::new(&arguments[2]), "Work", 2, 8384);
+    verify(Path::new(&arguments[1]), "inc", 3, 3);
+    verify(Path::new(&arguments[2]), "work", 2, 8384);
     println!(
         "Stack boundary verified: zero, wrapped/insufficient space and valid frames, no output or budget changes on rejection"
     );

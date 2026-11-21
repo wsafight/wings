@@ -89,7 +89,7 @@ def verify_manifest_files(parent, counter):
         assert result["accepted"] == 6 and result["rejected"] == 16, result
         for directory, expected in cases:
             result = execute(directory.name, lambda: aot.invoke(
-                directory, [aot.message("Inc", 7)], expected=0 if expected == "ok" else 1))
+                directory, [aot.message("inc", 7)], expected=0 if expected == "ok" else 1))
             if expected == "ok":
                 assert json.loads(result.stdout) == {"reply": 7} and not result.stderr, result
             else:

@@ -7,9 +7,9 @@ fn main() {
     assert!(arguments.len() == 2 && arguments[0] == "--trusted");
     let directory = Path::new(&arguments[1]);
     let module = unsafe { ScalarModule::load_trusted(directory) }.expect("trusted Counter module");
-    let increment = module.handler("Inc").expect("resolve Inc");
-    let get = module.handler("Get").expect("resolve Get");
-    assert_eq!(increment.schema().name, "Inc");
+    let increment = module.handler("inc").expect("resolve Inc");
+    let get = module.handler("get").expect("resolve Get");
+    assert_eq!(increment.schema().name, "inc");
     assert!(module.handler("Missing").is_err());
     let mut first = module.instantiate().expect("first");
     let mut second = module.instantiate().expect("second");
@@ -30,7 +30,7 @@ fn main() {
     );
     let other_module =
         unsafe { ScalarModule::load_trusted(directory) }.expect("other module identity");
-    let other_increment = other_module.handler("Inc").expect("other ID");
+    let other_increment = other_module.handler("inc").expect("other ID");
     assert!(
         first
             .invoke_handler(&other_increment, &[1], 4, &cancellation)
@@ -69,7 +69,7 @@ fn main() {
         first.invoke_handler(&get, &[], 2, &cancellation),
         Ok(Some(7))
     );
-    assert_eq!(fresh.invoke("Inc", &[9]), Ok(Some(9)));
+    assert_eq!(fresh.invoke("inc", &[9]), Ok(Some(9)));
     println!(
         "Shared module verified: independent state/initialization/failure, module-bound IDs and lifetime; process header {} bytes",
         std::mem::size_of::<ScalarProcess>()

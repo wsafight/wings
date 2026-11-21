@@ -121,8 +121,8 @@ fn execute(directory: &Path, workload: &Workload) -> Result<Value, String> {
         },
     )?;
     let handle = scheduler.handle();
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
+    let configure = module.handler("configure")?;
+    let apply = module.handler("apply")?;
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut pids = Vec::with_capacity(workload.actors);
     for identity in 1..=workload.actors {

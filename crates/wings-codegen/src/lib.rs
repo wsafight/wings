@@ -384,15 +384,20 @@ fn compile_body(
         .collect();
     let mut literals = Vec::with_capacity(function.instructions.len());
     for instruction in &function.instructions {
-        let literal = if let Operation::StringLiteral(ref value) = instruction.operation {
+        let raw_bytes: Option<&[u8]> = match &instruction.operation {
+            Operation::StringLiteral(value) => Some(value.as_bytes()),
+            Operation::BytesLiteral(value) => Some(value.as_slice()),
+            _ => None,
+        };
+        let literal = if let Some(bytes) = raw_bytes {
             let identifier = module
                 .declare_anonymous_data(false, false)
                 .map_err(|error| error.to_string())?;
             let mut data = DataDescription::new();
-            data.define(if value.is_empty() {
+            data.define(if bytes.is_empty() {
                 vec![0].into_boxed_slice()
             } else {
-                value.as_bytes().into()
+                bytes.into()
             });
             module
                 .define_data(identifier, &data)
@@ -450,6 +455,9 @@ fn compile_body(
                 | Operation::ConcatStrings(_, _)
                 | Operation::EqualStrings(_, _)
                 | Operation::StringLiteral(_)
+                | Operation::BytesLiteral(_)
+                | Operation::IntToString(_)
+                | Operation::BoolToString(_)
         )
     });
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -714,30 +722,50 @@ fn compile_body(
             }
         }
         let instruction = &function.instructions[index];
-        let loop_header = if let Operation::Loop(initial) = instruction.operation {
-            let header = builder.create_block();
-            let after = builder.create_block();
-            builder.append_block_param(header, types::I64);
-            builder.append_block_param(after, types::I64);
-            builder.ins().jump(header, &[registers[initial]]);
-            builder.switch_to_block(header);
-            loops.push((header, after, index));
-            Some(builder.block_params(header)[0])
-        } else {
-            None
+        let early_count = match instruction.operation {
+            Operation::Loop(initial) => {
+                let header = builder.create_block();
+                let after = builder.create_block();
+                builder.append_block_param(header, types::I64);
+                builder.append_block_param(after, types::I64);
+                builder.ins().jump(header, &[registers[initial]]);
+                builder.switch_to_block(header);
+                loops.push((header, after, index, 1usize));
+                registers.push(builder.block_params(header)[0]);
+                1usize
+            }
+            Operation::LoopValues(ref initials) => {
+                let header = builder.create_block();
+                let after = builder.create_block();
+                let arity = initials.len();
+                for _ in 0..arity {
+                    builder.append_block_param(header, types::I64);
+                    builder.append_block_param(after, types::I64);
+                }
+                let args: Vec<Value> = initials.iter().map(|&reg| registers[reg]).collect();
+                builder.ins().jump(header, &args);
+                builder.switch_to_block(header);
+                loops.push((header, after, index, arity));
+                registers.extend_from_slice(builder.block_params(header));
+                arity
+            }
+            Operation::EndIf(value) => {
+                let (_, merge_block) = branches.pop().expect("validated branch");
+                builder.ins().jump(merge_block, &[registers[value]]);
+                builder.switch_to_block(merge_block);
+                registers.push(builder.block_params(merge_block)[0]);
+                1usize
+            }
+            Operation::EndIfValues(ref values) => {
+                let (_, merge_block) = branches.pop().expect("validated branch");
+                let args: Vec<Value> = values.iter().map(|&reg| registers[reg]).collect();
+                builder.ins().jump(merge_block, &args);
+                builder.switch_to_block(merge_block);
+                registers.extend_from_slice(builder.block_params(merge_block));
+                values.len()
+            }
+            _ => 0usize,
         };
-        let merged = if let Operation::EndIf(value) = instruction.operation {
-            let (_, merge_block) = branches.pop().expect("validated branch");
-            builder.ins().jump(merge_block, &[registers[value]]);
-            builder.switch_to_block(merge_block);
-            Some(builder.block_params(merge_block)[0])
-        } else {
-            None
-        };
-        let early_value = loop_header.or(merged);
-        if let Some(value) = early_value {
-            registers.push(value);
-        }
         poll_control(
             &mut builder,
             pointer_type,
@@ -969,25 +997,34 @@ fn compile_body(
                 builder.switch_to_block(continued);
                 builder.ins().load(types::I64, MemFlags::new(), output, 0)
             }
-            Operation::Loop(_) => loop_header.expect("validated loop header"),
+            Operation::Loop(_) | Operation::LoopValues(_) => builder.ins().iconst(types::I64, 0),
             Operation::While(condition) => {
-                let (_, after, header_index) = *loops.last().expect("validated loop");
+                let (_, after, header_index, arity) = *loops.last().expect("validated loop");
                 let body = builder.create_block();
                 builder.ins().brif(
                     registers[condition],
                     body,
                     &[],
                     after,
-                    &[registers[header_index]],
+                    &registers[header_index..header_index + arity],
                 );
                 builder.switch_to_block(body);
                 builder.ins().iconst(types::I64, 0)
             }
             Operation::EndLoop(value) => {
-                let (header, after, _) = loops.pop().expect("validated loop");
+                let (header, after, _, _) = loops.pop().expect("validated loop");
                 builder.ins().jump(header, &[registers[value]]);
                 builder.switch_to_block(after);
                 builder.block_params(after)[0]
+            }
+            Operation::EndLoopValues(ref values) => {
+                let (header, after, _, _) = loops.pop().expect("validated loop");
+                let args: Vec<Value> = values.iter().map(|&reg| registers[reg]).collect();
+                builder.ins().jump(header, &args);
+                builder.switch_to_block(after);
+                registers.extend_from_slice(builder.block_params(after));
+                index += values.len();
+                continue;
             }
             Operation::If(condition) => {
                 let then_block = builder.create_block();
@@ -1007,7 +1044,18 @@ fn compile_body(
                 builder.switch_to_block(else_block);
                 builder.ins().iconst(types::I64, 0)
             }
-            Operation::EndIf(_) => merged.expect("validated branch merge"),
+            Operation::ElseValues(ref values) => {
+                let (else_block, merge_block) = *branches.last().expect("validated branch");
+                for _ in 0..values.len() {
+                    builder.append_block_param(merge_block, types::I64);
+                }
+                let args: Vec<Value> = values.iter().map(|&reg| registers[reg]).collect();
+                builder.ins().jump(merge_block, &args);
+                builder.switch_to_block(else_block);
+                builder.ins().iconst(types::I64, 0)
+            }
+            Operation::EndIf(_) | Operation::EndIfValues(_) => builder.ins().iconst(types::I64, 0),
+            Operation::PhiValue(_) => unreachable!("phi values are consumed with owner op"),
             Operation::Constant(value) => builder.ins().iconst(types::I64, value),
             Operation::StringLiteral(ref value) => {
                 let output = heap_output.expect("literal heap scratch");
@@ -1027,6 +1075,44 @@ fn compile_body(
                     wings_abi::HEAP_STRING_LITERAL,
                     output,
                     output,
+                    exit,
+                )
+            }
+            Operation::BytesLiteral(ref value) => {
+                let output = heap_output.expect("literal heap scratch");
+                let address = builder
+                    .ins()
+                    .global_value(pointer_type, literals[index].expect("literal data"));
+                builder.ins().store(MemFlags::new(), address, output, 0);
+                let length = builder.ins().iconst(types::I64, value.len() as i64);
+                builder.ins().store(MemFlags::new(), length, output, 8);
+                let unused = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), unused, output, 16);
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    wings_abi::HEAP_BYTES_LITERAL,
+                    output,
+                    output,
+                    exit,
+                )
+            }
+            Operation::IntToString(operand) | Operation::BoolToString(operand) => {
+                let op = if matches!(instruction.operation, Operation::IntToString(_)) {
+                    wings_abi::HEAP_INT_TO_STRING
+                } else {
+                    wings_abi::HEAP_BOOL_TO_STRING
+                };
+                call_heap(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    heap_signature,
+                    op,
+                    registers[operand],
+                    heap_output.expect("heap operation scratch"),
                     exit,
                 )
             }
@@ -1061,21 +1147,25 @@ fn compile_body(
                 let left = registers[left];
                 let right = registers[right];
                 match operator {
-                    Operator::Divide => {
+                    Operator::Divide | Operator::Remainder => {
                         let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
                         fail_if_to(&mut builder, zero, STATUS_DIVISION_BY_ZERO, exit);
                         let minimum = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
                         let negative_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
                         let overflow = builder.ins().band(minimum, negative_one);
                         fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
-                        builder.ins().sdiv(left, right)
+                        if matches!(operator, Operator::Divide) {
+                            builder.ins().sdiv(left, right)
+                        } else {
+                            builder.ins().srem(left, right)
+                        }
                     }
                     _ => {
                         let (result, overflow) = match operator {
                             Operator::Add => builder.ins().sadd_overflow(left, right),
                             Operator::Subtract => builder.ins().ssub_overflow(left, right),
                             Operator::Multiply => builder.ins().smul_overflow(left, right),
-                            Operator::Divide => unreachable!(),
+                            Operator::Divide | Operator::Remainder => unreachable!(),
                         };
                         fail_if_to(&mut builder, overflow, STATUS_OVERFLOW, exit);
                         result
@@ -1299,10 +1389,12 @@ fn compile_body(
                 )
             }
         };
-        if early_value.is_none() {
+        if early_count == 0 {
             registers.push(value);
+            index += 1;
+        } else {
+            index += early_count;
         }
-        index += 1;
     }
     if !tail_polled {
         poll_control(
@@ -1370,11 +1462,16 @@ fn needs_inline_roots(operation: &Operation) -> bool {
         && !matches!(
             operation,
             Operation::Loop(_)
+                | Operation::LoopValues(_)
                 | Operation::While(_)
                 | Operation::EndLoop(_)
+                | Operation::EndLoopValues(_)
                 | Operation::If(_)
                 | Operation::Else(_)
+                | Operation::ElseValues(_)
                 | Operation::EndIf(_)
+                | Operation::EndIfValues(_)
+                | Operation::PhiValue(_)
         )
 }
 
@@ -1419,21 +1516,25 @@ fn emit_pure_scalar(
             let left = registers[left];
             let right = registers[right];
             match operator {
-                Operator::Divide => {
+                Operator::Divide | Operator::Remainder => {
                     let zero = builder.ins().icmp_imm(IntCC::Equal, right, 0);
                     fail_scalar_if(builder, zero, STATUS_DIVISION_BY_ZERO, exit, fast_step);
                     let minimum = builder.ins().icmp_imm(IntCC::Equal, left, i64::MIN);
                     let negative_one = builder.ins().icmp_imm(IntCC::Equal, right, -1);
                     let overflow = builder.ins().band(minimum, negative_one);
                     fail_scalar_if(builder, overflow, STATUS_OVERFLOW, exit, fast_step);
-                    builder.ins().sdiv(left, right)
+                    if matches!(operator, Operator::Divide) {
+                        builder.ins().sdiv(left, right)
+                    } else {
+                        builder.ins().srem(left, right)
+                    }
                 }
                 _ => {
                     let (result, overflow) = match operator {
                         Operator::Add => builder.ins().sadd_overflow(left, right),
                         Operator::Subtract => builder.ins().ssub_overflow(left, right),
                         Operator::Multiply => builder.ins().smul_overflow(left, right),
-                        Operator::Divide => unreachable!(),
+                        Operator::Divide | Operator::Remainder => unreachable!(),
                     };
                     fail_scalar_if(builder, overflow, STATUS_OVERFLOW, exit, fast_step);
                     result

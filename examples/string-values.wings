@@ -1,110 +1,110 @@
-process Text {
-  state text: String = "";
+actor Text {
+  state text = "";
 
-  fn copy(value: String) -> String {
-    let result = string_from_bytes(string_bytes(value));
-    collect();
+  fn copy(value: str) -> str {
+    let result = value.bytes().to_str();
+    gc();
     result
   }
 
-  on Fill(length: Int) -> Int {
-    text = string_from_bytes(fill_bytes(length, 97));
-    string_len(text)
+  on fill(length: int) -> int {
+    text = bytes::fill(length, 97).to_str();
+    text.len()
   }
 
-  on Read -> Int { string_len(text) }
+  on read -> int { text.len() }
 
-  on ByteLength -> Int { bytes_len(string_bytes(text)) }
+  on byte_length -> int { text.bytes().len() }
 
-  on Store(value: String) { collect(); text = value; collect(); }
+  on store(value: str) { gc(); text = value; gc(); }
 
-  on Echo(value: String) -> Bytes { collect(); text = value; string_bytes(value) }
+  on echo(value: str) -> bytes { gc(); text = value; value.bytes() }
 
-  on Mixed(value: String, data: Bytes, record: RecordInt, values: IntList, empty: String) -> Int {
-    collect();
+  on mixed(value: str, data: bytes, record: box<int>, values: [int], empty: str) -> int {
+    gc();
     text = value;
-    string_len(value) * 1000000 + bytes_len(string_bytes(value)) * 1000 + bytes_len(data) +
-      read_int(record) + head_int(values) + string_len(empty)
+    value.len() * 1000000 + value.bytes().len() * 1000 + data.len() +
+      record.get() + values.head() + empty.len()
   }
 
-  on SendText(length: Int) -> Int {
-    let child = spawn_self();
-    let value = string_from_bytes(fill_bytes(length, 97));
-    send(child, Store, value);
-    collect();
-    string_len(value)
+  on send_text(length: int) -> int {
+    let child = spawn();
+    let value = bytes::fill(length, 97).to_str();
+    child ! store(value);
+    gc();
+    value.len()
   }
 
-  on SelfText(value: String) { send_self(Store, value); collect(); }
+  on self_text(value: str) { self ! store(value); gc(); }
 
-  on AskText(value: String, timeout: Int) -> Int {
-    let child = spawn_self();
-    let pending = request(child, CountText, TextDone, timeout, value);
-    collect();
-    string_len(value)
+  on ask_text(value: str, timeout: int) -> int {
+    let child = spawn();
+    let pending = child.ask(count_text(value), timeout: timeout, then: text_done);
+    gc();
+    value.len()
   }
 
-  on CountText(value: String) -> Int { collect(); text = value; string_len(value) }
-  on TextDone(id: RequestId, status: Int, value: Int) {
-    text = string_from_bytes(fill_bytes(if status == 0 { value } else { 0 }, 97));
+  on count_text(value: str) -> int { gc(); text = value; value.len() }
+  on reply text_done(id: req, status: int, value: int) {
+    text = bytes::fill(if status == 0 { value } else { 0 }, 97).to_str();
   }
 
-  on OverText { let value = string_from_bytes(fill_bytes(32769, 97)); send_self(PairText, value, value); }
-  on PairText(first: String, second: String) { text = concat_strings(first, second); }
+  on over_text { let value = bytes::fill(32769, 97).to_str(); self ! pair_text(value, value); }
+  on pair_text(first: str, second: str) { text = first + second; }
 
-  on SendThenFail { let child = spawn_self(); send(child, Store, "published"); text = "candidate"; 1 / 0; }
+  on send_then_fail { let child = spawn(); child ! store("published"); text = "candidate"; 1 / 0; }
 
-  on Unicode -> Int {
-    text = concat_strings("中", "😀");
-    collect();
-    string_len(text) * 100 + bytes_len(string_bytes(copy(text)))
+  on unicode -> int {
+    text = "中" + "😀";
+    gc();
+    text.len() * 100 + copy(text).bytes().len()
   }
 
-  on Copy -> Int {
+  on copy -> int {
     let next = copy(text);
-    collect();
+    gc();
     text = next;
-    string_len(text)
+    text.len()
   }
 
-  on Choose(flag: Bool) -> Int {
-    text = if flag { copy(text) } else { string_from_bytes(fill_bytes(0, 0)) };
-    string_len(text)
+  on choose(flag: bool) -> int {
+    text = if flag { copy(text) } else { bytes::fill(0, 0).to_str() };
+    text.len()
   }
 
-  on Grow(limit: Int) -> Int {
-    text = string_from_bytes(fill_bytes(0, 0));
-    while string_len(text) < limit {
-      text = concat_strings(text, string_from_bytes(fill_bytes(1, 97)));
-      collect();
+  on grow(limit: int) -> int {
+    text = bytes::fill(0, 0).to_str();
+    while text.len() < limit {
+      text = (text + bytes::fill(1, 97).to_str());
+      gc();
     }
-    string_len(text)
+    text.len()
   }
 
-  on Double -> Int {
-    text = concat_strings(text, text);
-    string_len(text)
+  on double -> int {
+    text = text + text;
+    text.len()
   }
 
-  on Invalid -> Int {
-    text = string_from_bytes(fill_bytes(4, 97));
-    text = string_from_bytes(fill_bytes(1, 255));
-    string_len(text)
+  on invalid -> int {
+    text = bytes::fill(4, 97).to_str();
+    text = bytes::fill(1, 255).to_str();
+    text.len()
   }
 
-  on Clear -> Unit {
-    text = string_from_bytes(fill_bytes(0, 0));
-    collect();
+  on clear -> () {
+    text = bytes::fill(0, 0).to_str();
+    gc();
   }
 
-  on Sweep -> Unit { collect(); }
+  on sweep -> () { gc(); }
 
-  fn suffix(value: String) -> String { concat_strings(value, "\0\n\r\t\\\"") }
+  fn suffix(value: str) -> str { value + "\0\n\r\t\\\"" }
 
-  on Literal -> Int {
+  on literal -> int {
     text = suffix("中😀");
-    collect();
-    let data = string_bytes(text);
-    string_len(text) * 100 + bytes_len(data)
+    gc();
+    let data = text.bytes();
+    text.len() * 100 + data.len()
   }
 }

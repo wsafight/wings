@@ -156,7 +156,7 @@ impl CompletedEpoch {
         supervisor: &SchedulerSupervisor,
     ) -> Result<usize, String> {
         let handle = supervisor.handle();
-        let apply = module.handler("Apply")?;
+        let apply = module.handler("apply")?;
         for (child, pid) in self.children.iter().zip(&self.pids) {
             if supervisor.current_pid(*child).is_ok()
                 || handle.snapshot(*pid).is_ok()
@@ -197,8 +197,8 @@ pub(super) fn epoch(
 ) -> Result<CompletedEpoch, String> {
     let baseline = tenant.used();
     let handle = supervisor.handle();
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
+    let configure = module.handler("configure")?;
+    let apply = module.handler("apply")?;
     let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(3));
     let pool = StackPool::new_accounted(tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);
@@ -334,7 +334,7 @@ pub(super) fn epoch(
             || event.restart != SchedulerRestartStatus::Disabled
             || !expected[identity]
             || states[identity].is_some()
-            || exit.handler() != "Apply"
+            || exit.handler() != "apply"
             || exit.reason != SchedulerExitReason::Managed(ExecutionFault::DivisionByZero)
         {
             return Err("concurrent failure unexpected diagnostic".into());

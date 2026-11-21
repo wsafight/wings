@@ -1,53 +1,53 @@
-process RecordMessages {
-  state saved: RecordInt = record_int(0)
+actor RecordMessages {
+  state saved = box(0)
 
-  on Start(value: Int, fail: Bool) -> Int {
-    let child = spawn_self()
-    let message = record_int(value)
-    send(child, Store, message)
-    collect()
-    if fail { 1 / 0 } else { read_int(message) }
+  on start(value: int, fail: bool) -> int {
+    let child = spawn()
+    let message = box(value)
+    child ! store(message)
+    gc()
+    if fail { 1 / 0 } else { message.get() }
   }
 
-  on Self(value: Int) -> Int {
-    let message = record_int(value)
-    send_self(Store, message)
-    collect()
-    read_int(message)
+  on self_msg(value: int) -> int {
+    let message = box(value)
+    self ! store(message)
+    gc()
+    message.get()
   }
 
-  on Ask(value: Int) -> Int {
-    let child = spawn_self()
-    let id = request(child, Compute, Completed, 60000, record_int(value))
-    read_int(saved)
+  on ask(value: int) -> int {
+    let child = spawn()
+    let id = child.ask(compute(box(value)), timeout: 60000, then: completed)
+    saved.get()
   }
 
-  on Pair(value: Int) -> Int {
-    let child = spawn_self()
-    send(child, StorePair, record_int(value), true, record_int(value + 1))
+  on pair(value: int) -> int {
+    let child = spawn()
+    child ! store_pair(box(value), true, box(value + 1))
     value
   }
 
-  on Store(value: RecordInt) {
-    collect()
+  on store(value: box<int>) {
+    gc()
     saved = value
-    collect()
+    gc()
   }
 
-  on StorePair(first: RecordInt, flag: Bool, second: RecordInt) {
-    collect()
-    saved = record_int(read_int(first) + if flag { read_int(second) } else { 0 })
-    collect()
+  on store_pair(first: box<int>, flag: bool, second: box<int>) {
+    gc()
+    saved = box(first.get() + if flag { second.get() } else { 0 })
+    gc()
   }
 
-  on Compute(value: RecordInt) -> Int {
-    collect()
-    read_int(value) + 1
+  on compute(value: box<int>) -> int {
+    gc()
+    value.get() + 1
   }
 
-  on Completed(id: RequestId, status: Int, value: Int) {
-    saved = record_int(status * 100 + value)
+  on reply completed(id: req, status: int, value: int) {
+    saved = box(status * 100 + value)
   }
 
-  on Read -> Int { collect(); read_int(saved) }
+  on read -> int { gc(); saved.get() }
 }

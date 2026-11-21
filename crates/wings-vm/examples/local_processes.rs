@@ -19,7 +19,7 @@ fn read(worker: &mut ScalarWorker, module: &ScalarModule, pid: Pid) -> i64 {
     let ticket = worker
         .request(
             pid,
-            &module.handler("Read").unwrap(),
+            &module.handler("read").unwrap(),
             &[],
             128,
             Duration::from_secs(60),
@@ -51,7 +51,7 @@ fn main() {
             let ticket = worker
                 .request(
                     pid,
-                    &module.handler("Start").unwrap(),
+                    &module.handler("start").unwrap(),
                     &[4, i64::from(fail)],
                     128,
                     Duration::from_secs(60),
@@ -110,7 +110,7 @@ fn main() {
         worker
             .request(
                 pid,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[3, 0],
                 128,
                 Duration::from_secs(60),
@@ -134,7 +134,7 @@ fn main() {
         let ticket = worker
             .request(
                 pid,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[3, 0],
                 128,
                 Duration::from_secs(60),
@@ -166,7 +166,7 @@ fn main() {
     let ticket = worker
         .request(
             pid,
-            &module.handler("Me").unwrap(),
+            &module.handler("me").unwrap(),
             &[6],
             128,
             Duration::from_secs(60),
@@ -184,7 +184,7 @@ fn main() {
         let ticket = worker
             .request(
                 pid,
-                &module.handler("Choose").unwrap(),
+                &module.handler("choose").unwrap(),
                 &[i64::from(flag)],
                 128,
                 Duration::from_secs(60),

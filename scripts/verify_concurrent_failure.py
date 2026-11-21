@@ -307,7 +307,7 @@ def invalid_json():
 
 
 def reject_protocol(artifact, sender, sequence, operation, reason):
-    messages = [aot.message("Configure", 256, 0, 1), aot.message("Apply", sender, sequence, 7, operation)]
+    messages = [aot.message("configure", 256, 0, 1), aot.message("apply", sender, sequence, 7, operation)]
     child = subprocess.Popen([str(aot.VM), "run", "--trusted", str(artifact), "--heap-records", "4"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              cwd=aot.ROOT, start_new_session=True, preexec_fn=limit_child)

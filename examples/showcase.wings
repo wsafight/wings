@@ -1,0 +1,43 @@
+actor Showcase {
+  struct Meta { tag: str, score: int }
+  struct Card { meta: Meta, active: bool }
+
+  state total = 0
+  state label = "boot"
+  state card = Card { meta: Meta { tag: "v2", score: 10 }, active: true }
+  state history: [int] = []
+
+  fn add_scaled(base: int, factor: int) -> int => base + factor * 2
+
+  fn sum_list(xs: [int]) -> int {
+    let acc = 0
+    for item in xs {
+      acc += item
+    }
+    acc
+  }
+
+  on run_step(limit: int) -> str {
+    for i in 1..=limit {
+      if i % 2 == 0 {
+        total += i
+      } else if i % 3 == 0 {
+        history = [i, ..history]
+      }
+    }
+    let piped = total |> add_scaled(5)
+    card.meta.score += piped
+    let active = !card.active
+    card = Card { active, ..card }
+    let bonus = match history {
+      [] => 0,
+      [head, ..rest] => head + sum_list(rest),
+    }
+    let raw = b"ok!"
+    let safe = (false && (1 / 0 == 0)) || (true || (1 / 0 == 1))
+    label = f"{card.meta.tag}:{card.meta.score + bonus}:{card.active}:{safe}:{raw.len()}"
+    label
+  }
+
+  on status -> str => "${label}|total=${total}"
+}

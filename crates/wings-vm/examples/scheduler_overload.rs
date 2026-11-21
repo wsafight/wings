@@ -34,9 +34,9 @@ fn main() {
     let handle = scheduler.handle();
     let busy = handle.spawn_with_heap(&module, limits(), 100, 4).unwrap();
     let healthy = handle.spawn_with_heap(&module, limits(), 1, 4).unwrap();
-    let add = module.handler("Add").unwrap();
+    let add = module.handler("add").unwrap();
     handle
-        .send(busy, &module.handler("Hold").unwrap(), &[], u64::MAX)
+        .send(busy, &module.handler("hold").unwrap(), &[], u64::MAX)
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while handle.snapshot(busy).unwrap().execution.is_none() {

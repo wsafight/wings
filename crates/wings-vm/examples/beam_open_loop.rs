@@ -332,8 +332,8 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     let vm = ResourceAccount::vm_accounted(limits())?;
     let bootstrap = vm.used();
     let module = unsafe { ScalarModule::load_accounted(directory, &vm) }?;
-    let configure = module.handler("Configure")?;
-    let apply = module.handler("Apply")?;
+    let configure = module.handler("configure")?;
+    let apply = module.handler("apply")?;
     if module.manifest().state != ValueType::BytesRef
         || configure.schema().parameters.len() != 3
         || configure

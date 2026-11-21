@@ -56,28 +56,28 @@ fn direct(module: &ScalarModule, tenant: &ResourceAccount) {
         .unwrap();
     let mut process = module.instantiate_with_heap(&pool, &account, 16).unwrap();
     let reply = process
-        .invoke_record("Value", &[7], 8192, &CancellationToken::default())
+        .invoke_record("value", &[7], 8192, &CancellationToken::default())
         .unwrap();
     check_reply(&reply, 7);
     let retained = reply.clone();
     check_reply(&retained, 7);
     drop(reply);
     let empty = process
-        .invoke_record("EmptyValue", &[], 8192, &CancellationToken::default())
+        .invoke_record("empty_value", &[], 8192, &CancellationToken::default())
         .unwrap();
     assert_eq!(empty.schema().name, "Empty");
     assert_eq!(empty.values().count(), 0);
     drop(empty);
 
     let boundary = process
-        .invoke_record("Boundary", &[], 100_000, &CancellationToken::default())
+        .invoke_record("boundary", &[], 100_000, &CancellationToken::default())
         .unwrap();
     let values = boundary.values().collect::<Vec<_>>();
     assert!(matches!(values[1], MessageValue::String(value) if value.len() == 65535));
     assert!(matches!(values[4], MessageValue::Bytes(value) if value == [255]));
     assert!(
         process
-            .invoke_record("TooLarge", &[], 100_000, &CancellationToken::default())
+            .invoke_record("too_large", &[], 100_000, &CancellationToken::default())
             .is_err()
     );
     check_reply(&retained, 7);
@@ -94,7 +94,7 @@ fn host_worker(module: &ScalarModule, tenant: &ResourceAccount) {
     let request = worker
         .request(
             owner,
-            &module.handler("Value").unwrap(),
+            &module.handler("value").unwrap(),
             &[17],
             8192,
             remaining(deadline),
@@ -109,7 +109,7 @@ fn host_worker(module: &ScalarModule, tenant: &ResourceAccount) {
     let failed = worker
         .request(
             owner,
-            &module.handler("TooLarge").unwrap(),
+            &module.handler("too_large").unwrap(),
             &[],
             100_000,
             remaining(deadline),
@@ -144,7 +144,7 @@ fn language_worker(module: &ScalarModule, tenant: &ResourceAccount) {
         let request = worker
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[7, timeout, i64::from(cancel), i64::from(fail)],
                 16384,
                 remaining(deadline),
@@ -158,7 +158,7 @@ fn language_worker(module: &ScalarModule, tenant: &ResourceAccount) {
         let read = worker
             .request(
                 owner,
-                &module.handler("Read").unwrap(),
+                &module.handler("read").unwrap(),
                 &[],
                 4096,
                 remaining(deadline),
@@ -196,7 +196,7 @@ fn language_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
         let mut request = handle
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[7, timeout, i64::from(cancel), i64::from(fail)],
                 16384,
                 remaining(deadline),
@@ -210,7 +210,7 @@ fn language_scheduler(module: &ScalarModule, tenant: &ResourceAccount, workers: 
             let mut read = handle
                 .request(
                     owner,
-                    &module.handler("Read").unwrap(),
+                    &module.handler("read").unwrap(),
                     &[],
                     4096,
                     remaining(deadline),
@@ -236,7 +236,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let request = worker
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[],
                 8192,
                 remaining(deadline),
@@ -249,7 +249,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         );
         let exit = worker.last_exit().unwrap();
         assert_eq!(exit.pid, owner);
-        assert_eq!(exit.handler(), "Done");
+        assert_eq!(exit.handler(), "done");
         assert_eq!(
             exit.execution.fault,
             Some(wings_vm::ExecutionFault::HeapExhausted)
@@ -259,7 +259,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let read = worker
             .request(
                 target,
-                &module.handler("Read").unwrap(),
+                &module.handler("read").unwrap(),
                 &[],
                 8192,
                 remaining(deadline),
@@ -287,7 +287,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
         let mut request = handle
             .request(
                 owner,
-                &module.handler("Start").unwrap(),
+                &module.handler("start").unwrap(),
                 &[],
                 8192,
                 remaining(deadline),
@@ -301,7 +301,7 @@ fn import_failure(module: &ScalarModule, tenant: &ResourceAccount, workers: usiz
             remaining(deadline);
             if let Some(exit) = handle.last_exit() {
                 assert_eq!(exit.pid, owner);
-                assert_eq!(exit.handler(), "Done");
+                assert_eq!(exit.handler(), "done");
                 assert_eq!(
                     exit.reason,
                     wings_vm::SchedulerExitReason::Managed(wings_vm::ExecutionFault::HeapExhausted)
