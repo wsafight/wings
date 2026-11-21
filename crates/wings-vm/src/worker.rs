@@ -14,8 +14,6 @@ use crate::{
 };
 
 static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
-static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
-static NEXT_REQUEST_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 const MAX_PROCESSES: usize = 256;
 const MAX_MAILBOX: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
@@ -530,21 +528,9 @@ impl ScalarWorker {
             .iter()
             .position(|slot| slot.actor.is_none() && slot.generation != 0)
             .ok_or("worker process table exhausted")?;
-        let mut capability = NEXT_CAPABILITY.load(Ordering::Relaxed);
-        let capability = loop {
-            if capability > i64::MAX as u64 {
-                return Err("process capabilities exhausted".into());
-            }
-            match NEXT_CAPABILITY.compare_exchange_weak(
-                capability,
-                capability + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break capability as i64,
-                Err(current) => capability = current,
-            }
-        };
+        let capability =
+            wings_abi::encode_capability(self.identity, index as u32, self.slots[index].generation)
+                .ok_or("process capabilities exhausted")?;
         let bytes = std::mem::size_of::<Actor>()
             + mailbox_capacity * std::mem::size_of::<Option<Message>>();
         let charge = self.tenant.reserve(Resources {
@@ -780,14 +766,7 @@ impl ScalarWorker {
         bytes: BytePayload,
     ) -> Result<(), String> {
         self.enqueue_payload_kind(
-            pid,
-            handler,
-            arguments,
-            max_steps,
-            request,
-            false,
-            lists,
-            bytes,
+            pid, handler, arguments, max_steps, request, false, lists, bytes,
         )
     }
 
@@ -802,18 +781,51 @@ impl ScalarWorker {
         allow_pid: bool,
         require_mailbox_slot: bool,
         lists: &ListPayload,
-        mut bytes: BytePayload,
+        bytes: BytePayload,
     ) -> Result<Message, String> {
-        let actor = self.actor_mut(pid)?;
+        self.prepare_message_payload_checked(
+            pid,
+            handler,
+            arguments,
+            max_steps,
+            request,
+            allow_pid,
+            require_mailbox_slot,
+            lists,
+            bytes,
+        )
+        .map_err(String::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_message_payload_checked(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+        allow_pid: bool,
+        require_mailbox_slot: bool,
+        lists: &ListPayload,
+        mut bytes: BytePayload,
+    ) -> Result<Message, crate::VmError> {
+        let actor = self.actor_mut(pid).map_err(|_| crate::VmError::StalePid)?;
         if !std::sync::Arc::ptr_eq(&actor.task.module().inner, &handler.module.inner) {
-            return Err("handler ID belongs to a different module".into());
+            return Err(crate::VmError::Other(
+                "handler ID belongs to a different module",
+            ));
         }
         let schema = handler.schema();
         if schema.is_completion() {
-            return Err("completion events cannot be sent directly".into());
+            return Err(crate::VmError::Other(
+                "completion events cannot be sent directly",
+            ));
         }
         if schema.reply.is_some() != request.is_some() {
-            return Err("send requires a one-way handler; request requires a reply handler".into());
+            return Err(crate::VmError::Other(
+                "send requires a one-way handler; request requires a reply handler",
+            ));
         }
         crate::message_values::validate_message_payload(
             &schema.parameters,
@@ -823,12 +835,14 @@ impl ScalarWorker {
             lists,
             &bytes,
         )
-        .map_err(|_| String::from("handler argument count or scalar type mismatch"))?;
+        .map_err(|_| {
+            crate::VmError::InvalidArguments("handler argument count or scalar type mismatch")
+        })?;
         if require_mailbox_slot && actor.mailbox.count == actor.mailbox.slots.len() {
-            return Err("mailbox_full".into());
+            return Err(crate::VmError::MailboxFull);
         }
-        bytes.transfer(&actor.account)?;
-        let charge = actor.account.reserve(Resources {
+        bytes.transfer_checked(&actor.account)?;
+        let charge = actor.account.reserve_checked(Resources {
             messages: 1,
             bytes: std::mem::size_of::<Message>() as u64,
             ..Resources::default()
@@ -862,15 +876,7 @@ impl ScalarWorker {
         bytes: BytePayload,
     ) -> Result<(), String> {
         let message = self.prepare_message_payload(
-            pid,
-            handler,
-            arguments,
-            max_steps,
-            request,
-            allow_pid,
-            true,
-            lists,
-            bytes,
+            pid, handler, arguments, max_steps, request, allow_pid, true, lists, bytes,
         )?;
         let actor = self.actor_mut(pid)?;
         let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
@@ -1173,6 +1179,14 @@ impl ScalarWorker {
             .filter_map(|(index, slot)| slot.actor.as_ref().map(|_| self.pid(index)))
     }
 
+    fn target_by_capability(&self, capability: i64) -> Option<Pid> {
+        let (index, generation) = wings_abi::decode_capability(self.identity, capability)?;
+        self.slots
+            .get(index)
+            .filter(|slot| slot.generation == generation && slot.actor.is_some())
+            .map(|_| self.pid(index))
+    }
+
     fn apply_effect(&mut self, pid: Pid, effect: crate::execution::ProcessEffect) -> (u32, i64) {
         let actor = self.actor(pid).expect("effect actor");
         let module = actor.task.module().clone();
@@ -1191,19 +1205,22 @@ impl ScalarWorker {
                 }
             }
             wings_abi::EFFECT_CANCEL_REQUEST => {
-                let request = self.requests.iter().enumerate().find_map(|(index, slot)| {
-                    slot.pending
-                        .as_ref()
-                        .and_then(|pending| pending.completion.as_ref())
-                        .filter(|completion| {
-                            completion.owner == pid && completion.capability == effect.target
-                        })
-                        .map(|_| RequestId {
-                            worker: self.identity,
-                            slot: index as u32,
-                            generation: slot.generation,
-                        })
-                });
+                let request = wings_abi::decode_request_capability(self.identity, effect.target)
+                    .and_then(|(index, generation)| {
+                        self.requests
+                            .get(index)
+                            .filter(|slot| slot.generation == generation)
+                            .and_then(|slot| slot.pending.as_ref())
+                            .and_then(|pending| pending.completion.as_ref())
+                            .filter(|completion| {
+                                completion.owner == pid && completion.capability == effect.target
+                            })
+                            .map(|_| RequestId {
+                                worker: self.identity,
+                                slot: index as u32,
+                                generation,
+                            })
+                    });
                 if let Some(request) = request {
                     self.select_request(request, RequestOutcome::Cancelled);
                     (wings_abi::STATUS_OK, 0)
@@ -1226,7 +1243,7 @@ impl ScalarWorker {
                         .and_then(|(mods, _)| mods.get(effect.handler).cloned())
                 };
                 match target_mod
-                    .ok_or_else(|| "unregistered spawn actor".into())
+                    .ok_or_else(|| String::from("unregistered spawn actor"))
                     .and_then(|m| self.spawn_configured(&m, limits, capacity, heap_records))
                 {
                     Ok(child) => (
@@ -1237,41 +1254,34 @@ impl ScalarWorker {
                 }
             }
             wings_abi::EFFECT_MONITOR => {
-                let result: Result<(), String> = (|| {
+                let result: Result<(), crate::VmError> = (|| {
                     if effect.count != 0 || effect.target <= 0 || self.monitor_count >= MAX_MONITORS
                     {
-                        return Err("invalid monitor target or capacity".into());
+                        return Err(crate::VmError::InvalidArguments(
+                            "invalid monitor target or capacity",
+                        ));
                     }
-                    let schema = module
-                        .manifest()
-                        .handlers
-                        .get(effect.handler)
-                        .ok_or("invalid monitor handler")?;
+                    let handler = module.handler_by_index(effect.handler)?;
+                    let schema = handler.schema();
                     if schema.is_completion()
                         || schema.reply.is_some()
                         || schema.parameters.len() != 2
                         || schema.parameters[0].1 != wings_abi::ValueType::Pid
                         || schema.parameters[1].1 != wings_abi::ValueType::Int
                     {
-                        return Err("monitor requires a one-way (Pid, Int) handler".into());
+                        return Err(crate::VmError::InvalidHandler);
                     }
-                    let handler = module.handler(&schema.name)?;
-                    let owner = self.actor(pid)?;
-                    let message_charge = owner.account.reserve(Resources {
+                    let owner = self.actor(pid).map_err(|_| crate::VmError::StalePid)?;
+                    let message_charge = owner.account.reserve_checked(Resources {
                         messages: 1,
                         bytes: std::mem::size_of::<Message>() as u64,
                         ..Resources::default()
                     })?;
-                    let node_charge = owner.account.reserve(Resources {
+                    let node_charge = owner.account.reserve_checked(Resources {
                         bytes: std::mem::size_of::<MonitorEntry>() as u64,
                         ..Resources::default()
                     })?;
-                    let target_alive = self.slots.iter().any(|slot| {
-                        slot.actor
-                            .as_ref()
-                            .is_some_and(|a| a.capability == effect.target)
-                    });
-                    let reason = if target_alive {
+                    let reason = if self.target_by_capability(effect.target).is_some() {
                         None
                     } else {
                         Some(self.lookup_recent_exit(effect.target).unwrap_or(-1))
@@ -1324,31 +1334,17 @@ impl ScalarWorker {
                 ) {
                     Some(pid)
                 } else {
-                    self.slots.iter().enumerate().find_map(|(index, slot)| {
-                        slot.actor
-                            .as_ref()
-                            .filter(|target| target.capability == effect.target)
-                            .map(|_| self.pid(index))
-                    })
+                    self.target_by_capability(effect.target)
                 };
                 let target_and_handler = if is_cross_actor {
-                    let actor_idx = effect.handler >> 16;
-                    let h_idx = effect.handler & 0xFFFF;
+                    let (actor_idx, h_idx) = wings_abi::decode_actor_handler(effect.handler);
                     target.and_then(|target| {
                         let reg_mod = self.modules.as_ref()?.0.get(actor_idx)?;
-                        let schema = reg_mod.manifest().handlers.get(h_idx)?;
-                        let handler = reg_mod.handler(&schema.name).ok()?;
+                        let handler = reg_mod.handler_by_index(h_idx).ok()?;
                         Some((target, handler))
                     })
                 } else {
-                    target
-                        .zip(module.manifest().handlers.get(effect.handler))
-                        .and_then(|(target, schema)| {
-                            module
-                                .handler(&schema.name)
-                                .ok()
-                                .map(|handler| (target, handler))
-                        })
+                    target.zip(module.handler_by_index(effect.handler).ok())
                 };
                 let accepted = if is_after {
                     target_and_handler.is_some_and(|(target, handler)| {
@@ -1365,7 +1361,7 @@ impl ScalarWorker {
                     })
                 } else {
                     target_and_handler.is_some_and(|(target, handler)| {
-                        self.enqueue_payload_kind(
+                        self.enqueue_payload_kind_checked(
                             target,
                             &handler,
                             &effect.arguments[..effect.count],
@@ -1392,6 +1388,28 @@ impl ScalarWorker {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn enqueue_payload_kind_checked(
+        &mut self,
+        pid: Pid,
+        handler: &HandlerId,
+        arguments: &[i64],
+        max_steps: u64,
+        request: Option<RequestId>,
+        allow_pid: bool,
+        lists: &ListPayload,
+        bytes: BytePayload,
+    ) -> Result<(), crate::VmError> {
+        let message = self.prepare_message_payload_checked(
+            pid, handler, arguments, max_steps, request, allow_pid, true, lists, bytes,
+        )?;
+        let actor = self.actor_mut(pid).expect("validated recipient");
+        let tail = (actor.mailbox.head + actor.mailbox.count) % actor.mailbox.slots.len();
+        actor.mailbox.slots[tail] = Some(message);
+        actor.mailbox.count += 1;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn schedule_timer(
         &mut self,
         target: Pid,
@@ -1401,29 +1419,27 @@ impl ScalarWorker {
         budget: u64,
         lists: &ListPayload,
         bytes: BytePayload,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::VmError> {
         if !(0..=86_400_000).contains(&delay_ms) || self.timer_count >= MAX_TIMERS {
-            return Err("invalid timer delay or capacity".into());
+            return Err(crate::VmError::InvalidArguments(
+                "invalid timer delay or capacity",
+            ));
         }
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(delay_ms as u64))
-            .ok_or("timer deadline overflow")?;
+            .ok_or(crate::VmError::InvalidArguments("timer deadline overflow"))?;
         let node_bytes =
             std::mem::size_of::<ScheduledTimer>().saturating_sub(std::mem::size_of::<Message>());
-        let node_charge = self.actor(target)?.account.reserve(Resources {
-            bytes: node_bytes as u64,
-            ..Resources::default()
-        })?;
-        let message = self.prepare_message_payload(
-            target,
-            handler,
-            arguments,
-            budget,
-            None,
-            true,
-            false,
-            lists,
-            bytes,
+        let node_charge = self
+            .actor(target)
+            .map_err(|_| crate::VmError::StalePid)?
+            .account
+            .reserve_checked(Resources {
+                bytes: node_bytes as u64,
+                ..Resources::default()
+            })?;
+        let message = self.prepare_message_payload_checked(
+            target, handler, arguments, budget, None, true, false, lists, bytes,
         )?;
         let mut cursor = &mut self.timers;
         while cursor
@@ -1608,97 +1624,57 @@ impl ScalarWorker {
         &mut self,
         owner: Pid,
         effect: crate::execution::ProcessEffect,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, crate::VmError> {
         if !(0..=86_400_000).contains(&effect.timeout_ms) {
-            return Err("invalid request timeout".into());
+            return Err(crate::VmError::InvalidArguments("invalid request timeout"));
         }
-        let actor = self.actor(owner)?;
+        let actor = self.actor(owner).map_err(|_| crate::VmError::StalePid)?;
         let module = actor.task.module().clone();
         let target = self
-            .slots
-            .iter()
-            .enumerate()
-            .find_map(|(index, slot)| {
-                slot.actor
-                    .as_ref()
-                    .filter(|actor| actor.capability == effect.target)
-                    .map(|_| self.pid(index))
-            })
-            .ok_or("invalid request target")?;
+            .target_by_capability(effect.target)
+            .ok_or(crate::VmError::InvalidCapability)?;
         let (target_module, handler_idx) = if effect.operation == wings_abi::EFFECT_REQUEST_ACTOR {
-            let actor_idx = effect.handler >> 16;
-            let h_idx = effect.handler & 0xFFFF;
+            let (actor_idx, h_idx) = wings_abi::decode_actor_handler(effect.handler);
             let reg_mod = self
                 .modules
                 .as_ref()
                 .and_then(|(mods, _)| mods.get(actor_idx).cloned())
-                .ok_or("unregistered request actor")?;
+                .ok_or(crate::VmError::InvalidHandler)?;
             (reg_mod, h_idx)
         } else {
             (module.clone(), effect.handler)
         };
-        let schema = target_module
-            .manifest()
-            .handlers
-            .get(handler_idx)
-            .ok_or("invalid request handler")?;
-        if !matches!(
-            schema.reply,
-            Some(
-                wings_abi::ValueType::Int
-                    | wings_abi::ValueType::Bool
-                    | wings_abi::ValueType::Unit
-                    | wings_abi::ValueType::ListRef
-                    | wings_abi::ValueType::BytesRef
-                    | wings_abi::ValueType::StringRef
-                    | wings_abi::ValueType::RecordRef(_)
-                    | wings_abi::ValueType::Pid
-            )
-        ) {
-            return Err("request requires a supported scalar or copied value reply".into());
+        let handler = target_module.handler_by_index(handler_idx)?;
+        let schema = handler.schema();
+        if !schema.reply.is_some_and(|ty| ty.is_supported_reply()) {
+            return Err(crate::VmError::InvalidHandler);
         }
-        let callback = module
-            .manifest()
-            .handlers
-            .get(effect.callback)
-            .filter(
-                |callback| match (callback.completion_reply(), schema.reply) {
-                    (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
-                        &module.manifest().records,
-                        cb_ty,
-                        &target_module.manifest().records,
-                        rep_ty,
-                    ),
-                    _ => false,
-                },
-            )
-            .ok_or("invalid request completion")?;
-        let handler = target_module.handler(&schema.name)?;
-        let callback = module.handler(&callback.name)?;
+        let callback = module.handler_by_index(effect.callback)?;
+        let valid_callback = match (callback.schema().completion_reply(), schema.reply) {
+            (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
+                &module.manifest().records,
+                cb_ty,
+                &target_module.manifest().records,
+                rep_ty,
+            ),
+            _ => false,
+        };
+        if !valid_callback {
+            return Err(crate::VmError::InvalidHandler);
+        }
         let index = self
             .requests
             .iter()
             .position(|slot| slot.pending.is_none() && slot.generation != 0)
-            .ok_or("request_table_full")?;
-        let mut capability = NEXT_REQUEST_CAPABILITY.load(Ordering::Relaxed);
-        let capability = loop {
-            if capability > i64::MAX as u64 {
-                return Err("request capabilities exhausted".into());
-            }
-            match NEXT_REQUEST_CAPABILITY.compare_exchange_weak(
-                capability,
-                capability + 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break capability as i64,
-                Err(current) => capability = current,
-            }
-        };
+            .ok_or(crate::VmError::RequestTableFull)?;
+        let generation = self.requests[index].generation;
+        let capability =
+            wings_abi::encode_request_capability(self.identity, index as u32, generation as u64)
+                .ok_or(crate::VmError::InvalidCapability)?;
         let request = RequestId {
             worker: self.identity,
             slot: index as u32,
-            generation: self.requests[index].generation,
+            generation,
         };
         let budget = actor
             .active
@@ -1706,19 +1682,21 @@ impl ScalarWorker {
             .expect("request active message")
             .message
             .max_steps;
-        let charge = actor.account.reserve(Resources {
+        let charge = actor.account.reserve_checked(Resources {
             requests: 1,
             ..Resources::default()
         })?;
-        let event_charge = actor.account.reserve(Resources {
+        let event_charge = actor.account.reserve_checked(Resources {
             messages: 1,
             bytes: std::mem::size_of::<Message>() as u64,
             ..Resources::default()
         })?;
         let deadline = Instant::now()
             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
-            .ok_or("request deadline overflow")?;
-        self.enqueue_payload_kind(
+            .ok_or(crate::VmError::InvalidArguments(
+                "request deadline overflow",
+            ))?;
+        self.enqueue_payload_kind_checked(
             target,
             &handler,
             &effect.arguments[..effect.count],

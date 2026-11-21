@@ -280,8 +280,8 @@ fn handle_tcp_connection(
             continue;
         }
         out.clear();
-        let rpc_res: Result<RpcEnvelope, String> =
-            serde_json::from_slice(trimmed).map_err(|e| e.to_string());
+        let rpc_res: Result<RpcEnvelope, RpcError> =
+            serde_json::from_slice(trimmed).map_err(|e| RpcError::BadRequest(e.to_string()));
         match rpc_res.and_then(|rpc| {
             execute_rpc(
                 account,
@@ -301,7 +301,8 @@ fn handle_tcp_connection(
             }
             Err(err) => {
                 out.clear();
-                serde_json::to_writer(&mut out, &ErrorResponse { error: &err })
+                let message = err.message();
+                serde_json::to_writer(&mut out, &ErrorResponse { error: &message })
                     .map_err(|e| e.to_string())?;
                 out.push(b'\n');
                 writer.write_all(&out).map_err(|e| e.to_string())?;
@@ -437,14 +438,14 @@ fn handle_http_connection(
             }
             continue;
         }
-        let parsed_rpc: Result<(String, Vec<Value>), String> = if path == "/" {
+        let parsed_rpc: Result<(String, Vec<Value>), RouteError> = if path == "/" {
             serde_json::from_slice::<RpcEnvelope>(&body_buf)
                 .map(|rpc| (rpc.message, rpc.args))
-                .map_err(|e| e.to_string())
+                .map_err(|e| RouteError::BadRequest(e.to_string()))
         } else {
             let handler_name = path.trim_start_matches('/');
             if handler_name.is_empty() || handler_name.contains('/') {
-                Err("not_found".into())
+                Err(RouteError::NotFound)
             } else {
                 let trimmed = trim_ascii(&body_buf);
                 if trimmed.is_empty() {
@@ -452,10 +453,10 @@ fn handle_http_connection(
                 } else if trimmed.first() == Some(&b'[') {
                     serde_json::from_slice::<Vec<Value>>(trimmed)
                         .map(|args| (handler_name.to_string(), args))
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| RouteError::BadRequest(e.to_string()))
                 } else {
                     serde_json::from_slice::<Value>(trimmed)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| RouteError::BadRequest(e.to_string()))
                         .and_then(|val| match val {
                             Value::Object(mut map)
                                 if map.len() == 1
@@ -473,14 +474,16 @@ fn handle_http_connection(
                             Value::Object(map) => {
                                 Ok((handler_name.to_string(), vec![Value::Object(map)]))
                             }
-                            _ => Err("expected JSON array or object body".into()),
+                            _ => Err(RouteError::BadRequest(
+                                "expected JSON array or object body".into(),
+                            )),
                         })
                 }
             }
         };
         out.clear();
         match parsed_rpc {
-            Err(err) if err == "not_found" => {
+            Err(RouteError::NotFound) => {
                 write_http_response(
                     &mut writer,
                     404,
@@ -489,7 +492,7 @@ fn handle_http_connection(
                     close_conn,
                 )?;
             }
-            Err(err) => {
+            Err(RouteError::BadRequest(err)) => {
                 let _ = serde_json::to_writer(&mut out, &ErrorResponse { error: &err });
                 out.push(b'\n');
                 write_http_response(&mut writer, 400, "Bad Request", &out, close_conn)?;
@@ -510,19 +513,10 @@ fn handle_http_connection(
                         write_http_response(&mut writer, 200, "OK", &out, close_conn)?;
                     }
                     Err(err) => {
-                        let (code, status_text) = if err.starts_with("unknown handler ") {
-                            (404, "Not Found")
-                        } else if err == "request timed out" {
-                            (504, "Gateway Timeout")
-                        } else if err == "managed actor handler failed"
-                            || err == "request cancelled"
-                        {
-                            (500, "Internal Server Error")
-                        } else {
-                            (400, "Bad Request")
-                        };
+                        let (code, status_text) = err.http_status();
+                        let message = err.message();
                         out.clear();
-                        let _ = serde_json::to_writer(&mut out, &ErrorResponse { error: &err });
+                        let _ = serde_json::to_writer(&mut out, &ErrorResponse { error: &message });
                         out.push(b'\n');
                         write_http_response(&mut writer, code, status_text, &out, close_conn)?;
                     }
@@ -648,6 +642,61 @@ fn trim_ascii(mut slice: &[u8]) -> &[u8] {
     slice
 }
 
+enum RouteError {
+    NotFound,
+    BadRequest(String),
+}
+
+enum RpcError {
+    UnknownHandler(String),
+    BadRequest(String),
+    Backpressure(String),
+    TimedOut,
+    Cancelled,
+    HandlerFailed,
+}
+
+impl RpcError {
+    fn http_status(&self) -> (u16, &'static str) {
+        match self {
+            Self::UnknownHandler(_) => (404, "Not Found"),
+            Self::BadRequest(_) => (400, "Bad Request"),
+            Self::Backpressure(_) => (503, "Service Unavailable"),
+            Self::TimedOut => (504, "Gateway Timeout"),
+            Self::Cancelled | Self::HandlerFailed => (500, "Internal Server Error"),
+        }
+    }
+
+    fn message(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::UnknownHandler(name) => {
+                std::borrow::Cow::Owned(format!("unknown handler {name}"))
+            }
+            Self::BadRequest(msg) | Self::Backpressure(msg) => std::borrow::Cow::Borrowed(msg),
+            Self::TimedOut => std::borrow::Cow::Borrowed("request timed out"),
+            Self::Cancelled => std::borrow::Cow::Borrowed("request cancelled"),
+            Self::HandlerFailed => std::borrow::Cow::Borrowed("managed actor handler failed"),
+        }
+    }
+
+    fn from_dispatch_error(err: String) -> Self {
+        if err == wings_vm::VmError::MailboxFull.as_str()
+            || err == wings_vm::VmError::RequestTableFull.as_str()
+            || err.starts_with("resource_exhausted")
+        {
+            Self::Backpressure(err)
+        } else {
+            Self::BadRequest(err)
+        }
+    }
+}
+
+impl From<RpcError> for String {
+    fn from(err: RpcError) -> Self {
+        err.message().into_owned()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_rpc(
     account: &ResourceAccount,
@@ -659,8 +708,13 @@ fn execute_rpc(
     message_name: &str,
     raw_args: &[Value],
     out: &mut Vec<u8>,
-) -> Result<(), String> {
-    let handler = entry_module.handler(message_name)?;
+) -> Result<(), RpcError> {
+    if !wings_artifact::valid_name(message_name) {
+        return Err(RpcError::BadRequest("invalid handler name".into()));
+    }
+    let handler = entry_module
+        .handler(message_name)
+        .map_err(|_| RpcError::UnknownHandler(message_name.to_string()))?;
     let schema = handler.schema();
     let reply_type = schema.reply;
     let records = &entry_module.manifest().records;
@@ -682,7 +736,8 @@ fn execute_rpc(
                 &mut leaves,
                 &mut leaf_count,
                 &mut node_budget,
-            )?;
+            )
+            .map_err(RpcError::BadRequest)?;
         }
     } else {
         match_flattened_args(
@@ -691,7 +746,8 @@ fn execute_rpc(
             raw_args,
             &mut leaves,
             &mut leaf_count,
-        )?;
+        )
+        .map_err(RpcError::BadRequest)?;
     }
 
     let mut list_storage = [0i64; 64];
@@ -700,16 +756,22 @@ fn execute_rpc(
     for (ty, val) in &leaves[..leaf_count] {
         match ty {
             ValueType::StringRef => {
-                let s = val.as_str().ok_or("expected a String argument")?;
+                let s = val
+                    .as_str()
+                    .ok_or_else(|| RpcError::BadRequest("expected a String argument".into()))?;
                 if s.len() > 65536 - byte_count {
-                    return Err("message strings and bytes exceed 65536 total bytes".into());
+                    return Err(RpcError::BadRequest(
+                        "message strings and bytes exceed 65536 total bytes".into(),
+                    ));
                 }
                 byte_count += s.len();
             }
             ValueType::BytesRef => {
-                let arr = extract_bytes_array(val)?;
+                let arr = extract_bytes_array(val).map_err(RpcError::BadRequest)?;
                 if arr.len() > 65536 - byte_count {
-                    return Err("message strings and bytes exceed 65536 total bytes".into());
+                    return Err(RpcError::BadRequest(
+                        "message strings and bytes exceed 65536 total bytes".into(),
+                    ));
                 }
                 byte_count += arr.len();
             }
@@ -717,10 +779,14 @@ fn execute_rpc(
         }
     }
     let _byte_charge = if byte_count > 0 {
-        Some(account.reserve(Resources {
-            bytes: byte_count as u64,
-            ..Resources::default()
-        })?)
+        Some(
+            account
+                .reserve(Resources {
+                    bytes: byte_count as u64,
+                    ..Resources::default()
+                })
+                .map_err(RpcError::from_dispatch_error)?,
+        )
     } else {
         None
     };
@@ -728,32 +794,40 @@ fn execute_rpc(
     if byte_count > 0 {
         byte_storage
             .try_reserve_exact(byte_count)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| RpcError::Backpressure(e.to_string()))?;
     }
     let mut segments = [(0usize, 0usize); 64];
     for (idx, (ty, val)) in leaves[..leaf_count].iter().enumerate() {
         match ty {
             ValueType::ListRef => {
-                let arr = val.as_array().ok_or("expected an IntList array argument")?;
+                let arr = val.as_array().ok_or_else(|| {
+                    RpcError::BadRequest("expected an IntList array argument".into())
+                })?;
                 if arr.len() > 64 - list_used {
-                    return Err("message lists exceed 64 total integers".into());
+                    return Err(RpcError::BadRequest(
+                        "message lists exceed 64 total integers".into(),
+                    ));
                 }
                 let start = list_used;
                 for item in arr {
-                    let n = item.as_i64().ok_or("expected i64 elements in IntList")?;
+                    let n = item.as_i64().ok_or_else(|| {
+                        RpcError::BadRequest("expected i64 elements in IntList".into())
+                    })?;
                     list_storage[list_used] = n;
                     list_used += 1;
                 }
                 segments[idx] = (start, arr.len());
             }
             ValueType::BytesRef => {
-                let arr = extract_bytes_array(val)?;
+                let arr = extract_bytes_array(val).map_err(RpcError::BadRequest)?;
                 let start = byte_storage.len();
                 for item in arr {
                     let b = item
                         .as_u64()
                         .and_then(|n| u8::try_from(n).ok())
-                        .ok_or("expected 0..=255 byte elements")?;
+                        .ok_or_else(|| {
+                            RpcError::BadRequest("expected 0..=255 byte elements".into())
+                        })?;
                     byte_storage.push(b);
                 }
                 segments[idx] = (start, arr.len());
@@ -765,17 +839,24 @@ fn execute_rpc(
     let mut message_values = [MessageValue::Unit; 64];
     for (idx, (ty, val)) in leaves[..leaf_count].iter().enumerate() {
         message_values[idx] = match ty {
-            ValueType::Int => MessageValue::Int(val.as_i64().ok_or("expected an i64 argument")?),
-            ValueType::Bool => MessageValue::Bool(val.as_bool().ok_or("expected a Bool argument")?),
+            ValueType::Int => MessageValue::Int(
+                val.as_i64()
+                    .ok_or_else(|| RpcError::BadRequest("expected an i64 argument".into()))?,
+            ),
+            ValueType::Bool => MessageValue::Bool(
+                val.as_bool()
+                    .ok_or_else(|| RpcError::BadRequest("expected a Bool argument".into()))?,
+            ),
             ValueType::Unit => {
                 if !val.is_null() {
-                    return Err("expected null for Unit".into());
+                    return Err(RpcError::BadRequest("expected null for Unit".into()));
                 }
                 MessageValue::Unit
             }
-            ValueType::StringRef => {
-                MessageValue::String(val.as_str().ok_or("expected a String argument")?)
-            }
+            ValueType::StringRef => MessageValue::String(
+                val.as_str()
+                    .ok_or_else(|| RpcError::BadRequest("expected a String argument".into()))?,
+            ),
             ValueType::ListRef => {
                 let (start, len) = segments[idx];
                 MessageValue::IntList(&list_storage[start..start + len])
@@ -786,32 +867,45 @@ fn execute_rpc(
             }
             ValueType::RecordRef(_) => unreachable!("records expanded to leaves"),
             ValueType::Pid | ValueType::RequestId => {
-                return Err("process capabilities are not JSON arguments".into());
+                return Err(RpcError::BadRequest(
+                    "process capabilities are not JSON arguments".into(),
+                ));
             }
         };
     }
 
     let values = &message_values[..leaf_count];
     if reply_type.is_none() {
-        handle.send_values(entry_pid, &handler, values, max_steps)?;
-        adapter.write_reply_value(out, None)?;
+        handle
+            .send_values(entry_pid, &handler, values, max_steps)
+            .map_err(RpcError::from_dispatch_error)?;
+        adapter
+            .write_reply_value(out, None)
+            .map_err(RpcError::BadRequest)?;
         return Ok(());
     }
-    let mut pending = handle.request_values(
-        entry_pid,
-        &handler,
-        values,
-        max_steps,
-        Duration::from_secs(30),
-    )?;
-    match pending.wait(Duration::from_secs(30))? {
+    let mut pending = handle
+        .request_values(
+            entry_pid,
+            &handler,
+            values,
+            max_steps,
+            Duration::from_secs(30),
+        )
+        .map_err(RpcError::from_dispatch_error)?;
+    match pending
+        .wait(Duration::from_secs(30))
+        .map_err(RpcError::from_dispatch_error)?
+    {
         Some(outcome) => match outcome.into_reply_value(reply_type) {
-            Ok(reply) => adapter.write_reply_value(out, Some(&reply)),
-            Err(RequestOutcome::TimedOut) => Err("request timed out".into()),
-            Err(RequestOutcome::Cancelled) => Err("request cancelled".into()),
-            Err(_) => Err("managed actor handler failed".into()),
+            Ok(reply) => adapter
+                .write_reply_value(out, Some(&reply))
+                .map_err(RpcError::BadRequest),
+            Err(RequestOutcome::TimedOut) => Err(RpcError::TimedOut),
+            Err(RequestOutcome::Cancelled) => Err(RpcError::Cancelled),
+            Err(_) => Err(RpcError::HandlerFailed),
         },
-        None => Err("request timed out".into()),
+        None => Err(RpcError::TimedOut),
     }
 }
 

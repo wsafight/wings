@@ -129,15 +129,11 @@ impl IngressSender {
     }
 
     fn validate_arguments(&self, arguments: &[i64]) -> Result<(), String> {
-        if arguments.len() != self.shared.count
-            || arguments
-                .iter()
-                .zip(&self.shared.parameters)
-                .any(|(value, ty)| !ty.accepts(*value))
-        {
-            return Err("ingress argument count or scalar type mismatch".into());
-        }
-        Ok(())
+        crate::message_values::validate_scalar_types(
+            &self.shared.parameters[..self.shared.count],
+            arguments,
+        )
+        .map_err(|_| String::from("ingress argument count or scalar type mismatch"))
     }
 
     fn publish(

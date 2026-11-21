@@ -12,9 +12,9 @@ use cranelift_module::{DataDescription, FuncId, Linkage, Module, default_libcall
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use wings_abi::{
     HEAP_COLLECT, HEAP_EMPTY_INTS, HEAP_HEAD_INT, HEAP_IS_EMPTY_INTS, HEAP_PREPEND_INT,
-    HEAP_TAIL_INTS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED,
-    STATUS_CANCELLED, STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW,
-    STATUS_STACK_EXHAUSTED, ScalarContext, ShadowFrame, host_target,
+    HEAP_TAIL_INTS, SCALAR_ABI_VERSION, STATUS_BUDGET_EXHAUSTED, STATUS_CANCELLED,
+    STATUS_DIVISION_BY_ZERO, STATUS_INVALID_CONTROL, STATUS_OVERFLOW, STATUS_STACK_EXHAUSTED,
+    ScalarContext, ShadowFrame, host_target,
 };
 use wings_artifact::{
     BUNDLE_FORMAT_VERSION, BundleManifest, FORMAT_VERSION, INITIALIZER_SYMBOL, Manifest,
@@ -324,9 +324,7 @@ fn summarize_direct_function(
                 };
                 base_steps = next;
             }
-            Operation::EmptyInts
-            | Operation::PrependInt(_, _)
-            | Operation::RecordNew { .. } => {
+            Operation::EmptyInts | Operation::PrependInt(_, _) | Operation::RecordNew { .. } => {
                 uses_heap = true;
                 let Some(next) = base_steps.checked_add(2) else {
                     return DirectSummary::default();
@@ -915,7 +913,7 @@ fn compile_body(
                         ..
                     } => (
                         wings_abi::EFFECT_SEND_ACTOR,
-                        (*actor << 16) | *handler,
+                        wings_abi::encode_actor_handler(*actor, *handler)? as usize,
                         arguments,
                     ),
                     Operation::SendAfter {
@@ -928,7 +926,7 @@ fn compile_body(
                         ..
                     } => (
                         wings_abi::EFFECT_SEND_AFTER_ACTOR,
-                        (*actor << 16) | *handler,
+                        wings_abi::encode_actor_handler(*actor, *handler)? as usize,
                         arguments,
                     ),
                     Operation::Monitor { handler, .. } => {
@@ -947,7 +945,7 @@ fn compile_body(
                         ..
                     } => (
                         wings_abi::EFFECT_REQUEST_ACTOR,
-                        (*actor << 16) | *handler,
+                        wings_abi::encode_actor_handler(*actor, *handler)? as usize,
                         arguments,
                     ),
                     Operation::CancelRequest(_) => (wings_abi::EFFECT_CANCEL_REQUEST, 0, &[]),

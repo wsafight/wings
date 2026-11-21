@@ -6,6 +6,24 @@ pub(crate) const MAX_ARGUMENTS: usize = 64;
 pub(crate) const MAX_LIST_ELEMENTS: usize = 64;
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65536;
 
+pub(crate) fn validate_scalar_types(
+    types: &[ValueType],
+    arguments: &[i64],
+) -> Result<(), &'static str> {
+    if arguments.len() != types.len() || arguments.len() > MAX_ARGUMENTS {
+        return Err("handler argument count mismatch");
+    }
+    for (value, ty) in arguments.iter().zip(types) {
+        if ty.is_reference() {
+            return Err("reference payload mismatch");
+        }
+        if !ty.accepts(*value) {
+            return Err("scalar argument mismatch");
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_scalar_arguments(
     parameters: &[(String, ValueType)],
     arguments: &[i64],
@@ -198,12 +216,17 @@ impl BytePayload {
         cursor == self.as_slice().len()
     }
 
-    pub(crate) fn transfer(&mut self, target: &ResourceAccount) -> Result<(), String> {
+    pub(crate) fn transfer_checked(
+        &mut self,
+        target: &ResourceAccount,
+    ) -> Result<(), crate::VmError> {
         if self.completion {
-            return Err("shared byte completion cannot be transferred as a message".into());
+            return Err(crate::VmError::Other(
+                "shared byte completion cannot be transferred as a message",
+            ));
         }
         if let Some(charge) = &mut self.charge {
-            charge.transfer(target)?;
+            charge.transfer_checked(target)?;
         }
         Ok(())
     }
@@ -349,13 +372,13 @@ mod tests {
         let mut payload = BytePayload::new(&source, 1, 8).unwrap();
         payload.data.extend_from_slice(b"abcdefgh");
         for rejected in [&restricted, &other_vm] {
-            assert!(payload.transfer(rejected).is_err());
+            assert!(payload.transfer_checked(rejected).is_err());
             assert_eq!(source.used().bytes, 8);
             assert_eq!(source_tenant.used().bytes, 8);
             assert_eq!(target_tenant.used().bytes, 0);
             assert_eq!(vm.used().bytes, 8);
         }
-        payload.transfer(&target).unwrap();
+        payload.transfer_checked(&target).unwrap();
         assert_eq!(source.used().bytes, 0);
         assert_eq!(source_tenant.used().bytes, 0);
         assert_eq!(target.used().bytes, 8);

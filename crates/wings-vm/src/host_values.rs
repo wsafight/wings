@@ -372,7 +372,11 @@ mod tests {
             );
             assert_eq!(vm.used(), Resources::default());
         }
-        for ty in [ValueType::ListRef, ValueType::BytesRef, ValueType::StringRef] {
+        for ty in [
+            ValueType::ListRef,
+            ValueType::BytesRef,
+            ValueType::StringRef,
+        ] {
             let handler = handler(&[ty; 64]);
             let value = match ty {
                 ValueType::ListRef => MessageValue::IntList(&[17]),

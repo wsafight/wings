@@ -98,6 +98,10 @@ impl ValueType {
         )
     }
 
+    pub fn is_supported_reply(self) -> bool {
+        !matches!(self, Self::RequestId)
+    }
+
     pub fn is_capability(self) -> bool {
         matches!(self, Self::Pid | Self::RequestId)
     }
@@ -295,4 +299,66 @@ pub fn host_target() -> Result<&'static str, String> {
         ("linux", "x86_64") if cfg!(target_env = "gnu") => Ok("x86_64-unknown-linux-gnu"),
         _ => Err("scalar AOT requires macOS AArch64 or Linux x86-64".into()),
     }
+}
+
+pub fn encode_actor_handler(actor: usize, handler: usize) -> Result<u32, String> {
+    let actor = u16::try_from(actor).map_err(|_| String::from("actor index exceeds u16"))?;
+    let handler = u16::try_from(handler).map_err(|_| String::from("handler index exceeds u16"))?;
+    Ok((u32::from(actor) << 16) | u32::from(handler))
+}
+
+pub const fn decode_actor_handler(encoded: usize) -> (usize, usize) {
+    ((encoded >> 16) & 0xFFFF, encoded & 0xFFFF)
+}
+
+pub const MAX_CAPABILITY_SLOTS: u32 = 1 << 14;
+
+pub const fn encode_capability(instance: u64, slot: u32, generation: u32) -> Option<i64> {
+    if slot >= MAX_CAPABILITY_SLOTS || generation == 0 {
+        return None;
+    }
+    let tag = (instance & 0xFFFF) << 47;
+    let raw = tag | ((generation as u64) << 14) | (slot as u64);
+    Some(raw as i64)
+}
+
+pub const fn encode_request_capability(instance: u64, slot: u32, generation: u64) -> Option<i64> {
+    if slot >= MAX_CAPABILITY_SLOTS || generation == 0 {
+        return None;
+    }
+    let folded = (generation ^ (generation >> 32)) as u32;
+    let gen32 = if folded == 0 { 1 } else { folded };
+    let tag = ((instance & 0xFFFF) << 47) | (1u64 << 46);
+    let raw = tag | ((gen32 as u64) << 14) | (slot as u64);
+    Some(raw as i64)
+}
+
+pub const fn decode_capability(instance: u64, encoded: i64) -> Option<(usize, u32)> {
+    if encoded <= 0 {
+        return None;
+    }
+    let raw = encoded as u64;
+    if ((raw >> 46) & 1) != 0 || ((raw >> 47) & 0xFFFF) != (instance & 0xFFFF) {
+        return None;
+    }
+    let generation = ((raw >> 14) & 0xFFFF_FFFF) as u32;
+    if generation == 0 {
+        return None;
+    }
+    Some(((raw & 0x3FFF) as usize, generation))
+}
+
+pub const fn decode_request_capability(instance: u64, encoded: i64) -> Option<(usize, u32)> {
+    if encoded <= 0 {
+        return None;
+    }
+    let raw = encoded as u64;
+    if ((raw >> 46) & 1) != 1 || ((raw >> 47) & 0xFFFF) != (instance & 0xFFFF) {
+        return None;
+    }
+    let generation = ((raw >> 14) & 0xFFFF_FFFF) as u32;
+    if generation == 0 {
+        return None;
+    }
+    Some(((raw & 0x3FFF) as usize, generation))
 }

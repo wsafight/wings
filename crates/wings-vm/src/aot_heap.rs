@@ -3422,8 +3422,11 @@ mod tests {
             .heap
             .allocate(heap.named[0].layout, &[RecordValue::Int(7)])
             .unwrap();
-        heap.commit_typed(wings_abi::ValueType::RecordRef(0), committed.encoded() as i64)
-            .unwrap();
+        heap.commit_typed(
+            wings_abi::ValueType::RecordRef(0),
+            committed.encoded() as i64,
+        )
+        .unwrap();
         heap.heap
             .allocate(heap.named[0].layout, &[RecordValue::Int(8)])
             .unwrap();

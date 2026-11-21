@@ -291,8 +291,16 @@ impl ScalarModule {
     }
 
     pub fn handler(&self, name: &str) -> Result<HandlerId, String> {
+        match self.handler_checked(name) {
+            Ok(id) => Ok(id),
+            Err(crate::VmError::UnknownHandler) => Err(format!("unknown handler {name}")),
+            Err(err) => Err(String::from(err)),
+        }
+    }
+
+    pub(crate) fn handler_checked(&self, name: &str) -> Result<HandlerId, crate::VmError> {
         if !wings_artifact::valid_name(name) {
-            return Err("invalid handler name".into());
+            return Err(crate::VmError::InvalidArguments("invalid handler name"));
         }
         let index = self
             .inner
@@ -300,7 +308,17 @@ impl ScalarModule {
             .handlers
             .iter()
             .position(|handler| handler.name == name)
-            .ok_or_else(|| format!("unknown handler {name}"))?;
+            .ok_or(crate::VmError::UnknownHandler)?;
+        Ok(HandlerId {
+            module: self.clone(),
+            index,
+        })
+    }
+
+    pub(crate) fn handler_by_index(&self, index: usize) -> Result<HandlerId, crate::VmError> {
+        if index >= self.inner.manifest.handlers.len() {
+            return Err(crate::VmError::InvalidHandler);
+        }
         Ok(HandlerId {
             module: self.clone(),
             index,

@@ -1160,9 +1160,9 @@ impl Function {
 
 fn operands(operation: &Operation) -> impl Iterator<Item = Register> + '_ {
     let (fixed, extra): (_, &[Register]) = match *operation {
-        Operation::Negate(value)
-        | Operation::If(value)
-        | Operation::While(value) => ([Some(value), None], &[]),
+        Operation::Negate(value) | Operation::If(value) | Operation::While(value) => {
+            ([Some(value), None], &[])
+        }
         Operation::HeadInt(value)
         | Operation::TailInts(value)
         | Operation::IsEmptyInts(value)

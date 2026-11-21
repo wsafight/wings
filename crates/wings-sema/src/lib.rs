@@ -2021,16 +2021,10 @@ impl Checker {
                         }
                         if matches!(
                             left_type,
-                            Type::Struct(_)
-                                | Type::IntList
-                                | Type::Bytes
-                                | Type::RequestId
+                            Type::Struct(_) | Type::IntList | Type::Bytes | Type::RequestId
                         ) || matches!(
                             right_type,
-                            Type::Struct(_)
-                                | Type::IntList
-                                | Type::Bytes
-                                | Type::RequestId
+                            Type::Struct(_) | Type::IntList | Type::Bytes | Type::RequestId
                         ) {
                             self.error(
                                 "T015",

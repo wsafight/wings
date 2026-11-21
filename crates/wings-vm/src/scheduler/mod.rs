@@ -40,7 +40,6 @@ const MAX_TIMERS: usize = 1024;
 const MAX_MONITORS: usize = 1024;
 const THREAD_STACK: usize = 2 << 20;
 static NEXT_SCHEDULER: AtomicU64 = AtomicU64::new(1);
-static NEXT_CAPABILITY: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
 pub struct SchedulerConfig {
@@ -806,7 +805,12 @@ impl SchedulerHandle {
                 committed_state,
                 stopping: false,
                 cancellation,
-                capability: next_identity(&NEXT_CAPABILITY)? as i64,
+                capability: wings_abi::encode_capability(
+                    self.shared.identity,
+                    pid.slot,
+                    pid.generation,
+                )
+                .ok_or("scheduler actor capabilities exhausted")?,
                 heap_records,
                 mailbox: ActorMailbox(shared_mailbox),
                 _charge: charge,
@@ -935,23 +939,10 @@ impl SchedulerHandle {
             && let Some(mailbox) = fast_slot.get(pid.generation)
         {
             validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
-            let reply = match handler.schema().reply {
-                Some(
-                    ty @ (wings_abi::ValueType::Int
-                    | wings_abi::ValueType::Bool
-                    | wings_abi::ValueType::Unit
-                    | wings_abi::ValueType::Pid
-                    | wings_abi::ValueType::ListRef
-                    | wings_abi::ValueType::BytesRef
-                    | wings_abi::ValueType::StringRef
-                    | wings_abi::ValueType::RecordRef(_)),
-                ) => ty,
-                _ => {
-                    return Err(
-                        "request requires a scalar, Pid, IntList, Bytes, String or Record reply"
-                            .into(),
-                    );
-                }
+            let Some(reply) = handler.schema().reply.filter(|ty| ty.is_supported_reply()) else {
+                return Err(
+                    "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
+                );
             };
             if mailbox.occupancy_hint() < mailbox.capacity() {
                 let mut owned = [0; 64];
@@ -1004,22 +995,10 @@ impl SchedulerHandle {
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
         validate_scalar(actor, handler, arguments)?;
-        let reply = match handler.schema().reply {
-            Some(
-                ty @ (wings_abi::ValueType::Int
-                | wings_abi::ValueType::Bool
-                | wings_abi::ValueType::Unit
-                | wings_abi::ValueType::Pid
-                | wings_abi::ValueType::ListRef
-                | wings_abi::ValueType::BytesRef
-                | wings_abi::ValueType::StringRef
-                | wings_abi::ValueType::RecordRef(_)),
-            ) => ty,
-            _ => {
-                return Err(
-                    "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
-                );
-            }
+        let Some(reply) = handler.schema().reply.filter(|ty| ty.is_supported_reply()) else {
+            return Err(
+                "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
+            );
         };
         let mut message = envelope_precopied(
             actor,
@@ -1439,9 +1418,13 @@ impl SharedMailbox {
     }
 
     pub(super) fn push(&self, message: Envelope) -> Result<(), String> {
+        self.push_checked(message).map_err(String::from)
+    }
+
+    pub(super) fn push_checked(&self, message: Envelope) -> Result<(), crate::VmError> {
         let mut guard = self.lock();
         if guard.count == guard.slots.len() {
-            return Err("mailbox_full".into());
+            return Err(crate::VmError::MailboxFull);
         }
         let tail = (guard.head + guard.count) % guard.slots.len();
         guard.slots[tail] = Some(message);
@@ -1549,10 +1532,7 @@ fn validate_scalar_module(
     arguments: &[i64],
 ) -> Result<(), String> {
     let schema = handler.schema();
-    if stopping
-        || !Arc::ptr_eq(&module.inner, &handler.module.inner)
-        || schema.is_completion()
-    {
+    if stopping || !Arc::ptr_eq(&module.inner, &handler.module.inner) || schema.is_completion() {
         return Err("scheduler handler identity, phase or arguments mismatch".into());
     }
     crate::message_values::validate_scalar_arguments(&schema.parameters, arguments)
@@ -1571,12 +1551,28 @@ fn validate(
     lists: &ListPayload,
     bytes: &BytePayload,
 ) -> Result<(), String> {
+    validate_checked(actor, handler, arguments, system, lists, bytes).map_err(|err| match err {
+        crate::VmError::InvalidArguments(msg) => format!("scheduler {msg}"),
+        other => String::from(other),
+    })
+}
+
+fn validate_checked(
+    actor: &Actor,
+    handler: &HandlerId,
+    arguments: &[i64],
+    system: bool,
+    lists: &ListPayload,
+    bytes: &BytePayload,
+) -> Result<(), crate::VmError> {
     let schema = handler.schema();
     if actor.stopping
         || !Arc::ptr_eq(&actor.module.inner, &handler.module.inner)
         || schema.is_completion() != system
     {
-        return Err("scheduler handler identity, phase or arguments mismatch".into());
+        return Err(crate::VmError::Other(
+            "scheduler handler identity, phase or arguments mismatch",
+        ));
     }
     crate::message_values::validate_message_payload(
         &schema.parameters,
@@ -1586,7 +1582,7 @@ fn validate(
         lists,
         bytes,
     )
-    .map_err(|err| format!("scheduler {err}"))
+    .map_err(crate::VmError::InvalidArguments)
 }
 
 fn envelope_precopied(
@@ -1600,13 +1596,13 @@ fn envelope_precopied(
     if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
         == actor.mailbox.capacity()
     {
-        return Err("mailbox_full".into());
+        return Err(crate::VmError::MailboxFull.into());
     }
-    let charge = actor.account.reserve(Resources {
+    let charge = actor.account.reserve_checked(Resources {
         bytes: std::mem::size_of::<Envelope>() as u64,
         ..Resources::default()
     })?;
-    let message_charge = actor.account.reserve(Resources {
+    let message_charge = actor.account.reserve_checked(Resources {
         messages: 1,
         ..Resources::default()
     })?;
@@ -1631,18 +1627,35 @@ fn envelope(
     max_steps: u64,
     lists: ListPayload,
     bytes: BytePayload,
-    _system: bool,
+    system: bool,
     reply: Reply,
 ) -> Result<Envelope, String> {
+    envelope_checked(
+        actor, handler, arguments, max_steps, lists, bytes, system, reply,
+    )
+    .map_err(String::from)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn envelope_checked(
+    actor: &Actor,
+    handler: &HandlerId,
+    arguments: &[i64],
+    max_steps: u64,
+    lists: ListPayload,
+    bytes: BytePayload,
+    _system: bool,
+    reply: Reply,
+) -> Result<Envelope, crate::VmError> {
     if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
         == actor.mailbox.capacity()
     {
-        return Err("mailbox_full".into());
+        return Err(crate::VmError::MailboxFull);
     }
-    delayed_envelope(actor, handler, arguments, max_steps, lists, bytes, reply)
+    delayed_envelope_checked(actor, handler, arguments, max_steps, lists, bytes, reply)
 }
 
-fn delayed_envelope(
+fn delayed_envelope_checked(
     actor: &Actor,
     handler: &HandlerId,
     arguments: &[i64],
@@ -1650,13 +1663,13 @@ fn delayed_envelope(
     lists: ListPayload,
     mut bytes: BytePayload,
     reply: Reply,
-) -> Result<Envelope, String> {
-    bytes.transfer(&actor.account)?;
-    let charge = actor.account.reserve(Resources {
+) -> Result<Envelope, crate::VmError> {
+    bytes.transfer_checked(&actor.account)?;
+    let charge = actor.account.reserve_checked(Resources {
         bytes: std::mem::size_of::<Envelope>() as u64,
         ..Resources::default()
     })?;
-    let message_charge = actor.account.reserve(Resources {
+    let message_charge = actor.account.reserve_checked(Resources {
         messages: 1,
         ..Resources::default()
     })?;

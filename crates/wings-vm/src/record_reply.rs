@@ -261,10 +261,9 @@ impl PartialEq for RecordReply {
                 let left = self.inner.payload.arguments[idx];
                 let right = other.inner.payload.arguments[idx];
                 match ty {
-                    ValueType::Int
-                    | ValueType::Bool
-                    | ValueType::Unit
-                    | ValueType::Pid => left == right,
+                    ValueType::Int | ValueType::Bool | ValueType::Unit | ValueType::Pid => {
+                        left == right
+                    }
                     ValueType::ListRef => {
                         let (ls, ll) = ListPayload::segment(left);
                         let (rs, rl) = ListPayload::segment(right);

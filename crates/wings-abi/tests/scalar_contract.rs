@@ -27,6 +27,25 @@ fn named_record_schema_limits_and_nominal_indices_are_explicit() {
     validate_records(&schemas).unwrap();
     assert!(ValueType::RecordRef(0).is_reference());
     assert!(!ValueType::RecordRef(0).accepts(1));
+    assert!(ValueType::Pid.is_supported_reply());
+    assert!(!ValueType::RequestId.is_supported_reply());
+    assert_eq!(
+        wings_abi::decode_actor_handler(wings_abi::encode_actor_handler(31, 511).unwrap() as usize),
+        (31, 511)
+    );
+    assert!(wings_abi::encode_actor_handler(usize::from(u16::MAX) + 1, 0).is_err());
+    assert!(wings_abi::encode_actor_handler(0, usize::from(u16::MAX) + 1).is_err());
+    let cap = wings_abi::encode_capability(7, 16383, u32::MAX).unwrap();
+    assert!(cap > 0);
+    assert_eq!(
+        wings_abi::decode_capability(7, cap),
+        Some((16383, u32::MAX))
+    );
+    assert_eq!(wings_abi::decode_capability(8, cap), None);
+    assert_eq!(wings_abi::decode_capability(7, 0), None);
+    assert_eq!(wings_abi::decode_capability(7, -1), None);
+    assert_eq!(wings_abi::encode_capability(7, 16384, 1), None);
+    assert_eq!(wings_abi::encode_capability(7, 0, 0), None);
     for invalid in [
         ValueType::RecordRef(1),
         ValueType::RecordRef(u16::MAX),

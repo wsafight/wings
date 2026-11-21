@@ -195,8 +195,12 @@ impl ResourceAccount {
     }
 
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
+        self.reserve_checked(amount).map_err(String::from)
+    }
+
+    pub(crate) fn reserve_checked(&self, amount: Resources) -> Result<Reservation, crate::VmError> {
         self.reserve_status(amount)
-            .map_err(|level| format!("resource_exhausted at {level:?} account"))
+            .map_err(crate::VmError::ResourceExhausted)
     }
 
     pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
@@ -340,6 +344,13 @@ impl Reservation {
     }
 
     pub fn transfer(&mut self, target: &ResourceAccount) -> Result<(), String> {
+        self.transfer_checked(target).map_err(String::from)
+    }
+
+    pub(crate) fn transfer_checked(
+        &mut self,
+        target: &ResourceAccount,
+    ) -> Result<(), crate::VmError> {
         if self.account.same(target) {
             return Ok(());
         }
@@ -356,10 +367,7 @@ impl Reservation {
                     .unwrap_or_else(|error| error.into_inner())
             });
             if !target.try_add_node(self.amount) {
-                return Err(format!(
-                    "resource_exhausted at {:?} account",
-                    target.level()
-                ));
+                return Err(crate::VmError::ResourceExhausted(target.level()));
             }
             drop(guard);
             self.account = target.clone();
@@ -381,7 +389,9 @@ impl Reservation {
             return Ok(());
         }
         if !self.account.root().same(target.root()) {
-            return Err("resource transfer requires the same VM account".into());
+            return Err(crate::VmError::Other(
+                "resource transfer requires the same VM account",
+            ));
         }
         if self.amount.is_zero() {
             self.account = target.clone();
@@ -410,7 +420,7 @@ impl Reservation {
                             previous.sub_node(self.amount);
                         }
                     }
-                    return Err(format!("resource_exhausted at {level:?} account"));
+                    return Err(crate::VmError::ResourceExhausted(level));
                 }
             }
         }

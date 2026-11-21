@@ -70,7 +70,10 @@ impl<'a> Graph<'a> {
     fn point(&mut self, index: usize, arity: usize) -> usize {
         let instruction = &self.function.instructions[index];
         let mut result = Node::new();
-        let before_poll = matches!(instruction.operation, Operation::Loop(_) | Operation::EndIf(_));
+        let before_poll = matches!(
+            instruction.operation,
+            Operation::Loop(_) | Operation::EndIf(_)
+        );
         result.definitions = self.references(index..index + arity);
         result.defined_before_poll = before_poll;
         if !before_poll {
@@ -90,7 +93,9 @@ impl<'a> Graph<'a> {
 
     fn connect(&mut self, from: usize, target: usize, phi_inputs: &[Register]) {
         let phi_inputs = self.references(phi_inputs.iter().copied());
-        self.nodes[from].successors.push(Edge { target, phi_inputs });
+        self.nodes[from]
+            .successors
+            .push(Edge { target, phi_inputs });
     }
 
     fn fallthrough(&mut self, from: Option<usize>, target: usize, phi_inputs: &[Register]) {

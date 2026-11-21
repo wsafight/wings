@@ -181,17 +181,7 @@ impl ReplyTable {
         reply_type: ValueType,
     ) -> Result<(IngressRequest, ReplyPublisher), String> {
         if !(self.account.same(account) || account.is_child_of(&self.account))
-            || !matches!(
-                reply_type,
-                ValueType::Int
-                    | ValueType::Bool
-                    | ValueType::Unit
-                    | ValueType::Pid
-                    | ValueType::ListRef
-                    | ValueType::BytesRef
-                    | ValueType::StringRef
-                    | ValueType::RecordRef(_)
-            )
+            || !reply_type.is_supported_reply()
         {
             return Err(
                 "result table requires its owner or direct child and a supported reply".into(),

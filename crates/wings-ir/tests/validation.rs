@@ -500,7 +500,9 @@ fn managed_call_paths_bound_aggregate_roots_and_total_ir_before_codegen() {
         },
     ));
     procedure.function.reply = procedure.function.instructions.len() - 1;
-    program.functions.push(identity_procedure(ValueType::RecordRef(0)));
+    program
+        .functions
+        .push(identity_procedure(ValueType::RecordRef(0)));
     program.functions.push(procedure);
     program.validate().unwrap();
     let mut roots = identity_procedure(ValueType::RecordRef(0));
@@ -849,7 +851,10 @@ fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
     assert_eq!(plan.at[5], vec![2, 4]);
     for (index, replacement) in [
         (1, instruction(ValueType::ListRef, Operation::Constant(0))),
-        (1, instruction(ValueType::RecordRef(0), Operation::EmptyInts)),
+        (
+            1,
+            instruction(ValueType::RecordRef(0), Operation::EmptyInts),
+        ),
         (
             2,
             instruction(ValueType::ListRef, Operation::PrependInt(1, 0)),
@@ -1093,17 +1098,19 @@ fn record_merge_itself_counts_toward_root_admission_before_its_poll() {
         function
             .instructions
             .push(instruction(ValueType::RecordRef(0), record_int(0)));
-        function
-            .instructions
-            .push(instruction(ValueType::Unit, Operation::Else(vec![then_value])));
+        function.instructions.push(instruction(
+            ValueType::Unit,
+            Operation::Else(vec![then_value]),
+        ));
         let else_value = function.instructions.len();
         function
             .instructions
             .push(instruction(ValueType::RecordRef(0), record_int(0)));
         let merged = function.instructions.len();
-        function
-            .instructions
-            .push(instruction(ValueType::RecordRef(0), Operation::EndIf(vec![else_value])));
+        function.instructions.push(instruction(
+            ValueType::RecordRef(0),
+            Operation::EndIf(vec![else_value]),
+        ));
         function
             .instructions
             .push(instruction(ValueType::Int, read_int(merged)));

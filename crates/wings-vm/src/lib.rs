@@ -12,6 +12,7 @@ use wings_artifact::Manifest;
 mod aot_heap;
 mod control_flag;
 mod detached;
+mod error;
 mod execution;
 mod heap;
 mod host_values;
@@ -39,6 +40,7 @@ mod worker;
 mod tests;
 
 pub use detached::DetachedProcess;
+pub use error::VmError;
 pub use execution::{
     ExecutionFault, ExecutionPhase, ExecutionSnapshot, ExecutionStatus, ScalarExecution, ScalarTask,
 };
@@ -368,10 +370,14 @@ impl ScalarProcess {
             || (matches!(handler.reply, Some(ValueType::RecordRef(_))) && record.is_some())
             || matches!(
                 (handler.reply, &bytes),
-                (Some(ValueType::BytesRef), Some(reply::BufferReply::Bytes(_)))
-                    | (Some(ValueType::StringRef), Some(reply::BufferReply::String(_)))
-            )
-        {
+                (
+                    Some(ValueType::BytesRef),
+                    Some(reply::BufferReply::Bytes(_))
+                ) | (
+                    Some(ValueType::StringRef),
+                    Some(reply::BufferReply::String(_))
+                )
+            ) {
             0
         } else if handler
             .reply

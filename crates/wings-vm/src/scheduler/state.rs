@@ -39,36 +39,6 @@ impl RequestTable {
             self.maybe_active[index / 64] &= !(1u64 << (index % 64));
         }
     }
-
-    fn find_active_mut(
-        &mut self,
-        mut predicate: impl FnMut(&Pending) -> bool,
-    ) -> Option<&mut Pending> {
-        for word_index in 0..4 {
-            let mut bits = self.maybe_active[word_index];
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                let index = word_index * 64 + bit;
-                if index >= self.slots.len() {
-                    self.maybe_active[word_index] &= !(1u64 << bit);
-                    continue;
-                }
-                if self.slots[index].pending.is_none() {
-                    self.maybe_active[word_index] &= !(1u64 << bit);
-                    continue;
-                }
-                if self.slots[index]
-                    .pending
-                    .as_ref()
-                    .is_some_and(&mut predicate)
-                {
-                    return self.slots[index].pending.as_mut();
-                }
-            }
-        }
-        None
-    }
 }
 
 impl Deref for RequestTable {
@@ -112,14 +82,22 @@ impl State {
     }
 
     pub(super) fn actor(&self, identity: u64, pid: SchedulerPid) -> Result<&Actor, String> {
+        self.actor_checked(identity, pid).map_err(String::from)
+    }
+
+    pub(super) fn actor_checked(
+        &self,
+        identity: u64,
+        pid: SchedulerPid,
+    ) -> Result<&Actor, crate::VmError> {
         if identity != pid.scheduler {
-            return Err("Pid belongs to another scheduler".into());
+            return Err(crate::VmError::ForeignPid);
         }
         self.slots
             .get(pid.slot as usize)
             .filter(|slot| slot.generation == pid.generation)
             .and_then(|slot| slot.actor.as_ref())
-            .ok_or_else(|| "stale scheduler Pid".into())
+            .ok_or(crate::VmError::StalePid)
     }
 
     pub(super) fn actor_mut(
@@ -127,14 +105,22 @@ impl State {
         identity: u64,
         pid: SchedulerPid,
     ) -> Result<&mut Actor, String> {
+        self.actor_mut_checked(identity, pid).map_err(String::from)
+    }
+
+    pub(super) fn actor_mut_checked(
+        &mut self,
+        identity: u64,
+        pid: SchedulerPid,
+    ) -> Result<&mut Actor, crate::VmError> {
         if identity != pid.scheduler {
-            return Err("Pid belongs to another scheduler".into());
+            return Err(crate::VmError::ForeignPid);
         }
         self.slots
             .get_mut(pid.slot as usize)
             .filter(|slot| slot.generation == pid.generation)
             .and_then(|slot| slot.actor.as_mut())
-            .ok_or_else(|| "stale scheduler Pid".into())
+            .ok_or(crate::VmError::StalePid)
     }
 
     pub(super) fn record_exit(&mut self, capability: i64, reason: i64) {
@@ -262,15 +248,24 @@ impl State {
         self.requests.retire_index(key.slot);
     }
 
-    pub(super) fn cancel(&mut self, owner: SchedulerPid, capability: i64) -> Result<(), String> {
+    pub(super) fn cancel(
+        &mut self,
+        owner: SchedulerPid,
+        capability: i64,
+    ) -> Result<(), crate::VmError> {
+        let (index, _) = wings_abi::decode_request_capability(owner.scheduler, capability)
+            .ok_or(crate::VmError::InvalidCapability)?;
         let pending = self
             .requests
-            .find_active_mut(|pending| {
+            .get_active_mut(index)
+            .filter(|slot| slot.generation != 0)
+            .and_then(|slot| slot.pending.as_mut())
+            .filter(|pending| {
                 pending.owner == owner
                     && pending.capability == capability
                     && pending.completion.is_some()
             })
-            .ok_or("invalid request capability")?;
+            .ok_or(crate::VmError::InvalidCapability)?;
         if pending.outcome.is_none() {
             pending.outcome = Some(if Instant::now() >= pending.deadline {
                 RequestOutcome::TimedOut
@@ -540,17 +535,23 @@ impl State {
         wake
     }
 
-    pub(super) fn target(&self, identity: u64, capability: i64) -> Result<SchedulerPid, String> {
-        self.slots
-            .iter()
-            .enumerate()
-            .find(|(_, slot)| {
-                slot.actor
-                    .as_ref()
-                    .is_some_and(|actor| actor.capability == capability && !actor.stopping)
-            })
-            .map(|(index, _)| self.pid(identity, index))
-            .ok_or_else(|| "invalid scheduler capability".into())
+    pub(super) fn target(
+        &self,
+        identity: u64,
+        capability: i64,
+    ) -> Result<SchedulerPid, crate::VmError> {
+        let (index, generation) = wings_abi::decode_capability(identity, capability)
+            .ok_or(crate::VmError::InvalidCapability)?;
+        let slot = self
+            .slots
+            .get(index)
+            .filter(|slot| slot.generation == generation)
+            .ok_or(crate::VmError::InvalidCapability)?;
+        if slot.actor.as_ref().is_some_and(|actor| !actor.stopping) {
+            Ok(self.pid(identity, index))
+        } else {
+            Err(crate::VmError::InvalidCapability)
+        }
     }
 }
 
@@ -627,14 +628,14 @@ impl Shared {
             };
         }
         let mut state = self.lock();
-        if state.closed || state.actor(self.identity, pid).is_err() {
+        if state.closed || state.actor_checked(self.identity, pid).is_err() {
             return (wings_abi::STATUS_CANCELLED, 0);
         }
         let mut wake = WakeSignal::NONE;
-        let result: Result<i64, String> = (|| {
-            let actor = state.actor(self.identity, pid)?;
+        let result: Result<i64, crate::VmError> = (|| {
+            let actor = state.actor_checked(self.identity, pid)?;
             if actor.stopping {
-                return Err("actor stopping".into());
+                return Err(crate::VmError::StalePid);
             }
             let module = actor.module.clone();
             match effect.operation {
@@ -649,32 +650,30 @@ impl Shared {
                         || effect.target <= 0
                         || state.monitor_count >= MAX_MONITORS
                     {
-                        return Err("invalid monitor target or capacity".into());
+                        return Err(crate::VmError::InvalidArguments(
+                            "invalid monitor target or capacity",
+                        ));
                     }
-                    let schema = module
-                        .manifest()
-                        .handlers
-                        .get(effect.handler)
-                        .ok_or("invalid monitor handler")?;
+                    let handler = module.handler_by_index(effect.handler)?;
+                    let schema = handler.schema();
                     if schema.is_completion()
                         || schema.reply.is_some()
                         || schema.parameters.len() != 2
                         || schema.parameters[0].1 != wings_abi::ValueType::Pid
                         || schema.parameters[1].1 != wings_abi::ValueType::Int
                     {
-                        return Err("monitor requires a one-way (Pid, Int) handler".into());
+                        return Err(crate::VmError::InvalidHandler);
                     }
-                    let handler = module.handler(&schema.name)?;
-                    let owner = state.actor(self.identity, pid)?;
-                    let envelope_charge = owner.account.reserve(Resources {
+                    let owner = state.actor_checked(self.identity, pid)?;
+                    let envelope_charge = owner.account.reserve_checked(Resources {
                         bytes: std::mem::size_of::<Envelope>() as u64,
                         ..Resources::default()
                     })?;
-                    let envelope_msg_charge = owner.account.reserve(Resources {
+                    let envelope_msg_charge = owner.account.reserve_checked(Resources {
                         messages: 1,
                         ..Resources::default()
                     })?;
-                    let node_charge = owner.account.reserve(Resources {
+                    let node_charge = owner.account.reserve_checked(Resources {
                         bytes: std::mem::size_of::<MonitorEntry>() as u64,
                         ..Resources::default()
                     })?;
@@ -738,26 +737,21 @@ impl Shared {
                         state.target(self.identity, effect.target)?
                     };
                     let (target_module, handler_idx) = if is_cross_actor {
-                        let actor_idx = effect.handler >> 16;
-                        let h_idx = effect.handler & 0xFFFF;
+                        let (actor_idx, h_idx) = wings_abi::decode_actor_handler(effect.handler);
                         let reg_mod = state
                             .modules
                             .as_ref()
                             .and_then(|(mods, _)| mods.get(actor_idx).cloned())
-                            .ok_or("unregistered target actor module")?;
+                            .ok_or(crate::VmError::InvalidHandler)?;
                         (reg_mod, h_idx)
                     } else {
                         (module.clone(), effect.handler)
                     };
-                    let target_actor = state.actor(self.identity, target)?;
-                    let schema = target_module
-                        .manifest()
-                        .handlers
-                        .get(handler_idx)
-                        .ok_or("invalid effect handler")?;
-                    let handler = target_module.handler(&schema.name)?;
+                    let target_actor = state.actor_checked(self.identity, target)?;
+                    let handler = target_module.handler_by_index(handler_idx)?;
+                    let schema = handler.schema();
                     let arguments = &effect.arguments[..effect.count];
-                    validate(
+                    validate_checked(
                         target_actor,
                         &handler,
                         arguments,
@@ -770,18 +764,20 @@ impl Shared {
                             || !(0..=86_400_000).contains(&effect.timeout_ms)
                             || state.timer_count >= MAX_TIMERS
                         {
-                            return Err("invalid send_after parameters or timer capacity".into());
+                            return Err(crate::VmError::InvalidArguments(
+                                "invalid send_after parameters or timer capacity",
+                            ));
                         }
                         let deadline = Instant::now()
                             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
-                            .ok_or("timer deadline overflow")?;
+                            .ok_or(crate::VmError::InvalidArguments("timer deadline overflow"))?;
                         let node_bytes = std::mem::size_of::<ScheduledTimer>()
                             .saturating_sub(std::mem::size_of::<Envelope>());
-                        let node_charge = target_actor.account.reserve(Resources {
+                        let node_charge = target_actor.account.reserve_checked(Resources {
                             bytes: node_bytes as u64,
                             ..Resources::default()
                         })?;
-                        let message = delayed_envelope(
+                        let message = delayed_envelope_checked(
                             target_actor,
                             &handler,
                             arguments,
@@ -817,9 +813,9 @@ impl Shared {
                     }
                     if !is_request {
                         if schema.reply.is_some() {
-                            return Err("send requires one-way entry".into());
+                            return Err(crate::VmError::InvalidHandler);
                         }
-                        let message = envelope(
+                        let message = envelope_checked(
                             target_actor,
                             &handler,
                             arguments,
@@ -830,66 +826,58 @@ impl Shared {
                             Reply::None,
                         )?;
                         state
-                            .actor_mut(self.identity, target)?
+                            .actor_mut_checked(self.identity, target)?
                             .mailbox
-                            .push(message)?;
+                            .push_checked(message)?;
                         wake = state.enqueue(target);
                         return Ok(0);
                     }
-                    if !matches!(
-                        schema.reply,
-                        Some(
-                            wings_abi::ValueType::Int
-                                | wings_abi::ValueType::Bool
-                                | wings_abi::ValueType::Unit
-                                | wings_abi::ValueType::ListRef
-                                | wings_abi::ValueType::BytesRef
-                                | wings_abi::ValueType::StringRef
-                                | wings_abi::ValueType::RecordRef(_)
-                                | wings_abi::ValueType::Pid
-                        )
-                    ) || !(0..=86_400_000).contains(&effect.timeout_ms)
+                    if !schema.reply.is_some_and(|ty| ty.is_supported_reply())
+                        || !(0..=86_400_000).contains(&effect.timeout_ms)
                     {
-                        return Err("invalid language request".into());
+                        return Err(crate::VmError::InvalidHandler);
                     }
-                    let callback = module
-                        .manifest()
-                        .handlers
-                        .get(effect.callback)
-                        .filter(
-                            |callback| match (callback.completion_reply(), schema.reply) {
-                                (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
-                                    &module.manifest().records,
-                                    cb_ty,
-                                    &target_module.manifest().records,
-                                    rep_ty,
-                                ),
-                                _ => false,
-                            },
-                        )
-                        .ok_or("invalid completion handler")?;
-                    let callback = module.handler(&callback.name)?;
+                    let callback = module.handler_by_index(effect.callback)?;
+                    let valid_callback = match (callback.schema().completion_reply(), schema.reply)
+                    {
+                        (Some(cb_ty), Some(rep_ty)) => wings_abi::equivalent_types(
+                            &module.manifest().records,
+                            cb_ty,
+                            &target_module.manifest().records,
+                            rep_ty,
+                        ),
+                        _ => false,
+                    };
+                    if !valid_callback {
+                        return Err(crate::VmError::InvalidHandler);
+                    }
                     let index = state
                         .requests
                         .iter()
                         .position(|slot| slot.generation != 0 && slot.pending.is_none())
-                        .ok_or("scheduler request table full")?;
-                    let owner = state.actor(self.identity, pid)?;
-                    let request_charge = owner.account.reserve(Resources {
+                        .ok_or(crate::VmError::RequestTableFull)?;
+                    let owner = state.actor_checked(self.identity, pid)?;
+                    let request_charge = owner.account.reserve_checked(Resources {
                         requests: 1,
                         ..Resources::default()
                     })?;
-                    let completion_charge = owner.account.reserve(Resources {
+                    let completion_charge = owner.account.reserve_checked(Resources {
                         messages: 1,
                         bytes: std::mem::size_of::<Envelope>() as u64,
                         ..Resources::default()
                     })?;
-                    let capability = next_identity(&NEXT_CAPABILITY)? as i64;
+                    let generation = state.requests[index].generation;
+                    let capability = wings_abi::encode_request_capability(
+                        self.identity,
+                        index as u32,
+                        generation,
+                    )
+                    .ok_or(crate::VmError::InvalidCapability)?;
                     let key = RequestKey {
                         slot: index,
-                        generation: state.requests[index].generation,
+                        generation,
                     };
-                    let message = envelope(
+                    let message = envelope_checked(
                         target_actor,
                         &handler,
                         arguments,
@@ -905,7 +893,9 @@ impl Shared {
                         capability,
                         deadline: Instant::now()
                             .checked_add(Duration::from_millis(effect.timeout_ms as u64))
-                            .ok_or("request deadline overflow")?,
+                            .ok_or(crate::VmError::InvalidArguments(
+                                "request deadline overflow",
+                            ))?,
                         outcome: None,
                         publisher: true,
                         completion: Some(Completion {
@@ -916,14 +906,14 @@ impl Shared {
                         _charge: request_charge,
                     };
                     state
-                        .actor_mut(self.identity, target)?
+                        .actor_mut_checked(self.identity, target)?
                         .mailbox
-                        .push(message)?;
+                        .push_checked(message)?;
                     state.requests[index].pending = Some(pending);
                     wake = state.enqueue(target);
                     Ok(capability)
                 }
-                _ => Err("unsupported scheduler effect".into()),
+                _ => Err(crate::VmError::InvalidHandler),
             }
         })();
         self.publish_signal(&state);
