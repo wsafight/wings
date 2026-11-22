@@ -138,18 +138,22 @@ impl LockContentionObservation {
 pub(super) fn spin_lock(lock: &AtomicBool, observation: Option<&ContentionCounters>) {
     if observation.is_none() {
         let mut spins = 0u32;
-        while lock
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            if spins < 16 {
-                std::hint::spin_loop();
-                spins += 1;
-            } else {
-                std::thread::yield_now();
+        loop {
+            if lock
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+            while lock.load(Ordering::Relaxed) {
+                if spins < 16 {
+                    std::hint::spin_loop();
+                    spins += 1;
+                } else {
+                    std::thread::yield_now();
+                }
             }
         }
-        return;
     }
 
     let observation = observation.expect("checked contention observation");
@@ -165,12 +169,14 @@ pub(super) fn spin_lock(lock: &AtomicBool, observation: Option<&ContentionCounte
                 if locked {
                     contended_at.get_or_insert_with(Instant::now);
                 }
-                if spins < 16 {
-                    std::hint::spin_loop();
-                    spins += 1;
-                } else {
-                    yields = yields.saturating_add(1);
-                    std::thread::yield_now();
+                while lock.load(Ordering::Relaxed) {
+                    if spins < 16 {
+                        std::hint::spin_loop();
+                        spins += 1;
+                    } else {
+                        yields = yields.saturating_add(1);
+                        std::thread::yield_now();
+                    }
                 }
             }
         }
