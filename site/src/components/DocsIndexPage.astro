@@ -206,11 +206,12 @@ const headings =
     display: flex;
     flex-direction: column;
     gap: 0.42rem;
-    padding: 1.2rem 1.3rem;
-    border-radius: 14px;
+    min-height: 156px;
+    padding: 1.15rem 1.2rem;
+    border-radius: 7px;
     background: var(--bg-card);
     border: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-card);
+    box-shadow: none;
     text-decoration: none !important;
     transition: border-color 0.16s ease, transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.16s ease;
   }
@@ -218,7 +219,7 @@ const headings =
   .chapter-card:hover {
     border-color: var(--accent-border);
     background: var(--bg-card-hover);
-    transform: translateY(-2px);
+    transform: translateY(-1px);
   }
 
   .chapter-top {
@@ -254,5 +255,42 @@ const headings =
     color: var(--text-muted);
     font-size: 0.86rem;
     line-height: 1.58;
+  }
+
+  .chapter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem 1rem;
+    border-top: 1px solid var(--border-strong);
+  }
+
+  .chapter-card {
+    min-height: 148px;
+    padding: 1rem 0.7rem 1rem 0;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .chapter-card:hover {
+    transform: none;
+    background: transparent;
+  }
+
+  .chapter-group {
+    font-family: var(--font-sans);
+    font-size: 0.76rem;
+    letter-spacing: 0;
+  }
+
+  @media (max-width: 640px) {
+    .chapter-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .chapter-card {
+      min-height: auto;
+      padding: 0.9rem 0;
+    }
   }
 </style>
