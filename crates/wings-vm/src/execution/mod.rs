@@ -49,7 +49,7 @@ enum InvocationBackend {
 struct Checkpoint {
     remaining_steps: u64,
     heap: Option<HeapStats>,
-    effect: Option<ProcessEffect>,
+    effect: Option<Box<ProcessEffect>>,
     yield_requested: Option<Instant>,
 }
 
@@ -268,7 +268,7 @@ struct Invocation {
     handler: usize,
     backend: Option<InvocationBackend>,
     snapshot: ExecutionSnapshot,
-    effect: Option<ProcessEffect>,
+    effect: Option<Box<ProcessEffect>>,
     acknowledgement: Option<(u32, i64)>,
     preemption: PreemptionToken,
     _charge: Option<Reservation>,
@@ -373,6 +373,7 @@ impl ScalarTask {
         self.invocation
             .as_mut()
             .and_then(|active| active.effect.take())
+            .map(|effect| *effect)
     }
 
     pub(crate) fn acknowledge_effect(&mut self, status: u32, value: i64) {

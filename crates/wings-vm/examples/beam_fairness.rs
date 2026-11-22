@@ -465,23 +465,39 @@ fn execute(
         }
         let now_ns = elapsed(start);
         if next == count || now_ns < planned(next) {
-            if !pending.is_empty() {
-                for _ in 0..16 {
-                    std::hint::spin_loop();
-                }
-            } else if next < count {
-                let gap = planned(next).saturating_sub(now_ns);
-                if gap > 90_000 {
-                    std::thread::sleep(Duration::from_nanos(gap - 55_000));
+            #[cfg(target_os = "macos")]
+            {
+                if next == count && pending.is_empty() {
+                    for _ in 0..64 {
+                        std::hint::spin_loop();
+                    }
                 } else {
-                    for _ in 0..16 {
+                    for _ in 0..32 {
                         std::hint::spin_loop();
                     }
                 }
-            } else {
-                std::thread::yield_now();
+                continue;
             }
-            continue;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if !pending.is_empty() {
+                    for _ in 0..16 {
+                        std::hint::spin_loop();
+                    }
+                } else if next < count {
+                    let gap = planned(next).saturating_sub(now_ns);
+                    if gap > 90_000 {
+                        std::thread::sleep(Duration::from_nanos(gap - 55_000));
+                    } else {
+                        for _ in 0..16 {
+                            std::hint::spin_loop();
+                        }
+                    }
+                } else {
+                    std::thread::yield_now();
+                }
+                continue;
+            }
         }
         let actor = 1 + next % 100;
         let sent = elapsed(start);

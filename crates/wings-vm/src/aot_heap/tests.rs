@@ -1775,7 +1775,9 @@ fn incoming_parameters_survive_gc_before_entry_and_later_parameter_allocation() 
     assert_eq!(heap.list_node(arguments[1]), Ok(None));
     let first = heap.heap.import_reference(arguments[0] as u64).unwrap();
     let second = heap.heap.import_reference(arguments[1] as u64).unwrap();
-    heap.incoming = std::array::from_fn(|index| Some(if index % 2 == 0 { first } else { second }));
+    heap.incoming = Some(Box::new(std::array::from_fn(|index| {
+        Some(if index % 2 == 0 { first } else { second })
+    })));
     let frame_slots = [arguments[1] as u64; MAX_SHADOW_ROOTS];
     let frame = ShadowFrame {
         previous: std::ptr::null(),

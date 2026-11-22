@@ -111,6 +111,7 @@ pub(super) fn worker(
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
+        let had_local = !local.is_empty();
         let (claim, wake, should_exit) = {
             let mut state = shared.worker_lock(index, LockPhase::Claim);
             let wake = state.maintain(shared.identity);
@@ -121,7 +122,6 @@ pub(super) fn worker(
                 let actor = state.slots[slot].actor.as_mut().expect("ready actor");
                 assert!(!actor.stopping && actor.owner.is_none() && actor.mailbox.count() > 0);
                 let can_fuse = !shared.config.lock_statistics
-                    && local.is_empty()
                     && actor.image.as_ref().is_some_and(|image| {
                         actor.mailbox.front_can_run_direct(
                             image,
@@ -171,17 +171,16 @@ pub(super) fn worker(
             break;
         }
         let attempted = claim.is_some();
-        if local.is_empty()
-            && claim.as_ref().is_some_and(|claim| {
-                claim.fused_direct.is_some()
-                    || WorkerFibers::can_run_fast(
-                        &claim.message.handler,
-                        &claim.message.lists,
-                        &claim.message.bytes,
-                    )
-            })
-        {
-            if run_fast_claim(
+        if claim.as_ref().is_some_and(|claim| {
+            claim.fused_direct.is_some()
+                || WorkerFibers::can_run_fast(
+                    &claim.message.handler,
+                    &claim.message.lists,
+                    &claim.message.bytes,
+                )
+        }) {
+            let max_batch = if had_local { 1 } else { MAX_BACKLOG_BATCH };
+            let progressed = run_fast_claim(
                 &shared,
                 index,
                 claim.expect("checked fast claim"),
@@ -191,7 +190,24 @@ pub(super) fn worker(
                 &mut local,
                 watch,
                 yield_observed,
-            ) {
+                max_batch,
+            );
+            if had_local {
+                if let Some(active) = local.pop_front() {
+                    run_active_slice(
+                        &shared,
+                        index,
+                        active,
+                        &pool,
+                        &timer,
+                        &mut fibers,
+                        &mut local,
+                    );
+                    hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                    continue;
+                }
+            }
+            if progressed {
                 hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
                 continue;
             }
@@ -210,55 +226,16 @@ pub(super) fn worker(
                 }
                 None => local.pop_front(),
             };
-            if let Some(mut active) = next_active {
-                match Instant::now()
-                    .checked_add(shared.config.quantum)
-                    .and_then(|deadline| timer.arm(deadline).ok())
-                {
-                    Some(()) => {
-                        let started_at =
-                            shared.slice_observations.get(index).map(|_| Instant::now());
-                        let result = active
-                            .task
-                            .resume_with_fibers(shared.config.slice_steps, &mut fibers);
-                        if let Some(started_at) = started_at {
-                            shared.slice_observations[index].record(
-                                active.pid,
-                                index,
-                                started_at,
-                                Instant::now(),
-                                &result,
-                            );
-                        }
-                        if let Some(observer) = shared.observations.get(index) {
-                            observer.record(active.pid, index);
-                        }
-                        timer.disarm();
-                        if matches!(result, Ok(ExecutionStatus::Suspended)) {
-                            if let Some(effect) = active.task.take_effect() {
-                                let (status, value) =
-                                    shared.effect(active.pid, effect, active.max_steps, &pool);
-                                active.task.acknowledge_effect(status, value);
-                            }
-                            let mut state = shared.worker_lock(index, LockPhase::Snapshot);
-                            if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
-                                actor.execution = active.task.snapshot();
-                            }
-                            drop(state);
-                            local.push_back(active);
-                        } else {
-                            finish(&shared, index, active, map_outcome(result));
-                        }
-                    }
-                    None => {
-                        finish(
-                            &shared,
-                            index,
-                            active,
-                            Err("scheduler timer failure".into()),
-                        );
-                    }
-                }
+            if let Some(active) = next_active {
+                run_active_slice(
+                    &shared,
+                    index,
+                    active,
+                    &pool,
+                    &timer,
+                    &mut fibers,
+                    &mut local,
+                );
                 hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
                 continue;
             }
@@ -327,6 +304,59 @@ fn mark_started(shared: &Shared, index: usize, pid: SchedulerPid) {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn run_active_slice(
+    shared: &Arc<Shared>,
+    index: usize,
+    mut active: Running,
+    pool: &StackPool,
+    timer: &DeadlineTimer,
+    fibers: &mut WorkerFibers,
+    local: &mut VecDeque<Running>,
+) {
+    match Instant::now()
+        .checked_add(shared.config.quantum)
+        .and_then(|deadline| timer.arm(deadline).ok())
+    {
+        Some(()) => {
+            let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
+            let result = active
+                .task
+                .resume_with_fibers(shared.config.slice_steps, fibers);
+            if let Some(started_at) = started_at {
+                shared.slice_observations[index].record(
+                    active.pid,
+                    index,
+                    started_at,
+                    Instant::now(),
+                    &result,
+                );
+            }
+            if let Some(observer) = shared.observations.get(index) {
+                observer.record(active.pid, index);
+            }
+            timer.disarm();
+            if matches!(result, Ok(ExecutionStatus::Suspended)) {
+                if let Some(effect) = active.task.take_effect() {
+                    let (status, value) = shared.effect(active.pid, effect, active.max_steps, pool);
+                    active.task.acknowledge_effect(status, value);
+                }
+                let mut state = shared.worker_lock(index, LockPhase::Snapshot);
+                if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
+                    actor.execution = active.task.snapshot();
+                }
+                drop(state);
+                local.push_back(active);
+            } else {
+                finish(shared, index, active, map_outcome(result));
+            }
+        }
+        None => {
+            finish(shared, index, active, Err("scheduler timer failure".into()));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_fast_claim(
     shared: &Arc<Shared>,
     index: usize,
@@ -337,6 +367,7 @@ fn run_fast_claim(
     local: &mut VecDeque<Running>,
     watch: u32,
     yield_observed: bool,
+    max_batch: usize,
 ) -> bool {
     let mut process = match claim.image.attach_scheduled(pool, &claim.account) {
         Ok(process) => process,
@@ -353,7 +384,7 @@ fn run_fast_claim(
     let mut fused_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
     let mut already_started = fused_direct.is_some();
-    for batch_step in 0..MAX_BACKLOG_BATCH {
+    for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
         let direct_prepared = if let Some(prepared) = fused_direct.take() {
             Some(prepared)
@@ -544,7 +575,7 @@ fn run_fast_claim(
                     observer.record(pid, index);
                 }
                 let mapped = map_outcome(result);
-                if batch_step + 1 < MAX_BACKLOG_BATCH && mapped.is_ok() {
+                if batch_step + 1 < max_batch && mapped.is_ok() {
                     let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
                     let can_batch_fast = !shared.config.lock_statistics
                         && !matches!(reply, Reply::Language(_))

@@ -479,17 +479,36 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             None
         };
         if next_planned.is_none_or(|planned| now_ns < planned) {
-            if pending.is_empty() {
-                if let Some(planned) = next_planned {
-                    let gap = planned.saturating_sub(now_ns);
-                    if gap > 150_000 {
-                        std::thread::sleep(Duration::from_nanos(gap - 80_000));
-                        continue;
+            #[cfg(target_os = "macos")]
+            {
+                if pending.is_empty() {
+                    if let Some(planned) = next_planned {
+                        let gap = planned.saturating_sub(now_ns);
+                        if gap > 2_500_000 {
+                            std::thread::sleep(Duration::from_nanos(gap - 1_800_000));
+                            continue;
+                        }
                     }
                 }
+                for _ in 0..32 {
+                    std::hint::spin_loop();
+                }
+                continue;
             }
-            std::thread::yield_now();
-            continue;
+            #[cfg(not(target_os = "macos"))]
+            {
+                if pending.is_empty() {
+                    if let Some(planned) = next_planned {
+                        let gap = planned.saturating_sub(now_ns);
+                        if gap > 150_000 {
+                            std::thread::sleep(Duration::from_nanos(gap - 80_000));
+                            continue;
+                        }
+                    }
+                }
+                std::thread::yield_now();
+                continue;
+            }
         }
         let target = workload.target(index);
         let planned = workload.planned(index);
