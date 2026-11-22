@@ -1,2 +1,7 @@
 /target/
 __pycache__/
+/.agents/
+/site/node_modules/
+/site/dist/
+/site/.astro/
+

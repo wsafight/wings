@@ -1,21 +1,21 @@
-# 包发布
+# Crate Publishing & Releases
 
-[返回概览](../README.md) · [架构设计](architecture.md) · [协作约定](../AGENTS.md)
+**English** | [简体中文](zh/publishing.md) · [Back to Overview](../README.md) · [Architecture](architecture.md) · [AGENTS.md](../AGENTS.md)
 
-## 发布策略与兼容性声明
+## Release Policy & Compatibility
 
-- 源码仓库：<https://github.com/wsafight/wings>，统一采用 `Apache-2.0` 许可证（见根目录 [LICENSE](../LICENSE)），仅向 crates.io 发布。
-- **早期阶段不承诺兼容**：在 `0.x` / `0.0.x` 阶段，新版本允许直接包含破坏性的语法、ABI、产物格式与 Rust API 变更，不为旧版本保留兼容垫片。
-- crates.io 已存在第三方同名 `wings` 包（WASM 插件库，与本项目无关）；本项目固定发布下述 10 个具名 Crate，不发布 `wings` 或 `wings-lang` 聚合占位包。
+- Source repository: <https://github.com/wsafight/wings>, licensed under `Apache-2.0` (see [LICENSE](../LICENSE)) and published exclusively to crates.io.
+- **No Backward Compatibility in `0.x` / `0.0.x`**: Early releases may introduce breaking changes to syntax, ABI layouts, artifact manifests, and Rust APIs without deprecation shims.
+- Because an unrelated third-party crate named `wings` already exists on crates.io, Wings publishes the 10 explicit workspace crates listed below rather than an umbrella `wings` or `wings-lang` package.
 
-## 分支保护与手动发布流程
+## Branch Protection & Manual Release Workflow
 
-- `main` 分支受保护：所有代码与文档变更必须通过 PR 合并，且通过 `native (macos-15, arm64)`、`native (ubuntu-24.04, x86_64)` 与 `msrv`（Rust `1.85.0`）三项 CI 检查。
-- 包发布仅在维护者明确要求后从已合并 `main` 的干净源码手动执行，不由 PR 自动触发。crates.io 不允许覆盖同版本号，上传前必须逐包执行 `--dry-run` 核对归档内容与构建。
+- `main` is protected: all code, site, and documentation changes land through pull requests passing `native (macos-15, arm64)`, `native (ubuntu-24.04, x86_64)`, `msrv` (Rust `1.85.0`), and `site` CI checks.
+- Releases are executed manually from a clean `main` checkout only when explicitly requested by a maintainer. Because crates.io versions are immutable, every crate is verified with `--dry-run` before publishing.
 
-## 拓扑发布顺序
+## Topological Publish Order
 
-内部依赖同时声明 `path` 与精确版本号，按以下无环拓扑顺序依次执行 `cargo publish -p <crate> --locked --registry crates-io`（本机配置镜像索引时需加 `CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/`）：
+Internal dependencies specify both `path` and exact `version` constraints, requiring publication in topological DAG order via `cargo publish -p <crate> --locked --registry crates-io` (set `CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/` when a local mirror index is configured):
 
 1. `wings-source`
 2. `wings-syntax`
@@ -28,7 +28,9 @@
 9. `wings-lsp`
 10. `wings-vm`
 
-## 历史发布记录
+## Release History
 
-- **`0.0.2`（2026-11-12）**：首次全量发布上述全部 10 个包（对应提交 `58dc907`，[GitHub Release v0.0.2](https://github.com/wsafight/wings/releases/tag/v0.0.2)），覆盖早期前端、`wings-lsp` 与单 Actor 标量 AOT 原型。
-- **`0.0.1`（2026-11-12）**：首次发布前端与语言服务器 5 个包（`wings-source`、`wings-syntax`、`wings-sema`、`wings-compile`、`wings-lsp`，对应提交 `247cf72`，[GitHub Release v0.0.1](https://github.com/wsafight/wings/releases/tag/v0.0.1)）。
+- **`0.0.3` (2026-11-22)**: Full workspace upgrade across all 10 crates featuring modern `wings-lang` v2 syntax, precise CFG reference roots & bounded recursion, O(1) `slot + generation` addressing, lock-free fast mailboxes, M:N preemptive `Scheduler`, `send_after` / `monitor`, multi-actor `build-app`, and `wings-vm serve` (`stdio` / `--tcp` / `--http`). Install via:
+  `cargo install wings-compile wings-vm wings-lsp --version 0.0.3 --locked`
+- **`0.0.2` (2026-11-12)**: First full publication of all 10 workspace crates (commit `58dc907`, [GitHub Release v0.0.2](https://github.com/wsafight/wings/releases/tag/v0.0.2)), covering the initial frontend, `wings-lsp`, and single-actor scalar AOT prototype.
+- **`0.0.1` (2026-11-12)**: Initial publication of the 5 frontend and language-server crates (`wings-source`, `wings-syntax`, `wings-sema`, `wings-compile`, `wings-lsp`, commit `247cf72`, [GitHub Release v0.0.1](https://github.com/wsafight/wings/releases/tag/v0.0.1)).

@@ -1,6 +1,6 @@
 [package]
 name = "wings-codegen"
-description = "Cranelift scalar AOT backend for Wings VM"
+description = "Cranelift AOT machine-code backend for Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

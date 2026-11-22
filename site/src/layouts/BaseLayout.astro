@@ -1,0 +1,478 @@
+---
+import '../styles/global.css';
+import {
+  type Locale,
+  UI_COPY,
+  getDocItems,
+  localePath,
+  switchLocaleHref,
+  withBase,
+} from '../lib/docs';
+
+interface Props {
+  title: string;
+  description?: string;
+  activeNav?: 'home' | 'docs';
+  locale?: Locale;
+}
+
+const {
+  locale = 'en',
+  title,
+  description,
+  activeNav = 'home',
+} = Astro.props;
+
+const copy = UI_COPY[locale];
+const docItems = getDocItems(locale);
+const pageDescription = description ?? copy.siteDescription;
+const currentPathname = Astro.url.pathname;
+const enHref = switchLocaleHref(currentPathname, 'en');
+const zhHref = switchLocaleHref(currentPathname, 'zh');
+const otherLocaleHref = locale === 'en' ? zhHref : enHref;
+
+const isLangActive = currentPathname.includes('/docs/language');
+const isArchActive = currentPathname.includes('/docs/architecture');
+const isEvalActive = currentPathname.includes('/docs/evaluation');
+
+const searchEntries = [
+  {
+    group: `00 · ${copy.docs.gettingStartedGroup}`,
+    title: copy.docs.overviewLink,
+    summary:
+      locale === 'zh'
+        ? '安装 wings-compile / wings-vm / wings-lsp，编译单模块与多 Actor HTTP/TCP 服务'
+        : 'Install wings-compile, wings-vm, and wings-lsp; build and serve native AOT actor bundles',
+    href: localePath(locale, '/docs/'),
+    keywords: 'install cargo quickstart check build build-app serve http tcp jsonl',
+  },
+  ...docItems.map((item) => ({
+    group: `0${item.order} · ${item.group}`,
+    title: item.title,
+    summary: item.summary,
+    href: localePath(locale, `/docs/${item.slug}/`),
+    keywords: item.keywords.join(' '),
+  })),
+];
+---
+
+<!doctype html>
+<html
+  lang={copy.htmlLang}
+  data-copy-label={copy.docs.copyBtn}
+  data-copied-label={copy.docs.copiedBtn}
+  data-search-empty={copy.nav.searchEmpty}
+>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={pageDescription} />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+    <link rel="alternate" hreflang="en" href={enHref} />
+    <link rel="alternate" hreflang="zh-CN" href={zhHref} />
+    <title>{title}</title>
+    <script is:inline>
+      (() => {
+        try {
+          const saved = localStorage.getItem('wings-theme');
+          if (saved === 'light' || saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', saved);
+          }
+        } catch (_) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href={localePath(locale, '/')}>
+            <img class="brand-mark" src={withBase('/favicon.svg')} alt="Wings VM" width="30" height="30" />
+            <span>Wings VM</span>
+            <span class="version-pill">v0.0.3</span>
+          </a>
+
+          <nav class="nav-links" aria-label={copy.nav.ariaMain}>
+            <a href={localePath(locale, '/')} class:list={['nav-link', { active: activeNav === 'home' }]}>
+              {copy.nav.home}
+            </a>
+            <a
+              href={localePath(locale, '/docs/')}
+              class:list={[
+                'nav-link',
+                { active: activeNav === 'docs' && !isLangActive && !isArchActive && !isEvalActive },
+              ]}
+            >
+              {copy.nav.docs}
+            </a>
+            <a
+              href={localePath(locale, '/docs/language/')}
+              class:list={['nav-link', 'nav-hide-mobile', { active: isLangActive }]}
+            >
+              {copy.nav.language}
+            </a>
+            <a
+              href={localePath(locale, '/docs/architecture/')}
+              class:list={['nav-link', 'nav-hide-mobile', { active: isArchActive }]}
+            >
+              {copy.nav.architecture}
+            </a>
+            <a
+              href={localePath(locale, '/docs/evaluation/')}
+              class:list={['nav-link', 'nav-hide-mobile', { active: isEvalActive }]}
+            >
+              {copy.nav.evaluation}
+            </a>
+          </nav>
+        </div>
+
+        <div class="nav-cluster">
+          <button
+            type="button"
+            class="search-trigger"
+            id="search-open-btn"
+            aria-label={copy.nav.searchPlaceholder}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <span class="search-trigger-label">{copy.nav.searchPlaceholder}</span>
+            <kbd class="search-kbd">⌘K</kbd>
+          </button>
+
+          <div class="lang-switch" role="group" aria-label="Language switcher">
+            <a href={enHref} class:list={['lang-opt', { current: locale === 'en' }]} title="English">
+              EN
+            </a>
+            <a href={zhHref} class:list={['lang-opt', { current: locale === 'zh' }]} title="简体中文">
+              中文
+            </a>
+          </div>
+
+          <button
+            type="button"
+            class="icon-btn"
+            id="theme-toggle-btn"
+            aria-label={copy.nav.themeToggle}
+            title={copy.nav.themeToggle}
+          >
+            <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+            <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          </button>
+
+          <a
+            class="nav-btn nav-hide-xs"
+            href="https://crates.io/crates/wings-vm"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+              <line x1="12" y1="22.08" x2="12" y2="12" />
+            </svg>
+            <span>crates.io</span>
+          </a>
+
+          <a
+            class="nav-btn"
+            href="https://github.com/wsafight/wings"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.4 7.86 10.92.58.1.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11.02 11.02 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.26 5.67.41.36.78 1.06.78 2.14 0 1.55-.01 2.79-.01 3.17 0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
+            </svg>
+            <span>GitHub</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- ⌘K Quick Jump Command Palette -->
+    <div class="search-backdrop" id="search-modal" hidden>
+      <div class="search-dialog" role="dialog" aria-modal="true" aria-label={copy.nav.searchPlaceholder}>
+        <div class="search-input-row">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="search"
+            class="search-input"
+            id="search-modal-input"
+            placeholder={copy.nav.searchModalPlaceholder}
+            autocomplete="off"
+          />
+          <kbd class="search-kbd">ESC</kbd>
+        </div>
+        <ul class="search-results" id="search-modal-results"></ul>
+        <div class="search-footer">
+          <span>{copy.nav.searchHint}</span>
+          <span>Wings VM v0.0.3</span>
+        </div>
+      </div>
+    </div>
+
+    <slot />
+
+    <footer class="site-footer">
+      <div class="container footer-grid">
+        <div class="footer-brand">
+          <div class="footer-brand-row">
+            <img class="brand-mark" src={withBase('/favicon.svg')} alt="Wings VM" width="26" height="26" />
+            <span>Wings VM</span>
+            <span class="version-pill">v0.0.3</span>
+          </div>
+          <p>{copy.footer.tagline}</p>
+        </div>
+
+        <div class="footer-col">
+          <h4>{copy.footer.colDocs}</h4>
+          <ul>
+            <li><a href={localePath(locale, '/docs/')}>{copy.footer.quickstart}</a></li>
+            <li><a href={localePath(locale, '/docs/language/')}>{copy.footer.language}</a></li>
+            <li><a href={localePath(locale, '/docs/architecture/')}>{copy.footer.architecture}</a></li>
+            <li><a href={localePath(locale, '/docs/runtime/')}>{copy.footer.runtime}</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>{copy.footer.colRuntime}</h4>
+          <ul>
+            <li><a href={localePath(locale, '/docs/evaluation/')}>{copy.footer.evaluation}</a></li>
+            <li><a href={localePath(locale, '/docs/roadmap/')}>{copy.footer.roadmap}</a></li>
+            <li><a href={localePath(locale, '/docs/publishing/')}>{copy.footer.publishing}</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h4>{copy.footer.colLinks}</h4>
+          <ul>
+            <li>
+              <a href="https://github.com/wsafight/wings" target="_blank" rel="noopener noreferrer">
+                {copy.footer.github} ↗
+              </a>
+            </li>
+            <li>
+              <a href="https://crates.io/crates/wings-vm" target="_blank" rel="noopener noreferrer">
+                {copy.footer.crates} ↗
+              </a>
+            </li>
+            <li><a href={otherLocaleHref}>{copy.footer.altLangLabel}</a></li>
+          </ul>
+        </div>
+      </div>
+    </footer>
+
+    <script is:inline define:vars={{ searchEntries }}>
+      (() => {
+        const root = document.documentElement;
+        const copyLabel = root.dataset.copyLabel || 'Copy';
+        const copiedLabel = root.dataset.copiedLabel || 'Copied';
+        const emptyLabel = root.dataset.searchEmpty || 'No matching chapters found.';
+
+        // 1. Theme toggle
+        const themeBtn = document.getElementById('theme-toggle-btn');
+        themeBtn?.addEventListener('click', () => {
+          const current = root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+          const next = current === 'light' ? 'dark' : 'light';
+          root.setAttribute('data-theme', next);
+          try {
+            localStorage.setItem('wings-theme', next);
+          } catch (_) {}
+        });
+
+        // 2. Spotlight hover radial follow
+        document.querySelectorAll('.spotlight-card').forEach((card) => {
+          card.addEventListener('pointermove', (e) => {
+            const rect = card.getBoundingClientRect();
+            card.style.setProperty('--mx', `${e.clientX - rect.left}px`);
+            card.style.setProperty('--my', `${e.clientY - rect.top}px`);
+          });
+        });
+
+        // 3. Copy buttons & terminal headers on prose code blocks
+        function bindCopyButton(btn, getText) {
+          btn.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(getText());
+              const prev = btn.textContent;
+              btn.textContent = copiedLabel;
+              btn.classList.add('copied');
+              setTimeout(() => {
+                btn.textContent = prev;
+                btn.classList.remove('copied');
+              }, 1600);
+            } catch (_) {}
+          });
+        }
+
+        document.querySelectorAll('[data-copy]').forEach((btn) => {
+          bindCopyButton(btn, () => btn.getAttribute('data-copy') || '');
+        });
+
+        document.querySelectorAll('.prose pre').forEach((pre) => {
+          if (pre.parentElement?.classList.contains('code-block-wrap')) return;
+          const rawLang = (pre.getAttribute('data-language') || 'text').toLowerCase();
+          const langMap = {
+            rust: 'wings / rust',
+            sh: 'shell',
+            bash: 'shell',
+            zsh: 'shell',
+            json: 'json',
+            toml: 'toml',
+            plaintext: 'output',
+            text: 'code',
+          };
+          const label = langMap[rawLang] || rawLang;
+
+          const wrap = document.createElement('div');
+          wrap.className = 'code-block-wrap';
+          pre.parentNode?.insertBefore(wrap, pre);
+
+          const bar = document.createElement('div');
+          bar.className = 'code-block-bar';
+          const langSpan = document.createElement('span');
+          langSpan.className = 'code-lang-label';
+          langSpan.textContent = label;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'copy-btn';
+          btn.textContent = copyLabel;
+          bar.appendChild(langSpan);
+          bar.appendChild(btn);
+
+          wrap.appendChild(bar);
+          wrap.appendChild(pre);
+          bindCopyButton(btn, () => pre.innerText.trim());
+        });
+
+        // 4. Heading anchor links in prose
+        document.querySelectorAll('.prose h2[id], .prose h3[id]').forEach((h) => {
+          if (h.querySelector('.heading-anchor')) return;
+          const a = document.createElement('a');
+          a.className = 'heading-anchor';
+          a.href = `#${h.id}`;
+          a.textContent = '#';
+          a.setAttribute('aria-hidden', 'true');
+          h.appendChild(a);
+        });
+
+        // 5. Command Palette (⌘K / Ctrl+K)
+        const modal = document.getElementById('search-modal');
+        const openBtn = document.getElementById('search-open-btn');
+        const input = document.getElementById('search-modal-input');
+        const resultsEl = document.getElementById('search-modal-results');
+        let activeIdx = 0;
+        let filtered = searchEntries.slice();
+
+        function renderResults() {
+          if (!resultsEl) return;
+          resultsEl.innerHTML = '';
+          if (!filtered.length) {
+            const empty = document.createElement('li');
+            empty.className = 'search-empty';
+            empty.textContent = emptyLabel;
+            resultsEl.appendChild(empty);
+            return;
+          }
+          filtered.forEach((item, idx) => {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = item.href;
+            a.className = `search-item${idx === activeIdx ? ' selected' : ''}`;
+            a.innerHTML = `
+              <div class="search-item-main">
+                <div class="search-item-group"></div>
+                <div class="search-item-title"></div>
+                <div class="search-item-desc"></div>
+              </div>
+              <span class="search-item-enter">↵</span>
+            `;
+            a.querySelector('.search-item-group').textContent = item.group;
+            a.querySelector('.search-item-title').textContent = item.title;
+            a.querySelector('.search-item-desc').textContent = item.summary;
+            a.addEventListener('mouseenter', () => {
+              activeIdx = idx;
+              resultsEl.querySelectorAll('.search-item').forEach((el, i) => {
+                el.classList.toggle('selected', i === activeIdx);
+              });
+            });
+            li.appendChild(a);
+            resultsEl.appendChild(li);
+          });
+        }
+
+        function openSearch() {
+          if (!modal || !input) return;
+          modal.hidden = false;
+          input.value = '';
+          filtered = searchEntries.slice();
+          activeIdx = 0;
+          renderResults();
+          requestAnimationFrame(() => input.focus());
+        }
+
+        function closeSearch() {
+          if (!modal) return;
+          modal.hidden = true;
+        }
+
+        openBtn?.addEventListener('click', openSearch);
+        modal?.addEventListener('click', (e) => {
+          if (e.target === modal) closeSearch();
+        });
+
+        input?.addEventListener('input', () => {
+          const q = input.value.trim().toLowerCase();
+          filtered = !q
+            ? searchEntries.slice()
+            : searchEntries.filter((it) =>
+                `${it.title} ${it.summary} ${it.group} ${it.keywords}`.toLowerCase().includes(q)
+              );
+          activeIdx = 0;
+          renderResults();
+        });
+
+        window.addEventListener('keydown', (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+            e.preventDefault();
+            if (modal?.hidden) openSearch();
+            else closeSearch();
+            return;
+          }
+          if (modal?.hidden) return;
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            closeSearch();
+          } else if (e.key === 'ArrowDown' && filtered.length) {
+            e.preventDefault();
+            activeIdx = (activeIdx + 1) % filtered.length;
+            renderResults();
+          } else if (e.key === 'ArrowUp' && filtered.length) {
+            e.preventDefault();
+            activeIdx = (activeIdx - 1 + filtered.length) % filtered.length;
+            renderResults();
+          } else if (e.key === 'Enter' && filtered[activeIdx]) {
+            e.preventDefault();
+            window.location.href = filtered[activeIdx].href;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

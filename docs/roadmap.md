@@ -1,36 +1,36 @@
-# 风险与里程碑
+# Risks & Roadmap
 
-[返回概览](../README.md) · [产品定位](product.md) · [架构设计](architecture.md) · [评测与验收](evaluation.md)
+**English** | [简体中文](zh/roadmap.md) · [Back to Overview](../README.md) · [Product Positioning](product.md) · [Architecture](architecture.md) · [Evaluation](evaluation.md)
 
-## 演进原则
+## Evolution Policy
 
-项目处于 `0.0.x` 早期阶段，**不保留任何历史兼容包袱**：语言语法、内置 API、IR、受管 C ABI、产物清单与宿主 Rust 接口均可直接做破坏性调整，以最快速度收敛架构与性能目标。
+Wings is in its `0.0.x` early stage with **zero legacy compatibility baggage**: language syntax, built-ins, IR instructions, the managed C ABI, artifact manifests, and Rust APIs may undergo direct breaking changes to converge rapidly on architectural clarity and performance targets.
 
-## MVP 七项技术切片进度
+## MVP Technical Slices (1–7)
 
-工程按 1–7 顺序推进；1–6 构成功能闭环的可运行开发者预览版，第 7 项双平台性能与内存硬门禁通过后才称为正式达标的 MVP：
+Engineering progresses sequentially across seven slices; slices 1–6 form a feature-complete developer preview, while slice 7 closes the formal dual-platform performance and memory MVP gate:
 
-| 序号 | 技术切片 | 核心验收要求 | 当前状态 |
+| # | Technical Slice | Core Acceptance Criteria | Status |
 |---|---|---|---|
-| 1 | 同线程活栈让出与恢复 | 强制检查点挂起恢复、保留原生栈与活跃值、取消/丢弃不跨 ABI unwind | 已完成 |
-| 2 | 受管执行与语言基础 | 精确 CFG shadow stack、原生栈界检查、分支/循环/有界递归、双平台唤醒 | 已完成 |
-| 3 | 多进程与有界邮箱 | `spawn`、单向发送、异步 `ask` 回复与超时、单发送者 FIFO、满槽显式背压 | 已完成 |
-| 4 | 业务值、GC 与三级账本 | `str`/`bytes`/`[int]`/具名 `struct`、可空 `pid?<Actor>`、分块精确 GC、三级预留回滚 | 主体完成（动态装载器/系统分配器内部成本待闭环） |
-| 5 | 公平调度与网络服务 | M:N 抢占调度、`send_after` 定时、`wings-vm serve`（`stdio`/`--tcp`/`--http`） | 已完成 |
-| 6 | 故障隔离、监控与监督 | 受管错误回滚未提交状态、`monitor` 退出通知、宿主有界重启强度控制与诊断快照 | 已完成 |
-| 7 | 双平台业务与性能门禁 | macOS AArch64 与 Linux x86-64 同机对照 BEAM，在硬 CPU 配额下同时验收吞吐与内存优势 | **进行中**（hot-queue 服务 p99 调优与 Linux 原生配额长测待完成） |
+| 1 | Same-Thread Live-Stack Yield & Resume | Suspend/resume at mandatory checkpoints preserving native stack & live values; cancel/drop without cross-ABI unwinding | Completed |
+| 2 | Managed Execution & Language Core | Precise CFG shadow stack, native stack-limit checks, branches/loops/bounded recursion, dual-platform wakeups | Completed |
+| 3 | Multi-Actor & Bounded Mailboxes | `spawn`, one-way casts, async `ask` replies & timeouts, per-sender FIFO, explicit `mailbox_full` backpressure | Completed |
+| 4 | Rich Values, GC & 3-Level Ledger | `str`/`bytes`/`[int]`/named `struct`, nullable `pid?<Actor>`, chunked precise GC, 3-level reservation & rollback | Core complete (loader/allocator native overhead gap remaining) |
+| 5 | Fair Preemption & Network Serving | M:N preemptive scheduler, `send_after` timers, `wings-vm serve` (`stdio`/`--tcp`/`--http`) | Completed |
+| 6 | Fault Isolation, Monitors & Supervision | Uncommitted state rollback on fault, `monitor` down notifications, bounded host restart intensity, exit snapshots | Completed |
+| 7 | Dual-Platform Workload & Performance Gate | Beat BEAM simultaneously on sustained throughput and whole-machine memory under hard CPU quotas on macOS ARM64 & Linux x86-64 | **In Progress** (hot-queue service p99 tuning & native Linux cgroup v2 runs pending) |
 
-暂不纳入 MVP：热代码升级、透明冬眠压缩、跨节点分布式集群、不可信第三方原生插件沙箱、完整 IDE 重构功能。
+Deferred beyond MVP: hot code swapping, transparent hibernation compaction, multi-node distributed clustering, untrusted native plugin sandboxes, and full IDE refactoring suites.
 
-## 主要风险与应对
+## Key Risks & Mitigations
 
-1. **热点队列尾延迟落后于 BEAM**：多 worker 通知、跨线程唤醒与结果表同步在高争用单 Actor 场景会放大服务 p99。持续通过锁区间/线程 CPU 归因与无锁路径消融压缩调度开销，未达标前不宣称性能门禁完成。
-2. **原生层账本盲区**：受管堆、栈池、邮箱与模块段跨度虽已纳入三级账户，但 libc / `dlopen` / 全局分配器碎片仍可能造成账面值低于实际物理驻留内存。评测同时报告三级账本值与 OS 进程树实际 RSS / physical footprint / PSS。
-3. **专用语言迁移成本**：`wings-lang` 不透明复用任意 Rust 库。通过完善现代语法表达力、`wings-lsp` 即时诊断补全与开箱即用的 `--http` / `--tcp` JSON-RPC 服务模式降低试用门槛。
+1. **Hot-Queue Tail Latency vs. BEAM**: Multi-worker wakeups, cross-thread notifications, and request-table synchronization amplify service p99 on heavily contended single actors. We continue profiling lock intervals and lock-free batching paths without claiming gate completion prematurely.
+2. **Native Memory Ledger Blind Spots**: While managed heaps, stack pools, mailboxes, and Mach-O/ELF image spans are admitted into the 3-level ledger, `libc` / `dlopen` / global allocator fragmentation can still widen resident OS memory. Benchmarks report both 3-level ledger totals and OS process-tree RSS / physical footprint / PSS.
+3. **Domain Language Adoption Cost**: `wings-lang` does not transparently embed arbitrary Rust crates. We mitigate adoption friction with expressive v2 syntax, zero-compiler-bloat `wings-lsp` tooling, and turnkey `--http` / `--tcp` JSON-RPC serving.
 
-## 后续里程碑方向（M1–M5）
+## Post-MVP Milestones (M1–M5)
 
-- **M1–M2**：闭环 Linux x86-64 cgroup v2 硬配额长测与 hot-queue 调度延迟优化，达成相对 BEAM 的同负载吞吐与内存双目标；补充跨文件模块导入与声明式监督配置。
-- **M3**：评估冷/温状态自适应冬眠压缩与更低开销的栈帧根元数据，验证百万级稀疏会话内存曲线。
-- **M4**：围绕真实 Agent 编排或会话网关试点，完善生产级观测指标与故障排障工具。
-- **M5 及以后**：按实际需求独立评估 Idle 边界静态热更新、受限外部 I/O 连接池、Linux AArch64 支持与外部插件子进程池。
+- **M1–M2**: Close Linux x86-64 cgroup v2 quota benchmarks and hot-queue service p99 optimization to pass the formal BEAM throughput + memory gate; add multi-file module imports and declarative supervision specs.
+- **M3**: Evaluate adaptive cold/warm actor hibernation compaction and lower-overhead stack-root tables on million-session sparse workloads.
+- **M4**: Pilot production observability metrics and diagnostic tooling on real AI agent orchestration or session-gateway workloads.
+- **M5+**: Independently evaluate idle-boundary static code reload, bounded external I/O pools, Linux AArch64 support, and isolated out-of-process extension pools.

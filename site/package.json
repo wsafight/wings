@@ -1,0 +1,17 @@
+{
+  "name": "wings-site",
+  "version": "0.0.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "astro": "^5.5.0"
+  },
+  "devDependencies": {
+    "unist-util-visit": "^5.0.0"
+  }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "wings-compile"
-description = "Compiler and static checking tools for the Wings VM language prototype"
+description = "Compiler, static checker, and AOT bundler for wings-lang on Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

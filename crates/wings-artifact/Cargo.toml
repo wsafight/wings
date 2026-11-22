@@ -1,6 +1,6 @@
 [package]
 name = "wings-artifact"
-description = "Bounded scalar AOT artifact metadata for Wings VM"
+description = "Bounded AOT module manifest and multi-actor bundle metadata for Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

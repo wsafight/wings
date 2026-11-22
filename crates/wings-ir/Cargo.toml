@@ -1,6 +1,6 @@
 [package]
 name = "wings-ir"
-description = "Validated scalar execution IR for Wings VM"
+description = "Validated managed execution IR and CFG root analysis for Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

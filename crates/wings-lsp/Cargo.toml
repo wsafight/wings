@@ -1,6 +1,6 @@
 [package]
 name = "wings-lsp"
-description = "Language server for the Wings VM language prototype"
+description = "Language server for wings-lang on Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
