@@ -77,6 +77,8 @@ const searchEntries = [
           const saved = localStorage.getItem('wings-theme');
           if (saved === 'light' || saved === 'dark') {
             document.documentElement.setAttribute('data-theme', saved);
+          } else {
+            document.documentElement.setAttribute('data-theme', 'light');
           }
         } catch (_) {}
       })();
