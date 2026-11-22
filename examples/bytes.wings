@@ -1,0 +1,41 @@
+actor ByteState {
+  fn changed(value: bytes, index: int, byte: int) -> bytes { value.set(index, byte) }
+  fn changed_word(value: bytes, offset: int, number: int) -> bytes { value.set_i64(offset, number) }
+
+  state data = bytes::fill(0, 0)
+
+  on fill(length: int, byte: int) -> int { data = bytes::fill(length, byte); data.len() }
+  on set(index: int, byte: int) -> int {
+    let old = data
+    let next = changed(data, index, byte)
+    gc()
+    data = next
+    old.at(index) * 256 + data.at(index)
+  }
+  on read(index: int) -> int { gc(); data.at(index) }
+  on length -> int { gc(); data.len() }
+  on set_word(offset: int, number: int) -> int {
+    let old = data
+    let next = changed_word(data, offset, number)
+    gc()
+    data = next
+    old.i64_at(offset)
+  }
+  on read_word(offset: int) -> int { gc(); data.i64_at(offset) }
+  on fail_word -> int { data = changed_word(data, 0, 99); 1 / 0 }
+  on branch(flag: bool) -> int {
+    let selected = if flag { changed(data, 0, 7) } else { data }
+    gc()
+    selected.at(0) + data.at(0)
+  }
+  on loop(limit: int) -> int {
+    data = bytes::fill(512, 0)
+    while data.at(0) < limit {
+      let next = changed(data, 0, data.at(0) + 1)
+      gc()
+      data = next
+    }
+    data.at(0)
+  }
+  on fail -> int { data = bytes::fill(4096, 99); 1 / 0 }
+}

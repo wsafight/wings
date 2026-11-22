@@ -1,0 +1,16 @@
+actor RequestRoots {
+  struct Boxed { value: int }
+  state count = Boxed(0)
+  on start(value: int, fail: bool) -> int {
+    let old = count;
+    count = Boxed(9);
+    let child = spawn();
+    let id = child.ask(compute(value), timeout: 60000, then: completed);
+    id.cancel();
+    gc();
+    (old.value + count.value) / if fail { 0 } else { 1 }
+  }
+  on compute(value: int) -> int { count = Boxed(value); count.value }
+  on reply completed(id: req, status: int, value: int) { count = Boxed(status * 100 + value) }
+  on read -> int { count.value }
+}

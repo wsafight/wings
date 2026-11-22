@@ -2,76 +2,75 @@
 
 面向高并发有状态应用的微进程虚拟机。
 
-Wings 的目标是**在相同业务负载下，比 BEAM 更快、更省内存**。业务代码通过消息交互，各微进程保存自己的状态，VM 负责调度、内存管理和监督恢复。
+Wings 用 Rust 实现运行时，通过 Cranelift 将 `wings-lang` 业务代码 AOT 编译为受管原生机器码，目标是**在相同业务负载下，比 BEAM 更快、更省内存**，同时保留消息隔离、抢占调度、资源配额与故障恢复能力。
 
-- **性能**：在相同 CPU 配额和尾延迟要求下，取得更高的持续吞吐。
-- **内存**：在相同状态、消息和活跃比例下，降低整机内存占用，提高单机进程密度。
-- **执行模型**：各进程的业务状态相互隔离，保留公平调度、监督恢复和资源检查。
+- **性能目标**：在相同 CPU 配额和尾延迟要求下，取得更高的持续吞吐。
+- **内存目标**：在相同业务状态、邮箱深度和活跃比例下，降低整机内存占用，提高单机进程密度。
+- **首要平台**：**macOS AArch64（Apple Silicon）** 与 **Linux x86-64**。
 
-VM 用 Rust 实现，`wings-lang` 业务代码通过 Cranelift AOT 编译执行。首要运行平台是 **macOS AArch64（Apple Silicon）与 Linux x86-64**，两者都要通过完整的 VM 运行测试和性能验收。组件说明见[架构设计](docs/architecture.md)。
+> [!IMPORTANT]
+> **早期开发声明（`0.0.x`）**：项目处于早期快速迭代阶段，**当前不考虑任何向后兼容**。语言语法、受管 ABI、编译产物清单（`manifest.json` / `bundle.json`）、CLI 选项与 Rust 内部/公开接口均可能直接发生破坏性演进，升级版本后请直接重新编译源码。
 
-## 文档
+## 当前能力概览
 
-- [产品定位](docs/product.md)：性能与内存目标、适用场景和采用路径。
-- [架构设计](docs/architecture.md)：技术选型、编译后端、受管 ABI、GC 和平台范围。
-- [Crate 拆分](docs/crates.md)：workspace 依赖、`wings-vm` 与编译工具的边界，以及 `wings-lsp` 方案。
-- [架构决策](docs/adr/README.md)：当前已采纳的设计、替代方案与重审条件。
-- [运行时](docs/runtime.md)：微进程、内存、调度、消息、资源额度、监督和热更新。
-- [语言设计](docs/language.md)：`wings-lang` 的 handler、状态和异步交互语义。
-- [激进优化](docs/optimizations.md)：编译、值布局、分配、消息、调度、GC 与平台专用优化。
-- [评测与验收](docs/evaluation.md)：BEAM 对照、负载、指标和故障注入。
-- [风险与里程碑](docs/roadmap.md)：已知风险、M0–M7 的范围和验收条件。
+- **语言与前端**：支持 `actor` 与顶层/局部不可变 `struct`、多 `state` 绑定、`int` / `bool` / `unit` / `[int]` / `bytes` / `str`、类型化 `pid<Actor>` 与可空 `pid?<Actor>`、分支与 `while` 循环、受管栈帧内的有界函数递归（含互递归），以及配套 `wings-lsp` 语言服务器。
+- **Actor 交互与容错**：支持 `spawn(Actor)`、单向消息（`!` / `.tell`）、带超时回调的异步请求（`.ask(..., timeout: ..., then: ...)`）、延时自定时消息（`send_after`）以及进程监控通知（`monitor`）。
+- **编译与运行时**：支持精确 CFG GC 根计算、进程内分块非移动 mark-sweep GC、O(1) `slot + generation` 能力寻址、可复用协程栈池、无锁快速邮箱、多 worker 抢占式 `Scheduler` 与 `VM -> Tenant -> Process` 三级资源准入。
+- **应用打包与网络接入**：支持 `wings-compile build-app` 打包多 Actor 应用，并通过 `wings-vm serve` 提供 `stdio`、`--tcp`（JSON Lines）与 `--http`（JSON-RPC + `/healthz`）服务入口。
+- **当前未闭环项**：跨文件模块、语言级声明式监督树尚未实现；动态装载器/系统分配器内部开销尚未完全纳入三级账本；同负载 BEAM 的 hot-queue 服务 p99 与 cgroup CPU 硬配额双门禁仍在推进中（详见[评测与验收](docs/evaluation.md)与[风险与里程碑](docs/roadmap.md)）。
 
-完整阅读顺序见[文档目录](docs.md)。参与修改前请阅读[协作约定](AGENTS.md)。
+## 快速开始
 
-## 当前进度
+环境要求：Rust `1.85+`，以及系统 C 链接器（`cc`，可通过环境变量 `CC` 指定）。
 
-处于 M0：已有 `process`、具名 `state`、类型化 `on`、状态赋值、局部 `let` 和尾表达式的前端检查及单文件 LSP。Cranelift 标量 AOT 原型可链接、装载可信本机产物并连续调用 Counter；macOS AArch64 与 Linux x86-64 已通过同一套 CI 原生执行验证。原型没有业务堆、调度、抢占或 GC，完整 M0 与性能、内存目标尚未验证。更新日期：2026-11-12。
-
-## 开发
-
-需要 Rust 1.85 或更新版本；构建 AOT 原型还需系统 C 链接工具链（`cc`，也可用 `CC` 指定编译器可执行路径）。检查命令只验证当前语法子集，不生成机器码：
+### 1. 检查与单 Actor 运行
 
 ```sh
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
+# 静态语法与类型检查
 cargo run -p wings-compile -- check examples/counter.wings
-cargo run -p wings-lsp
-```
 
-当前源码可额外构建并运行标量 AOT 示例。输出目录必须不存在；`--trusted` 表示只装载自己构建、可信且与清单匹配的本机原生代码，不是安全沙箱：
-
-```sh
+# 编译单 Actor AOT 产物（输出目录须不存在）
 cargo run -p wings-compile -- build examples/counter.wings -o target/counter-aot
+
+# 通过 JSON Lines 执行消息序列（--trusted 仅用于运行可信本地构建产物）
 cargo run -p wings-vm -- run --trusted target/counter-aot < examples/counter.messages.jsonl
 ```
 
-可复现的端到端边界验证：`cargo build --locked -p wings-compile -p wings-vm`，再运行 `python3 scripts/verify_scalar_aot.py`（需要 Python 3）。`cargo test` 当前仍没有 Rust 测试用例，行为验证由该独立脚本执行。
-
-此路径只验证直线标量 handler 的原生执行与状态提交，尚无 mailbox、资源账户或监督。产物与驱动协议见[架构原型说明](docs/architecture.md#标量-aot-原型)，不将成功执行示例视为完整 VM 已交付。
-
-LSP 使用 stdio、UTF-16 位置和整份文档同步，支持诊断、局部跳转、悬停与基础补全。目前逐份文档同步分析，尚无跨文件解析、增量失效或运行中取消；双平台 CI 覆盖构建，LSP 协议冒烟仍仅在本机 macOS AArch64 验证。语言支持范围见[语言设计](docs/language.md)。
-
-未发布源码另有标量执行控制：每条 IR 指令及输出提交前强制轮询原子取消标志并扣除一步预算。`wings-vm run --trusted <目录> --max-steps <u64>` 可设置每次 handler 的上限（默认 1,000,000），库接口支持跨线程共享取消令牌。耗尽或取消后不提交该次状态与回复，实例终止。这不是让出恢复、完整抢占或资源计费；源码 ABI v2 只装载源码编译器产物，不兼容已发布 `0.0.2` 的 v1 产物。契约见 [ADR-0010](docs/adr/0010-scalar-execution-control.md)。
-
-当前 workspace 版本为 `0.0.2`，采用 [Apache-2.0](LICENSE) 许可证。全部十个已有实现的包均已发布，包括标量 AOT 后端与可信装载原型，不代表完整 VM 已交付。发布顺序、状态和名称检查见[发布说明](docs/publishing.md)。
-
-crates.io 的 `0.0.1` 是原前端版本，仅有 `check` 和 LSP；不能覆盖该版本。`0.0.2` 增加 AOT 构建与可信执行入口，按 PR 合并、CI 验证、手动发布的顺序交付；PR 本身不触发包上传。
-
-`wings` 已由其他项目使用，本项目不发布同名聚合包。`wings-lang` 仅作语言名，不是待发布的 crate；项目名与商标核查仍未完成。名称约定见 [ADR-0008](docs/adr/0008-wings-naming.md)。
-
-## 安装
-
-可从 crates.io 安装 `0.0.2` 的编译命令、标量执行原型和语言服务器（构建 AOT 还需系统 C 工具链）：
+### 2. 多 Actor 应用打包与服务化启动
 
 ```sh
-CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/ cargo install wings-compile wings-vm wings-lsp --version 0.0.2 --locked --registry crates-io
-wings-compile check examples/counter.wings
-wings-compile build examples/counter.wings -o target/installed-counter-aot
-wings-vm run --trusted target/installed-counter-aot < examples/counter.messages.jsonl
-wings-lsp --help
+# 编译多 Actor 应用包（含监督重启与定时心跳示例）
+cargo run -p wings-compile -- build-app examples/session-service.wings -o target/session-bundle
+
+# 启动多 worker HTTP 服务（支持 POST /<handler> 与 GET /healthz）
+cargo run -p wings-vm -- serve --trusted target/session-bundle --workers 2 --http 127.0.0.1:8080
+
+# 或启动 TCP JSON Lines 服务
+cargo run -p wings-vm -- serve --trusted target/session-bundle --workers 2 --tcp 127.0.0.1:9000
 ```
 
-示例路径相对于本仓库，输出目录必须不存在；检查命令只做静态检查，LSP 通过 stdio 启动，不执行用户程序。`wings-vm` 仅装载可信本机产物，不是安全沙箱。
+### 3. 开发与验证命令
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+
+# 构建二进制与验证示例并执行完整端到端 AOT 回归（需 Python 3）
+cargo build --locked -p wings-compile -p wings-vm --bins --examples
+python3 scripts/verify_scalar_aot.py
+```
+
+## 文档导航
+
+| 文档 | 说明 |
+|---|---|
+| [产品定位](docs/product.md) | 性能与内存目标、适用场景、与 BEAM / Tokio / Wasmtime 的取舍对照 |
+| [架构设计](docs/architecture.md) | 10 个 Workspace Crate 边界、Cranelift AOT 管线、受管 C ABI 与精确 GC |
+| [语言设计](docs/language.md) | `wings-lang` 语法、类型系统、异步消息、定时器与监控语义 |
+| [运行时](docs/runtime.md) | 微进程表示、栈池、无锁邮箱、M:N 调度器、三级资源准入与网络服务入口 |
+| [评测与验收](docs/evaluation.md) | BEAM 对照负载、当前性能/内存实测状态与优化实验纪律 |
+| [风险与里程碑](docs/roadmap.md) | 早期演进策略、已知风险、M0–M7 阶段划分与正式 MVP 门禁清单 |
+| [包发布](docs/publishing.md) | `Apache-2.0` 许可、crates.io 拓扑发布顺序与版本记录 |
+
+参与代码或文档贡献前请阅读 [协作约定](AGENTS.md)。

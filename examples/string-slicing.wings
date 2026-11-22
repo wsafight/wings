@@ -1,0 +1,22 @@
+actor StringSlicing {
+  state text = "Aé中😀Z";
+
+  on at(index: int) -> int { text.at(index) }
+  on slice(start: int, length: int) -> str { text.slice(start, length) }
+  on boundary -> str {
+    let value = (bytes::fill(255, 97).to_str() + "😀z");
+    value.slice(255, 1)
+  }
+  on fill -> int {
+    text = bytes::fill(65536, 97).to_str();
+    text.len()
+  }
+  on length -> int { text.len() }
+  on last -> str { text.slice(65535, 1) }
+  on negative_index -> int { text.at(-1) }
+  on past_end -> str { text.slice(5, 1) }
+  on negative_length -> str { text.slice(0, -1) }
+  on overflow -> str { text.slice(9223372036854775807, 9223372036854775807) }
+  on clear -> () { text = ""; gc(); }
+  on sweep -> () { gc(); }
+}

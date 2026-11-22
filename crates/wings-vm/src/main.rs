@@ -1,121 +1,187 @@
-use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use serde_json::{Value, json};
-use wings_abi::{DEFAULT_MAX_STEPS, ValueType};
-use wings_vm::{CancellationToken, ScalarProcess};
+use wings_vm::{ResourceAccount, Resources, ScalarModule, Scheduler, SchedulerConfig, StackPool};
+
+mod cli;
+mod cli_args;
+mod cli_io;
+mod cli_record;
+mod cli_report;
+mod cli_serve;
 
 fn main() -> ExitCode {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if arguments == ["--help"] || arguments == ["-h"] {
-        println!(
-            "Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>]\n\nRuns only trusted host-native scalar AOT code. Reads bounded JSON lines from stdin; this is not a sandbox or a full microprocess VM. Each handler defaults to 1000000 execution steps."
-        );
-        return ExitCode::SUCCESS;
-    }
-    if !matches!(arguments.len(), 3 | 5)
-        || arguments[0] != "run"
-        || arguments[1] != "--trusted"
-        || (arguments.len() == 5 && arguments[3] != "--max-steps")
-    {
-        eprintln!("Usage: wings-vm run --trusted <artifact-directory> [--max-steps <u64>]");
-        return ExitCode::from(2);
-    }
-    let max_steps = if arguments.len() == 5 {
-        match arguments[4].parse::<u64>() {
-            Ok(value) => value,
-            Err(_) => {
-                eprintln!("--max-steps must be an unsigned 64-bit integer");
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        DEFAULT_MAX_STEPS
+    let limits = Resources {
+        bytes: 16 << 20,
+        processes: 1,
+        messages: 0,
+        requests: 0,
     };
-    match run(Path::new(&arguments[2]), max_steps) {
-        Ok(()) => ExitCode::SUCCESS,
+    let vm = match ResourceAccount::vm_accounted(limits) {
+        Ok(vm) => vm,
+        Err(_) => {
+            cli_report::startup_failed();
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut reporter = match cli_report::Reporter::new(&vm) {
+        Ok(reporter) => reporter,
+        Err(_) => {
+            cli_report::startup_failed();
+            return ExitCode::FAILURE;
+        }
+    };
+    match start(&vm, &mut reporter) {
+        Ok(code) => code,
         Err(error) => {
-            eprintln!("wings-vm: {error}");
+            reporter.report(format_args!("wings-vm: {error}"));
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(directory: &Path, max_steps: u64) -> Result<(), String> {
-    let mut process = unsafe { ScalarProcess::load_trusted(directory) }?;
-    let cancellation = CancellationToken::default();
-    let mut reader = io::stdin().lock();
-    let mut writer = io::stdout().lock();
-    while let Some(line) = read_line(&mut reader)? {
-        let input: Value = serde_json::from_slice(&line).map_err(|error| error.to_string())?;
-        let object = input.as_object().ok_or("expected a JSON object")?;
-        if object.len() != 2 || !object.contains_key("message") || !object.contains_key("args") {
-            return Err("expected exactly message and args fields".into());
+fn start(vm: &ResourceAccount, reporter: &mut cli_report::Reporter) -> Result<ExitCode, String> {
+    let limits = vm.limit();
+    let tenant = vm.tenant_accounted(limits)?;
+    let account = tenant.process_accounted(limits)?;
+    let startup = match cli_args::Startup::new(&account) {
+        Ok(startup) => startup,
+        Err(error) => {
+            reporter.report(format_args!("{error}"));
+            return Ok(ExitCode::from(2));
         }
-        let name = input["message"].as_str().ok_or("expected a message name")?;
-        let values = input["args"].as_array().ok_or("expected an args array")?;
-        let handler = process
-            .manifest()
-            .handlers
-            .iter()
-            .find(|handler| handler.name == name)
-            .ok_or_else(|| format!("unknown handler {name}"))?;
-        if values.len() != handler.parameters.len() {
-            return Err("handler argument count mismatch".into());
+    };
+    match startup.command() {
+        cli_args::Command::Help => {
+            reporter.help().map_err(|error| error.to_string())?;
         }
-        let reply_type = handler.reply;
-        let arguments = values
-            .iter()
-            .zip(&handler.parameters)
-            .map(|(value, (_, ty))| match ty {
-                ValueType::Int => value
-                    .as_i64()
-                    .ok_or_else(|| "expected an i64 argument".to_owned()),
-                ValueType::Bool => value
-                    .as_bool()
-                    .map(i64::from)
-                    .ok_or_else(|| "expected a Bool argument".to_owned()),
-                ValueType::Unit if value.is_null() => Ok(0),
-                ValueType::Unit => Err("expected null for Unit".into()),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let reply = process.invoke_controlled(name, &arguments, max_steps, &cancellation)?;
-        let output = match reply {
-            Some(value) => json!({ "reply": match reply_type {
-                Some(ValueType::Int) => json!(value),
-                Some(ValueType::Bool) => json!(value != 0),
-                _ => Value::Null,
-            } }),
-            None => json!({ "accepted": true }),
-        };
-        serde_json::to_writer(&mut writer, &output).map_err(|error| error.to_string())?;
-        writeln!(writer)
-            .and_then(|_| writer.flush())
-            .map_err(|error| error.to_string())?;
+        cli_args::Command::Run {
+            directory,
+            max_steps,
+            heap_records,
+        } => {
+            run(
+                vm,
+                &tenant,
+                &account,
+                Path::new(directory),
+                *max_steps,
+                *heap_records,
+            )?;
+        }
+        cli_args::Command::Serve {
+            directory,
+            workers,
+            max_steps,
+            heap_records,
+            listen,
+        } => {
+            serve(
+                &account,
+                Path::new(directory),
+                *workers,
+                *max_steps,
+                *heap_records,
+                *listen,
+            )?;
+        }
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn read_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, String> {
-    let mut line = Vec::new();
-    loop {
-        let buffer = reader.fill_buf().map_err(|error| error.to_string())?;
-        if buffer.is_empty() {
-            return Ok((!line.is_empty()).then_some(line));
-        }
-        let length = buffer
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(buffer.len(), |index| index + 1);
-        if line.len() + length > 64 * 1024 {
-            return Err("input line exceeds 64 KiB".into());
-        }
-        let finished = buffer[length - 1] == b'\n';
-        line.extend_from_slice(&buffer[..length]);
-        reader.consume(length);
-        if finished {
-            return Ok(Some(line));
-        }
+fn serve(
+    cli_account: &ResourceAccount,
+    directory: &Path,
+    workers: usize,
+    max_steps: u64,
+    heap_records: Option<usize>,
+    listen: Option<cli_args::ListenEndpoint>,
+) -> Result<(), String> {
+    let app_limits = Resources {
+        bytes: 256 << 20,
+        processes: 1024,
+        messages: 4096,
+        requests: 256,
+    };
+    let app_vm = ResourceAccount::vm_accounted(app_limits)?;
+    let app_tenant = app_vm.tenant_accounted(app_limits)?;
+    let (modules, entry_idx) = if directory.join("bundle.json").exists() {
+        unsafe { ScalarModule::load_bundle_accounted(directory, &app_vm) }?
+    } else {
+        let single = unsafe { ScalarModule::load_accounted(directory, &app_vm) }?;
+        (vec![single], 0)
+    };
+    let scheduler = Scheduler::new(
+        &app_tenant,
+        SchedulerConfig {
+            workers,
+            capacity: 256,
+            requests: 256,
+            ..SchedulerConfig::default()
+        },
+    )?;
+    let handle = scheduler.handle();
+    handle.register_modules(&modules)?;
+    let entry_module = &modules[entry_idx];
+    let actor_limits = Resources {
+        bytes: 16 << 20,
+        processes: 256,
+        messages: 512,
+        requests: 128,
+    };
+    let entry_pid = match heap_records {
+        Some(records) => handle.spawn_with_heap(entry_module, actor_limits, 64, records)?,
+        None => handle.spawn_with_heap(entry_module, actor_limits, 64, 256)?,
+    };
+    match listen {
+        None => cli_serve::serve_stdio(cli_account, entry_module, entry_pid, &handle, max_steps),
+        Some(cli_args::ListenEndpoint::Tcp(addr)) => cli_serve::serve_tcp(
+            addr,
+            &app_tenant,
+            entry_module,
+            entry_pid,
+            &handle,
+            max_steps,
+        ),
+        Some(cli_args::ListenEndpoint::Http(addr)) => cli_serve::serve_http(
+            addr,
+            &app_tenant,
+            entry_module,
+            entry_pid,
+            &handle,
+            max_steps,
+        ),
     }
+}
+
+fn run(
+    vm: &ResourceAccount,
+    tenant: &ResourceAccount,
+    account: &ResourceAccount,
+    directory: &Path,
+    max_steps: u64,
+    heap_records: Option<usize>,
+) -> Result<(), String> {
+    let pool = StackPool::new_accounted(tenant, 1, 0)?.for_process(account)?;
+    let module = unsafe { ScalarModule::load_accounted(directory, vm) }?;
+    let mut adapter = cli::Adapter::new(account)?;
+    let mut stdio = cli_io::Stdio::new(account)?;
+    let mut process = match heap_records {
+        None => module.instantiate_in_pool(&pool)?,
+        Some(capacity) => module.instantiate_with_heap(&pool, account, capacity)?,
+    };
+    let (reader, writer) = stdio.streams();
+    while let Some(request) = adapter.read_request(reader)? {
+        let handler = process.module().handler(request.message.as_str())?;
+        let schema = handler.schema();
+        let arguments = request.arguments.scalars(&schema.parameters)?;
+        let reply = process.invoke_value(
+            &handler,
+            &arguments[..schema.parameters.len()],
+            max_steps,
+            adapter.cancellation(),
+        )?;
+        adapter.write_reply_value(writer, reply.as_ref())?;
+    }
+    Ok(())
 }

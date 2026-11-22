@@ -1,0 +1,24 @@
+actor RequestEvents {
+  state count = 0
+  on start(timeout: int, cancel: bool, fail: bool) -> int {
+    let child = spawn();
+    let id = child.ask(compute(7, fail), timeout: timeout, then: completed);
+    if cancel { id.cancel() };
+    count = 9;
+    count
+  }
+  on self_msg -> int {
+    let id = self.ask(compute(3, false), timeout: 60000, then: completed);
+    count = 9;
+    count
+  }
+  on compute(value: int, fail: bool) -> int {
+    count = count + value;
+    count / if fail { 0 } else { 1 }
+  }
+  on reply completed(id: req, status: int, value: int) {
+    count = status * 100 + value
+  }
+  on add(value: int) { count = count + value }
+  on read -> int { count }
+}

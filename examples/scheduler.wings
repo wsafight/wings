@@ -1,0 +1,31 @@
+actor SchedulerDemo {
+  struct Boxed { value: int }
+  state saved: [int] = []
+
+  on begin(value: int) -> int {
+    let child = spawn()
+    let items = [value + 1, value + 2]
+    child ! store(items, Boxed(value))
+    gc()
+    let id = child.ask(compute([3]), timeout: 60000, then: completed)
+    value
+  }
+
+  on store(items: [int], record: Boxed) {
+    gc()
+    saved = [items.head() + items.tail().head() + record.value]
+    gc()
+  }
+
+  on compute(items: [int]) -> int {
+    gc()
+    saved.head() + items.head()
+  }
+
+  on reply completed(id: req, status: int, value: int) {
+    saved = [if status == 0 { value } else { -100 - status }]
+  }
+
+  on read -> int { gc(); if saved.is_empty() { -1 } else { saved.head() } }
+  on fail -> int { saved = [99, ..saved]; 1 / 0 }
+}

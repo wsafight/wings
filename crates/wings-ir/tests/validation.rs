@@ -1,0 +1,1909 @@
+use wings_abi::ValueType;
+use wings_ir::{
+    Comparison, Function, Handler, Instruction, MAX_HANDLERS, MAX_OPERATIONS, MAX_PARAMETERS,
+    Operation, Operator, Procedure, Program,
+};
+
+fn instruction(ty: ValueType, operation: Operation) -> Instruction {
+    Instruction { ty, operation }
+}
+
+fn record_int(value: usize) -> Operation {
+    Operation::RecordNew {
+        schema: 0,
+        arguments: vec![value],
+    }
+}
+
+fn read_int(value: usize) -> Operation {
+    Operation::RecordField { value, field: 0 }
+}
+
+#[test]
+fn string_equality_validates_both_types_and_keeps_last_use_operands_rooted() {
+    let mut program = valid_program();
+    program.handlers[0].reply = Some(ValueType::Bool);
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::StringRef, Operation::StringLiteral("中".into())),
+        instruction(ValueType::StringRef, Operation::StringLiteral("中".into())),
+        instruction(ValueType::Bool, Operation::EqualStrings(1, 2)),
+    ];
+    function.state = 0;
+    function.reply = 3;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert_eq!(roots.at[3], vec![1, 2]);
+    for (ty, operation) in [
+        (ValueType::Int, Operation::EqualStrings(1, 2)),
+        (ValueType::Bool, Operation::EqualStrings(0, 2)),
+        (ValueType::Bool, Operation::EqualStrings(1, 0)),
+        (ValueType::Bool, Operation::EqualStrings(1, 3)),
+        (ValueType::Bool, Operation::Compare(Comparison::Equal, 1, 2)),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[3] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
+fn string_index_and_slice_validate_scalar_operands_and_root_the_source() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("Aé😀".into()),
+        ),
+        instruction(ValueType::Int, Operation::Constant(1)),
+        instruction(ValueType::Int, Operation::StringAt(1, 2)),
+        instruction(ValueType::Int, Operation::Constant(1)),
+        instruction(ValueType::StringRef, Operation::StringSlice([1, 2, 4])),
+        instruction(ValueType::Int, Operation::StringLen(5)),
+    ];
+    function.state = 0;
+    function.reply = 6;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[3].contains(&1));
+    assert!(roots.at[5].contains(&1));
+    assert!(roots.at[6].contains(&5));
+    for (index, ty, operation) in [
+        (3, ValueType::StringRef, Operation::StringAt(1, 2)),
+        (3, ValueType::Int, Operation::StringAt(0, 2)),
+        (3, ValueType::Int, Operation::StringAt(1, 1)),
+        (5, ValueType::Int, Operation::StringSlice([1, 2, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([0, 2, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([1, 1, 4])),
+        (5, ValueType::StringRef, Operation::StringSlice([1, 2, 1])),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
+fn named_record_ir_rejects_forged_schema_field_types_and_external_signatures() {
+    let mut program = valid_program();
+    program.records = vec![
+        wings_abi::RecordSchema {
+            name: "A".into(),
+            fields: vec![("text".into(), ValueType::StringRef)],
+        },
+        wings_abi::RecordSchema {
+            name: "B".into(),
+            fields: vec![("text".into(), ValueType::StringRef)],
+        },
+    ];
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("中😀".into()),
+        ),
+        instruction(
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![1],
+            },
+        ),
+        instruction(
+            ValueType::StringRef,
+            Operation::RecordField { value: 2, field: 0 },
+        ),
+        instruction(ValueType::Int, Operation::StringLen(3)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 4;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[2].contains(&1));
+    assert!(roots.at[3].contains(&2));
+    for (index, ty, operation) in [
+        (
+            2,
+            ValueType::RecordRef(1),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![1],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![0],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 99,
+                arguments: vec![1],
+            },
+        ),
+        (
+            2,
+            ValueType::RecordRef(0),
+            Operation::RecordNew {
+                schema: 0,
+                arguments: vec![99],
+            },
+        ),
+        (
+            3,
+            ValueType::Int,
+            Operation::RecordField { value: 2, field: 0 },
+        ),
+        (
+            3,
+            ValueType::StringRef,
+            Operation::RecordField { value: 1, field: 0 },
+        ),
+        (
+            3,
+            ValueType::StringRef,
+            Operation::RecordField { value: 2, field: 1 },
+        ),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index] = instruction(ty, operation);
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].parameters[0].1 = ValueType::RecordRef(0);
+    assert!(invalid.validate().is_err());
+    let mut invalid = program.clone();
+    invalid.state = ValueType::RecordRef(u16::MAX);
+    assert!(invalid.validate().is_err());
+    let mut invalid = program;
+    invalid.handlers[0].reply = Some(ValueType::RecordRef(0));
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn string_literals_validate_type_individual_and_aggregate_data_limits() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(
+            ValueType::StringRef,
+            Operation::StringLiteral("a".repeat(65536)),
+        ),
+        instruction(ValueType::Int, Operation::StringLen(1)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 2;
+    program.validate().unwrap();
+    for (ty, value) in [(ValueType::Int, "a"), (ValueType::BytesRef, "a")] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[1] =
+            instruction(ty, Operation::StringLiteral(value.into()));
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[1].operation =
+        Operation::StringLiteral("a".repeat(65537));
+    assert!(invalid.validate().is_err());
+    let mut total = program.clone();
+    total.handlers[0]
+        .function
+        .instructions
+        .extend((0..15).map(|_| {
+            instruction(
+                ValueType::StringRef,
+                Operation::StringLiteral("a".repeat(65536)),
+            )
+        }));
+    total.validate().unwrap();
+    total.handlers[0].function.instructions.push(instruction(
+        ValueType::StringRef,
+        Operation::StringLiteral("a".into()),
+    ));
+    assert!(
+        total
+            .validate()
+            .unwrap_err()
+            .contains("1 MiB total string literal")
+    );
+}
+
+#[test]
+fn string_ir_preserves_typed_roots_and_rejects_forged_operands_and_boundaries() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(4)),
+        instruction(ValueType::Int, Operation::Constant(97)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::StringRef, Operation::StringFromBytes(3)),
+        instruction(ValueType::StringRef, Operation::ConcatStrings(4, 4)),
+        instruction(ValueType::BytesRef, Operation::StringBytes(5)),
+        instruction(ValueType::Int, Operation::StringLen(5)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 7;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&4));
+    assert!(roots.at[6].contains(&5));
+    assert!(roots.at[7].contains(&5));
+    for (index, operation) in [
+        (4, Operation::StringFromBytes(0)),
+        (4, Operation::StringFromBytes(4)),
+        (5, Operation::ConcatStrings(3, 4)),
+        (5, Operation::ConcatStrings(4, 3)),
+        (6, Operation::StringBytes(3)),
+        (7, Operation::StringLen(3)),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[index].operation = operation;
+        assert!(invalid.validate().is_err());
+    }
+    let mut messages = program.clone();
+    messages.handlers[0].parameters[0].1 = ValueType::StringRef;
+    messages.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.handlers[0].reply = Some(ValueType::StringRef);
+    invalid.handlers[0].function.reply = 5;
+    invalid.validate().unwrap();
+    invalid.handlers[0].reply = Some(ValueType::BytesRef);
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn byte_i64_operations_validate_types_and_preserve_last_use_source_roots() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(16)),
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::BytesRef, Operation::ReplaceI64Be([3, 2, 1])),
+        instruction(ValueType::Int, Operation::ReadI64Be(4, 2)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 5;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&4));
+    for operation in [
+        Operation::ReplaceI64Be([3, 3, 1]),
+        Operation::ReplaceI64Be([3, 1, 9]),
+        Operation::ReadI64Be(2, 1),
+    ] {
+        let mut bad = program.clone();
+        bad.handlers[0].function.instructions[4].operation = operation;
+        assert!(bad.validate().is_err());
+    }
+}
+
+#[test]
+fn bytes_operations_validate_types_operands_roots_and_external_boundaries() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(4)),
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::BytesRef, Operation::FillBytes(1, 2)),
+        instruction(ValueType::BytesRef, Operation::ReplaceByte([3, 2, 1])),
+        instruction(ValueType::Int, Operation::ByteAt(4, 2)),
+        instruction(ValueType::Int, Operation::BytesLen(3)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 5;
+    program.validate().unwrap();
+    let roots = program.handlers[0].function.root_plan();
+    assert!(roots.at[4].contains(&3));
+    assert!(roots.at[5].contains(&3) && roots.at[5].contains(&4));
+    for operation in [
+        Operation::FillBytes(3, 2),
+        Operation::ReplaceByte([3, 3, 1]),
+        Operation::ReplaceByte([3, 1, 9]),
+    ] {
+        let mut bad = program.clone();
+        bad.handlers[0].function.instructions[4].operation = operation;
+        assert!(bad.validate().is_err());
+    }
+    program.handlers[0].parameters[0].1 = ValueType::BytesRef;
+    program.validate().unwrap();
+    program.handlers[0].reply = Some(ValueType::BytesRef);
+    assert!(program.validate().is_err());
+    program.handlers[0].function.reply = 3;
+    program.validate().unwrap();
+}
+
+fn valid_program() -> Program {
+    Program {
+        records: vec![wings_abi::RecordSchema {
+            name: "Boxed".into(),
+            fields: vec![("value".into(), ValueType::Int)],
+        }],
+        external_actors: Vec::new(),
+        name: "Counter".into(),
+        state: ValueType::Int,
+        functions: Vec::new(),
+        initializer: Function {
+            instructions: vec![
+                instruction(ValueType::Int, Operation::Constant(0)),
+                instruction(ValueType::Unit, Operation::Constant(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+        handlers: vec![Handler {
+            name: "Add".into(),
+            parameters: vec![("delta".into(), ValueType::Int)],
+            reply: Some(ValueType::Int),
+            completion: None,
+            function: Function {
+                instructions: vec![
+                    instruction(ValueType::Int, Operation::State),
+                    instruction(ValueType::Int, Operation::Argument(0)),
+                    instruction(ValueType::Int, Operation::Binary(Operator::Add, 0, 1)),
+                ],
+                state: 2,
+                reply: 2,
+            },
+        }],
+    }
+}
+
+fn rejects(program: &Program, message: &str) {
+    let error = program.validate().unwrap_err();
+    assert!(error.contains(message), "unexpected error: {error}");
+}
+
+fn identity_procedure(ty: ValueType) -> Procedure {
+    Procedure {
+        name: "identity".into(),
+        parameters: vec![("value".into(), ty)],
+        result: ty,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Unit, Operation::Constant(0)),
+                instruction(ty, Operation::Argument(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    }
+}
+
+#[test]
+fn managed_calls_validate_signatures_scope_recursion_and_acyclic_depth_bounds() {
+    let mut program = valid_program();
+    program.functions.push(identity_procedure(ValueType::Int));
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Int,
+        Operation::Call {
+            function: 0,
+            arguments: vec![2],
+        },
+    ));
+    program.handlers[0].function.reply = 3;
+    program.validate().unwrap();
+    for (target, arguments, ty, message) in [
+        (1, vec![2], ValueType::Int, "unknown"),
+        (0, vec![], ValueType::Int, "signature"),
+        (0, vec![usize::MAX], ValueType::Int, "operand"),
+        (0, vec![2], ValueType::Bool, "signature"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].reply = Some(ty);
+        invalid.handlers[0].function.instructions[3] = instruction(
+            ty,
+            Operation::Call {
+                function: target,
+                arguments,
+            },
+        );
+        rejects(&invalid, message);
+    }
+    let mut recursive = program.clone();
+    recursive.functions[0]
+        .function
+        .instructions
+        .push(instruction(
+            ValueType::Int,
+            Operation::Call {
+                function: 0,
+                arguments: vec![1],
+            },
+        ));
+    recursive.functions[0].function.reply = 2;
+    recursive.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.functions[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    rejects(&invalid, "effects");
+    let mut invalid = program.clone();
+    invalid.functions[0].function.instructions[0].operation = Operation::State;
+    rejects(&invalid, "invalid scalar IR");
+    for index in 1..33 {
+        let mut procedure = identity_procedure(ValueType::Int);
+        procedure.function.instructions.push(instruction(
+            ValueType::Int,
+            Operation::Call {
+                function: index - 1,
+                arguments: vec![1],
+            },
+        ));
+        procedure.function.reply = 2;
+        program.functions.push(procedure);
+        if index == 31 {
+            program.validate().unwrap();
+        }
+    }
+    rejects(&program, "chain exceeds 32");
+}
+
+#[test]
+fn managed_call_paths_bound_aggregate_roots_and_total_ir_before_codegen() {
+    let mut program = valid_program();
+    let mut procedure = identity_procedure(ValueType::RecordRef(0));
+    for _ in 0..32 {
+        let index = procedure.function.instructions.len();
+        procedure
+            .function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), Operation::Argument(0)));
+        procedure
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, read_int(index)));
+    }
+    procedure.function.instructions.push(instruction(
+        ValueType::RecordRef(0),
+        Operation::Call {
+            function: 0,
+            arguments: vec![1],
+        },
+    ));
+    procedure.function.reply = procedure.function.instructions.len() - 1;
+    program
+        .functions
+        .push(identity_procedure(ValueType::RecordRef(0)));
+    program.functions.push(procedure);
+    program.validate().unwrap();
+    let mut roots = identity_procedure(ValueType::RecordRef(0));
+    for _ in 0..33 {
+        roots
+            .function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), Operation::Argument(0)));
+    }
+    roots.function.instructions.push(instruction(
+        ValueType::RecordRef(0),
+        Operation::Call {
+            function: 1,
+            arguments: vec![1],
+        },
+    ));
+    for register in 1..35 {
+        roots
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, read_int(register)));
+    }
+    program.functions.push(roots);
+    program.validate().unwrap();
+    let mut invalid = program.clone();
+    invalid.functions[1].function.instructions =
+        vec![instruction(ValueType::Unit, Operation::Constant(0))];
+    for _ in 0..33 {
+        invalid.functions[1]
+            .function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), Operation::Argument(0)));
+    }
+    for register in 1..34 {
+        invalid.functions[1]
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, read_int(register)));
+    }
+    invalid.functions[1].function.reply = 1;
+    rejects(&invalid, "call path exceeds 64");
+    let mut program = valid_program();
+    let mut procedure = identity_procedure(ValueType::Int);
+    procedure
+        .function
+        .instructions
+        .resize_with(MAX_OPERATIONS, || {
+            instruction(ValueType::Int, Operation::Constant(0))
+        });
+    program.functions = vec![procedure.clone(); 15];
+    let mut remainder = procedure.clone();
+    remainder.function.instructions.truncate(MAX_OPERATIONS - 5);
+    program.functions.push(remainder);
+    program.validate().unwrap();
+    program.functions[15]
+        .function
+        .instructions
+        .push(instruction(ValueType::Int, Operation::Constant(0)));
+    rejects(&program, "65536 total");
+    program.functions = vec![procedure; 16];
+    rejects(&program, "65536 total");
+    program.functions = vec![identity_procedure(ValueType::Int); 65];
+    rejects(&program, "too many managed functions");
+}
+
+#[test]
+fn self_send_validates_target_kind_arguments_and_initializer_boundary() {
+    let mut program = valid_program();
+    program.handlers.push(Handler {
+        name: "Notify".into(),
+        parameters: vec![("value".into(), ValueType::Int)],
+        reply: None,
+        completion: None,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Int, Operation::State),
+                instruction(ValueType::Unit, Operation::Constant(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    });
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![2],
+        },
+    ));
+    program.validate().unwrap();
+    for (target, arguments, error) in [
+        (usize::MAX, vec![2], "invalid self-send handler"),
+        (0, vec![2], "one-way handler"),
+        (1, vec![], "one-way handler"),
+        (1, vec![usize::MAX], "operand"),
+        (1, vec![2; 65], "invalid scalar IR"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[3].operation = Operation::SendSelf {
+            handler: target,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+    program.initializer.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![0],
+        },
+    ));
+    rejects(&program, "initializer");
+}
+
+#[test]
+fn pid_capabilities_support_state_messages_equality_and_null_while_forging_and_req_state_reject() {
+    let mut program = valid_program();
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SpawnSelf));
+    program.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::NullPid));
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Bool,
+        Operation::Compare(Comparison::Equal, 3, 5),
+    ));
+    program.validate().unwrap();
+
+    let mut pid_state = valid_program();
+    pid_state.state = ValueType::Pid;
+    pid_state.initializer.instructions = vec![instruction(ValueType::Pid, Operation::NullPid)];
+    pid_state.initializer.state = 0;
+    pid_state.initializer.reply = 0;
+    let unit_reg = pid_state.initializer.instructions.len();
+    pid_state
+        .initializer
+        .instructions
+        .push(instruction(ValueType::Unit, Operation::Constant(0)));
+    pid_state.initializer.reply = unit_reg;
+    pid_state.handlers[0].parameters = vec![("peer".into(), ValueType::Pid)];
+    pid_state.handlers[0].reply = Some(ValueType::Pid);
+    pid_state.handlers[0].function.instructions = vec![
+        instruction(ValueType::Pid, Operation::State),
+        instruction(ValueType::Pid, Operation::Argument(0)),
+    ];
+    pid_state.handlers[0].function.state = 1;
+    pid_state.handlers[0].function.reply = 0;
+    pid_state.validate().unwrap();
+
+    let mut invalid = program.clone();
+    invalid.state = ValueType::RequestId;
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].reply = Some(ValueType::RequestId);
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].parameters[0].1 = ValueType::RequestId;
+    rejects(&invalid, "local value");
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[3].operation = Operation::Constant(1);
+    rejects(&invalid, "invalid scalar IR");
+    let mut invalid = program;
+    invalid.handlers[0].function.instructions.push(instruction(
+        ValueType::Bool,
+        Operation::Compare(Comparison::Less, 3, 4),
+    ));
+    rejects(&invalid, "invalid scalar IR");
+}
+
+#[test]
+fn cross_process_send_requires_local_pid_and_matching_static_one_way_protocol() {
+    let mut program = valid_program();
+    program.handlers[0].reply = None;
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::Send {
+            target: 3,
+            handler: 0,
+            arguments: vec![2],
+        },
+    ));
+    function.reply = 4;
+    program.validate().unwrap();
+    for (target, handler, arguments, error) in [
+        (2, 0, vec![2], "invalid scalar IR"),
+        (usize::MAX, 0, vec![2], "operand"),
+        (3, usize::MAX, vec![2], "invalid self-send handler"),
+        (3, 0, vec![3], "one-way handler"),
+        (3, 0, vec![], "one-way handler"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[4].operation = Operation::Send {
+            target,
+            handler,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+}
+
+#[test]
+fn requests_require_copyable_reply_local_id_and_exact_completion_protocol() {
+    let mut program = valid_program();
+    program.handlers.push(Handler {
+        name: "Done".into(),
+        parameters: vec![
+            ("id".into(), ValueType::RequestId),
+            ("status".into(), ValueType::Int),
+            ("value".into(), ValueType::Int),
+        ],
+        reply: None,
+        completion: None,
+        function: Function {
+            instructions: vec![
+                instruction(ValueType::Int, Operation::State),
+                instruction(ValueType::Unit, Operation::Constant(0)),
+            ],
+            state: 0,
+            reply: 1,
+        },
+    });
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .push(instruction(ValueType::Pid, Operation::SelfPid));
+    function.instructions.push(instruction(
+        ValueType::RequestId,
+        Operation::Request {
+            target: 3,
+            handler: 0,
+            callback: 1,
+            timeout: 2,
+            arguments: vec![1],
+        },
+    ));
+    function
+        .instructions
+        .push(instruction(ValueType::Unit, Operation::CancelRequest(4)));
+    program.validate().unwrap();
+    for reply in [
+        ValueType::Int,
+        ValueType::Bool,
+        ValueType::Unit,
+        ValueType::StringRef,
+        ValueType::ListRef,
+        ValueType::BytesRef,
+    ] {
+        let mut typed = program.clone();
+        let register = typed.handlers[0].function.instructions.len();
+        typed.handlers[0].function.instructions.push(instruction(
+            reply,
+            if reply == ValueType::ListRef {
+                Operation::EmptyInts
+            } else if reply == ValueType::StringRef {
+                Operation::StringLiteral("ok".into())
+            } else if reply == ValueType::BytesRef {
+                Operation::FillBytes(1, 1)
+            } else {
+                Operation::Constant(0)
+            },
+        ));
+        typed.handlers[0].function.reply = register;
+        typed.handlers[0].reply = Some(reply);
+        typed.handlers[1].parameters[2].1 = reply;
+        assert_eq!(typed.handlers[1].completion_reply(), Some(reply));
+        typed.validate().unwrap();
+        for other in [
+            ValueType::Int,
+            ValueType::Bool,
+            ValueType::Unit,
+            ValueType::StringRef,
+            ValueType::ListRef,
+            ValueType::BytesRef,
+        ] {
+            if other != reply {
+                typed.handlers[1].parameters[2].1 = other;
+                rejects(&typed, "matching completion event");
+            }
+        }
+    }
+    for (target, handler, callback, timeout, arguments, error) in [
+        (2, 0, 1, 2, vec![1], "invalid scalar IR"),
+        (3, usize::MAX, 1, 2, vec![1], "invalid request handler"),
+        (3, 0, 0, 2, vec![1], "completion event"),
+        (3, 0, usize::MAX, 2, vec![1], "invalid request completion"),
+        (3, 0, 1, 3, vec![1], "invalid scalar IR"),
+        (3, 0, 1, 2, vec![], "matching parameters"),
+        (3, 0, 1, 2, vec![4], "operand"),
+    ] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[4].operation = Operation::Request {
+            target,
+            handler,
+            callback,
+            timeout,
+            arguments,
+        };
+        rejects(&invalid, error);
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[5].operation = Operation::CancelRequest(3);
+    rejects(&invalid, "invalid scalar IR");
+    let mut invalid = program.clone();
+    invalid.handlers[1].reply = Some(ValueType::Unit);
+    rejects(&invalid, "local value");
+    program.handlers[0].function.instructions.push(instruction(
+        ValueType::Unit,
+        Operation::SendSelf {
+            handler: 1,
+            arguments: vec![4, 0, 0],
+        },
+    ));
+    rejects(&program, "invalid scalar IR");
+}
+
+#[test]
+fn list_operations_root_graph_handles_and_reject_record_type_confusion() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::ListRef, Operation::EmptyInts),
+        instruction(ValueType::ListRef, Operation::PrependInt(0, 1)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::ListRef, Operation::TailInts(2)),
+        instruction(ValueType::Bool, Operation::IsEmptyInts(4)),
+        instruction(ValueType::Int, Operation::HeadInt(2)),
+    ];
+    function.state = 0;
+    function.reply = 6;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[2], vec![1]);
+    assert_eq!(plan.at[3], vec![2]);
+    assert_eq!(plan.at[5], vec![2, 4]);
+    for (index, replacement) in [
+        (1, instruction(ValueType::ListRef, Operation::Constant(0))),
+        (
+            1,
+            instruction(ValueType::RecordRef(0), Operation::EmptyInts),
+        ),
+        (
+            2,
+            instruction(ValueType::ListRef, Operation::PrependInt(1, 0)),
+        ),
+        (4, instruction(ValueType::ListRef, Operation::TailInts(0))),
+        (5, instruction(ValueType::Int, Operation::IsEmptyInts(2))),
+        (6, instruction(ValueType::Int, Operation::HeadInt(0))),
+    ] {
+        let mut wrong = program.clone();
+        wrong.handlers[0].function.instructions[index] = replacement;
+        rejects(&wrong, "operand, type");
+    }
+    let mut wrong = program;
+    wrong.handlers[0].reply = Some(ValueType::BytesRef);
+    assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn record_merges_publish_only_outer_and_selected_values_before_the_merge_poll() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(2)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Else(vec![4])),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![6])),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, read_int(7)),
+        instruction(ValueType::Int, read_int(1)),
+        instruction(ValueType::Int, Operation::Binary(Operator::Add, 9, 10)),
+    ];
+    function.reply = 11;
+    function.state = 0;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.capacity, 2);
+    assert_eq!(plan.at[5], vec![1, 4]);
+    assert_eq!(plan.at[6], vec![1]);
+    assert_eq!(plan.at[7], vec![1, 7]);
+    assert_eq!(plan.at[8], vec![1, 7]);
+    assert_eq!(plan.at[10], vec![1]);
+    for branch_local in [4, 6] {
+        let mut invalid = program.clone();
+        invalid.handlers[0].function.instructions[9].operation = read_int(branch_local);
+        assert!(invalid.validate().is_err());
+    }
+    let mut invalid = program.clone();
+    invalid.handlers[0].function.instructions[7].ty = ValueType::Int;
+    rejects(&invalid, "record field requires named record");
+    invalid.handlers[0].function.instructions[9].operation = Operation::Constant(0);
+    rejects(&invalid, "operand, type");
+    let mut dead = program;
+    dead.handlers[0].function.instructions[9].operation = read_int(1);
+    dead.validate().unwrap();
+    assert_eq!(dead.handlers[0].function.root_plan().at[7], vec![1]);
+}
+
+#[test]
+fn nested_record_merges_restore_path_roots_within_loops() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Int, Operation::Loop(vec![0])),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::While(3)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::RecordRef(0), record_int(2)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::RecordRef(0), record_int(2)),
+        instruction(ValueType::Unit, Operation::Else(vec![8])),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![6])),
+        instruction(ValueType::Unit, Operation::Else(vec![10])),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![1])),
+        instruction(ValueType::Int, read_int(12)),
+        instruction(ValueType::Int, Operation::EndLoop(vec![13])),
+    ];
+    function.state = 14;
+    function.reply = 14;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[9], vec![1, 8]);
+    // The inner else input is consumed before the merge checkpoint. On the
+    // then path only the merged value, not the unselected else input, is live.
+    assert_eq!(plan.at[10], vec![1, 10]);
+    assert_eq!(plan.at[12], vec![1, 12]);
+    assert_eq!(plan.at[14], vec![1]);
+    assert!(plan.at[15].is_empty());
+    assert_eq!(plan.capacity, 2);
+}
+
+#[test]
+fn zero_exit_loop_defines_the_after_value_without_rooting_it_at_the_backedge() {
+    let mut program = valid_program();
+    program.state = ValueType::RecordRef(0);
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Constant(0)),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::RecordRef(0), Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::RecordRef(0), Operation::Loop(vec![0])),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::While(3)),
+        instruction(ValueType::RecordRef(0), Operation::EndLoop(vec![2])),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, read_int(5)),
+    ];
+    function.state = 5;
+    function.reply = 7;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[1], vec![0]);
+    assert_eq!(plan.at[2], vec![2]);
+    assert_eq!(plan.at[4], vec![2]);
+    assert_eq!(plan.at[5], vec![2]);
+    assert_eq!(plan.at[6], vec![5]);
+    assert_eq!(plan.at[7], vec![5]);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn identical_reference_state_and_reply_share_one_final_root_slot() {
+    let function = Function {
+        instructions: vec![
+            instruction(ValueType::Int, Operation::Constant(7)),
+            instruction(ValueType::RecordRef(0), record_int(0)),
+        ],
+        state: 1,
+        reply: 1,
+    };
+    let plan = function.root_plan();
+    assert_eq!(plan.at[2], vec![1]);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn empty_reference_branches_keep_only_their_own_edge_input_before_the_merge() {
+    let mut program = valid_program();
+    program.state = ValueType::RecordRef(0);
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Constant(0)),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::RecordRef(0), Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(3)),
+        instruction(ValueType::Unit, Operation::Else(vec![2])),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![0])),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, read_int(6)),
+    ];
+    function.state = 6;
+    function.reply = 8;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[4], vec![0, 2]);
+    assert_eq!(plan.at[5], vec![2]);
+    assert_eq!(plan.at[6], vec![6]);
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[8], vec![6]);
+    assert_eq!(plan.at[9], vec![6]);
+    assert_eq!(plan.capacity, 2);
+}
+
+#[test]
+fn consecutive_reference_merges_use_edge_phi_inputs_and_exact_checkpoint_roots() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::State),
+        instruction(ValueType::Int, Operation::Constant(10)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::Bool, Operation::Constant(1)),
+        instruction(ValueType::Unit, Operation::If(4)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::Unit, Operation::Else(vec![6])),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![8])),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::If(10)),
+        instruction(ValueType::Unit, Operation::Else(vec![9])),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::RecordRef(0), Operation::EndIf(vec![13])),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, read_int(9)),
+        instruction(ValueType::Int, read_int(14)),
+        instruction(ValueType::Int, Operation::Binary(Operator::Add, 16, 17)),
+    ];
+    function.state = 0;
+    function.reply = 18;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[9], vec![9]);
+    assert_eq!(plan.at[12], vec![9]);
+    assert_eq!(plan.at[14], vec![9, 14]);
+    assert_eq!(plan.at[15], vec![9, 14]);
+    assert_eq!(plan.at[16], vec![9, 14]);
+    assert_eq!(plan.at[17], vec![14]);
+    assert_eq!(plan.capacity, 2);
+}
+
+#[test]
+fn record_merge_itself_counts_toward_root_admission_before_its_poll() {
+    for outer_count in [63, 64] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions.truncate(1);
+        for _ in 0..outer_count {
+            function
+                .instructions
+                .push(instruction(ValueType::RecordRef(0), record_int(0)));
+        }
+        let condition = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Bool, Operation::Constant(1)));
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::If(condition)));
+        let then_value = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), record_int(0)));
+        function.instructions.push(instruction(
+            ValueType::Unit,
+            Operation::Else(vec![then_value]),
+        ));
+        let else_value = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), record_int(0)));
+        let merged = function.instructions.len();
+        function.instructions.push(instruction(
+            ValueType::RecordRef(0),
+            Operation::EndIf(vec![else_value]),
+        ));
+        function
+            .instructions
+            .push(instruction(ValueType::Int, read_int(merged)));
+        for reference in 1..=outer_count {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, read_int(reference)));
+        }
+        function.state = 0;
+        function.reply = function.instructions.len() - 1;
+        assert_eq!(function.root_plan().capacity, outer_count + 1);
+        if outer_count == 63 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
+    }
+}
+
+#[test]
+fn loop_structure_types_scope_and_extended_reference_lifetimes_are_validated() {
+    fn loop_program() -> Program {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::State),
+            instruction(ValueType::RecordRef(0), record_int(0)),
+            instruction(ValueType::Int, Operation::Loop(vec![0])),
+            instruction(ValueType::Bool, Operation::Constant(1)),
+            instruction(ValueType::Unit, Operation::While(3)),
+            instruction(ValueType::Int, read_int(1)),
+            instruction(ValueType::Int, Operation::EndLoop(vec![5])),
+        ];
+        function.state = 6;
+        function.reply = 6;
+        program
+    }
+    let program = loop_program();
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.capacity, 1);
+    for (index, replacement, message) in [
+        (
+            2,
+            instruction(ValueType::RecordRef(0), Operation::Loop(vec![1])),
+            "operand, type",
+        ),
+        (
+            2,
+            instruction(ValueType::Unit, Operation::While(3)),
+            "operand, type",
+        ),
+        (
+            3,
+            instruction(ValueType::Int, Operation::Constant(1)),
+            "operand, type",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::If(3)),
+            "end-loop without",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::Collect),
+            "end-loop without",
+        ),
+        (
+            5,
+            instruction(ValueType::Unit, Operation::While(3)),
+            "duplicate while",
+        ),
+        (
+            5,
+            instruction(ValueType::Unit, Operation::Else(vec![0])),
+            "else without",
+        ),
+        (
+            6,
+            instruction(ValueType::Bool, Operation::EndLoop(vec![3])),
+            "operand, type",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Constant(0)),
+            "unterminated",
+        ),
+    ] {
+        let mut program = loop_program();
+        program.handlers[0].function.instructions[index] = replacement;
+        rejects(&program, message);
+    }
+    for register in [2, 3, 5] {
+        let mut program = loop_program();
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::Negate(register)));
+        rejects(&program, "branch scope");
+    }
+    let mut program = loop_program();
+    program.initializer = program.handlers[0].function.clone();
+    rejects(&program, "operand, type");
+    let mut program = loop_program();
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .insert(5, instruction(ValueType::Int, Operation::Loop(vec![2])));
+    function
+        .instructions
+        .insert(6, instruction(ValueType::Unit, Operation::While(3)));
+    function
+        .instructions
+        .insert(8, instruction(ValueType::Int, Operation::EndLoop(vec![7])));
+    function.instructions[9].operation = Operation::EndLoop(vec![8]);
+    function.state = 9;
+    function.reply = 9;
+    program.validate().unwrap();
+    assert_eq!(program.handlers[0].function.root_plan().at[8], vec![1]);
+
+    for depth in [64, 65] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::State),
+            instruction(ValueType::Bool, Operation::Constant(0)),
+        ];
+        let mut value = 0;
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::Loop(vec![value])));
+            value = function.instructions.len() - 1;
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::While(1)));
+        }
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::EndLoop(vec![value])));
+            value = function.instructions.len() - 1;
+        }
+        function.state = value;
+        function.reply = value;
+        if depth == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "control nesting exceeds 64");
+        }
+    }
+}
+
+#[test]
+fn reference_loop_headers_replace_initial_roots_and_keep_zero_exit_values() {
+    let mut program = valid_program();
+    program.state = ValueType::RecordRef(0);
+    program
+        .initializer
+        .instructions
+        .insert(1, instruction(ValueType::RecordRef(0), record_int(0)));
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::RecordRef(0), Operation::State),
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::RecordRef(0), Operation::Loop(vec![2])),
+        instruction(ValueType::Bool, Operation::Constant(0)),
+        instruction(ValueType::Unit, Operation::While(4)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::RecordRef(0), Operation::EndLoop(vec![6])),
+        instruction(ValueType::Int, read_int(7)),
+    ];
+    function.state = 7;
+    function.reply = 8;
+    program.validate().unwrap();
+    let plan = program.handlers[0].function.root_plan();
+    assert_eq!(plan.at[3], vec![3]);
+    assert_eq!(plan.at[5], vec![3]);
+    assert_eq!(plan.at[7], vec![6]);
+    assert_eq!(plan.at[8], vec![7]);
+    assert_eq!(plan.at[9], vec![7]);
+    let mut wrong = program.clone();
+    wrong.handlers[0].function.instructions[7].operation = Operation::EndLoop(vec![1]);
+    rejects(&wrong, "operand, type");
+    for local in [3, 6] {
+        let mut wrong = program.clone();
+        wrong.handlers[0].function.instructions[8].operation = read_int(local);
+        rejects(&wrong, "branch scope");
+    }
+    let mut alias = program;
+    alias.handlers[0]
+        .function
+        .instructions
+        .push(instruction(ValueType::Int, read_int(2)));
+    alias.handlers[0].function.reply = 9;
+    alias.validate().unwrap();
+    let plan = alias.handlers[0].function.root_plan();
+    assert_eq!(plan.at[3], vec![2, 3]);
+    assert_eq!(plan.at[8], vec![2, 7]);
+}
+
+#[test]
+fn comparison_types_and_operands_are_validated_before_codegen() {
+    for comparison in [
+        Comparison::Equal,
+        Comparison::NotEqual,
+        Comparison::Less,
+        Comparison::LessEqual,
+        Comparison::Greater,
+        Comparison::GreaterEqual,
+    ] {
+        let mut program = valid_program();
+        program.handlers[0].reply = Some(ValueType::Bool);
+        let function = &mut program.handlers[0].function;
+        function.instructions[2] =
+            instruction(ValueType::Bool, Operation::Compare(comparison, 0, 1));
+        function.state = 0;
+        program.validate().unwrap();
+        program.handlers[0].function.instructions[2].ty = ValueType::Int;
+        rejects(&program, "operand, type");
+    }
+    for (left, right) in [(usize::MAX, 1), (0, 2), (2, 0)] {
+        let mut program = valid_program();
+        program.handlers[0].function.instructions[2] = instruction(
+            ValueType::Bool,
+            Operation::Compare(Comparison::Equal, left, right),
+        );
+        rejects(&program, "operand, type");
+    }
+    for (ty, comparison, valid) in [
+        (ValueType::Bool, Comparison::Equal, true),
+        (ValueType::Unit, Comparison::NotEqual, true),
+        (ValueType::Bool, Comparison::Less, false),
+        (ValueType::RecordRef(0), Comparison::Equal, false),
+    ] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![
+            instruction(ValueType::Int, Operation::Constant(0)),
+            instruction(
+                ty,
+                if ty == ValueType::RecordRef(0) {
+                    record_int(0)
+                } else {
+                    Operation::Constant(0)
+                },
+            ),
+            instruction(ValueType::Bool, Operation::Compare(comparison, 1, 1)),
+        ];
+        function.state = 0;
+        program.handlers[0].reply = Some(ValueType::Bool);
+        if valid {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "operand, type");
+        }
+    }
+}
+
+#[test]
+fn conditional_structure_types_depth_and_branch_scopes_are_validated() {
+    fn conditional() -> Program {
+        let mut program = valid_program();
+        program.initializer.instructions = vec![
+            instruction(ValueType::Bool, Operation::Constant(1)),
+            instruction(ValueType::Unit, Operation::If(0)),
+            instruction(ValueType::Int, Operation::Constant(7)),
+            instruction(ValueType::Unit, Operation::Else(vec![2])),
+            instruction(ValueType::Int, Operation::Constant(9)),
+            instruction(ValueType::Int, Operation::EndIf(vec![4])),
+            instruction(ValueType::Unit, Operation::Constant(0)),
+        ];
+        program.initializer.state = 5;
+        program.initializer.reply = 6;
+        program
+    }
+    conditional().validate().unwrap();
+    for (index, replacement, message) in [
+        (
+            0,
+            instruction(ValueType::Int, Operation::Constant(1)),
+            "operand, type",
+        ),
+        (
+            1,
+            instruction(ValueType::Unit, Operation::Else(vec![0])),
+            "else without",
+        ),
+        (
+            3,
+            instruction(ValueType::Unit, Operation::EndIf(vec![2])),
+            "end-if without",
+        ),
+        (
+            4,
+            instruction(ValueType::Int, Operation::Negate(2)),
+            "branch scope",
+        ),
+        (
+            4,
+            instruction(ValueType::Int, Operation::Negate(3)),
+            "branch scope",
+        ),
+        (
+            4,
+            instruction(ValueType::Unit, Operation::Else(vec![0])),
+            "duplicate else",
+        ),
+        (
+            5,
+            instruction(ValueType::Bool, Operation::EndIf(vec![4])),
+            "operand, type",
+        ),
+        (
+            5,
+            instruction(ValueType::Int, Operation::Constant(0)),
+            "unterminated",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Negate(4)),
+            "branch scope",
+        ),
+        (
+            6,
+            instruction(ValueType::Int, Operation::Negate(2)),
+            "branch scope",
+        ),
+    ] {
+        let mut program = conditional();
+        program.initializer.instructions[index] = replacement;
+        rejects(&program, message);
+    }
+    for state in [2, 4] {
+        let mut program = conditional();
+        program.initializer.state = state;
+        rejects(&program, "state or reply register");
+    }
+    for depth in [64, 65] {
+        let mut program = conditional();
+        let function = &mut program.initializer;
+        function.instructions.truncate(1);
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::If(0)));
+        }
+        function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::Constant(7)));
+        let mut value = function.instructions.len() - 1;
+        for _ in 0..depth {
+            function
+                .instructions
+                .push(instruction(ValueType::Unit, Operation::Else(vec![value])));
+            function
+                .instructions
+                .push(instruction(ValueType::Int, Operation::Constant(9)));
+            function.instructions.push(instruction(
+                ValueType::Int,
+                Operation::EndIf(vec![function.instructions.len() - 1]),
+            ));
+            value = function.instructions.len() - 1;
+        }
+        function.state = value;
+        function.reply = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Constant(0)));
+        if depth == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "nesting exceeds 64");
+        }
+    }
+}
+
+#[test]
+fn temporary_records_are_well_typed_and_have_exact_live_roots() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+        instruction(ValueType::Int, read_int(1)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    function.state = 0;
+    function.reply = 3;
+    let plan = function.root_plan();
+    assert_eq!(plan.capacity, 1);
+    assert_eq!(plan.at[2], vec![1]);
+    assert!(plan.at[5].is_empty());
+    program.validate().unwrap();
+}
+
+#[test]
+fn rejects_record_forging_type_confusion_and_boundary_references() {
+    for (ty, operation) in [
+        (ValueType::RecordRef(0), Operation::Constant(1)),
+        (ValueType::RecordRef(0), record_int(usize::MAX)),
+        (ValueType::Int, record_int(0)),
+        (ValueType::Int, read_int(0)),
+        (ValueType::Int, Operation::Collect),
+    ] {
+        let mut program = valid_program();
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ty, operation));
+        assert!(program.validate().is_err());
+    }
+    let mut program = valid_program();
+    program.handlers[0].reply = Some(ValueType::BytesRef);
+    assert!(program.validate().is_err());
+}
+
+#[test]
+fn persistent_state_and_initializer_outputs_stay_live_through_final_checkpoint() {
+    let mut program = valid_program();
+    program.state = ValueType::RecordRef(0);
+    program.initializer.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(7)),
+        instruction(ValueType::RecordRef(0), record_int(0)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    program.initializer.state = 1;
+    program.initializer.reply = 2;
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::RecordRef(0), Operation::State),
+        instruction(ValueType::Int, Operation::Argument(0)),
+        instruction(ValueType::RecordRef(0), record_int(1)),
+        instruction(ValueType::Unit, Operation::Collect),
+    ];
+    program.handlers[0].function.state = 2;
+    program.handlers[0].function.reply = 1;
+    program.validate().unwrap();
+    let plan = program.initializer.root_plan();
+    assert_eq!(plan.at[3], vec![1]);
+    assert_eq!(plan.capacity, 1);
+    let plan = program.handlers[0].function.root_plan();
+    assert!(plan.at[0].is_empty());
+    assert_eq!(plan.at[4], vec![2]);
+    assert_eq!(plan.capacity, 1);
+}
+
+#[test]
+fn returned_reference_counts_toward_root_limit_even_without_later_operand_use() {
+    for temporary in [63, 64] {
+        let mut program = valid_program();
+        let function = &mut program.initializer;
+        function.instructions = vec![instruction(ValueType::Int, Operation::Constant(7))];
+        for _ in 0..=temporary {
+            function
+                .instructions
+                .push(instruction(ValueType::RecordRef(0), record_int(0)));
+        }
+        function.state = 1;
+        for reference in 2..=temporary + 1 {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, read_int(reference)));
+        }
+        function.reply = function.instructions.len();
+        function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Constant(0)));
+        assert_eq!(function.root_plan().capacity, temporary + 1);
+        program.state = ValueType::RecordRef(0);
+        program.handlers.clear();
+        if temporary == 63 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
+    }
+}
+
+#[test]
+fn reference_limit_counts_simultaneously_live_values_not_total_allocations() {
+    for count in [64, 65] {
+        let mut program = valid_program();
+        let function = &mut program.handlers[0].function;
+        function.instructions = vec![instruction(ValueType::Int, Operation::Constant(1))];
+        for _ in 0..count {
+            function
+                .instructions
+                .push(instruction(ValueType::RecordRef(0), record_int(0)));
+        }
+        for reference in 1..=count {
+            function
+                .instructions
+                .push(instruction(ValueType::Int, read_int(reference)));
+        }
+        function.state = 0;
+        function.reply = 0;
+        assert_eq!(function.root_plan().capacity, count);
+        if count == 64 {
+            program.validate().unwrap();
+        } else {
+            rejects(&program, "64 simultaneously live");
+        }
+    }
+    let mut program = valid_program();
+    for _ in 0..128 {
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ValueType::RecordRef(0), record_int(0)));
+    }
+    assert_eq!(program.handlers[0].function.root_plan().capacity, 0);
+    program.validate().unwrap();
+}
+
+#[test]
+fn accepts_scalar_state_argument_and_arithmetic() {
+    let mut program = valid_program();
+    for operator in [
+        Operator::Add,
+        Operator::Subtract,
+        Operator::Multiply,
+        Operator::Divide,
+    ] {
+        program.handlers[0].function.instructions[2].operation = Operation::Binary(operator, 0, 1);
+        program.validate().unwrap();
+    }
+}
+
+#[test]
+fn accepts_backwards_negation_and_nonfinal_output_registers() {
+    let mut program = valid_program();
+    let function = &mut program.handlers[0].function;
+    function
+        .instructions
+        .push(instruction(ValueType::Int, Operation::Negate(2)));
+    // Output registers need not be the last instruction or even the same register.
+    function.state = 0;
+    function.reply = 3;
+    program.validate().unwrap();
+}
+
+#[test]
+fn accepts_each_scalar_type_for_state_and_reply() {
+    for ty in [ValueType::Int, ValueType::Bool, ValueType::Unit] {
+        let mut program = valid_program();
+        program.state = ty;
+        program.initializer.instructions[0].ty = ty;
+        let handler = &mut program.handlers[0];
+        handler.parameters[0].1 = ty;
+        handler.reply = Some(ty);
+        handler.function = Function {
+            instructions: vec![
+                instruction(ty, Operation::State),
+                instruction(ty, Operation::Argument(0)),
+            ],
+            state: 0,
+            reply: 1,
+        };
+        program.validate().unwrap();
+    }
+}
+
+#[test]
+fn accepts_no_handlers_and_the_maximum_handler_count() {
+    let mut program = valid_program();
+    let handler = program.handlers[0].clone();
+    program.handlers.clear();
+    program.validate().unwrap();
+    program.handlers = vec![handler; MAX_HANDLERS];
+    program.validate().unwrap();
+}
+
+#[test]
+fn rejects_one_more_than_the_handler_limit() {
+    let mut program = valid_program();
+    program.handlers = vec![program.handlers[0].clone(); MAX_HANDLERS + 1];
+    rejects(&program, "too many handlers");
+}
+
+#[test]
+fn accepts_exact_parameter_limit_and_rejects_one_more() {
+    let mut program = valid_program();
+    program.handlers[0].parameters = (0..MAX_PARAMETERS)
+        .map(|index| (format!("p{index}"), ValueType::Int))
+        .collect();
+    program.handlers[0].function.instructions[1].operation =
+        Operation::Argument(MAX_PARAMETERS - 1);
+    program.validate().unwrap();
+    program.handlers[0]
+        .parameters
+        .push(("extra".into(), ValueType::Int));
+    rejects(&program, "too many parameters");
+}
+
+#[test]
+fn accepts_exact_operation_limit_and_rejects_one_more_in_each_entry() {
+    for initializer in [true, false] {
+        let mut program = valid_program();
+        let function = if initializer {
+            &mut program.initializer
+        } else {
+            &mut program.handlers[0].function
+        };
+        function.instructions.resize(
+            MAX_OPERATIONS,
+            instruction(ValueType::Int, Operation::Constant(0)),
+        );
+        program.validate().unwrap();
+        let function = if initializer {
+            &mut program.initializer
+        } else {
+            &mut program.handlers[0].function
+        };
+        function
+            .instructions
+            .push(instruction(ValueType::Int, Operation::Constant(0)));
+        rejects(&program, "too many operations");
+    }
+}
+
+#[test]
+fn rejects_state_reads_in_the_initializer() {
+    let mut program = valid_program();
+    program.initializer.instructions[0].operation = Operation::State;
+    rejects(&program, "operand, type or forward reference");
+}
+
+#[test]
+fn rejects_arguments_in_the_initializer() {
+    let mut program = valid_program();
+    program.initializer.instructions[0].operation = Operation::Argument(0);
+    rejects(&program, "operand, type or forward reference");
+}
+
+#[test]
+fn rejects_state_reads_with_the_wrong_type() {
+    let mut program = valid_program();
+    program.handlers[0].function.instructions[0].ty = ValueType::Bool;
+    rejects(&program, "operand, type or forward reference");
+}
+
+#[test]
+fn rejects_out_of_bounds_arguments_and_argument_type_mismatches() {
+    for (ty, index) in [
+        (ValueType::Int, 1),
+        (ValueType::Int, usize::MAX),
+        (ValueType::Bool, 0),
+    ] {
+        let mut program = valid_program();
+        program.handlers[0].function.instructions[1] = instruction(ty, Operation::Argument(index));
+        rejects(&program, "operand, type or forward reference");
+    }
+}
+
+#[test]
+fn rejects_invalid_boolean_and_unit_constant_encodings() {
+    for (ty, values) in [
+        (ValueType::Bool, vec![i64::MIN, -1, 2, i64::MAX]),
+        (ValueType::Unit, vec![-1, 1]),
+    ] {
+        for value in values {
+            let mut program = valid_program();
+            program
+                .initializer
+                .instructions
+                .push(instruction(ty, Operation::Constant(value)));
+            rejects(&program, "operand, type or forward reference");
+        }
+    }
+}
+
+#[test]
+fn accepts_integer_extremes_and_both_boolean_encodings() {
+    let mut program = valid_program();
+    for (ty, value) in [
+        (ValueType::Int, i64::MIN),
+        (ValueType::Int, i64::MAX),
+        (ValueType::Bool, 0),
+        (ValueType::Bool, 1),
+    ] {
+        program
+            .initializer
+            .instructions
+            .push(instruction(ty, Operation::Constant(value)));
+    }
+    program.validate().unwrap();
+}
+
+#[test]
+fn rejects_self_forward_and_missing_register_references() {
+    for index in [2, 3, usize::MAX] {
+        for operation in [
+            Operation::Negate(index),
+            Operation::Binary(Operator::Add, index, 0),
+            Operation::Binary(Operator::Add, 0, index),
+        ] {
+            let mut program = valid_program();
+            program.handlers[0].function.instructions[2].operation = operation;
+            rejects(&program, "operand, type or forward reference");
+        }
+    }
+}
+
+#[test]
+fn rejects_noninteger_arithmetic_operands_and_results() {
+    for operation in [
+        Operation::Negate(1),
+        Operation::Binary(Operator::Multiply, 0, 1),
+        Operation::Binary(Operator::Divide, 1, 0),
+    ] {
+        let mut program = valid_program();
+        program.handlers[0].parameters[0].1 = ValueType::Bool;
+        program.handlers[0].function.instructions[1].ty = ValueType::Bool;
+        program.handlers[0].function.instructions[2].operation = operation;
+        rejects(&program, "operand, type or forward reference");
+    }
+    let mut program = valid_program();
+    program.handlers[0].function.instructions[2].ty = ValueType::Bool;
+    rejects(&program, "operand, type or forward reference");
+}
+
+#[test]
+fn rejects_empty_functions_and_missing_output_registers() {
+    for initializer in [true, false] {
+        for output in [0, 1] {
+            let mut program = valid_program();
+            let function = if initializer {
+                &mut program.initializer
+            } else {
+                &mut program.handlers[0].function
+            };
+            if output == 0 {
+                function.state = usize::MAX;
+            } else {
+                function.reply = usize::MAX;
+            }
+            rejects(&program, "state or reply register");
+        }
+        let mut program = valid_program();
+        if initializer {
+            program.initializer.instructions.clear();
+        } else {
+            program.handlers[0].function.instructions.clear();
+        }
+        rejects(&program, "state or reply register");
+    }
+}
+
+#[test]
+fn rejects_output_registers_of_the_wrong_type() {
+    let mut program = valid_program();
+    program.initializer.state = 1;
+    rejects(&program, "state or reply register");
+    let mut program = valid_program();
+    program.initializer.reply = 0;
+    rejects(&program, "state or reply register");
+    let mut program = valid_program();
+    program.handlers[0].reply = Some(ValueType::Bool);
+    rejects(&program, "state or reply register");
+}
+
+#[test]
+fn one_way_and_explicit_unit_handlers_require_unit_reply_registers() {
+    for reply in [None, Some(ValueType::Unit)] {
+        let mut program = valid_program();
+        program.handlers[0].reply = reply;
+        rejects(&program, "state or reply register");
+        program.handlers[0]
+            .function
+            .instructions
+            .push(instruction(ValueType::Unit, Operation::Constant(0)));
+        program.handlers[0].function.reply = 3;
+        program.validate().unwrap();
+    }
+}
+
+#[test]
+fn arithmetic_faults_are_runtime_errors_not_ir_validation_errors() {
+    let mut program = valid_program();
+    // These are well typed even though native execution must return a managed
+    // arithmetic error. No faulty native code is executed by this test.
+    program.handlers[0].function.instructions = vec![
+        instruction(ValueType::Int, Operation::Constant(i64::MIN)),
+        instruction(ValueType::Int, Operation::Constant(0)),
+        instruction(ValueType::Int, Operation::Negate(0)),
+        instruction(ValueType::Int, Operation::Binary(Operator::Divide, 0, 1)),
+    ];
+    program.handlers[0].function.state = 0;
+    program.handlers[0].function.reply = 3;
+    program.validate().unwrap();
+}

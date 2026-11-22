@@ -1,0 +1,21 @@
+actor ChunkedGc {
+  struct Boxed { value: int }
+  fn refresh(value: Boxed) -> Boxed {
+    gc()
+    Boxed(value.value + 1)
+  }
+  state value = Boxed(7)
+  on get -> int { value.value }
+  on sweep -> int {
+    let outer = Boxed(11)
+    value = refresh(value)
+    gc()
+    outer.value + value.value
+  }
+  on allocate(limit: int) -> int {
+    while value.value < limit {
+      value = Boxed(value.value + 1)
+    }
+    value.value
+  }
+}

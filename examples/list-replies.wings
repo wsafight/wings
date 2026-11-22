@@ -1,0 +1,73 @@
+actor ListReplies {
+  state values: [int] = []
+
+  on make(seed: int, length: int) -> [int] {
+    values = [length]
+    while values.head() > 0 {
+      let next = values.head() - 1
+      values = [next, seed + next, ..values.tail()]
+    }
+    gc()
+    values.tail()
+  }
+
+  on current -> [int] {
+    gc()
+    if values.is_empty() { values } else { values.tail() }
+  }
+
+  on echo(input: [int]) -> [int] {
+    gc()
+    values = [0, ..input]
+    gc()
+    input
+  }
+
+  on candidate -> [int] {
+    let result = if values.is_empty() { values } else { values.tail() }
+    values = [77]
+    gc()
+    result
+  }
+
+  on fail -> [int] {
+    values = [999]
+    gc()
+    let failed = 1 / 0
+    values
+  }
+
+  on start(length: int, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
+    let pending = if fail {
+      target.ask(fail, timeout: timeout, then: done)
+    } else {
+      target.ask(make(17, length), timeout: timeout, then: done)
+    }
+    if cancel { pending.cancel() }
+    values = [9]
+    9
+  }
+
+  on reply done(id: req, status: int, result: [int]) {
+    gc()
+    values = [status, ..result]
+    gc()
+    self ! mark
+  }
+
+  on mark { values = [999, ..values]; gc() }
+  on completed_status -> int { values.tail().head() }
+  on completed_values -> [int] { values.tail().tail() }
+  on clear { values = []; gc() }
+  on pulse -> int { 1 }
+  on marker -> int { if values.is_empty() { -1 } else { values.head() } }
+
+  on start_import_fail -> int {
+    let child = spawn()
+    let pending = child.ask(initial, timeout: 60000, then: done)
+    values = [9]
+    9
+  }
+  on initial -> [int] { [5] }
+}

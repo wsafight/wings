@@ -1,0 +1,19 @@
+actor TcpBytesCounter {
+  state data = bytes::fill(256, 0)
+
+  on configure(length: int) -> int {
+    let empty = bytes::fill(length, 0)
+    data = empty.set_i64(8, 1)
+    data.i64_at(0)
+  }
+
+  on apply(delta: int, fail: bool) -> int {
+    let next = data.i64_at(0) + delta
+    data = data.set_i64(0, next)
+    if fail { 1 / 0 } else { data.i64_at(0) }
+  }
+
+  on read -> bytes {
+    data
+  }
+}

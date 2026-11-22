@@ -1,0 +1,28 @@
+actor Records {
+  struct Boxed { value: int }
+  state count = 0
+
+  on work(value: int) -> int {
+    let first: Boxed = Boxed(value)
+    Boxed(value + 1)
+    Boxed(value + 2)
+    gc()
+    count = first.value
+    count
+  }
+
+  on get -> int { count }
+
+  on fail -> int {
+    let candidate = Boxed(99)
+    count = candidate.value
+    1 / 0
+  }
+
+  on full -> int {
+    let first = Boxed(1)
+    let second = Boxed(2)
+    let third = Boxed(3)
+    first.value + second.value + third.value
+  }
+}

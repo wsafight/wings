@@ -38,3 +38,13 @@ cranelift-module = "=0.118.0"
 cranelift-object = "=0.118.0"
 cranelift-native = "=0.118.0"
 libloading = "0.8.9"
+
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+
+[profile.dev.package.regalloc2]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true

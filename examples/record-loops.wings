@@ -1,0 +1,98 @@
+actor RecordLoops {
+  struct Boxed { value: int }
+  state value = Boxed(0)
+  on get -> int { value.value }
+  on count(limit: int) -> int {
+    while value.value < limit {
+      value = Boxed(value.value + 1)
+      gc()
+    }
+    value.value
+  }
+  on preserve(flag: bool, next: int) -> int {
+    value = Boxed(next)
+    while flag {
+      value = Boxed(value.value + 1)
+    }
+    gc()
+    value.value
+  }
+  on advance(limit: int, next: int) -> int {
+    value = Boxed(next)
+    while value.value < limit {
+      value = Boxed(value.value + 1)
+      gc()
+    }
+    value.value
+  }
+  on retain(limit: int) -> int {
+    while value.value < limit {
+      let previous = value
+      value = Boxed(value.value + 1)
+      gc()
+      previous.value;
+    }
+    value.value
+  }
+  on sequential(first: bool, second: bool, next: int) -> int {
+    let left = if first { Boxed(next) } else { Boxed(next + 1) }
+    let right = if second { left } else { Boxed(next + 2) }
+    gc()
+    left.value + 10 * right.value
+  }
+  on backedges(limit: int, next: int) -> int {
+    let saved = Boxed(next)
+    value = Boxed(0)
+    while value.value < limit {
+      let until = value.value + 2
+      let outer = if saved.value < 0 { Boxed(0) } else { saved }
+      while value.value < until {
+        let inner = if value.value < until - 1 { outer } else { Boxed(next + 1) }
+        value = Boxed(value.value + 1)
+        gc()
+        inner.value;
+        outer.value;
+      }
+      saved.value;
+    }
+    gc()
+    value.value + saved.value
+  }
+  on zero_exit(flag: bool, next: int) -> int {
+    let saved = Boxed(next)
+    while flag {
+      let selected = if value.value < 0 { saved } else { Boxed(next + 1) }
+      value = selected
+      gc()
+      saved.value;
+    }
+    gc()
+    saved.value + value.value
+  }
+  on empty_branches(flag: bool, next: int) -> int {
+    let saved = Boxed(next)
+    value = if flag { saved } else { value }
+    gc()
+    value.value
+  }
+  on nested(limit: int) -> int {
+    let saved = value
+    while value.value < limit {
+      let until = value.value + 2
+      while value.value < until {
+        value = if value.value < limit {
+          Boxed(value.value + 1)
+        } else { Boxed(value.value + 2) }
+        gc()
+      }
+    }
+    value.value + saved.value
+  }
+  on fail(limit: int) -> int {
+    while value.value < limit {
+      value = Boxed(value.value + 1)
+      gc()
+    }
+    1 / 0
+  }
+}

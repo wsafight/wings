@@ -1,7 +1,7 @@
-{"message":"Get","args":[]}
-{"message":"Inc","args":[3]}
-{"message":"Inc","args":[4]}
-{"message":"Reset","args":[]}
-{"message":"Set","args":[12]}
-{"message":"Get","args":[]}
-{"message":"Confirm","args":[]}
+{"message":"get","args":[]}
+{"message":"inc","args":[3]}
+{"message":"inc","args":[4]}
+{"message":"reset","args":[]}
+{"message":"set","args":[12]}
+{"message":"get","args":[]}
+{"message":"confirm","args":[]}

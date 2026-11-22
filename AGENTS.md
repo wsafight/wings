@@ -2,73 +2,45 @@
 
 本文件适用于整个仓库。
 
-## 项目现状
+## 早期阶段原则（无需向后兼容）
 
-- 项目名为 Wings，对外称 Wings VM，定位是微进程虚拟机；核心目标是在相同业务负载下，性能高于 BEAM、内存占用低于 BEAM。
-- VM 用 Rust 实现，独立运行；执行引擎包与命令叫 `wings-vm`，编译工具叫 `wings-compile`，语言服务器叫 `wings-lsp`。`wings-lang` 是业务语言名，不是聚合 crate。名称尚未完成重名与商标核查。
-- 当前处于 M0：已有前端、LSP 和可信本机标量 AOT 原型，支持无循环、无业务堆分配的 handler。未发布源码使用标量 ABI v2，并有强制原子取消检查与执行步数预算；已发布 `0.0.2` 仍是 v1。完整受管 ABI、根链、活栈切换、调度、GC 与基准尚未实现；取消终止不是抢占恢复，不把静态检查或标量原型称为完整 VM。
-- 只处理当前任务涉及的内容。文档整理任务不顺带创建代码骨架、依赖、分支或 Git 仓库。
+- 项目当前处于 **`0.0.x` 早期演进阶段，不承诺任何向后兼容**。
+- 语言语法、关键字、内置函数、IR 指令、受管 C ABI、产物清单（`manifest.json` / `bundle.json`）、CLI 参数与 Rust 库公开接口均可直接按更优方案重构或替换。
+- **禁止保留历史兼容包袱**：演进设计时直接删除旧写法、旧枚举变体、旧字段或过渡适配层，不维护双轨兼容路径，优先保证代码精简、边界清晰与实现健壮。
 
-## 文档入口
+## 当前进度与正式门禁差距
 
-先读 `README.md` 和 `docs.md`，再按任务查阅对应主题：
+- **已跑通能力**：
+  - `wings-lang` 前端与单文件 LSP（`actor`、`struct`、多 `state`、标量/`[int]`/`bytes`/`str`、可空 `pid?<Actor>`、分支、循环、受管栈帧内的有界直接/互递归）。
+  - Cranelift AOT 编译（精确 CFG GC 根、超块与调用点检查、单 Actor 产物 `build` 与多 Actor 应用包 `build-app`）。
+  - `wings-vm` 运行时：O(1) `slot + generation` 能力寻址、可复用协程栈池、无锁快速邮箱、多 worker 抢占式 `Scheduler`、`send_after` 定时器、`monitor` 生命周期通知与有界监督重启、三级资源账户（`VM -> Tenant -> Process`），以及 `wings-vm serve`（`stdio` / `--tcp` / `--http` JSON-RPC）。
+- **尚未关闭的正式 MVP 门禁**（对外说明时须如实保留边界）：
+  - **同负载 BEAM 双目标门禁**：fairness 五对长测已通过，但 hot-queue 开环服务延迟 p99 仍高于 BEAM，且尚未完成 Linux cgroup v2 硬 CPU 配额下的持续吞吐与整机内存双目标同时验收。
+  - **完整原生资源账本**：堆、栈池、邮箱、请求表与模块映像跨度已纳入三级准入，但动态装载器、系统库内部暂存与全局 allocator 开销尚未完全闭环。
+  - **双平台原生实测**：macOS AArch64 与 Linux x86-64 均需通过最新源码的完整 CI 与同机 BEAM 对照。
 
-| 文件 | 负责内容 |
-|---|---|
-| `README.md` | 项目概览、状态、交付形态与平台范围 |
-| `docs.md` | 文档目录和阅读顺序，不复制各主题正文 |
-| `docs/product.md` | 场景、替代方案、采用路径和产品价值 |
-| `docs/architecture.md` | 架构约束、后端、受管 ABI、GC 和平台实现 |
-| `docs/crates.md` | 计划中的 crate、依赖方向、工具链与 LSP 边界 |
-| `docs/publishing.md` | 初始版本、包名查询、许可证与发布顺序 |
-| `docs/adr/README.md` | 架构决策索引、记录规则和当前状态 |
-| `docs/runtime.md` | 进程、内存、调度、消息、额度、监督与热更新 |
-| `docs/language.md` | 语言示例、handler、异步交互与副作用语义 |
-| `docs/optimizations.md` | 激进优化候选、依赖、风险、实验与回退要求 |
-| `docs/evaluation.md` | 实验条件、基线、指标与故障注入 |
-| `docs/roadmap.md` | 风险、里程碑和各阶段验收范围 |
+## 核心架构与实现约束
 
-每项设计只在对应主题文档中详细说明，其他文档用相对链接引用。修改契约时，检查架构、运行时、语言、评测和里程碑是否一致。
+- **Workspace 依赖隔离**：严格维持无环依赖（见 `docs/architecture.md`）。`wings-lsp` 不得依赖 IR、Cranelift 或 VM；`wings-vm`（含测试依赖）不得依赖前端、语义分析、IR、Cranelift 或 `wings-compile`。
+- **执行与状态隔离**：业务值不可变，微进程之间不共享可变业务数据。`send` / `ask` / `spawn` / `send_after` / `monitor` 副作用在调用点生效，handler 失败不回滚已发出副作用；状态更新与自动回复仅在正常返回后提交。
+- **抢占与安全边界**：抢占依赖编译器强制 safepoint 与原子标志轮询，runtime 长操作（如 GC、大字节/字符串处理）必须分块检查预算与取消。严禁 Rust panic/unwind 跨越受管 C ABI（`corosensei` 禁用 unwind 特性）。
+- **精确 GC 与三级准入**：进程内精确、非移动 mark-sweep GC，活跃引用通过显式 shadow stack 维护。可增长资源在分配前经过 `Process -> Tenant -> VM` 三级准入，失败原子回滚，退出完整退账。
+- **代码组织**：保持单文件职责聚焦，避免巨型源文件堆积；跨模块共享校验与错误类型（如 `VmError`），减少字符串拼接与重复样板代码。
 
-主题文档维护当前契约，`docs/adr/` 保存选择理由。实质改变已采纳决策时新增 ADR，互相链接替代关系，并同步索引与相关文档，不覆盖历史理由。
+## 写作与文档约定
 
-## 不要擅自改变的设计约束
+- 默认使用中文，表达具体、克制，不写空洞宣传语。
+- 保持文档精简：只维护根目录 `README.md`、`AGENTS.md` 与 `docs/` 下的核心主题文档（`product.md`、`architecture.md`、`language.md`、`runtime.md`、`evaluation.md`、`roadmap.md`、`publishing.md`）。不为每次日常提交新建独立的验证日志、提案草稿或碎片化 ADR 文件；设计变更直接同步更新对应主题文档。
+- 明确区分已实现能力、实验数据与未完成门禁，不把功能跑通等同于性能达标。
 
-以下是当前设计，尚未实现。调整时说明影响，并更新相应的验证要求。
+## 开发、验证与发布流程
 
-- Rust VM + `wings-lang` 单前端 + Cranelift AOT 后端；交付 VM、编译工具与 LSP。首版不提供受限 Rust 子集前端，不承诺任意 Rust 库直接进入受管路径。
-- 完整执行引擎使用 `wings-vm`。调度、GC、mailbox 与平台实现先作为内部模块；按 `docs/crates.md` 保持 workspace 依赖无环。
-- LSP 与编译器共用源码、语法和语义分析库。`wings-lsp` 不依赖代码生成或 VM，不执行用户程序完成查询；编辑器协议类型不得进入语言分析库。
-- 首要运行目标为 macOS AArch64（Apple Silicon）与 Linux x86-64，M0 起并行验证完整 VM。Linux AArch64、macOS x86-64 为后续扩展，不把 macOS 降为仅前端或工具开发平台。
-- 业务数据不可变，微进程之间不共享可变业务数据。逻辑独立 arena 不等于每进程独立 `mmap` 或硬件隔离。
-- 语言使用 `process`、具名 `state`、统一 `on` 和 `{}` 块。消息字段与回复显式标注类型；有 `->` 的入口处理请求，无 `->` 的入口处理单向消息，`-> Unit` 不能当作单向消息。只允许替换状态绑定，参数与局部 `let` 不可变，不恢复旧回调语法。
-- handler 返回后才释放执行栈；被抢占的 handler 仍有活栈，不能冬眠。首版不支持 actor 内阻塞 `receive`、`await` 或同步 `call`。
-- `send`、`request`、`spawn` 的副作用在调用点生效；handler 失败不会撤回这些副作用。状态与自动回复只在正常返回后提交，不承诺事务或 exactly-once。
-- 抢占依赖编译器强制 safepoint 和原子标志轮询；runtime 长操作也必须有界或可分块让出。不用取消检查换取性能，不承诺硬实时。
-- 初版使用显式 shadow stack 和进程内精确、非移动 mark-sweep GC。禁止 Rust panic/unwind 跨越受管 ABI。
-- 可增长资源在分配前经过微进程、租户、VM 实例三级准入；预留失败回滚，资源转移与清理不能逃逸计费。
-- 同进程内的受管机制无法隔离编译器、runtime 或可信 native 的内存错误；不可信原生扩展需要后续的 OS 子进程方案，线程池不能代替。
-- 首版静态加载。热更新、原生子进程池、额外平台组合与分布式均按里程碑独立决策，不提前写成现有功能。
-- 激进优化集中记录在 `docs/optimizations.md`；候选不等于默认设计。涉及 GC 移动性、对象所有权、受管 ABI 或执行模型变更时，先更新契约和验证要求，再接入实现。
-
-## 写作约定
-
-- 默认用中文，写清行为、条件、顺序和失败路径；保留必要的英文术语与代码标识。
-- 表达具体、自然、克制，不加“下一代”“极致性能”等宣传语，不为命名补写宏大品牌故事。
-- 产品说明围绕性能与内存目标展开；组件与运行方式集中在架构文档，不反复解释实现语言、独立运行或嵌入式 SDK。
-- 明确区分拟定设计、待验证假设、实验目标和已测结果。不要把可能写成确定，把计划写成已完成。
-- 保留对照方案、限定条件、失败处理和不做的事项；不要为压缩篇幅删掉安全边界。
-- 性能数字附负载、平台、资源上限与测量区间；没有数据就明确写未验证。
-- BEAM 是性能与内存的主基线，kameo/Tokio 和 Wasmtime 是辅助对照。两项目标须在同一组代表性负载下验证，不能拼接不同场景的最优值。
-- 两个首要平台分别在同机、同系统下对照 BEAM，不混合跨平台跑分；RSS、物理占用、压缩内存和 PSS 等统计不能当作同一口径。
-- 语言示例区分检查器已支持的子集与拟定能力，不把静态检查通过写成编译运行成功，也不宣称 Elixir 或其他语言工具可以直接执行。接口草案不当作已发布 API。
-- 调整标题或移动章节时，更新相对链接和目录，不维护重复的整篇设计稿。
-
-## 实现与验证
-
-- workspace 初始版本为 `0.0.1`，采用维护者确认的 `Apache-2.0` 许可证，仅向 crates.io 发布。未经维护者确认不更换许可证，不发布空包占名；包发布细节见 `docs/publishing.md`。
-- `main` 受保护，代码和文档变更必须从分支提交 PR，通过 macOS AArch64、Linux x86-64 与 MSRV 检查后合并；不直接推送 main、不绕过管理员保护。包发布独立手动执行，不由 PR 事件触发；发布已合并、通过验证的源码，未经用户要求不自动发布。
-- 收到实现任务时，先对照 `docs/roadmap.md` 确定阶段；优先解决 M0 的执行模型与后端验证，不一次铺开所有可选功能。
-- 文档任务检查相对链接、章节完整性、名称一致性和代码围栏。代码改动运行 `cargo check --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`，格式检查使用 `cargo fmt --all -- --check`。
-- 后续新增可运行代码时，同时记录实际可用的构建与验证命令，再按改动范围执行检查。
-- 崩溃、非法访存与 OOM 注入只能在有资源限制的隔离测试 OS 子进程内进行，不在开发宿主制造无约束资源耗尽。
+- `main` 分支受保护，所有改动通过分支提交 PR，必须通过 `native (macos-15, arm64)`、`native (ubuntu-24.04, x86_64)` 与 `msrv`（Rust `1.85.0`）检查后合并。
+- 提交前常规检查：
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+  - `cargo +1.85.0 check --workspace --all-targets --locked`（本机已安装 MSRV 工具链时）
+  - `cargo test --workspace --tests --locked && cargo test --workspace --doc --locked`
+- 涉及 ABI、代码生成、调度器或 CLI 协议变更时，按范围补充运行 `python3 scripts/verify_scalar_aot.py` 及依赖树隔离检查。
+- 崩溃、非法访存与分配失败注入只能在带 CPU/墙钟/core 限制的隔离测试子进程内执行，不在宿主机直接制造无界资源耗尽。
+- 包发布遵循 `Apache-2.0` 许可证与 `docs/publishing.md` 依赖顺序，仅在维护者明确要求时手动执行。

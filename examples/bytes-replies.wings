@@ -1,0 +1,47 @@
+actor BytesReplies {
+  state data = bytes::fill(0, 0)
+
+  on make(length: int) -> bytes {
+    data = bytes::fill(length, 255)
+    gc()
+    data
+  }
+  on echo(input: bytes) -> bytes { gc(); data = input; gc(); input }
+  on current -> bytes { gc(); data }
+  on candidate -> bytes { let old = data; data = bytes::fill(1, 77); gc(); old }
+  on fail -> bytes { data = bytes::fill(1, 99); let failed = 1 / 0; data }
+  on clear { data = bytes::fill(0, 0); gc() }
+  on marker -> int { if data.len() == 0 { -1 } else { data.at(0) } }
+
+  on start(length: int, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
+    let pending = if fail {
+      target.ask(fail, timeout: timeout, then: done)
+    } else {
+      target.ask(make(length), timeout: timeout, then: done)
+    }
+    if cancel { pending.cancel() }
+    data = bytes::fill(1, 9)
+    9
+  }
+  on reply done(id: req, status: int, result: bytes) {
+    gc()
+    let length = result.len()
+    let edges = if length == 0 { 0 } else { result.at(0) + result.at(length - 1) }
+    data = bytes::fill(24, 0).set_i64(0, 9).set_i64(8, length).set_i64(16, edges)
+    gc()
+    self ! mark(status)
+  }
+  on mark(status: int) { data = data.set_i64(0, status) }
+  on completed_status -> int { data.i64_at(0) }
+  on completed_length -> int { data.i64_at(8) }
+  on completed_edges -> int { data.i64_at(16) }
+  on completed -> int { if data.len() == 24 { data.i64_at(0) } else { 9 } }
+
+  on initial -> bytes { data }
+  on start_import_fail -> int {
+    let target = spawn()
+    let pending = target.ask(initial, timeout: 60000, then: done)
+    9
+  }
+}

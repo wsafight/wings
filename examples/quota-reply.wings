@@ -1,0 +1,12 @@
+actor QuotaReply {
+  struct Empty {}
+
+  state count = 7
+
+  on value -> Empty {
+    count = 99
+    Empty()
+  }
+
+  on read -> int { count }
+}

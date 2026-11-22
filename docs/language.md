@@ -1,140 +1,138 @@
-# wings-lang
+# 语言设计（`wings-lang`）
 
-[文档目录](../docs.md) · [项目概览](../README.md)
+[返回概览](../README.md) · [架构设计](architecture.md) · [运行时](runtime.md)
 
-Wings 用 `process` 声明进程类型，用 `on` 声明消息入口。参数和回复类型显式标注，局部绑定可以推导类型。下面的示例可通过检查；当前源码的标量 AOT 原型还可在可信本机路径编译并执行，不代表完整微进程 VM 已实现：
+`wings-lang` 是面向有状态微进程的静态类型语言：业务值全部不可变，进程之间仅通过异步消息交互，无共享可变内存，也无阻塞式 `receive` 或同步 `await`。
 
-```text
-process Counter {
-  state count: Int = 0
+> **演进说明**：项目处于早期阶段，语法与内置库直接围绕清晰简洁的现代写法演进，不承诺保留早期过渡语法兼容。
 
-  on Inc(by: Int) -> Int {
-    let next = count + by
-    count = next
-    next
+## 完整示例：多 Actor 会话服务
+
+以下示例（源自 [`examples/session-service.wings`](../examples/session-service.wings)）展示了共享 `struct`、可空 `pid?<Actor>` 状态、`spawn`、`monitor`、`send_after` 与异步 `.ask` 回调：
+
+```wings
+struct SessionCommand {
+  session_id: int,
+  prompt: str,
+}
+
+struct SessionReply {
+  session_id: int,
+  turn: int,
+  output: str,
+}
+
+struct SessionStatus {
+  alive: bool,
+  turns: int,
+  restarts: int,
+  ticks: int,
+  last_reply: str,
+}
+
+actor SessionWorker {
+  state turns = 0
+
+  on step(cmd: SessionCommand) -> SessionReply {
+    if cmd.prompt == "boom" {
+      let crash = 1 / 0
+    }
+    turns += 1
+    SessionReply {
+      session_id: cmd.session_id,
+      turn: turns,
+      output: f"s{cmd.session_id}#{turns}:{cmd.prompt}",
+    }
+  }
+}
+
+actor SessionManager {
+  state worker: pid?<SessionWorker> = null
+  state worker_mon = 0
+  state turns = 0
+  state restarts = 0
+  state ticks = 0
+  state last_reply = "idle"
+
+  on boot -> bool {
+    if worker.is_null() {
+      let child = spawn(SessionWorker)
+      worker = child
+      worker_mon = monitor(child, on_worker_down)
+      let _t = send_after(10, heartbeat(1))
+    }
+    true
   }
 
-  on Reset {
-    count = 0
+  on heartbeat(delta: int) {
+    ticks += delta
   }
 
-  on Set(value: Int) {
-    count = value
+  on dispatch(cmd: SessionCommand) -> bool {
+    if let w = worker {
+      w.ask(step(cmd), timeout: 1000, then: on_step_done)
+      true
+    } else {
+      false
+    }
   }
 
-  on Get -> Int {
-    count
+  on reply on_step_done(id: req, status: int, reply: SessionReply) {
+    if status == 0 {
+      turns += 1
+      last_reply = reply.output
+    }
   }
 
-  on Confirm -> Unit {}
+  on on_worker_down(mon_id: int, reason: int) {
+    if mon_id == worker_mon {
+      restarts += 1
+      let replacement = spawn(SessionWorker)
+      worker = replacement
+      worker_mon = monitor(replacement, on_worker_down)
+    }
+  }
+
+  on status -> SessionStatus => SessionStatus {
+    alive: worker.is_some(),
+    turns: turns,
+    restarts: restarts,
+    ticks: ticks,
+    last_reply: last_reply,
+  }
 }
 ```
 
-## 声明、消息与返回值
+## 类型系统
 
-- `process Counter` 声明类型，不会立即创建进程。当前每个进程恰好声明一个具名 state，初始化表达式不能引用状态、参数或 handler 局部变量。
-- `on Inc(by: Int) -> Int` 接收请求，末尾表达式是回复值。`-> Unit` 仍然要求一次确认回复，不能与单向消息混用。
-- 没有 `->` 的入口只接收单向消息，块结果必须是 `Unit`。不通过返回值隐式推断是否需要回复，也不静默丢弃非 `Unit` 的尾表达式。
-- 消息名以大写字母开头，同一进程内不重名，不按参数或回复类型重载。无参数时可以省略 `()`。
-- handler 声明同时定义该进程的消息协议：消息名、具名字段、字段类型及可选回复类型。业务代码不必再写一份等价的消息枚举。跨模块消息命名、导出和系统事件类型仍待设计。
-- 不按消息来源再分一类入口；普通消息、回复、超时和退出事件都走消息分派。系统事件的具体模式尚未实现，不能与业务消息仅凭同名构造器混淆。
-
-类型名使用 `Int`、`Bool`、`Unit`。当前 `Int` 使用有符号 64 位，`Bool` 值为 `true`、`false`，`Unit` 的值为 `()`。算术只接受 `Int`，不做隐式类型转换。加、减、乘和取负发生溢出时受管失败；除法向零截断，除零及最小整数除以 `-1` 也失败，不回绕、不饱和、不跨 ABI unwind。当前字面量由前端按整数 token 检查，最小值可通过表达式 `-9223372036854775807 - 1` 表示。
-
-## 语句与表达式
-
-块使用 `{}`。完整语句之间用换行或 `;` 分隔；没有 `;` 的末尾表达式作为块结果。赋值、`let` 和空块的结果都是 `Unit`；在末尾表达式后加 `;` 会丢弃其值。
-
-```text
-process Flag {
-  state enabled: Bool = false
-
-  on Set(value: Bool) -> Bool {
-    let previous: Bool = enabled
-    enabled = value
-    previous
-  }
-}
-```
-
-`let` 绑定不可变，可以省略类型标注，不能重新赋值。当前同一 handler 内禁止重名，也不允许参数或局部变量遮蔽状态名。局部变量从初始化表达式之后可见，不能提前引用或引用自身。
-
-四则运算按通常优先级结合，支持括号和取负。未加括号时，完整表达式后的换行结束该语句；需要跨行时用括号，或把运算符放在上一行末尾。`#` 到行末是注释，空白和注释保留在 token 流中。
-
-## 状态与失败
-
-业务值不可变，状态绑定可以替换。`count = next` 表示替换本次 handler 的候选状态，不代表对象字段可变，也不暴露共享可变引用。后续语句读取更新后的候选值。
-
-执行契约如下；标量 AOT 原型已实现候选状态与正常返回提交，完整 VM 的消息投递、退出和监督尚未实现：
-
-1. handler 开始时，以当前已提交状态作为候选状态。
-2. 赋值只更新候选状态；没有赋值就保持原值。
-3. 正常结束时提交候选状态，再投递请求入口的自动回复。
-4. 受管失败时不提交候选状态，也不发送成功回复；进程退出或监督恢复按运行时规则处理，不保证进程继续使用旧状态运行。
-
-状态常驻 arena，不在每条消息前后序列化。结构共享只限进程内部；消息复制和冬眠仍需遍历数据，其成本取决于编码后大小及共享结构的处理方式。候选状态和临时值也必须计入资源预算。
-
-## 异步交互与副作用
-
-下面只说明后续内建的调用方向，当前检查器不支持这些调用：
-
-```text
-send(counter, Reset)
-let id = request(counter, Inc(by: 2))
-```
-
-`send` 面向单向入口，`request` 面向声明了回复类型的入口；发送前检查目标协议，不能把需要回复的消息当作单向消息发送。编译器检查静态协议；装载或动态边界仍需校验消息 schema。准入失败必须显式返回错误，不伪装成成功发送。错误结果的具体类型与处理写法尚未确定，上例不是完整的错误处理代码。
-
-`request` 成功返回 `RequestId`，不返回对端的业务结果。handler 保存关联状态后返回；回复、超时和对端退出转成带关联 ID 的后续事件，每个请求只完成一次，迟到回复不再匹配已结束的请求。取消不回滚对端已经发生的副作用。
-
-首版不支持函数内部阻塞 `receive`、`await` 或同步 `call`。超时由 timer 投递事件。将来如需等待语法，必须单独设计可序列化续体，不能复用 Idle 冬眠的假设。异步 I/O 通过事件衔接微进程消息，不能阻塞调度线程；请求关联表和超时也受资源预算约束，具体协议在 M0 确定。
-
-受管入口的逻辑签名为 `handle(context, state_handle, message_handle) -> HandlerResult`，这不是普通 Rust ABI。context 只提供受控的 runtime 内建和进程资源访问。
-
-`send`、`request` 和 `spawn` 在调用点完成额度准入并返回结果，副作用随即生效，不等 handler 返回后再统一执行 effects 列表。handler 随后失败，也不会撤回已经发送的消息或创建的进程。新 state 和自动 reply 只在正常返回时提交；提交后 reply 投递失败不回滚 state，调用方通过超时或退出事件结束等待。
-
-编译器必须把 runtime 调用建模为具有副作用的受管调用，并在可能分配、让出或 GC 的位置维护活跃根。候选状态与回复都是根维护的一部分；内部 `HandlerResult` 由编译器构造，不要求业务代码手写协议 tuple。该模型不承诺事务或 exactly-once，业务重试需要自己的幂等键。
-
-## 语法取舍
-
-采用简单的静态类型和表达式，消息入口直接写进语言，不复制 Actor 库的回调样板：
-
-| 参考 | 采用 | 不采用 |
+| 类型 | 说明 | 边界约束 |
 |---|---|---|
-| Erlang / Elixir | 消息隔离、监督与按消息分派 | 三类回调入口、位置返回 tuple，以及 Elixir 语法兼容 |
-| Gleam | 显式边界类型、局部推导、带数据的消息与模式匹配方向 | 手动连接每个 handler 的回复通道与状态返回值 |
-| Pony | 直接声明进程和消息入口 | 把完整引用能力系统带入最小语言 |
-| Rust | 参数与回复签名、联合类型和穷尽匹配方向 | 业务层所有权、生命周期和借用标注 |
-| Go | 少量规则、明确控制流 | 每个进程手写接收循环和阻塞 `select` |
+| `int` | 64 位有符号整数（`i64`） | 加/减/乘/取负/除法溢出或除零均触发受管失败，不静默回绕 |
+| `bool` | 布尔值 `true` / `false` | 支持 `!`、短路 `&&` / `||`、`==` / `!=` |
+| `unit` / `()` | 单元值 `()` | 无返回值单向 handler 的块结果类型 |
+| `str` | 不可变 UTF-8 字符串 | 单值 `0..=64 KiB`，支持字面量转义、插值 `f"..."`、`++`、内容相等比较、按 Unicode 标量值 `.len()` / `.at(i)` / `.slice(start, len)` |
+| `bytes` | 不可变字节序列 | 单值 `0..=64 KiB`，支持 `bytes.fill(len, byte)`、`.len()`、`.get(i)`、`.set(i, b)`、64 位大小端读写、切片与拼接 |
+| `[int]` | 不可变持久化整数链表 | 支持 `[a, b, ..tail]`、`.is_empty()`、`.head()`、`.tail()`、`.prepend(v)`；跨消息/回复最多 64 个元素 |
+| `struct` | 顶层共享或 Actor 内具名不可变记录 | 名义类型等价；每 Actor 最多 32 种 schema、每种最多 8 个字段；支持具名构造与 `Struct { field: v, ..base }` 更新 |
+| `pid<Actor>` / `pid?<Actor>` | 静态类型化进程引用 / 可空进程引用 | 支持 `null`、`.is_null()`、`.is_some()` 及 `if let p = opt_pid { ... }` 解包 |
+| `req` | 异步请求关联句柄 | 用于 `.ask` 返回值与 `on reply` 完成回调匹配 |
 
-后续普通代码按 `fn`、`let`、`if`、`match`、记录和联合类型推进；目前只实现了其中的 `let`。不引入宏、隐式转换、用户自定义运算符或监督 DSL。监督树先用显式配置，`link`/`monitor` 走受控内建。具体理由见 [ADR-0007](adr/0007-message-handlers-and-state.md)。
+## 状态、函数与控制流
 
-## 当前原型支持范围
+- **多 `state` 声明**：每个 `actor` 最多声明 8 个状态字段（支持从初始表达式推导类型）。handler 执行期间对状态变量的赋值只更新候选状态；**只有 handler 正常返回时才原子提交状态与回复**，算术错误、配额耗尽或预算超时均保留旧状态。
+- **表达式与语句**：换行或 `;` 分隔语句；支持 `let` 绑定、结构体字段路径更新、`if / else if / else`、`while` 循环、管道 `x |> fn_call(arg)` 与复合赋值（`+=`、`-=`、`*=`、`/=`、`%=`、`++=`）。
+- **受管函数与有界递归**：Actor 内 `fn` 只访问参数、局部绑定与其他 `fn`（不直接读写 `state`），支持直接递归与互递归。每次调用前校验剩余原生栈空间与执行步数预算，并维护跨帧精确 GC 根链。
 
-`examples/counter.wings` 可通过 `wings-compile check` 检查，也可用 `wings-compile build` 生成可信本机标量产物。crates.io `0.0.2` 已包含此构建入口，旧版 `0.0.1` 仍只提供检查器。
+## 消息、定时器与监控语义
 
-未发布源码额外插入取消与预算检查，不增加业务语法。取消或预算耗尽属于受管失败，遵守候选状态与自动回复仅正常返回后提交的规则；不提供 `await`、阻塞接收或暂停恢复。源码与 `0.0.2` 的产物 ABI 不兼容，见 [ADR-0010](adr/0010-scalar-execution-control.md)。
-
-当前子集包含：
-
-- `process`、一个具名 state、统一的 `on`、具名类型化参数和可选回复类型。
-- `Int`、`Bool`、`Unit`，整数、布尔与 `()` 字面量，括号、取负和四则运算。
-- 状态赋值、不可变 `let`、可选局部类型标注、多语句块和尾表达式。
-- 名称解析、重复声明、赋值目标、初始值、消息参数运算和回复类型检查；单向消息与 `-> Unit` 在语义模型中分开保存。
-
-尚未实现模块、函数、分支、循环、记录、联合类型、完整模式匹配、消息构造与发送、系统事件或其他副作用调用。标量原型只处理一个 process、无业务堆分配的直线入口；状态提交与回复可运行验证，但异步消息、资源账户和监督仍是待实现契约。驱动协议及可信边界见[架构原型说明](architecture.md#标量-aot-原型)。
-
-解析保留空白和注释 token，错误恢复继续识别后续 handler；原型限制每份源码 1 MiB、单个表达式 256 次解析调用，每次最多输出 128 条诊断，超限报错或截断诊断。这些是工具原型限制，不是最终语言资源契约。旧原型语法已移除，不维护两套解析规则。
-
-## 编辑器支持
-
-`wings-lsp` 共用 `wings-syntax` 的容错解析和 `wings-sema` 的符号、类型信息，首批支持诊断、跳转、悬停和基础补全。未保存或不完整的源码可以继续分析，但编译与编辑器采用同一套语言规则，不执行程序获得查询结果。文档版本、位置编码和依赖方案见 [Crate 拆分](crates.md)。
-
-当前服务支持 stdio、UTF-16 位置、整份文档更新和单文件查询，丢弃旧版本文档更新；分析同步执行，未实现跨文件项目模型、细粒度增量和运行中取消，不声明相关 capability。后续工作按 crate 方案推进。
-
-## 相关文档
-
-- [运行时](runtime.md)说明消息、资源额度、超时和监督。
-- [架构设计](architecture.md)说明编译后端与受管 ABI。
-- [架构决策](adr/0006-workspace-and-lsp.md)说明编译器与 LSP 共用前端的原因。
-- [激进优化](optimizations.md)说明类型特化、拆箱、逃逸分析和专用消息布局；优化不得改变值语义与副作用时机。
+- **单向消息与请求入口**：
+  - `on msg(args...) { ... }`（无 `->`）仅接收单向投递；
+  - `on msg(args...) -> ReplyType { ... }`（含 `-> ()`）接收请求并返回回复，也可通过 `on msg -> T => expr` 简写。
+- **跨 Actor 交互**：
+  - `spawn(TargetActor)` 创建子进程并返回 `pid<TargetActor>`（Actor 内置 `self` 为当前进程引用）。
+  - `target ! msg(args...)` 或 `target.tell(msg(args...))` 发送异步单向消息。
+  - `target.ask(msg(args...), timeout: ms, then: on_done)` 发起非阻塞请求，目标完成、失败或超时后向当前 Actor 投递 `on reply on_done(id: req, status: int, value: ReplyType)` 事件。
+- **延时消息与监控**：
+  - `send_after(delay_ms, msg(args...))` 在指定毫秒后向 `self` 投递单向消息。
+  - `monitor(target_pid, on_down_handler)` 监控目标 Actor 生命周期；若目标已退出或后续异常/正常终止，向当前 Actor 投递一次 `on_down_handler(mon_id: int, reason: int)` 通知。
+- **副作用边界**：`spawn`、`!` / `.tell`、`.ask`、`send_after`、`monitor` 在调用点立即生效并扣费；后续若当前 handler 发生受管失败，已发出的消息或创建的子进程不会撤回（不承诺跨进程事务）。

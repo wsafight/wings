@@ -1,0 +1,111 @@
+actor Text {
+  struct Boxed { value: int }
+  state text = "";
+
+  fn copy(value: str) -> str {
+    let result = value.bytes().to_str();
+    gc();
+    result
+  }
+
+  on fill(length: int) -> int {
+    text = bytes::fill(length, 97).to_str();
+    text.len()
+  }
+
+  on read -> int { text.len() }
+
+  on byte_length -> int { text.bytes().len() }
+
+  on store(value: str) { gc(); text = value; gc(); }
+
+  on echo(value: str) -> bytes { gc(); text = value; value.bytes() }
+
+  on mixed(value: str, data: bytes, record: Boxed, values: [int], empty: str) -> int {
+    gc();
+    text = value;
+    value.len() * 1000000 + value.bytes().len() * 1000 + data.len() +
+      record.value + values.head() + empty.len()
+  }
+
+  on send_text(length: int) -> int {
+    let child = spawn();
+    let value = bytes::fill(length, 97).to_str();
+    child ! store(value);
+    gc();
+    value.len()
+  }
+
+  on self_text(value: str) { self ! store(value); gc(); }
+
+  on ask_text(value: str, timeout: int) -> int {
+    let child = spawn();
+    let pending = child.ask(count_text(value), timeout: timeout, then: text_done);
+    gc();
+    value.len()
+  }
+
+  on count_text(value: str) -> int { gc(); text = value; value.len() }
+  on reply text_done(id: req, status: int, value: int) {
+    text = bytes::fill(if status == 0 { value } else { 0 }, 97).to_str();
+  }
+
+  on over_text { let value = bytes::fill(32769, 97).to_str(); self ! pair_text(value, value); }
+  on pair_text(first: str, second: str) { text = first + second; }
+
+  on send_then_fail { let child = spawn(); child ! store("published"); text = "candidate"; 1 / 0; }
+
+  on unicode -> int {
+    text = "中" + "😀";
+    gc();
+    text.len() * 100 + copy(text).bytes().len()
+  }
+
+  on copy -> int {
+    let next = copy(text);
+    gc();
+    text = next;
+    text.len()
+  }
+
+  on choose(flag: bool) -> int {
+    text = if flag { copy(text) } else { bytes::fill(0, 0).to_str() };
+    text.len()
+  }
+
+  on grow(limit: int) -> int {
+    text = bytes::fill(0, 0).to_str();
+    while text.len() < limit {
+      text = (text + bytes::fill(1, 97).to_str());
+      gc();
+    }
+    text.len()
+  }
+
+  on double -> int {
+    text = text + text;
+    text.len()
+  }
+
+  on invalid -> int {
+    text = bytes::fill(4, 97).to_str();
+    text = bytes::fill(1, 255).to_str();
+    text.len()
+  }
+
+  on clear -> () {
+    text = bytes::fill(0, 0).to_str();
+    gc();
+  }
+
+  on sweep -> () { gc(); }
+
+  fn suffix(value: str) -> str { value + "\0\n\r\t\\\"" }
+
+  on literal -> int {
+    text = suffix("中😀");
+    gc();
+    let data = text.bytes();
+    text.len() * 100 + data.len()
+  }
+}

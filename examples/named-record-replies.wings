@@ -1,0 +1,86 @@
+actor NamedRecordReplies {
+  struct Empty {}
+  struct Boxed { value: int }
+  struct Detail {
+    label: str,
+    accepted: bool,
+    values: [int],
+    bytes: bytes,
+    saved: Boxed,
+    empty: Empty,
+    unit: ()
+  }
+  struct Result { key: int, detail: Detail }
+
+  state count = 0
+
+  fn make(value: int) -> Result {
+    Result(value, Detail(bytes::fill(3, 97).to_str(), true, [value], bytes::fill(2, 255), Boxed(value + 1), Empty(), ()))
+  }
+
+  fn empty_score(result: Result) -> int {
+    let accepted = if result.detail.accepted { 1 } else { 0 }
+    let listed = if result.detail.values.is_empty() { 0 } else { 1 }
+    result.key + result.detail.label.len() + accepted + listed + result.detail.bytes.len() + result.detail.saved.value
+  }
+
+  on value(value: int) -> Result {
+    let result = make(value)
+    count = count + 1
+    gc()
+    result
+  }
+
+  on boundary -> Result {
+    count = 42
+    Result(7, Detail(bytes::fill(65535, 97).to_str(), true, [], bytes::fill(1, 255), Boxed(8), Empty(), ()))
+  }
+
+  on too_large -> Result {
+    count = 99
+    Result(7, Detail(bytes::fill(65536, 97).to_str(), true, [], bytes::fill(1, 255), Boxed(8), Empty(), ()))
+  }
+
+  on fail -> Result {
+    count = 99
+    let failed = 1 / 0
+    make(failed)
+  }
+
+  on start(value: int, timeout: int, cancel: bool, fail: bool) -> int {
+    let target = if cancel { self } else { spawn() }
+    let pending = if fail {
+      target.ask(fail, timeout: timeout, then: done)
+    } else {
+      target.ask(value(value), timeout: timeout, then: done)
+    }
+    if cancel { pending.cancel() }
+    count = 10
+    count
+  }
+
+  on reply done(id: req, status: int, result: Result) {
+    gc()
+    count = if status == 0 {
+      result.key + result.detail.label.len() + result.detail.values.head() +
+        result.detail.bytes.at(0) + result.detail.saved.value +
+        if result.detail.accepted { 1 } else { 0 }
+    } else if empty_score(result) == 0 {
+      -status
+    } else {
+      -100 - status
+    }
+  }
+
+  on read -> int { count }
+  on empty_value -> Empty { Empty() }
+  on text -> Detail {
+    Detail("中文😀\n\"\\", false, [], bytes::fill(0, 0), Boxed(0), Empty(), ())
+  }
+  on escaped_boundary -> Detail {
+    Detail(bytes::fill(65536, 0).to_str(), true, [], bytes::fill(0, 0), Boxed(0), Empty(), ())
+  }
+  on binary_boundary -> Detail {
+    Detail("", true, [], bytes::fill(65536, 255), Boxed(0), Empty(), ())
+  }
+}

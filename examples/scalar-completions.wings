@@ -1,0 +1,39 @@
+actor ScalarCompletions {
+  state count = 0
+
+  on start(kind: bool, value: bool, timeout: int, cancel: bool, fail: bool, same: bool) -> int {
+    let target = if same { self } else { spawn() }
+    let pending = if kind {
+      target.ask(compute_bool(value, fail), timeout: timeout, then: completed_bool)
+    } else {
+      target.ask(compute_unit(fail), timeout: timeout, then: completed_unit)
+    }
+    if cancel { pending.cancel() }
+    count = 9
+    count
+  }
+
+  on compute_bool(value: bool, fail: bool) -> bool {
+    count = count + 1
+    if fail { 1 / 0 == 0 } else { value }
+  }
+
+  on compute_unit(fail: bool) -> () {
+    count = count + 1
+    let checked = 1 / if fail { 0 } else { 1 }
+    ()
+  }
+
+  on reply completed_bool(id: req, status: int, value: bool) {
+    count = status * 1000 + if value { 11 } else { 7 }
+    self ! add(10000)
+  }
+
+  on reply completed_unit(id: req, status: int, value: ()) {
+    count = status * 1000 + 13
+    self ! add(10000)
+  }
+
+  on add(value: int) { count = count + value }
+  on read -> int { count }
+}

@@ -1,0 +1,23 @@
+actor TypedIngress {
+  struct Boxed { value: int }
+  state saved = 0
+
+  on store(text: str, blob: bytes, numbers: [int], item: Boxed, flag: bool, unit: ()) {
+    gc()
+    saved = text.len() * 1000000 + blob.len() + item.value +
+      if numbers.is_empty() { 0 } else { numbers.head() } +
+      if flag { 1 } else { 0 }
+    gc()
+  }
+
+  on compute(text: str, blob: bytes, numbers: [int], item: Boxed, flag: bool, unit: ()) -> int {
+    gc()
+    saved = text.len() * 1000000 + blob.len() + item.value +
+      if numbers.is_empty() { 0 } else { numbers.head() } +
+      if flag { 1 } else { 0 }
+    gc()
+    saved
+  }
+
+  on get -> int { saved }
+}

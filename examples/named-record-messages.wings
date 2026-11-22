@@ -1,0 +1,57 @@
+actor NamedMessages {
+  struct Empty {}
+  struct Boxed { value: int }
+  struct Label { text: str, enabled: bool }
+  struct Payload { label: Label, values: [int], data: bytes, saved: Boxed, empty: Empty, unit: () }
+  struct Lists { first: [int], second: [int] }
+  state count = 0;
+
+  fn make(length: int) -> Payload {
+    Payload(Label(bytes::fill(length, 97).to_str(), true), [3], bytes::fill(1, 9), Boxed(7), Empty(), ())
+  }
+
+  fn score(value: Payload) -> int {
+    gc();
+    if value.label.enabled {
+      value.label.text.len() + value.values.head() + value.data.at(0) + value.saved.value
+    } else { 0 }
+  }
+
+  on store(value: Payload) { count = score(value) }
+  on query(value: Payload) -> int { count = score(value); count }
+  on start(length: int) -> int {
+    let value = make(length);
+    gc();
+    self ! store(value);
+    count
+  }
+  on cross(length: int) -> int {
+    let target = spawn();
+    let value = make(length);
+    target ! store(value);
+    target.ask(query(value), timeout: 1000, then: done);
+    count
+  }
+  on ask(length: int) -> int {
+    let value = make(length);
+    self.ask(query(value), timeout: 1000, then: done);
+    count
+  }
+  on reply done(id: req, status: int, value: int) {
+    count = if status == 0 { value } else { -1000 - status }
+  }
+  on empty_value(value: Empty) { count = count + 1 }
+  on empty_message -> int { self ! empty_value(Empty()); count }
+  on published_then_fail(length: int) -> int {
+    let target = spawn();
+    target ! store(make(length));
+    count = 999;
+    1 / 0
+  }
+  on too_many_bytes -> int {
+    self ! store(make(65536));
+    count
+  }
+  on pair(value: Lists) { count = value.first.head() + value.second.head() }
+  on read -> int { gc(); count }
+}

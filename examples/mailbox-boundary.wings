@@ -1,0 +1,16 @@
+actor MailboxBoundary {
+  state data = bytes::fill(4096, 0)
+
+  on add(delta: int) -> int {
+    data = data.set_i64(0, data.i64_at(0) + delta)
+    data.i64_at(0)
+  }
+
+  on notify(delta: int) {
+    data = data.set_i64(0, data.i64_at(0) + delta)
+  }
+
+  on hold {
+    while true {}
+  }
+}

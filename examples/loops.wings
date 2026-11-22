@@ -1,0 +1,60 @@
+actor Loops {
+  struct Boxed { value: int }
+  state count = 0
+  on get -> int { count }
+  on count(limit: int) -> int {
+    while count < limit {
+      count = count + 1
+    }
+    count
+  }
+  on heap(limit: int) -> int {
+    let saved = Boxed(3)
+    while count < limit {
+      let temporary = Boxed(count)
+      gc()
+      count = temporary.value + saved.value
+    }
+    count
+  }
+  on nested(limit: int) -> int {
+    while count < limit {
+      let next = count + 2
+      while count < next {
+        count = count + 1
+      }
+    }
+    count
+  }
+  on nested_heap(limit: int) -> int {
+    let saved = Boxed(3)
+    while count < limit {
+      let next = count + 2
+      while count < next {
+        let temporary = Boxed(count)
+        let selected = if count < limit { saved.value } else { temporary.value }
+        gc()
+        count = temporary.value + if selected == 3 { 1 } else { 2 }
+      }
+    }
+    count
+  }
+  on forever {
+    while true {}
+  }
+  on branch_heap(limit: int) -> int {
+    let saved = Boxed(3)
+    while count < limit {
+      let selected = if count < 6 { Boxed(1) } else { saved }
+      gc()
+      count = count + selected.value
+    }
+    count
+  }
+  on fail(limit: int) -> int {
+    while count < limit {
+      count = count + 1
+    }
+    1 / 0
+  }
+}

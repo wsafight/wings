@@ -2,14 +2,29 @@ import json
 import os
 from pathlib import Path
 import resource
+import select
+import signal
+import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import time
+
+from verify_resource_receipt import validate as validate_resource_receipt
+from verify_atomic_progress import validate as validate_atomic_progress
 
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPILER = ROOT / "target/debug/wings-compile"
-VM = ROOT / "target/debug/wings-vm"
+PROFILE = os.environ.get("WINGS_PROFILE", "debug")
+TARGET = Path(os.environ.get("WINGS_TARGET_DIR", ROOT / "target"))
+COMPILER = TARGET / PROFILE / "wings-compile"
+VM = TARGET / PROFILE / "wings-vm"
+
+# Opt-in bounded native sampling of processes that already exceeded a deadline;
+# disabled by default so ordinary runs keep their original behavior.
+TIMEOUT_SAMPLE = os.environ.get("WINGS_TIMEOUT_SAMPLE") == "1"
 
 
 def limit_child():
@@ -17,22 +32,68 @@ def limit_child():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def command(arguments, text="", expected=0):
-    result = subprocess.run(
-        [str(argument) for argument in arguments],
-        input=text,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        cwd=ROOT,
-        preexec_fn=limit_child,
-    )
+def limit_sampler():
+    limit_child()
+    resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
+
+
+def command_result(arguments, expected, result):
     if result.returncode != expected:
         raise AssertionError(
             f"{arguments}: expected exit {expected}, got {result.returncode}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
     return result
+
+
+def sampled_command(arguments, text="", expected=0, timeout=30):
+    arguments = [str(argument) for argument in arguments]
+    started = time.monotonic()
+    child = subprocess.Popen(
+        arguments,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=ROOT,
+        start_new_session=True,
+        preexec_fn=limit_child,
+    )
+    try:
+        stdout, stderr = child.communicate(input=text, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        before_cleanup = child.poll()
+        try:
+            sampling = sample_timeout_stacks(child, Path(arguments[0]).name)
+        except Exception as sampling_error:
+            sampling = f"sample_error={sampling_error!r}"
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = child.communicate()
+        raise AssertionError(
+            f"{arguments}: command timed out after {timeout} seconds; "
+            f"elapsed={time.monotonic() - started:.3f}s; exit_before_cleanup={before_cleanup}; "
+            f"exit={child.returncode}; {sampling}\nstdout: {stdout}\nstderr: {stderr}"
+        ) from error
+    return command_result(arguments, expected, subprocess.CompletedProcess(arguments, child.returncode, stdout, stderr))
+
+
+def command(arguments, text="", expected=0, timeout=30):
+    if TIMEOUT_SAMPLE:
+        return sampled_command(arguments, text, expected, timeout)
+    result = subprocess.run(
+        [str(argument) for argument in arguments],
+        input=text,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        cwd=ROOT,
+        preexec_fn=limit_child,
+    )
+    return command_result(arguments, expected, result)
 
 
 def invoke(directory, messages, expected=0):
@@ -44,6 +105,423 @@ def message(name, *arguments):
     return {"message": name, "args": list(arguments)}
 
 
+def verify_cli_record_replies(directory):
+    arguments = [VM, "run", "--trusted", directory, "--heap-records", 16]
+    requests = [message("value", -(2**63)), message("read"), message("value", 2**63 - 2),
+                message("read"), message("empty_value"), message("text")]
+    result = command(arguments, "".join(json.dumps(item) + "\n" for item in requests))
+    values = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+    for value, expected in ((values[0], -(2**63)), (values[2], 2**63 - 2)):
+        assert value == {"key": expected, "detail": {"label": {"string": "aaa"}, "accepted": True,
+                         "values": {"int_list": [expected]}, "bytes": {"bytes": [255, 255]},
+                         "saved": {"value": expected + 1}, "empty": {}, "unit": None}}, value
+    assert values[1] == 1 and values[3] == 2 and values[4] == {}, values
+    assert values[5] == {"label": {"string": "中文😀\n\"\\"}, "accepted": False, "values": {"int_list": []},
+                         "bytes": {"bytes": []}, "saved": {"value": 0}, "empty": {}, "unit": None}, values[5]
+    for name in ("boundary", "escaped_boundary", "binary_boundary"):
+        result = command(arguments, json.dumps(message(name)) + "\n" + json.dumps(message("read")) + "\n")
+        assert result.stdout.count("\n") == 2 and len(result.stdout.encode()) > 65536, name
+        value, state = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+        if name == "boundary":
+            assert value["detail"]["label"] == {"string": "a" * 65535} and value["detail"]["bytes"] == {"bytes": [255]}
+            assert state == 42, state
+        elif name == "escaped_boundary":
+            assert value["label"] == {"string": "\0" * 65536} and value["bytes"] == {"bytes": []}
+            assert state == 0, state
+        else:
+            assert value["bytes"] == {"bytes": [255] * 65536} and value["label"] == {"string": ""}
+            assert state == 0, state
+    for name, diagnostic in (("too_large", "65536 bytes"), ("fail", "division by zero")):
+        result = command(arguments, json.dumps(message(name)) + "\n", expected=1)
+        assert not result.stdout and diagnostic in result.stderr and "panicked" not in result.stderr, result
+    for invalid in ({"value": 1}, [1], "raw", None):
+        result = command(arguments, json.dumps(message("value", invalid)) + "\n", expected=1)
+        assert not result.stdout and result.stderr.startswith("wings-vm: "), result
+    reader, writer = os.pipe()
+    os.close(reader)
+    try:
+        result = subprocess.run([str(value) for value in arguments], input=json.dumps(message("value", 7)),
+                                text=True, stdout=writer, stderr=subprocess.PIPE, timeout=30,
+                                cwd=ROOT, preexec_fn=limit_child)
+    finally:
+        os.close(writer)
+    assert result.returncode == 1 and "broken pipe" in result.stderr.lower() and "panicked" not in result.stderr, result
+    source = directory.parent / "cli-deep-records.wings"
+    records = ["struct R0 { value: int }"]
+    expression = "R0 { value: 7 }"
+    for index in range(1, 32):
+        records.append(f"struct R{index} {{ inner: R{index - 1} }}")
+        expression = f"R{index} {{ inner: {expression} }}"
+    source.write_text("actor P { " + " ".join(records) + " state n = 0; on read -> R31 => " + expression + " }")
+    deep = directory.parent / "cli-deep-records"
+    command([COMPILER, "build", source, "-o", deep])
+    result = command([VM, "run", "--trusted", deep, "--heap-records", 64], json.dumps(message("read")) + "\n")
+    value = json.loads(result.stdout)["reply"]
+    for _ in range(31):
+        assert list(value) == ["inner"], value
+        value = value["inner"]
+    assert value == {"value": 7}, value
+    print("CLI record replies verified: nested/empty records, signed leaves, UTF-8 escaping, 64 KiB boundaries, unchanged input rejection and broken output; not MVP acceptance")
+
+
+def verify_cli_reporting(directory, parent):
+    for arguments, expected, close_output, close_errors in (
+        (["--help"], 1, True, False), (["--help"], 1, True, True),
+        (["--unknown"], 2, False, True),
+        (["run", "--trusted", parent / "absent-artifact"], 1, False, True),
+    ):
+        descriptors = []
+        def closed_pipe():
+            reader, writer = os.pipe()
+            os.close(reader)
+            descriptors.append(writer)
+            return writer
+        try:
+            result = subprocess.run([str(VM), *map(str, arguments)], input=b"",
+                                    stdout=closed_pipe() if close_output else subprocess.PIPE,
+                                    stderr=closed_pipe() if close_errors else subprocess.PIPE,
+                                    timeout=30, cwd=ROOT, preexec_fn=limit_child)
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+        assert result.returncode == expected and not result.stdout, (arguments, result)
+        if not close_errors:
+            assert result.stderr.startswith(b"wings-vm: ") and b"broken pipe" in result.stderr.lower(), result
+            assert b"panicked" not in result.stderr and len(result.stderr) <= 4096
+    artifact = parent / "oversized-diagnostic"
+    artifact.mkdir()
+    (artifact / ("program.dylib" if os.uname().sysname == "Darwin" else "program.so")).write_bytes(b"")
+    (artifact / "manifest.json").write_bytes(json.dumps("\x7f" * 60000, ensure_ascii=False).encode())
+    for options in ([], ["--heap-records", "2"]):
+        result = command([VM, "run", "--trusted", artifact, *options], expected=1)
+        assert not result.stdout and result.stderr.startswith("wings-vm: "), result
+        assert "artifact JSON string exceeds 256 bytes" in result.stderr and len(result.stderr.encode()) <= 256, len(result.stderr.encode())
+        assert "truncated" not in result.stderr
+        assert "panicked" not in result.stderr
+    print("Bounded CLI reporting verified: broken help/diagnostic pipes, preserved exits and 4096-byte diagnostics; source error allocation remains separate")
+
+
+def verify_cli_arguments(directory, parent):
+    def run(arguments, expected, text=b""):
+        result = subprocess.run([os.fsencode(VM), *[os.fsencode(value) for value in arguments]],
+                                input=text, capture_output=True, timeout=30, cwd=ROOT, preexec_fn=limit_child)
+        assert result.returncode == expected and b"panicked" not in result.stderr, (arguments[:2], result)
+        assert len(result.stderr) <= 4096, result
+        return result
+
+    for help_option in ("--help", "-h"):
+        result = run([help_option], 0)
+        assert result.stdout.startswith(b"Usage: wings-vm run --trusted ") and b"16 KiB" in result.stdout
+        assert not result.stderr
+    for arguments in ([], ["run"], ["--help", "extra"], ["run", "--trusted", directory, "--max-steps"],
+                      ["run", "--trusted", directory, "--max-steps", "1", "--heap-records", "2", "extra"],
+                      [b"x" * 20000] * 12):
+        result = run(arguments, 2)
+        assert not result.stdout and result.stderr.startswith(b"Usage: wings-vm run --trusted ")
+    for options in ([], ["--heap-records", "2"]):
+        limit = 16384 - sum(len(os.fsencode(value)) + 1 for value in ["run", "--trusted", *options]) - 1
+        for length, expected in ((limit, 1), (limit + 1, 2)):
+            result = run(["run", "--trusted", b"x" * length, *options], expected)
+            assert not result.stdout
+            if expected == 2:
+                assert result.stderr == b"CLI arguments exceed 16 KiB\n"
+            else:
+                assert result.stderr.startswith(b"wings-vm: ") and b"CLI arguments exceed" not in result.stderr
+        result = run(["run", "--trusted", b"/tmp/wings-artifact-\xff", *options], 1)
+        assert not result.stdout and result.stderr.startswith(b"wings-vm: ")
+    for option, value, diagnostic in ((b"\xff", b"1", b"unknown or duplicate execution option"),
+                                      (b"--max-steps", b"\xff", b"--max-steps must"),
+                                      (b"--heap-records", b"\xff", b"--heap-records must")):
+        result = run(["run", "--trusted", directory, option, value], 2)
+        assert not result.stdout and result.stderr.startswith(diagnostic)
+    if os.uname().sysname == "Linux":
+        alias = os.fsencode(parent) + b"/counter-\xff"
+        os.symlink(os.fsencode(directory), alias)
+        for options in ([], ["--heap-records", "2"]):
+            result = run(["run", "--trusted", alias, *options], 0, (json.dumps(message("inc", 7)) + "\n").encode())
+            assert json.loads(result.stdout) == {"reply": 7} and not result.stderr
+    print("Bounded CLI startup verified: native argv, help/options, exact byte limit and non-UTF8 handling; not complete host accounting")
+
+
+def verify_cli_stdio(directory):
+    def flushed_reply(child):
+        deadline = time.monotonic() + 5
+        buffer = b""
+        while b"\n" not in buffer:
+            assert len(buffer) < 256, "oversized CLI reply"
+            assert select.select([child.stdout], [], [], max(0, deadline - time.monotonic()))[0], "CLI reply not flushed before EOF"
+            chunk = os.read(child.stdout.fileno(), 256 - len(buffer))
+            assert chunk, "CLI closed before reply"
+            buffer += chunk
+        return json.loads(buffer)
+
+    for options in ([], ["--heap-records", "2"]):
+        arguments = [str(VM), "run", "--trusted", str(directory), *options]
+        for broken_pipe in (False, True):
+            child = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     preexec_fn=limit_child, cwd=ROOT)
+            try:
+                child.stdin.write((json.dumps(message("inc", 3)) + "\n").encode())
+                child.stdin.flush()
+                assert flushed_reply(child) == {"reply": 3}
+                if broken_pipe:
+                    child.stdout.close()
+                    child.stdout = None
+                child.stdin.write((json.dumps(message("inc", 4)) + "\n").encode())
+                child.stdin.flush()
+                if not broken_pipe:
+                    assert flushed_reply(child) == {"reply": 7}
+                child.stdin.close()
+                child.stdin = None
+                output, errors = child.communicate(timeout=5)
+                if broken_pipe:
+                    assert child.returncode == 1 and b"broken pipe" in errors.lower(), (child.returncode, errors)
+                    assert output is None and len(errors) <= 256
+                else:
+                    assert child.returncode == 0 and not output and not errors, (child.returncode, output, errors)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+        descriptor = os.open(ROOT, os.O_RDONLY)
+        try:
+            failed_read = subprocess.run(arguments, stdin=descriptor, capture_output=True, timeout=30,
+                                         preexec_fn=limit_child, cwd=ROOT)
+        finally:
+            os.close(descriptor)
+        assert failed_read.returncode == 1 and not failed_read.stdout, failed_read
+        assert failed_read.stderr.startswith(b"wings-vm: ") and len(failed_read.stderr) <= 256, failed_read
+    print("Owned CLI stdio verified: scalar/heap replies before EOF, broken output and read errors; not complete host accounting")
+
+
+def sample_timeout_stacks(child, label="tcp-ready"):
+    """Bounded native sampling of a process that already exceeded the readiness
+    deadline. The failure verdict and elapsed time are decided before this runs
+    and are never extended; the sampler has its own CPU/wall/file limits and
+    only attaches while the child is still alive. Default off."""
+    if child.poll() is not None:
+        return "sample_skipped=already exited before sampling"
+    output = TARGET / "startup-samples"
+    output.mkdir(parents=True, exist_ok=True)
+    safe_label = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40] or "process"
+    destination = output / f"{safe_label}-{os.getpid()}-{time.time_ns()}.txt"
+    try:
+        result = subprocess.run(
+            ["/usr/bin/sample", str(child.pid), "2", "-mayDie", "-file", str(destination)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=3.5, preexec_fn=limit_sampler, cwd=ROOT,
+        )
+        exit_status = result.returncode
+        stderr_prefix = result.stderr[:4096]
+    except subprocess.TimeoutExpired as expired:
+        exit_status = "sampler wall deadline exceeded"
+        stderr_prefix = (expired.stderr or b"")[:4096]
+    sample_bytes = destination.stat().st_size if destination.exists() else None
+    return (f"sample_exit={exit_status}; sample_file={destination}; "
+            f"sample_bytes={sample_bytes}; sample_stderr_prefix={stderr_prefix!r}")
+
+
+def tcp_ready(child, timeout=5):
+    started = time.monotonic()
+    line = bytearray()
+    try:
+        while not line.endswith(b"\n"):
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0 or not select.select([child.stdout], [], [], max(0, remaining))[0]:
+                raise TimeoutError("readiness deadline exceeded")
+            block = os.read(child.stdout.fileno(), 1)
+            if not block:
+                raise ValueError("EOF before readiness")
+            line.extend(block)
+            if len(line) > 4096:
+                raise ValueError("readiness exceeds 4096 bytes")
+        ready = json.loads(line)
+        if not isinstance(ready, dict) or not isinstance(ready.get("listening"), str):
+            raise ValueError("invalid readiness schema")
+        return ready
+    except (OSError, ValueError) as error:
+        sampler = sample_timeout_stacks(child) if TIMEOUT_SAMPLE else None
+        before_cleanup = child.poll()
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait(timeout=5)
+        captured = []
+        for stream in (child.stdout, child.stderr):
+            os.set_blocking(stream.fileno(), False)
+            try:
+                captured.append(os.read(stream.fileno(), 4097)[:4096])
+            except BlockingIOError:
+                captured.append(b"")
+        output = (bytes(line) + captured[0])[:4096]
+        details = (
+            f"TCP startup failed: {error}; elapsed={time.monotonic() - started:.3f}s; "
+            f"exit_before_cleanup={before_cleanup}; exit={child.returncode}; "
+            f"stdout_prefix={output!r}; stderr_prefix={captured[1]!r}"
+        )
+        if sampler is not None:
+            details += f"; {sampler}"
+            if b'"listening"' in captured[0]:
+                details += "; readiness_completed_during_sampling=true"
+        raise AssertionError(details) from error
+
+
+def verify_tcp_service(directory):
+    executable = TARGET / PROFILE / "examples/tcp_counter"
+
+    def frame(sequence, value, operation=1, reserved=0):
+        return struct.pack(">QQqQ", sequence, operation, value, reserved)
+
+    def reply(connection):
+        received = bytearray()
+        while len(received) < 32:
+            block = connection.recv(32 - len(received))
+            assert block, "service closed before completing the reply"
+            received.extend(block)
+        return struct.unpack(">QQqQ", received)
+
+    def require_closed(connection):
+        try:
+            assert connection.recv(1) == b""
+        except ConnectionResetError:
+            pass
+
+    def scenario(connections, frames, exercise, expected):
+        child = subprocess.Popen(
+            [str(executable), "--trusted", str(directory), str(connections), str(frames)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            start_new_session=True, preexec_fn=limit_child, cwd=ROOT,
+        )
+        try:
+            ready = tcp_ready(child)
+            host, port = ready["listening"].split(":")
+            assert host == "127.0.0.1"
+
+            def connect():
+                connection = socket.create_connection((host, int(port)), timeout=2)
+                connection.settimeout(2)
+                return connection
+
+            try:
+                exercise(connect)
+            except (AssertionError, OSError) as error:
+                try:
+                    output, errors = child.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    output, errors = child.communicate(timeout=5)
+                raise AssertionError(f"TCP scenario {expected}: exit={child.returncode}, report={output!r}, stderr={errors!r}") from error
+            output, errors = child.communicate(timeout=5)
+            assert child.returncode == 0 and not errors, (child.returncode, output, errors)
+            report = json.loads(output)
+            assert report["resources_released"] is True
+            assert report["bootstrap_bytes"] > 0
+            assert report["remaining_bytes"] == report["bootstrap_bytes"]
+            assert report["wake_errors"] == 0
+            assert report["socket_setup_errors"] == 0, report
+            assert report["socket_buffer_rejections"] == 0, report
+            if os.uname().sysname == "Darwin" and report["connections"]:
+                assert 0 < report["max_tcp_segment"] <= 1024, report
+            else:
+                assert report["max_tcp_segment"] is None, report
+            assert 0 <= report["max_socket_buffer"] <= 65536
+            if report["connections"]:
+                assert report["max_socket_buffer"] > 0
+            for key, value in expected.items():
+                assert report[key] == value, (key, report, value)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+
+    def normal(connect):
+        with connect() as connection:
+            payload = frame(1, 3)
+            connection.sendall(payload[:3])
+            connection.sendall(payload[3:])
+            assert reply(connection) == (1, 3, 3, 0)
+            connection.sendall(frame(2, 1) + frame(3, 5) + frame(4, -1))
+            assert [reply(connection) for _ in range(3)] == [
+                (2, 3, 4, 0), (3, 3, 9, 0), (4, 3, 8, 0),
+            ]
+
+    scenario(1, 4, normal, {"connections": 1, "published": 4, "replies": 4,
+                          "committed": 8, "failed": 0, "rejected": 0, "io_errors": 0})
+
+    def maximum_frames(connect):
+        for connection_index in range(8):
+            with connect() as connection:
+                connection.sendall(b"".join(frame(index + 1, 1) for index in range(64)))
+                for index in range(64):
+                    assert reply(connection) == (index + 1, 3, connection_index * 64 + index + 1, 0)
+                require_closed(connection)
+
+    scenario(8, 64, maximum_frames, {"connections": 8, "published": 512, "replies": 512,
+                                    "committed": 512, "failed": 0, "rejected": 0,
+                                    "invalid": 0, "io_errors": 0, "timed_out": 0})
+
+    def failing(connect, overflow):
+        with connect() as connection:
+            first = 2**63 - 1 if overflow else 7
+            connection.sendall(frame(1, first) + frame(2, 1, 1 if overflow else 2) + frame(3, 99))
+            assert reply(connection) == (1, 3, first, 0)
+            assert reply(connection) == (2, 4, 3, 0)
+            assert reply(connection) == (3, 4, 4, 0)
+
+    for overflow in [False, True]:
+        scenario(1, 3, lambda connect: failing(connect, overflow), {
+            "published": 2, "replies": 1, "failed": 1, "rejected": 1,
+            "committed": 2**63 - 1 if overflow else 7, "timed_out": 0,
+        })
+
+    def invalid(connect):
+        for payload in [frame(0, 1), frame(1, 1, 9), frame(1, 1, reserved=1)]:
+            with connect() as connection:
+                connection.sendall(payload)
+                require_closed(connection)
+        with connect() as connection:
+            connection.sendall(frame(9, 4))
+            assert reply(connection) == (9, 3, 4, 0)
+
+    scenario(4, 1, invalid, {"connections": 4, "invalid": 3, "published": 1,
+                           "replies": 1, "committed": 4})
+
+    def bounded_read(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 1)[:5])
+        with connect() as connection:
+            connection.sendall(frame(1, 1)[:8])
+            time.sleep(0.15)
+            require_closed(connection)
+        with connect() as connection:
+            connection.sendall(frame(3, 9))
+            assert reply(connection) == (3, 3, 9, 0)
+
+    scenario(3, 1, bounded_read, {"connections": 3, "io_errors": 1,
+                                "published": 1, "committed": 9})
+
+    def frame_limit(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 2))
+            assert reply(connection) == (1, 3, 2, 0)
+            require_closed(connection)
+
+    scenario(1, 1, frame_limit, {"connections": 1, "published": 1, "committed": 2})
+    def disconnected(connect):
+        with connect() as connection:
+            connection.sendall(frame(1, 6))
+            connection.shutdown(socket.SHUT_WR)
+            assert reply(connection) == (1, 3, 6, 0)
+            require_closed(connection)
+
+    scenario(1, 2, disconnected, {"connections": 1, "published": 1,
+                                 "replies": 1, "committed": 6})
+    scenario(1, 1, lambda connect: None, {"connections": 0, "published": 0, "committed": 0})
+    for arguments in [(0, 1), (9, 1), (1, 0), (1, 65)]:
+        command([executable, "--trusted", directory, *arguments], expected=1)
+
+
 def verify_control_abi(directory):
     import ctypes
 
@@ -51,77 +529,1282 @@ def verify_control_abi(directory):
         _fields_ = [("state", ctypes.c_int64), ("reply", ctypes.c_int64)]
 
     class Context(ctypes.Structure):
-        _fields_ = [("cancellation", ctypes.POINTER(ctypes.c_uint32)), ("remaining_steps", ctypes.c_uint64)]
+        _fields_ = [
+            ("cancellation", ctypes.POINTER(ctypes.c_uint32)),
+            ("remaining_steps", ctypes.c_uint64),
+            ("yield_request", ctypes.POINTER(ctypes.c_uint32)),
+            ("slice_remaining", ctypes.c_uint64),
+            ("slow_path", ctypes.c_void_p),
+            ("data", ctypes.c_void_p),
+            ("stack_limit", ctypes.c_size_t),
+            ("roots", ctypes.c_void_p),
+            ("heap_call", ctypes.c_void_p),
+            ("heap_data", ctypes.c_void_p),
+            ("effect_call", ctypes.c_void_p),
+        ]
+
+    def control(budget, slice_steps=2**64 - 1, callback=None):
+        return Context(ctypes.pointer(flag), budget, ctypes.pointer(request), slice_steps, callback, None, 1, None, None, None)
 
     library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
     library = ctypes.CDLL(str(directory / library_name))
     manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["abi"] == 2
-    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "Inc")
+    assert manifest["abi"] == 23
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == "inc")
     entry = getattr(library, f"wings_scalar_handler_{index}")
     initializer = library.wings_scalar_init
     for function in [entry, initializer]:
         function.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
         function.restype = ctypes.c_uint32
     flag = ctypes.c_uint32(0)
+    request = ctypes.c_uint32(0)
     arguments = (ctypes.c_int64 * 1)(3)
     for budget in range(4):
         output = Output(71, 91)
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
         assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
     for budget in [0, 4]:
         flag.value = 1
         output = Output(71, 91)
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
         assert (output.state, output.reply, context.remaining_steps) == (71, 91, budget)
     output = Output(71, 91)
-    context = Context(ctypes.pointer(flag), 3)
+    context = control(3)
     assert initializer(0, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
     assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
     flag.value = 0
     for budget in [4, 2**64 - 1]:
-        context = Context(ctypes.pointer(flag), budget)
+        context = control(budget)
         assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 0
         assert (output.state, output.reply, context.remaining_steps) == (7, 7, budget - 4)
-    print("Scalar ABI v2 control verified: each poll, cancellation, priority, output commit")
+    for requested, slice_steps in [(0, 0), (1, 4)]:
+        request.value = requested
+        output = Output(71, 91)
+        context = control(4, slice_steps)
+        assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 5
+        assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
+    request.value = 0
+    observations = []
+    callback_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context))
+
+    @callback_type
+    def replenish(context_pointer):
+        current = context_pointer.contents
+        observations.append((current.remaining_steps, output.state, output.reply))
+        current.slice_remaining = 1
+        return 0
+
+    output = Output(71, 91)
+    context = control(4, 1, ctypes.cast(replenish, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 0
+    assert observations == [(3, 71, 91), (2, 71, 91), (1, 71, 91)]
+    assert (output.state, output.reply, context.remaining_steps) == (7, 7, 0)
+
+    @callback_type
+    def cancel_on_resume(context_pointer):
+        flag.value = 1
+        context_pointer.contents.slice_remaining = 1
+        return 0
+
+    output = Output(71, 91)
+    context = control(4, 1, ctypes.cast(cancel_on_resume, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
+    flag.value = 0
+
+    @callback_type
+    def fail_slow_path(context_pointer):
+        return 3
+
+    context = control(4, 1, ctypes.cast(fail_slow_path, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 3
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 3)
+
+    @callback_type
+    def exhaust_on_resume(context_pointer):
+        context_pointer.contents.remaining_steps = 0
+        context_pointer.contents.slice_remaining = 1
+        return 0
+
+    context = control(4, 1, ctypes.cast(exhaust_on_resume, ctypes.c_void_p).value)
+    assert entry(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 4
+    assert (output.state, output.reply, context.remaining_steps) == (71, 91, 0)
+    for function in [initializer, entry]:
+        for stack_limit in [0, 2**63, 2**64 - 1]:
+            output = Output(71, 91)
+            context = control(4, 0, ctypes.cast(replenish, ctypes.c_void_p).value)
+            context.stack_limit = stack_limit
+            before = list(observations)
+            assert function(4, arguments, ctypes.byref(output), ctypes.byref(context)) == 6
+            assert (output.state, output.reply, context.remaining_steps) == (71, 91, 4)
+            assert observations == before
+    print("Scalar ABI v23 verified: stack boundary, polls, budgets, callback, cancellation, output commit")
+
+
+def cargo_example(package, name, *arguments):
+    if os.environ.get("WINGS_PREBUILT_EXAMPLES") == "1":
+        return command([TARGET / PROFILE / "examples" / name, *arguments])
+    options = ["--release"] if PROFILE == "release" else []
+    return command(["cargo", "run", "--locked", *options, "-p", package, "--example", name, "--", *arguments])
+
+
+def example(name, *arguments):
+    return cargo_example("wings-vm", name, "--trusted", *arguments)
+
+
+def module_image_budget(directory):
+    library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    data = (directory / library_name).read_bytes()
+    segments = []
+    if os.uname().sysname == "Darwin":
+        assert data[:4] == b"\xcf\xfa\xed\xfe"
+        count = struct.unpack_from("<I", data, 16)[0]
+        offset = 32
+        for _ in range(count):
+            kind, size = struct.unpack_from("<II", data, offset)
+            if kind == 0x19:
+                segments.append(struct.unpack_from("<QQ", data, offset + 24))
+            offset += size
+    else:
+        assert data[:6] == b"\x7fELF\x02\x01"
+        offset = struct.unpack_from("<Q", data, 32)[0]
+        size, count = struct.unpack_from("<HH", data, 54)
+        for index in range(count):
+            base = offset + index * size
+            if struct.unpack_from("<I", data, base)[0] == 1:
+                segments.append((struct.unpack_from("<Q", data, base + 16)[0],
+                                 struct.unpack_from("<Q", data, base + 40)[0]))
+    page = os.sysconf("SC_PAGESIZE")
+    segments = [(address, memory) for address, memory in segments if memory]
+    start = min(address // page * page for address, _ in segments)
+    end = max((address + memory + page - 1) // page * page for address, memory in segments)
+    return (2 << 20) + max((len(data) + 4095) // 4096 * 4096, end - start)
+
+
+def verify_persistent_roots(directory, branches=False, loops=False, record_branches=False, record_loops=False, functions=False, lists=False, self_send=False, local_processes=False, requests=False, list_messages=False, byte_buffers=False):
+    import ctypes
+
+    class Output(ctypes.Structure):
+        _fields_ = [("state", ctypes.c_int64), ("reply", ctypes.c_int64)]
+
+    class Frame(ctypes.Structure):
+        pass
+
+    Frame._fields_ = [("previous", ctypes.POINTER(Frame)), ("slots", ctypes.POINTER(ctypes.c_uint64)), ("count", ctypes.c_size_t)]
+
+    class Context(ctypes.Structure):
+        _fields_ = [
+            ("cancellation", ctypes.POINTER(ctypes.c_uint32)), ("remaining_steps", ctypes.c_uint64),
+            ("yield_request", ctypes.POINTER(ctypes.c_uint32)), ("slice_remaining", ctypes.c_uint64),
+            ("slow_path", ctypes.c_void_p), ("data", ctypes.c_void_p), ("stack_limit", ctypes.c_size_t),
+            ("roots", ctypes.POINTER(Frame)), ("heap_call", ctypes.c_void_p), ("heap_data", ctypes.c_void_p),
+            ("effect_call", ctypes.c_void_p),
+        ]
+
+    records = {}
+    committed = None
+    sequence = 0
+    errors = []
+    observations = []
+    frame_depths = []
+    cancel_depth = None
+
+    def collect(current):
+        roots = set()
+        frame = current.roots
+        depth = 0
+        count = 0
+        while frame:
+            depth += 1
+            count += frame.contents.count
+            assert depth <= 64 and count <= 64
+            roots.update(frame.contents.slots[index] for index in range(frame.contents.count))
+            frame = frame.contents.previous
+        frame_depths.append(depth)
+        assert roots <= records.keys(), (roots, records)
+        retained = set(roots)
+        if committed is not None:
+            retained.add(committed)
+        pending = list(retained)
+        while pending:
+            reference = pending.pop()
+            value = records[reference]
+            if isinstance(value, tuple) and value[2] not in retained:
+                retained.add(value[2])
+                pending.append(value[2])
+        for reference in list(records):
+            if reference not in retained:
+                del records[reference]
+        return roots
+
+    heap_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.c_uint32, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64))
+
+    @heap_type
+    def heap_call(pointer, operation, argument, result):
+        nonlocal sequence
+        try:
+            collect(pointer.contents)
+            if operation == 19:
+                args = ctypes.cast(argument, ctypes.POINTER(ctypes.c_uint64))
+                assert args[0] == 0
+                sequence += 1
+                records[sequence] = args[1]
+                result[0] = sequence
+            elif operation == 20:
+                args = ctypes.cast(argument, ctypes.POINTER(ctypes.c_uint64))
+                assert args[0] == 0 and args[2] == 0
+                result[0] = records[args[1]]
+            elif operation == 3:
+                sequence += 1
+                records[sequence] = None
+                result[0] = sequence
+            elif operation == 4:
+                tail = result[0]
+                assert tail in records
+                sequence += 1
+                records[sequence] = ("cons", argument, tail)
+                result[0] = sequence
+            elif operation in [5, 6, 7]:
+                node = records[argument]
+                if operation == 7:
+                    result[0] = int(node is None)
+                elif node is None:
+                    return 9
+                else:
+                    result[0] = node[1 if operation == 5 else 2]
+            elif operation == 26:
+                ptr, length, _ = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
+                if ptr == 0 or not 0 <= length <= 65536:
+                    return 13
+                sequence += 1
+                records[sequence] = ctypes.string_at(ptr, length)
+                result[0] = sequence
+            elif operation in [8, 9, 10, 11, 12, 13]:
+                values = list(ctypes.cast(argument, ctypes.POINTER(ctypes.c_int64))[:3])
+                if operation == 8:
+                    length, value = values[:2]
+                    if not 0 <= length <= 65536 or not 0 <= value <= 255:
+                        return 13
+                    data = bytes([value]) * length
+                else:
+                    data = records[values[0]]
+                    assert isinstance(data, bytes)
+                    if operation == 9:
+                        result[0] = len(data)
+                        return 0
+                    index = values[1]
+                    width = 8 if operation in [12, 13] else 1
+                    if not 0 <= index <= len(data) - width:
+                        return 13
+                    if operation == 10:
+                        result[0] = data[index]
+                        return 0
+                    if operation == 12:
+                        result[0] = int.from_bytes(data[index:index + 8], "big", signed=True) % (1 << 64)
+                        return 0
+                    if operation == 11 and not 0 <= values[2] <= 255:
+                        return 13
+                    replacement = values[2].to_bytes(8, "big", signed=True) if operation == 13 else bytes([values[2]])
+                    data = data[:index] + replacement + data[index + width:]
+                sequence += 1
+                records[sequence] = data
+                result[0] = sequence
+            else:
+                assert operation == 2
+                result[0] = 0
+            return 0
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
+    slow_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context))
+
+    @slow_type
+    def slow_path(pointer):
+        try:
+            observations.append((pointer.contents.remaining_steps, collect(pointer.contents)))
+            if cancel_depth is not None and frame_depths[-1] >= cancel_depth:
+                flag.value = 1
+            pointer.contents.slice_remaining = 1
+            return 0
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
+    effects = []
+    effect_status = 0
+    reject_operation = None
+    class EffectRequest(ctypes.Structure):
+        _fields_ = [("operation", ctypes.c_uint32), ("handler", ctypes.c_uint32), ("target", ctypes.c_int64), ("arguments", ctypes.POINTER(ctypes.c_int64)), ("count", ctypes.c_size_t), ("callback", ctypes.c_uint32), ("timeout_ms", ctypes.c_int64), ("list_mask", ctypes.c_uint64), ("bytes_mask", ctypes.c_uint64), ("string_mask", ctypes.c_uint64)]
+
+    effect_type = ctypes.CFUNCTYPE(ctypes.c_uint32, ctypes.POINTER(Context), ctypes.POINTER(EffectRequest), ctypes.POINTER(ctypes.c_int64))
+
+    @effect_type
+    def effect_call(pointer, request, output):
+        try:
+            roots = collect(pointer.contents)
+            current = request.contents
+            assert current.bytes_mask == 0 and current.string_mask == 0
+            if list_messages:
+                assert current.operation in [0, 2, 3, 4]
+                values = list(current.arguments[:current.count])
+                if current.operation == 2:
+                    assert current.count == current.list_mask == 0
+                    effects.append((current.operation, None, 0, []))
+                else:
+                    schema = manifest["handlers"][current.handler]
+                    expected_lists = sum(1 << index for index, parameter in enumerate(schema["parameters"]) if parameter[1] == "ListRef")
+                    assert current.list_mask == expected_lists
+                    for index, value in enumerate(values):
+                        if expected_lists & (1 << index):
+                            assert value in roots
+                            copied = []
+                            while records[value] is not None:
+                                node = records[value]
+                                copied.append(node[1] if node[1] < 1 << 63 else node[1] - (1 << 64))
+                                value = node[2]
+                                assert len(copied) <= 64
+                            values[index] = copied
+                    effects.append((current.operation, schema["name"], current.list_mask, values))
+                pointer.contents.slice_remaining = 1
+                output[0] = 42 if current.operation == 2 else (43 if current.operation == 4 else 0)
+                return 0
+            assert len(roots) == 2
+            if requests:
+                assert current.operation in [2, 4, 5]
+                assert current.target == (42 if current.operation == 4 else (43 if current.operation == 5 else 0))
+                if current.operation == 4:
+                    assert current.timeout_ms == 60000
+                    assert manifest["handlers"][current.callback]["name"] == "completed"
+                effects.append((current.operation, list(current.arguments[:current.count])))
+            elif local_processes:
+                assert current.operation in [2, 3]
+                assert current.target == (42 if current.operation == 3 else 0)
+                effects.append((current.operation, list(current.arguments[:current.count])))
+            else:
+                assert current.operation == 0 and current.target == 0
+                effects.append((current.handler, list(current.arguments[:current.count])))
+            pointer.contents.slice_remaining = 1
+            output[0] = 42 if current.operation == 2 else (43 if current.operation == 4 else 0)
+            return effect_status if reject_operation is None or current.operation == reject_operation else 0
+        except Exception as error:
+            errors.append(repr(error))
+            return 8
+
+    library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    library = ctypes.CDLL(str(directory / library_name))
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["abi"] == 23 and manifest["state"] == ("BytesRef" if byte_buffers else ("ListRef" if lists or list_messages else ("Int" if branches or loops else {"RecordRef": 0})))
+    if self_send or local_processes or requests or list_messages:
+        name = "start"
+    elif byte_buffers:
+        name = "fill"
+    elif lists:
+        name = "build"
+    elif record_loops or functions:
+        name = "count"
+    elif record_branches:
+        name = "nested"
+    elif loops == "nested":
+        name = "nested_heap"
+    elif loops == "branch":
+        name = "branch_heap"
+    else:
+        name = "heap" if branches or loops else "replace"
+    index = next(index for index, handler in enumerate(manifest["handlers"]) if handler["name"] == name)
+    flag = ctypes.c_uint32(0)
+    arguments = (ctypes.c_int64 * 1)(19)
+    handler = getattr(library, f"wings_scalar_handler_{index}")
+    if record_branches or record_loops or functions or lists or self_send or local_processes or requests or list_messages or byte_buffers:
+        def execute(entry, values):
+            arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+            entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+            entry.restype = ctypes.c_uint32
+            context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+            if self_send or local_processes or requests or list_messages:
+                context.effect_call = ctypes.cast(effect_call, ctypes.c_void_p).value
+            output = Output(71, 91)
+            observations.clear()
+            state = committed or 0
+            status = entry(state, arguments, ctypes.byref(output), ctypes.byref(context))
+            assert status == 0 and not errors and not context.roots, (status, errors)
+            assert output.state in observations[-1][1], (output.state, observations)
+            return output
+
+        output = execute(library.wings_scalar_init, [])
+        if byte_buffers:
+            assert records[output.state] == b""
+            committed = output.state
+            for name, values, expected_state, expected_reply in [
+                ("fill", [65536, 3], bytes([3]) * 65536, 65536),
+                ("set", [65535, 255], bytes([3]) * 65535 + bytes([255]), 1023),
+                ("branch", [0], bytes([3]) * 65535 + bytes([255]), 6),
+                ("branch", [1], bytes([3]) * 65535 + bytes([255]), 10),
+                ("read", [65535], bytes([3]) * 65535 + bytes([255]), 255),
+                ("loop", [7], bytes([7]) + bytes(511), 7),
+                ("length", [], bytes([7]) + bytes(511), 512),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert (records[output.state], output.reply) == (expected_state, expected_reply), (name, output.reply)
+                committed = output.state
+            assert max(frame_depths) >= 2, frame_depths
+            previous = 0
+            for number in [-(1 << 63), -1, 0, 1, (1 << 63) - 1, 0]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "set_word")
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504, number])
+                assert output.reply == previous
+                committed = output.state
+                assert records[committed][504:] == number.to_bytes(8, "big", signed=True)
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "read_word")
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), [504])
+                assert output.reply == number
+                previous = number
+            for name, values, expected_status in [
+                ("fill", [-1, 0], 13), ("fill", [65537, 0], 13),
+                ("fill", [1, 256], 13), ("set", [512, 0], 13), ("fail", [], 2),
+                ("read_word", [505], 13), ("set_word", [-1, 0], 13), ("fail_word", [], 2),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                entry = getattr(library, f"wings_scalar_handler_{index}")
+                entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+                entry.restype = ctypes.c_uint32
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                rejected = Output(71, 91)
+                arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+                assert entry(committed, arguments, ctypes.byref(rejected), ctypes.byref(context)) == expected_status, (name, errors)
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert records[committed] == bytes([7]) + bytes(511)
+                assert not errors and not context.roots, errors
+            print("Compiler roots verified: byte source liveness, fn/branch/loop roots, immutable state and failed candidate unlinking")
+            return
+        if list_messages:
+            committed = output.state
+            for name, values, expected_reply in [
+                ("start", [23, 0], 23), ("self_msg", [29], 29),
+                ("mixed", [31], 31), ("ask", [37], -1), ("empty", [], 0),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert output.reply == expected_reply and records[output.state] is None
+            assert effects == [
+                (2, None, 0, []), (3, "store", 1, [[23, 24]]),
+                (0, "store", 1, [[29, 30]]),
+                (2, None, 0, []), (3, "store_mixed", 25, [[31, 32], 1, 33, [32], []]),
+                (2, None, 0, []), (4, "compute", 1, [[37, 38]]),
+                (0, "store", 1, [[]]),
+            ], effects
+            print("Compiler roots verified: list source graphs and mixed record/list last-use arguments at every effect")
+            return
+        if requests:
+            committed = output.state
+            output = execute(handler, [4, 0])
+            assert records[output.state] == 9 and output.reply == 9
+            assert effects == [(2, []), (4, [4]), (5, [])], effects
+            for reject_operation, effect_status in [(4, 12), (5, 12)]:
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None, ctypes.cast(effect_call, ctypes.c_void_p).value)
+                rejected = Output(71, 91)
+                values = (ctypes.c_int64 * 2)(4, 0)
+                assert handler(committed, values, ctypes.byref(rejected), ctypes.byref(context)) == effect_status, errors
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert not errors and not context.roots
+            print("Compiler roots verified: request/cancel, result capabilities, candidate roots and failure unlinking")
+            return
+        if local_processes:
+            committed = output.state
+            output = execute(handler, [4, 0])
+            assert records[output.state] == 9 and output.reply == 9
+            assert effects == [(2, []), (3, [4])], effects
+            for reject_operation, effect_status in [(2, 11), (3, 10)]:
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None, ctypes.cast(effect_call, ctypes.c_void_p).value)
+                rejected = Output(71, 91)
+                values = (ctypes.c_int64 * 2)(4, 0)
+                assert handler(committed, values, ctypes.byref(rejected), ctypes.byref(context)) == effect_status, errors
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert not errors and not context.roots
+            print("Compiler roots verified: spawn/send result, candidate, outer record and rejection unlinking")
+            return
+        if self_send:
+            committed = output.state
+            output = execute(handler, [])
+            assert records[output.state] == 9 and output.reply == 9
+            add = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "add")
+            assert effects == [(add, [3])], effects
+            for effect_status in [3, 10]:
+                context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None, ctypes.cast(effect_call, ctypes.c_void_p).value)
+                rejected = Output(71, 91)
+                assert handler(committed, arguments, ctypes.byref(rejected), ctypes.byref(context)) == effect_status, errors
+                assert (rejected.state, rejected.reply) == (71, 91)
+                assert not errors and not context.roots
+            assert effects == [(add, [3])] * 3
+            print("Compiler roots verified: self-send callback, candidate and outer live record")
+            return
+        if lists:
+            assert records[output.state] is None
+            committed = output.state
+            for name, values, expected_reply in [
+                ("empty", [], 1), ("push", [7], 7), ("push", [11], 11),
+                ("shared", [1], 18), ("shared", [0], 106), ("pop", [], 11), ("pop", [], 7),
+                ("empty", [], 1), ("build", [7], 7), ("drain", [], 0), ("empty", [], 1),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert output.reply == expected_reply, (name, output.reply)
+                committed = output.state
+            print("Compiler roots verified: transitive list tails, merges, loops and inline calls")
+            return
+        assert records[output.state] == (0 if record_loops or functions else 7)
+        committed = output.state
+        if functions:
+            for name, values, expected_state, expected_reply in [
+                ("count", [7], 7, 7), ("choose", [0], 7, 7),
+                ("choose", [1], 8, 8), ("order", [], 8, 12), ("once", [], 8, 38),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert records[output.state] == expected_state and output.reply == expected_reply, (name, records, output.reply)
+                committed = output.state
+            assert max(frame_depths) >= 3, frame_depths
+            sentinel_slots = (ctypes.c_uint64 * 1)(committed)
+            sentinel = Frame(None, sentinel_slots, 1)
+            cancel_depth = 3
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "choose")
+            entry = getattr(library, f"wings_scalar_handler_{index}")
+            context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+            context.roots = ctypes.pointer(sentinel)
+            rejected = Output(71, 91)
+            assert entry(committed, (ctypes.c_int64 * 1)(1), ctypes.byref(rejected), ctypes.byref(context)) == 3, errors
+            assert not errors and ctypes.addressof(context.roots.contents) == ctypes.addressof(sentinel) and flag.value == 1
+            assert (rejected.state, rejected.reply) == (71, 91)
+            cancel_depth = None
+            flag.value = 0
+            for name, values, expected_status in [("fail", [], 2), ("first_failure", [], 2), ("second_failure", [], 1)]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                entry = getattr(library, f"wings_scalar_handler_{index}")
+                entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+                entry.restype = ctypes.c_uint32
+                arguments = (ctypes.c_int64 * max(1, len(values)))(*values)
+                previous = records[committed]
+                for budget in [0, 1, 4, 16, 128]:
+                    context = Context(ctypes.pointer(flag), budget, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                    context.roots = ctypes.pointer(sentinel)
+                    rejected = Output(71, 91)
+                    status = entry(committed, arguments, ctypes.byref(rejected), ctypes.byref(context))
+                    assert status in [expected_status, 4] and not errors and ctypes.addressof(context.roots.contents) == ctypes.addressof(sentinel), (name, status, errors)
+                    assert (rejected.state, rejected.reply) == (71, 91) and records[committed] == previous
+            print("Compiler roots verified: nested managed frames, arguments, returns, collections and failure unlinking")
+            return
+        if record_loops:
+            for name, values, expected_state, expected_reply in [
+                ("count", [0], 0, 0), ("count", [5], 5, 5), ("count", [3], 5, 5),
+                ("preserve", [0, 10], 10, 10), ("nested", [15], 17, 27),
+                ("advance", [12, 8], 12, 12), ("advance", [5, 9], 9, 9),
+                ("retain", [15], 15, 15),
+                ("sequential", [1, 1, 10], 15, 110),
+                ("sequential", [1, 0, 10], 15, 130),
+                ("sequential", [0, 1, 10], 15, 121),
+                ("sequential", [0, 0, 10], 15, 131),
+                ("backedges", [0, 20], 0, 20),
+                ("backedges", [1, 20], 2, 22),
+                ("backedges", [5, 20], 6, 26),
+                ("zero_exit", [0, 30], 6, 36),
+                ("empty_branches", [1, 40], 40, 40),
+                ("empty_branches", [0, 50], 40, 40),
+            ]:
+                index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+                output = execute(getattr(library, f"wings_scalar_handler_{index}"), values)
+                assert records[output.state] == expected_state and output.reply == expected_reply, (name, records, output.reply)
+                committed = output.state
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "fail")
+            entry = getattr(library, f"wings_scalar_handler_{index}")
+            entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+            entry.restype = ctypes.c_uint32
+            previous = records[committed]
+            arguments[0] = previous + 3
+            for budget in [0, 1, 8, 24, 48, 256]:
+                context = Context(ctypes.pointer(flag), budget, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                output = Output(71, 91)
+                status = entry(committed, arguments, ctypes.byref(output), ctypes.byref(context))
+                assert status in [2, 4] and not errors and not context.roots, (status, errors)
+                assert (output.state, output.reply) == (71, 91) and records[committed] == previous
+            print("Compiler roots verified: record headers, empty/consecutive merges, nested backedges, zero exits, fresh candidates and aliases")
+            return
+        for first, second in [(1, 1), (1, 0), (0, 1), (0, 0), (1, 1)]:
+            previous = records[committed]
+            output = execute(handler, [first, second, 19])
+            expected = 19 if first and second else (20 if not first and not second else previous)
+            assert output.reply == expected and records[output.state] == expected
+            committed = output.state
+        for name in ["local", "discard", "replace"]:
+            index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == name)
+            entry = getattr(library, f"wings_scalar_handler_{index}")
+            for chosen in [1, 0]:
+                previous = records[committed]
+                output = execute(entry, [chosen] if name == "discard" else [chosen, 23])
+                expected = previous if name == "discard" else ((23 if chosen else 24) + previous if name == "local" else (23 if chosen else previous))
+                assert output.reply == expected, (name, chosen, output.reply, expected)
+                committed = output.state
+        index = next(index for index, schema in enumerate(manifest["handlers"]) if schema["name"] == "fail")
+        entry = getattr(library, f"wings_scalar_handler_{index}")
+        entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+        entry.restype = ctypes.c_uint32
+        previous = records[committed]
+        for budget in range(32):
+            for chosen in [0, 1]:
+                arguments[0] = chosen
+                context = Context(ctypes.pointer(flag), budget, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+                output = Output(71, 91)
+                status = entry(committed, arguments, ctypes.byref(output), ctypes.byref(context))
+                assert status in [2, 4] and not errors and not context.roots, (status, errors)
+                assert (output.state, output.reply) == (71, 91)
+                assert records[committed] == previous
+        print("Compiler roots verified: reference merges, both paths, nested candidates, aliases and dead results")
+        return
+    if loops:
+        limit, expected = (7, 9) if loops == "nested" else (30, 30)
+        cases = [(handler, 0, limit, expected), (handler, 0, 0, 0)]
+    elif branches:
+        cases = [(handler, 7, 1, 18), (handler, 7, 0, 29)]
+    else:
+        cases = [(library.wings_scalar_init, 0, 19, 7), (handler, 1, 19, 19)]
+    for entry, state, argument, expected in cases:
+        arguments[0] = argument
+        entry.argtypes = [ctypes.c_int64, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(Output), ctypes.POINTER(Context)]
+        entry.restype = ctypes.c_uint32
+        context = Context(ctypes.pointer(flag), 4096, ctypes.pointer(flag), 1, ctypes.cast(slow_path, ctypes.c_void_p).value, None, 1, None, ctypes.cast(heap_call, ctypes.c_void_p).value, None)
+        output = Output(71, 91)
+        observations.clear()
+        assert entry(state, arguments, ctypes.byref(output), ctypes.byref(context)) == 0, errors
+        assert not errors and not context.roots
+        if branches or loops:
+            assert output.state == (expected if loops else 7) and output.reply == expected, (output.state, output.reply, expected)
+            assert not records and not observations[-1][1], (records, observations)
+        else:
+            assert records[output.state] == expected
+            assert observations[-1][1] == {output.state}, observations
+            committed = output.state
+    if loops:
+        print("Compiler roots verified: loop backedge GC")
+    elif branches:
+        print("Compiler roots verified: chosen branch GC")
+    else:
+        print("Persistent compiler roots verified: initializer, candidate-only output and collection at final checkpoint")
+
+
+def verify_cli_module_admission(parent):
+    directory = parent / "cli-module-admission"
+    directory.mkdir()
+    (directory / "manifest.json").write_text("not json")
+    name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+    with (directory / name).open("wb") as library:
+        library.truncate(16 << 20)
+    for options in [[], ["--heap-records", "1"]]:
+        result = command([VM, "run", "--trusted", directory, *options], expected=1)
+        assert not result.stdout
+        assert "resource_exhausted at Vm" in result.stderr, result.stderr
+
+
+def verify_cli_input(counter, parent):
+    prefix = json.dumps(message("inc", 7)) + "\n"
+    invalid = [
+        '{"message":"Missing","message":"inc","args":[99]}',
+        '{"message":"inc","args":[99],"args":[1]}',
+        '{"message":"inc","mess\\u0061ge":"inc","args":[99]}',
+        '{"message":"inc","args":[99],"extra":0}',
+        '{"message":"inc"}',
+        '{"args":[99]}',
+        '{"message":"inc","args":[1.0]}',
+        '{"message":"inc","args":[1e0]}',
+        '{"message":"inc","args":[9223372036854775808]}',
+        '{"message":"inc","args":[-9223372036854775809]}',
+        '{"message":"inc","args":["99"]}',
+        '{"message":"inc","args":[{}]}',
+        '{"message":"inc","args":[[]]}',
+        '{"message":"inc","args":[99]} {}',
+        '{"message":"inc","args":[' + ",".join(["1"] * 65) + "]}",
+        '{"message":"' + "x" * 257 + '","args":[]}',
+        '{"message":"' + "\\u0061" * 10000 + '","args":[]}',
+        '{"message":"inc","args":[' + "[" * 2000 + "0" + "]" * 2000 + "]}",
+        '"' + "\x7f" * 60000 + '"',
+        '{"message":"inc","args":"' + "\x7f" * 60000 + '"}',
+    ]
+    for options in [[], ["--heap-records", 4]]:
+        for text in invalid:
+            result = command([VM, "run", "--trusted", counter, *options], prefix + text + "\n", expected=1)
+            assert result.stdout == '{"reply":7}\n', (options, text[:128], result.stdout, result.stderr)
+            assert result.stderr
+            assert len(result.stderr) < 1024, (options, len(result.stderr))
+        exact = '{"args":[],"mess\\u0061ge":"\\u0067et"}'
+        line = exact + " " * (64 * 1024 - len(exact) - 1) + "\n"
+        result = command([VM, "run", "--trusted", counter, *options], prefix + line + exact)
+        assert [json.loads(item) for item in result.stdout.splitlines()] == [
+            {"reply": 7}, {"reply": 7}, {"reply": 7},
+        ]
+    source = parent / "cli-many-arguments.wings"
+    parameters = ",".join(f"value_{index}: int" for index in range(64))
+    source.write_text(f"actor Many {{ state count = 0; on sum({parameters}) -> int => value_0 + value_63 }}")
+    artifact = parent / "cli-many-arguments"
+    command([COMPILER, "build", source, "-o", artifact])
+    result = invoke(artifact, [message("sum", *range(64))])
+    assert json.loads(result.stdout) == {"reply": 63}
+    assert not invoke(artifact, [message("sum", *range(65))], expected=1).stdout
 
 
 def main():
+    print(command([sys.executable, ROOT / "scripts/verify_slice_fairness.py", "--self-test"]).stdout.strip())
     if not COMPILER.is_file() or not VM.is_file():
-        raise SystemExit("Run cargo build --locked -p wings-compile -p wings-vm first")
+        raise SystemExit("Build wings-compile and wings-vm for the selected WINGS_PROFILE first")
     with tempfile.TemporaryDirectory(prefix="wings-aot-") as temporary:
         parent = Path(temporary)
+        verify_cli_module_admission(parent)
         counter = parent / "counter"
         command([COMPILER, "build", ROOT / "examples/counter.wings", "-o", counter])
-        messages = [message("Get"), message("Inc", 3), message("Inc", 4), message("Reset"), message("Set", 12), message("Get"), message("Confirm")]
+        print(example("control_tokens", counter).stdout, end="")
+        verify_cli_reporting(counter, parent)
+        verify_cli_arguments(counter, parent)
+        verify_cli_input(counter, parent)
+        verify_cli_stdio(counter)
+        locks = json.loads(example("scheduler_locks", counter).stdout)
+        slices = parent / "scheduler-slices"
+        command([COMPILER, "build", ROOT / "examples/scheduler-slices.wings", "-o", slices])
+        validate_atomic_progress(json.loads(example("scheduler_atomic_progress", slices).stdout))
+        print("Atomic yield progress verified: infinite step slices, one/two workers, healthy actors, stopped counters and cleanup; not fairness acceptance")
+        slice_result = json.loads(example("scheduler_slices", slices).stdout)
+        assert slice_result["status"] == "ok"
+        assert slice_result["metric"] == "resume_wall_intervals_not_cpu_or_fairness_acceptance"
+        assert [(case["workers"], case["capacity"]) for case in slice_result["cases"]] == [(workers, capacity) for workers in (1, 2) for capacity in (0, 1, 256)]
+        assert all(case["resources_released"] and case["remaining_bytes"] == case["bootstrap_bytes"] and case["committed"] == [64, 256] for case in slice_result["cases"])
+        print("Scheduler resume intervals verified: bounded step slices, one/two workers, hot/healthy progress, outcome counts, failure/cancel and cleanup; not fairness acceptance")
+        assert locks["status"] == "ok"
+        assert locks["metric"] == "partial_worker_lock_wall_time_not_cpu_or_performance_acceptance"
+        assert [(case["workers"], case["enabled"]) for case in locks["cases"]] == [(1, False), (1, True), (2, False), (2, True)]
+        for case in locks["cases"]:
+            assert case["replies"] == 16 and case["failed"] == 1 and case["committed"] == [8, 8]
+            validate_resource_receipt(case)
+            assert len(case["statistics"]) == (case["workers"] if case["enabled"] else 0)
+            for worker in case["statistics"]:
+                assert type(worker["worker_cpu_ns"]) is int and 0 <= worker["worker_cpu_ns"] <= (1 << 64) - 3
+                for phase in ("claim", "start", "snapshot", "finish"):
+                    values = worker[phase]
+                    assert values["saturated"] is False
+                    assert 0 <= values["max_wait_ns"] <= values["wait_ns"]
+                    assert 0 <= values["max_held_ns"] <= values["held_ns"]
+        print("Optional worker diagnostics verified: one/two worker real AOT, equal state/failure, stopped lock counts, joined thread CPU and cleanup; not full CPU attribution or performance acceptance")
+        for count in (16, 64, 256):
+            density = json.loads(example("scheduler_density", counter, count).stdout)
+            assert density["actors"] == count and density["workers"] == 2
+            assert density["requests"] == 64
+            assert density["metric"] == "logical_reservation_not_rss"
+            assert 0 < density["empty_bytes"] <= 12 << 20
+            assert 0 < density["actor_bytes"] <= count * 4096
+            assert density["populated_bytes"] == density["empty_bytes"] + density["actor_bytes"]
+            assert density["retired_bytes"] == density["empty_bytes"]
+            assert density["resources_released"] is True
+        print("Scheduler idle actor reservations verified: shared reply capacity, bounded metadata and cleanup; not RSS")
+        for count in (1000, 10000):
+            sparse = json.loads(example("scheduler_sparse", counter, count).stdout)
+            assert sparse["actors"] == count and sparse["active"] == 100
+            assert sparse["workers"] == 2 and sparse["replies"] == 600
+            assert sparse["metric"] == "logical_reservation_not_rss"
+            assert 0 < sparse["empty_bytes"] < sparse["populated_bytes"] <= 256 << 20
+            assert sparse["resources_released"] is True
+        print("Sparse scheduler verified: 1000/10000 actors, 100 active, FIFO, generation reuse and cleanup; not BEAM/performance")
+        messages = [message("get"), message("inc", 3), message("inc", 4), message("reset"), message("set", 12), message("get"), message("confirm")]
         actual = [json.loads(line) for line in invoke(counter, messages).stdout.splitlines()]
         assert actual == [{"reply": 0}, {"reply": 3}, {"reply": 7}, {"accepted": True}, {"accepted": True}, {"reply": 12}, {"reply": None}]
         controlled = [VM, "run", "--trusted", counter, "--max-steps"]
         for budget in range(4):
-            result = command(controlled + [budget], json.dumps(message("Inc", 3)) + "\n", expected=1)
+            result = command(controlled + [budget], json.dumps(message("inc", 3)) + "\n", expected=1)
             assert not result.stdout and "step budget exhausted" in result.stderr
         result = command(controlled + [4], "".join(json.dumps(item) + "\n" for item in messages[:3]))
         assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 3, 7]
-        result = command(controlled + [2], json.dumps(message("Get")) + "\n" + json.dumps(message("Inc", 3)) + "\n" + json.dumps(message("Get")) + "\n", expected=1)
+        result = command(controlled + [2], json.dumps(message("get")) + "\n" + json.dumps(message("inc", 3)) + "\n" + json.dumps(message("get")) + "\n", expected=1)
         assert result.stdout == '{"reply":0}\n' and "step budget exhausted" in result.stderr
         for invalid in ["-1", "1.5", "18446744073709551616", "not-a-number"]:
             assert "unsigned 64-bit" in command(controlled + [invalid], expected=2).stderr
         command([sys.executable, Path(__file__), "--check-control", counter])
-        command(["cargo", "run", "--locked", "-p", "wings-vm", "--example", "execution_control", "--", "--trusted", counter])
+        example("execution_control", counter)
+        argument_source = parent / "invocation-arguments.wings"
+        argument_text = "actor Arguments {\n state count = 0\n on read -> int => count\n"
+        for count in (1, 8, 9, 64):
+            names = [f"value{index}" for index in range(count)]
+            parameters = ", ".join(f"{name}: int" for name in names)
+            argument_text += f" on add{count}({parameters}) -> int {{ count += {' + '.join(names)}\n count }}\n"
+        argument_source.write_text(argument_text + "}\n")
+        argument_artifact = parent / "invocation-arguments"
+        command([COMPILER, "build", argument_source, "-o", argument_artifact])
+        print(example("invocation_arguments", argument_artifact).stdout, end="")
+        example("stack_pool", counter)
+        example("accounted_stacks", counter)
+        example("shared_module", counter)
+        example("parallel_modules", counter)
+        library_name = "program.dylib" if os.uname().sysname == "Darwin" else "program.so"
+        invalid_module_manifest = parent / "module-bad-manifest"
+        invalid_module_manifest.mkdir()
+        (invalid_module_manifest / "manifest.json").write_text("{")
+        shutil.copyfile(counter / library_name, invalid_module_manifest / library_name)
+        invalid_module_library = parent / "module-bad-library"
+        invalid_module_library.mkdir()
+        shutil.copyfile(counter / "manifest.json", invalid_module_library / "manifest.json")
+        (invalid_module_library / library_name).write_text("not a native library")
+        invalid_module_symbol = parent / "module-missing-symbol"
+        invalid_module_symbol.mkdir()
+        shutil.copyfile(counter / "manifest.json", invalid_module_symbol / "manifest.json")
+        symbol_source = parent / "module-empty.c"
+        symbol_source.write_text("int wings_module_fixture(void) { return 0; }\n")
+        command([os.environ.get("CC", "cc"), "-dynamiclib" if os.uname().sysname == "Darwin" else "-shared", "-fPIC", symbol_source, "-o", invalid_module_symbol / library_name])
+        print(example("module_accounting", counter, invalid_module_manifest, invalid_module_library,
+                      invalid_module_symbol, module_image_budget(counter)).stdout, end="")
+        from verify_module_image import verify as verify_module_image
+        module_images = parent / "module-images"
+        module_images.mkdir()
+        verify_module_image(module_images)
+        result = example("handler_lookup", counter)
+        print(result.stdout.splitlines()[-1])
+        paths = json.loads(example("module_path_accounting").stdout)
+        assert paths["metric"] == "rust_allocation_requests_not_live_bytes_or_rss"
+        assert paths["status"] == "ok" and paths["resources_released"]
+        assert paths["remaining_bytes"] == paths["bootstrap_bytes"]
+        assert [(row["case"], row["available_bytes"]) for row in paths["cases"]] == [
+            (name, available) for name in ("ascii-large", "non-utf8-large", "nul-large", "one-past", "exact", "empty")
+            for available in (2 << 20, 0)]
+        for row in paths["cases"]:
+            assert row["resources_released"] and 0 < row["error_bytes"] <= 128
+            assert 0 < row["allocations"] and row["largest_requested_bytes"] <= 128
+            assert row["total_requested_bytes"] <= 1024
+            if row["available_bytes"] == 0:
+                assert row["error_prefix"] == "resource_exhausted at Vm account"
+            elif row["input_bytes"] > 16 << 10:
+                assert row["error_prefix"] == "artifact directory path exceeds 16 KiB"
+                assert row["largest_requested_bytes"] <= 128 and row["total_requested_bytes"] <= 1024
+        print("Accounted module paths verified: bounded source staging, native byte lengths, full-account precedence and cleanup; not complete native allocator or MVP acceptance")
+        example("resource_accounts")
+        print(example("sync_accounting").stdout, end="")
+        example("record_heap")
+        example("worker_wakeup")
+        worker_source = parent / "worker.wings"
+        worker_source.write_text("""actor Queue {
+  state count = 0
+  on add(value: int) => count += value
+  on set(value: int) => count = value
+  on fail { count = 99; let failure = 1 / 0 }
+  on get -> int => count
+  on bump(value: int) -> int { count += value; count }
+  on ack -> () {}
+  on echo_bool(value: bool) -> bool => value
+  on fail_request -> int { count = 99; 1 / 0 }
+}
+""")
+        worker_artifact = parent / "worker"
+        command([COMPILER, "build", worker_source, "-o", worker_artifact])
+        example("scalar_worker", worker_artifact)
+        example("worker_ingress", worker_artifact)
+        example("worker_ingress_requests", worker_artifact)
+        list_messages = parent / "list-messages"
+        command([COMPILER, "build", ROOT / "examples/list-messages.wings", "-o", list_messages])
+        example("list_messages", list_messages)
+        command([sys.executable, Path(__file__), "--check-list-message-roots", list_messages])
+        for name in ["store", "compute"]:
+            result = command(
+                [VM, "run", "--trusted", list_messages, "--heap-records", 16],
+                json.dumps(message(name, 2 << 32)) + "\n",
+                expected=1,
+            )
+            assert "not JSON arguments" in result.stderr
+        byte_messages = parent / "byte-messages"
+        command([COMPILER, "build", ROOT / "examples/byte-messages.wings", "-o", byte_messages])
+        result = example("byte_messages", byte_messages)
+        print(result.stdout.strip())
+        for name in ["store", "compute"]:
+            result = command([VM, "run", "--trusted", byte_messages, "--heap-records", 10],
+                             json.dumps(message(name, 65536 << 32)) + "\n", expected=1)
+            assert "not JSON arguments" in result.stderr
+        host_values = parent / "host-values"
+        command([COMPILER, "build", ROOT / "examples/host-values.wings", "-o", host_values])
+        result = example("host_values", host_values)
+        assert "Typed host values verified" in result.stdout
+        print(result.stdout.strip())
+        typed_ingress = parent / "typed-ingress"
+        command([COMPILER, "build", ROOT / "examples/typed-ingress.wings", "-o", typed_ingress])
+        result = example("typed_ingress", typed_ingress)
+        assert "Typed ingress verified" in result.stdout
+        print(result.stdout.strip())
+        tcp_artifact = parent / "tcp-counter"
+        command([COMPILER, "build", ROOT / "examples/tcp-counter.wings", "-o", tcp_artifact])
+        verify_tcp_service(tcp_artifact)
+        tcp_bytes = parent / "tcp-bytes-counter"
+        command([COMPILER, "build", ROOT / "examples/tcp-bytes-counter.wings", "-o", tcp_bytes])
+        from verify_tcp_bytes import verify as verify_tcp_bytes
+        verify_tcp_bytes(tcp_bytes, parent / "tcp-bytes-evidence")
+        allocation_artifact = parent / "allocation-failures"
+        command([COMPILER, "build", ROOT / "examples/allocation-failures.wings", "-o", allocation_artifact])
+        from verify_allocation_failures import verify as verify_allocation_failures
+        verify_allocation_failures(allocation_artifact, parent / "allocation-failure-evidence")
+        command([TARGET / PROFILE / "examples/tcp_counter", "--trusted", counter, 1, 1], expected=1)
+        example("scalar_requests", worker_artifact)
+        example("scalar_supervisor", worker_artifact)
+        timer_source = parent / "timer.wings"
+        timer_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
+        timer_groups = "\n".join(
+            f"let group_{group} = " + " + ".join(f"value_{index}" for index in range(group * 64, (group + 1) * 64))
+            for group in range(2)
+        )
+        timer_total = " + ".join(f"group_{group}" for group in range(2))
+        timer_source.write_text(f"""actor Timer {{
+  state count = 0
+  on work(seed: int) -> int {{
+    {timer_bindings}
+    {timer_groups}
+    let total = {timer_total}
+    count += total
+    total
+  }}
+  on get -> int => count
+  on fail -> int {{ count = 99; 1 / 0 }}
+}}
+""")
+        timer_artifact = parent / "timer"
+        command([COMPILER, "build", timer_source, "-o", timer_artifact])
+        example("worker_timer", timer_artifact)
+        command([TARGET / PROFILE / "examples/frame_limits", parent / "frame-limit-rejected"])
+        resume_source = parent / "resume.wings"
+        bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(48))
+        total = " + ".join(f"value_{index}" for index in range(48))
+        resume_source.write_text(f"""actor Resume {{
+  state count = 0
+  on work(seed: int) -> int {{
+    {bindings}
+    let total = {total}
+    count += total
+    total
+  }}
+  on get -> int => count
+  on fail -> int {{ count = 99; 1 / 0 }}
+}}
+""")
+        resume_artifact = parent / "resume"
+        command([COMPILER, "build", resume_source, "-o", resume_artifact])
+        pressure_source = parent / "pressure.wings"
+        pressure_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(128))
+        pressure_total = " + ".join(f"value_{index}" for index in range(128))
+        pressure_source.write_text(f"actor Pressure {{ state count = 0; on work(seed: int) -> int {{ {pressure_bindings}; {pressure_total} }} }}")
+        pressure_artifact = parent / "pressure"
+        command([COMPILER, "build", pressure_source, "-o", pressure_artifact])
+        assert json.loads(invoke(pressure_artifact, [message("work", 2)]).stdout) == {"reply": 8384}
+        example("stack_boundary", counter, pressure_artifact)
+        records = parent / "aot-records"
+        records.mkdir()
+        cargo_example("wings-compile", "build_aot_records", records)
+        example("aot_records", records)
+        named_records = parent / "named-records"
+        command([COMPILER, "build", ROOT / "examples/named-records.wings", "-o", named_records])
+        example("named_records", named_records)
+        named_messages = parent / "named-record-messages"
+        command([COMPILER, "build", ROOT / "examples/named-record-messages.wings", "-o", named_messages])
+        print(example("named_record_messages", named_messages).stdout, end="")
+        named_run = [VM, "run", "--trusted", named_records, "--heap-records", 16]
+        result = command(named_run, "".join(json.dumps(request) + "\n" for request in [message("read"), message("advance"), message("text"), message("select", False), message("select", True), message("read")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [33, 8, {"string": "初始😀!"}, 9, 8, 35]
+        language_records = parent / "language-records"
+        command([COMPILER, "build", ROOT / "examples/records.wings", "-o", language_records])
+        heap_run = [VM, "run", "--trusted", language_records, "--heap-records", 2]
+        result = command(heap_run, json.dumps(message("work", 11)) + "\n" + json.dumps(message("get")) + "\n")
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 11]
+        for failure, expected in [(message("full"), "heap exhausted"), (message("fail"), "division by zero")]:
+            result = command(heap_run, json.dumps(message("work", 7)) + "\n" + json.dumps(failure) + "\n", expected=1)
+            assert result.stdout == '{"reply":7}\n' and expected in result.stderr
+        result = command([VM, "run", "--trusted", language_records, "--max-steps", 128, "--heap-records", 2], json.dumps(message("work", 5)) + "\n")
+        assert result.stdout == '{"reply":5}\n'
+        assert "callback" in invoke(language_records, [message("work", 5)], expected=1).stderr
+        for invalid in ["0", "1025", "-1", "1.5", "not-a-number", "18446744073709551616"]:
+            assert "1..=1024" in command([VM, "run", "--trusted", language_records, "--heap-records", invalid], expected=2).stderr
+        for options in [["--heap-records", 2, "--heap-records", 2], ["--max-steps", 4, "--max-steps", 8], ["--unknown", 1]]:
+            assert "option" in command([VM, "run", "--trusted", language_records, *options], expected=2).stderr
+        initializer_source = parent / "record-initializer.wings"
+        initializer_source.write_text("actor P { struct Boxed { value: int } state n = Boxed(7).value; on get -> int => n }")
+        initializer_artifact = parent / "record-initializer"
+        command([COMPILER, "build", initializer_source, "-o", initializer_artifact])
+        assert "callback" in invoke(initializer_artifact, [], expected=1).stderr
+        assert command([VM, "run", "--trusted", initializer_artifact, "--heap-records", 1], json.dumps(message("get")) + "\n").stdout == '{"reply":7}\n'
+        example("language_records", language_records)
+        record_state = parent / "record-state"
+        command([COMPILER, "build", ROOT / "examples/record-state.wings", "-o", record_state])
+        state_run = [VM, "run", "--trusted", record_state, "--heap-records", 2]
+        messages = [message("get"), message("replace", 17), message("get"), message("set", 23), message("get")]
+        result = command(state_run, "".join(json.dumps(item) + "\n" for item in messages))
+        assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": 7}, {"accepted": True}, {"reply": 17}, {"reply": 23}, {"reply": 23}]
+        result = command(state_run, json.dumps(message("conditional", True)) + "\n" + json.dumps(message("conditional", False)) + "\n")
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [18, 14]
+        assert "accounted heap" in invoke(record_state, [], expected=1).stderr
+        result = command(state_run, json.dumps(message("fail")) + "\n", expected=1)
+        assert not result.stdout and "division by zero" in result.stderr
+        result = command([VM, "run", "--trusted", record_state, "--heap-records", 1], json.dumps(message("set", 1)) + "\n", expected=1)
+        assert not result.stdout and "heap exhausted" in result.stderr
+        example("persistent_records", record_state)
+        example("record_supervisor", record_state)
+        command([sys.executable, Path(__file__), "--check-record-roots", record_state])
+        branches = parent / "branches"
+        command([COMPILER, "build", ROOT / "examples/branches.wings", "-o", branches])
+        result = invoke(branches, [message("select", True, 9), message("select", False, 11), message("guard", True), message("optional_heap", True), message("unit", True), message("bool", False), message("overflow", False)])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [9, 9, 17, 9, None, True, 9]
+        result = invoke(branches, [message("nested", first, second) for first in [True, False] for second in [True, False]])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [11, 22, 33, 44]
+        for request, reason in [(message("guard", False), "division by zero"), (message("optional_heap", False), "callback"), (message("overflow", True), "overflow")]:
+            result = invoke(branches, [request], expected=1)
+            assert not result.stdout and reason in result.stderr
+        for flag, budget in [(True, 7), (False, 6)]:
+            text = json.dumps(message("select", flag, 17)) + "\n"
+            result = command([VM, "run", "--trusted", branches, "--max-steps", budget], text)
+            assert json.loads(result.stdout)["reply"] == (17 if flag else 7)
+            result = command([VM, "run", "--trusted", branches, "--max-steps", budget - 1], text, expected=1)
+            assert not result.stdout and "step budget exhausted" in result.stderr
+        example("conditional_execution", branches)
+        command([sys.executable, Path(__file__), "--check-branch-roots", branches])
+        loops = parent / "loops"
+        command([COMPILER, "build", ROOT / "examples/loops.wings", "-o", loops])
+        scheduler = parent / "scheduler"
+        command([COMPILER, "build", ROOT / "examples/scheduler.wings", "-o", scheduler])
+        example("multi_worker", scheduler, loops)
+        session_bundle = parent / "session-service-bundle"
+        command([COMPILER, "build-app", ROOT / "examples/session-service.wings", "-o", session_bundle])
+        print(example("mvp_runtime", session_bundle, VM).stdout.strip())
+        byte_buffers = parent / "bytes"
+        command([COMPILER, "build", ROOT / "examples/bytes.wings", "-o", byte_buffers])
+        bootstrap = example("vm_bootstrap", counter, byte_buffers)
+        print(bootstrap.stdout.strip())
+        example("byte_buffers", byte_buffers)
+        command([sys.executable, Path(__file__), "--check-byte-roots", byte_buffers])
+        counter_bytes = parent / "beam-counter"
+        command([COMPILER, "build", ROOT / "examples/beam-counter.wings", "-o", counter_bytes])
+        command([sys.executable, ROOT / "scripts/verify_counter_equivalence.py", "--artifact", counter_bytes])
+        multi_counter = parent / "beam-multi-counter"
+        command([COMPILER, "build", ROOT / "examples/beam-multi-counter.wings", "-o", multi_counter])
+        command([sys.executable, ROOT / "scripts/verify_multi_counter.py", "--artifact", multi_counter])
+        command([sys.executable, ROOT / "scripts/verify_open_loop.py", "--artifact", multi_counter])
+        command([sys.executable, ROOT / "scripts/verify_resource_receipt.py"])
+        command([sys.executable, ROOT / "scripts/verify_measurement.py"])
+        fairness = parent / "beam-fairness"
+        command([COMPILER, "build", ROOT / "examples/beam-fairness.wings", "-o", fairness])
+        command([sys.executable, ROOT / "scripts/verify_fairness.py", "--artifact", fairness])
+        command([sys.executable, ROOT / "scripts/verify_fairness_measurement.py"])
+        senders_counter = parent / "beam-senders-counter"
+        command([COMPILER, "build", ROOT / "examples/beam-senders-counter.wings", "-o", senders_counter])
+        command([sys.executable, ROOT / "scripts/verify_senders_counter.py", "--artifact", senders_counter])
+        failure_counter = parent / "beam-failure-counter"
+        command([COMPILER, "build", ROOT / "examples/beam-failure-counter.wings", "-o", failure_counter])
+        command([sys.executable, ROOT / "scripts/verify_concurrent_failure.py", "--artifact", failure_counter])
+        command([sys.executable, ROOT / "scripts/verify_failure_soak.py", "--artifact", failure_counter])
+        mailbox_boundary = parent / "mailbox-boundary"
+        command([COMPILER, "build", ROOT / "examples/mailbox-boundary.wings", "-o", mailbox_boundary])
+        example("scheduler_overload", mailbox_boundary)
+        example("scheduler_yield", mailbox_boundary)
+        recovery = parent / "concurrent-recovery"
+        command([COMPILER, "build", ROOT / "examples/concurrent-recovery.wings", "-o", recovery])
+        example("concurrent_recovery", recovery)
+        command([sys.executable, ROOT / "scripts/verify_recovery_soak.py", "--artifact", recovery])
+        command([sys.executable, ROOT / "scripts/verify_lock_statistics.py"])
+        command([sys.executable, ROOT / "scripts/verify_lock_statistics.py", "--runtime"])
+        command([sys.executable, ROOT / "scripts/verify_admission_counter.py", "--artifact", mailbox_boundary])
+        result = invoke(loops, [message("count", 0), message("count", 10), message("count", 5), message("count", 20), message("nested", 25)])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [0, 10, 10, 20, 26]
+        result = command([VM, "run", "--trusted", loops, "--heap-records", 2], json.dumps(message("heap", 30)) + "\n")
+        assert json.loads(result.stdout) == {"reply": 30}
+        for request, budget, reason in [(message("forever"), 128, "step budget exhausted"), (message("count", 100), 32, "step budget exhausted"), (message("fail", 10), 1024, "division by zero")]:
+            result = command([VM, "run", "--trusted", loops, "--max-steps", budget], json.dumps(request) + "\n", expected=1)
+            assert not result.stdout and reason in result.stderr
+        example("loop_execution", loops)
+        record_branches = parent / "record-branches"
+        command([COMPILER, "build", ROOT / "examples/record-branches.wings", "-o", record_branches])
+        example("record_conditionals", record_branches)
+        command([sys.executable, Path(__file__), "--check-record-branch-roots", record_branches])
+        command([sys.executable, Path(__file__), "--check-loop-branch-roots", loops])
+        record_loops = parent / "record-loops"
+        command([COMPILER, "build", ROOT / "examples/record-loops.wings", "-o", record_loops])
+        example("record_loops", record_loops)
+        command([sys.executable, Path(__file__), "--check-record-loop-roots", record_loops])
+        functions = parent / "functions"
+        command([COMPILER, "build", ROOT / "examples/functions.wings", "-o", functions])
+        example("inline_functions", functions)
+        command([sys.executable, Path(__file__), "--check-function-roots", functions])
+        managed_stack_source = parent / "managed-stack.wings"
+        managed_bindings = "\n".join(f"let value_{index} = seed + {index}" for index in range(32))
+        managed_total = " + ".join(f"value_{index}" for index in range(32))
+        managed_functions = ["fn f0(seed: int) -> int => seed + 1"]
+        for index in range(1, 32):
+            managed_functions.append(f"fn f{index}(seed: int) -> int {{ {managed_bindings}; let nested = f{index - 1}(seed); {managed_total} + nested }}")
+        managed_stack_source.write_text("actor ManagedStack { state count = 0; " + "\n".join(managed_functions) + " on work(seed: int) -> int { count = 99; f31(seed) } }")
+        managed_stack = parent / "managed-stack"
+        command([COMPILER, "build", managed_stack_source, "-o", managed_stack])
+        example("managed_stack", managed_stack)
+        chunked_gc = parent / "chunked-gc"
+        command([COMPILER, "build", ROOT / "examples/chunked-gc.wings", "-o", chunked_gc])
+        example("chunked_gc", chunked_gc)
+        lists = parent / "lists"
+        command([COMPILER, "build", ROOT / "examples/lists.wings", "-o", lists])
+        example("int_lists", lists)
+        example("detached_process", lists)
+        command([sys.executable, Path(__file__), "--check-list-roots", lists])
+        self_send = parent / "self-send"
+        self_send_roots = parent / "self-send-roots"
+        command([COMPILER, "build", ROOT / "examples/self-send.wings", "-o", self_send])
+        command([COMPILER, "build", ROOT / "examples/self-send-roots.wings", "-o", self_send_roots])
+        example("self_send", self_send, self_send_roots)
+        command([sys.executable, Path(__file__), "--check-self-send-roots", self_send_roots])
+        local_processes = parent / "local-processes"
+        local_process_roots = parent / "local-process-roots"
+        command([COMPILER, "build", ROOT / "examples/local-processes.wings", "-o", local_processes])
+        command([COMPILER, "build", ROOT / "examples/local-process-roots.wings", "-o", local_process_roots])
+        example("local_processes", local_processes, local_process_roots)
+        command([sys.executable, Path(__file__), "--check-local-process-roots", local_process_roots])
+        request_events = parent / "request-events"
+        command([COMPILER, "build", ROOT / "examples/request-events.wings", "-o", request_events])
+        example("request_events", request_events)
+        example("worker_wait", request_events)
+        scalar_completions = parent / "scalar-completions"
+        command([COMPILER, "build", ROOT / "examples/scalar-completions.wings", "-o", scalar_completions])
+        result = example("scalar_completions", scalar_completions)
+        assert "72 bounded Bool/Unit scenarios" in result.stdout
+        print(result.stdout.strip())
+        for name, value in [("completed_bool", False), ("completed_unit", None)]:
+            result = invoke(scalar_completions, [message(name, 1, 0, value)], expected=1)
+            assert not result.stdout and "not JSON arguments" in result.stderr
+        named_record_replies = parent / "named-record-replies"
+        quota_reply = parent / "quota-reply"
+        command([COMPILER, "build", ROOT / "examples/quota-reply.wings", "-o", quota_reply])
+        print(example("quota_reply", quota_reply).stdout.strip())
+        named_record_reply_state = parent / "named-record-reply-state"
+        command([COMPILER, "build", ROOT / "examples/named-record-replies.wings", "-o", named_record_replies])
+        command([COMPILER, "build", ROOT / "examples/named-record-reply-state.wings", "-o", named_record_reply_state])
+        result = example("named_record_replies", named_record_replies, named_record_reply_state)
+        assert "Named record replies verified:" in result.stdout
+        print(result.stdout.strip())
+        verify_cli_record_replies(named_record_replies)
+        list_replies = parent / "list-replies"
+        command([COMPILER, "build", ROOT / "examples/list-replies.wings", "-o", list_replies])
+        result = example("list_replies", list_replies)
+        assert "72 bounded language scenarios" in result.stdout
+        print(result.stdout.strip())
+        list_run = [VM, "run", "--trusted", list_replies, "--heap-records", 140]
+        for length in [0, 1, 64]:
+            result = command(list_run, "".join(json.dumps(request) + "\n" for request in [message("make", 17, length), message("current"), message("candidate"), message("marker")]))
+            values = {"int_list": list(range(17, 17 + length))}
+            assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
+        for value in [-(2**63), 2**63 - 1]:
+            result = command(list_run, json.dumps(message("make", value, 1)) + "\n")
+            assert json.loads(result.stdout) == {"reply": {"int_list": [value]}}
+        result = command(list_run, json.dumps(message("make", 17, 65)) + "\n", expected=1)
+        assert not result.stdout and "exceeds 64" in result.stderr
+        for request in [message("echo", 0), message("done", 1, 0, 0)]:
+            result = command(list_run, json.dumps(request) + "\n", expected=1)
+            assert not result.stdout and "not JSON arguments" in result.stderr
+        result = invoke(list_replies, [message("make", 17, 1)], expected=1)
+        assert not result.stdout and "heap" in result.stderr
+        request_roots = parent / "request-roots"
+        bytes_replies = parent / "bytes-replies"
+        command([COMPILER, "build", ROOT / "examples/bytes-replies.wings", "-o", bytes_replies])
+        strings = parent / "string-values"
+        string_replies = parent / "string-replies"
+        command([COMPILER, "build", ROOT / "examples/string-replies.wings", "-o", string_replies])
+        result = example("string_replies", string_replies)
+        assert "72 language scenarios" in result.stdout
+        print(result.stdout.strip())
+        string_reply_run = [VM, "run", "--trusted", string_replies, "--heap-records", 8]
+        result = command(string_reply_run, json.dumps(message("unicode")) + "\n")
+        assert json.loads(result.stdout)["reply"] == {"string": "中😀\0\n\r\t\\\""}
+        command([COMPILER, "build", ROOT / "examples/string-values.wings", "-o", strings])
+        result = example("string_values", strings)
+        assert "Accounted UTF-8 strings:" in result.stdout
+        assert "Accounted String messages:" in result.stdout
+        print(result.stdout.strip())
+        slicing = parent / "string-slicing"
+        command([COMPILER, "build", ROOT / "examples/string-slicing.wings", "-o", slicing])
+        result = cargo_example("wings-vm", "string_slicing", slicing)
+        assert "Unicode scalar indexing/slicing verified:" in result.stdout
+        print(result.stdout.strip())
+        slicing_run = [VM, "run", "--trusted", slicing, "--heap-records", 16]
+        requests = [message("at", index) for index in range(5)] + [
+            message("slice", 0, 5), message("slice", 1, 3), message("slice", 2, 2),
+            message("slice", 5, 0), message("boundary"), message("fill"), message("last"),
+        ]
+        result = command(slicing_run, "".join(json.dumps(request) + "\n" for request in requests))
+        replies = [json.loads(line)["reply"] for line in result.stdout.splitlines()]
+        assert replies == [65, 233, 20013, 128512, 90, {"string": "Aé中😀Z"},
+                           {"string": "é中😀"}, {"string": "中😀"}, {"string": ""},
+                           {"string": "😀"}, 65536, {"string": "a"}]
+        for request in [message("negative_index"), message("past_end"), message("negative_length"), message("overflow")]:
+            result = command(slicing_run, json.dumps(request) + "\n", expected=1)
+            assert not result.stdout
+            assert "string index or slice is out of bounds" in result.stderr
+        string_run = [VM, "run", "--trusted", strings, "--heap-records", 16]
+        equality = parent / "string-equality"
+        command([COMPILER, "build", ROOT / "examples/string-equality.wings", "-o", equality])
+        result = example("string_equality", equality)
+        assert "String content equality verified:" in result.stdout
+        print(result.stdout.strip())
+        equality_run = [VM, "run", "--trusted", equality, "--heap-records", 16]
+        result = command(equality_run, "".join(json.dumps(request) + "\n" for request in [message("self_msg"), message("fill", 257), message("equal", 257), message("different", 256), message("unicode"), message("not_normalized"), message("last_byte")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [True, 257, True, True, True, True, True]
+        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("unicode"), message("copy"), message("grow", 20), message("read")]))
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [207, 2, 20, 20]
+        result = command(string_run, "".join(json.dumps(request) + "\n" for request in [message("unicode"), message("invalid")]), expected=1)
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [207]
+        assert "invalid UTF-8 string" in result.stderr
+        result = example("bytes_replies", bytes_replies)
+        assert "72 language scenarios" in result.stdout
+        print(result.stdout.strip())
+        bytes_run = [VM, "run", "--trusted", bytes_replies, "--heap-records", 8]
+        for length in [0, 1, 256, 257, 65536]:
+            result = command(bytes_run, "".join(json.dumps(request) + "\n" for request in [message("make", length), message("current"), message("candidate"), message("marker")]))
+            values = {"bytes": [255] * length}
+            assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [values, values, values, 77]
+        result = command(bytes_run, json.dumps(message("make", 65537)) + "\n", expected=1)
+        assert not result.stdout
+        command([COMPILER, "build", ROOT / "examples/request-roots.wings", "-o", request_roots])
+        command([sys.executable, Path(__file__), "--check-request-roots", request_roots])
+        command([sys.executable, Path(__file__), "--check-loop-roots", loops])
+        command([sys.executable, Path(__file__), "--check-nested-loop-roots", loops])
+        for limit, budget in [(0, 6), (1, 12), (10, 66)]:
+            for exact in [True, False]:
+                result = command([VM, "run", "--trusted", loops, "--max-steps", budget if exact else budget - 1], json.dumps(message("count", limit)) + "\n", expected=0 if exact else 1)
+                assert (json.loads(result.stdout)["reply"] == limit) if exact else (not result.stdout and "step budget exhausted" in result.stderr)
+        comparisons = parent / "comparisons"
+        command([COMPILER, "build", ROOT / "examples/comparisons.wings", "-o", comparisons])
+        checks = []
+        expected = []
+        for left, right in [(-2**63, 2**63 - 1), (2**63 - 1, -2**63), (-1, 0), (0, -1), (-2**63, -2**63), (2**63 - 1, 2**63 - 1), (0, 0)]:
+            for name, value in [("eq", left == right), ("ne", left != right), ("lt", left < right), ("le", left <= right), ("gt", left > right), ("ge", left >= right), ("max", max(left, right))]:
+                checks.append(message(name, left, right))
+                expected.append(value)
+        for left in [False, True]:
+            for right in [False, True]:
+                checks.append(message("bool_eq", left, right))
+                expected.append(left == right)
+        checks.append(message("unit_eq", None, None))
+        expected.append(True)
+        result = invoke(comparisons, checks)
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == expected
+        result = command([VM, "run", "--trusted", comparisons, "--heap-records", 1], json.dumps(message("heap", -2**63)) + "\n")
+        assert json.loads(result.stdout) == {"reply": True}
+        for budget, success in [(5, True), (4, False)]:
+            result = command([VM, "run", "--trusted", comparisons, "--max-steps", budget], json.dumps(message("lt", -1, 0)) + "\n", expected=0 if success else 1)
+            assert (json.loads(result.stdout)["reply"] is True) if success else (not result.stdout and "step budget exhausted" in result.stderr)
+        example("stackful_resume", counter, resume_artifact)
+        example("owned_tasks", counter, resume_artifact)
         source_path = parent / "arithmetic.wings"
-        source_path.write_text("""process Arithmetic {
-  state count: Int = 0
-  on Get -> Int { count }
-  on Add(value: Int) -> Int { count = count + value; count }
-  on Fail -> Int { count = 99; 1 / 0 }
-  on Sum(left: Int, right: Int) -> Int { left + right }
-  on Difference(left: Int, right: Int) -> Int { left - right }
-  on Product(left: Int, right: Int) -> Int { left * right }
-  on Divide(left: Int, right: Int) -> Int { left / right }
-  on Negate(value: Int) -> Int { -value }
-  on Previous(value: Int) -> Int {
+        source_path.write_text("""actor Arithmetic {
+  state count = 0
+  on get -> int => count
+  on add(value: int) -> int { count += value; count }
+  on fail -> int { count = 99; 1 / 0 }
+  on sum(left: int, right: int) -> int => left + right
+  on difference(left: int, right: int) -> int => left - right
+  on product(left: int, right: int) -> int => left * right
+  on divide(left: int, right: int) -> int => left / right
+  on remainder(left: int, right: int) -> int => left % right
+  on negate(value: int) -> int => -value
+  on previous(value: int) -> int {
     let previous = count
     count = value
     previous
@@ -132,44 +1815,116 @@ def main():
         command([COMPILER, "build", source_path, "-o", arithmetic])
         minimum = -(2**63)
         maximum = 2**63 - 1
-        result = invoke(arithmetic, [message("Sum", 6, 7), message("Difference", 6, 7), message("Product", -6, 7), message("Divide", -7, 2), message("Negate", -6), message("Add", 4), message("Previous", 8), message("Get")])
-        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [13, -1, -42, -3, 6, 4, 4, 8]
+        result = invoke(arithmetic, [message("sum", 6, 7), message("difference", 6, 7), message("product", -6, 7), message("divide", -7, 2), message("remainder", -7, 3), message("remainder", 7, -3), message("negate", -6), message("add", 4), message("previous", 8), message("get")])
+        assert [json.loads(line)["reply"] for line in result.stdout.splitlines()] == [13, -1, -42, -3, -1, 1, 6, 4, 4, 8]
         failing = [
-            message("Sum", maximum, 1),
-            message("Difference", minimum, 1),
-            message("Product", maximum, 2),
-            message("Divide", 1, 0),
-            message("Divide", minimum, -1),
-            message("Negate", minimum),
-            message("Fail"),
+            message("sum", maximum, 1),
+            message("difference", minimum, 1),
+            message("product", maximum, 2),
+            message("divide", 1, 0),
+            message("divide", minimum, -1),
+            message("remainder", 1, 0),
+            message("remainder", minimum, -1),
+            message("negate", minimum),
+            message("fail"),
         ]
         for failure in failing:
-            result = invoke(arithmetic, [message("Add", 7), failure, message("Get")], expected=1)
+            result = invoke(arithmetic, [message("add", 7), failure, message("get")], expected=1)
             assert result.stdout == '{"reply":7}\n'
             assert "managed" in result.stderr
-        for invalid in [message("Missing"), message("Add"), message("Add", True), message("Add", 2**63), message("Add", 1, 2)]:
+        showcase = parent / "showcase"
+        command([COMPILER, "build", ROOT / "examples/showcase.wings", "-o", showcase])
+        showcase_run = [VM, "run", "--trusted", showcase, "--heap-records", 64]
+        showcase_out = command(showcase_run, json.dumps(message("run_step", 6)) + "\n" + json.dumps(message("status")) + "\n")
+        assert [json.loads(line)["reply"] for line in showcase_out.stdout.splitlines()] == [
+            {"string": "v2:35:false:true:3"},
+            {"string": "v2:35:false:true:3|total=12"},
+        ], showcase_out.stdout
+        rec_source = parent / "recursion.wings"
+        rec_source.write_text("""actor Recursion {
+  state memo = 0
+  fn fib(n: int) -> int => if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+  fn repeat_str(s: str, n: int) -> str => if n <= 0 { "" } else { s + repeat_str(s, n - 1) }
+  on calc(n: int) -> int { memo = fib(n); memo }
+  on build_str(n: int) -> str => repeat_str("ab", n)
+  on deep_scalar(n: int) -> int => if n <= 0 { 0 } else { 1 + fib(n) }
+}
+""")
+        rec_artifact = parent / "recursion"
+        command([COMPILER, "build", rec_source, "-o", rec_artifact])
+        rec_out = command(
+            [VM, "run", "--trusted", rec_artifact, "--heap-records", 32],
+            json.dumps(message("calc", 10)) + "\n" + json.dumps(message("build_str", 5)) + "\n",
+        )
+        assert [json.loads(line)["reply"] for line in rec_out.stdout.splitlines()] == [
+            55,
+            {"string": "ababababab"},
+        ], rec_out.stdout
+        deep_str_fail = command(
+            [VM, "run", "--trusted", rec_artifact, "--heap-records", 4],
+            json.dumps(message("build_str", 70)) + "\n",
+            expected=1,
+        )
+        assert "stack" in deep_str_fail.stderr or "heap" in deep_str_fail.stderr, deep_str_fail.stderr
+
+        multi_bundle = parent / "multi-app"
+        command([COMPILER, "build-app", ROOT / "examples/multi-actor-app.wings", "-o", multi_bundle])
+        serve_proc = subprocess.Popen(
+            [str(VM), "serve", "--trusted", str(multi_bundle), "--workers", "2", "--heap-records", "64"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=ROOT,
+            preexec_fn=limit_child,
+        )
+        try:
+            serve_proc.stdin.write(json.dumps(message("dispatch", 6, 7)) + "\n")
+            serve_proc.stdin.flush()
+            first_reply = json.loads(serve_proc.stdout.readline())
+            assert first_reply == {"reply": 2}, first_reply
+            deadline = time.monotonic() + 3.0
+            while True:
+                serve_proc.stdin.write(json.dumps(message("completed_count")) + "\n")
+                serve_proc.stdin.flush()
+                done_reply = json.loads(serve_proc.stdout.readline())
+                if done_reply == {"reply": 2}:
+                    break
+                assert time.monotonic() < deadline, f"multi-actor serve timed out: {done_reply}"
+                time.sleep(0.005)
+            serve_proc.stdin.write(json.dumps(message("summary")) + "\n")
+            serve_proc.stdin.flush()
+            summary_reply = json.loads(serve_proc.stdout.readline())
+            assert summary_reply == {"reply": {"string": "done=2,sum=26,even=false"}}, summary_reply
+            serve_proc.stdin.close()
+            assert serve_proc.wait(timeout=5) == 0, serve_proc.stderr.read()
+        finally:
+            if serve_proc.poll() is None:
+                serve_proc.kill()
+                serve_proc.wait()
+        for invalid in [message("Missing"), message("add"), message("add", True), message("add", 2**63), message("add", 1, 2)]:
             assert not invoke(arithmetic, [invalid], expected=1).stdout
         assert "--trusted" in command([VM, "run", arithmetic], expected=2).stderr
         assert "64 KiB" in command([VM, "run", "--trusted", arithmetic], "x" * (64 * 1024 + 1), expected=1).stderr
         assert command([VM, "run", "--trusted", arithmetic], "not json\n", expected=1).stderr
         assert "new artifact directory" in command([COMPILER, "build", source_path, "-o", arithmetic], expected=1).stderr
         flag_source = parent / "flag.wings"
-        flag_source.write_text("""process Flag {
-  state enabled: Bool = false
-  on Set(value: Bool) -> Bool { let previous = enabled; enabled = value; previous }
-  on Get -> Bool { enabled }
-  on Confirm(value: Unit) -> Unit { value }
-  on Notify(value: Unit) { value }
+        flag_source.write_text("""actor Flag {
+  state enabled = false
+  on set(value: bool) -> bool { let previous = enabled; enabled = value; previous }
+  on get -> bool => enabled
+  on confirm(value: ()) -> () => value
+  on notify(value: ()) { value }
 }
 """)
         flag = parent / "flag"
         command([COMPILER, "build", flag_source, "-o", flag])
-        result = invoke(flag, [message("Set", True), message("Get"), message("Confirm", None), message("Notify", None)])
+        result = invoke(flag, [message("set", True), message("get"), message("confirm", None), message("notify", None)])
         assert [json.loads(line) for line in result.stdout.splitlines()] == [{"reply": False}, {"reply": True}, {"reply": None}, {"accepted": True}]
-        assert not invoke(flag, [message("Set", 1)], expected=1).stdout
+        assert not invoke(flag, [message("set", 1)], expected=1).stdout
         manifest_path = counter / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        for field, value in [("abi", 1), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
+        for field, value in [("abi", 1), ("abi", 2), ("abi", 3), ("abi", 4), ("abi", 5), ("abi", 6), ("abi", 7), ("abi", 8), ("abi", 9), ("abi", 999), ("format", 999), ("target", "wrong-target"), ("library", "/tmp/foreign.so")]:
             changed = dict(manifest)
             changed[field] = value
             manifest_path.write_text(json.dumps(changed))
@@ -187,22 +1942,50 @@ def main():
         library.symlink_to(saved_library)
         assert "regular file" in command([VM, "run", "--trusted", counter], expected=1).stderr
         failure_source = parent / "bad-initializer.wings"
-        failure_source.write_text("process Broken { state count: Int = 1 / 0; on Get -> Int { count } }")
+        failure_source.write_text("actor Broken { state count = 1 / 0; on get -> int => count }")
         failure_artifact = parent / "bad-initializer"
         command([COMPILER, "build", failure_source, "-o", failure_artifact])
         assert "division by zero" in invoke(failure_artifact, [], expected=1).stderr
         invalid_source = parent / "invalid.wings"
-        invalid_source.write_text("process Invalid { state count: Int = true }")
+        invalid_source.write_text("actor Invalid { state count: int = true }")
         invalid_artifact = parent / "invalid"
         command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1)
         assert not invalid_artifact.exists()
-        invalid_source.write_text("process First { state value: Unit = () } process Second { state value: Unit = () }")
-        assert "exactly one process" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
-        print("Scalar AOT verification passed: state, replies, Bool/Unit, arithmetic boundaries, execution control, input and artifact rejection")
+        invalid_source.write_text("actor First { state value: () = () } actor Second { state value: () = () }")
+        assert "exactly one actor" in command([COMPILER, "build", invalid_source, "-o", invalid_artifact], expected=1).stderr
+    print("Scalar AOT verification passed: execution/stack boundaries, live stacks, quota accounting, compiler record roots/GC, worker mailboxes/requests/deadlines, bounded supervision, OS wakeup and artifact rejection")
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--check-control":
         verify_control_abi(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-roots":
+        verify_persistent_roots(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), branches=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-loop-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-nested-loop-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops="nested")
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), record_branches=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-loop-branch-roots":
+        verify_persistent_roots(Path(sys.argv[2]), loops="branch")
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-record-loop-roots":
+        verify_persistent_roots(Path(sys.argv[2]), record_loops=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-function-roots":
+        verify_persistent_roots(Path(sys.argv[2]), functions=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-roots":
+        verify_persistent_roots(Path(sys.argv[2]), lists=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-byte-roots":
+        verify_persistent_roots(Path(sys.argv[2]), byte_buffers=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-list-message-roots":
+        verify_persistent_roots(Path(sys.argv[2]), list_messages=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-self-send-roots":
+        verify_persistent_roots(Path(sys.argv[2]), self_send=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-local-process-roots":
+        verify_persistent_roots(Path(sys.argv[2]), local_processes=True)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-request-roots":
+        verify_persistent_roots(Path(sys.argv[2]), requests=True)
     else:
         main()

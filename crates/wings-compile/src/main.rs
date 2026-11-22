@@ -8,15 +8,16 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments == ["--help"] || arguments == ["-h"] {
         println!(
-            "Usage: wings-compile check <file.wings>\n       wings-compile build <file.wings> -o <new-directory>\n\ncheck only analyzes source; build emits a trusted host-native scalar AOT prototype."
+            "Usage: wings-compile check <file.wings>\n       wings-compile build <file.wings> -o <new-directory>\n       wings-compile build-app <file.wings> -o <new-directory>\n\ncheck only analyzes source; build emits a single-actor scalar AOT artifact; build-app emits a multi-actor application bundle."
         );
         return ExitCode::SUCCESS;
     }
     let is_check = arguments.len() == 2 && arguments[0] == "check";
     let is_build = arguments.len() == 4 && arguments[0] == "build" && arguments[2] == "-o";
-    if !is_check && !is_build {
+    let is_build_app = arguments.len() == 4 && arguments[0] == "build-app" && arguments[2] == "-o";
+    if !is_check && !is_build && !is_build_app {
         eprintln!(
-            "Usage: wings-compile check <file.wings> | build <file.wings> -o <new-directory>"
+            "Usage: wings-compile check <file.wings> | build <file.wings> -o <new-directory> | build-app <file.wings> -o <new-directory>"
         );
         return ExitCode::from(2);
     }
@@ -36,6 +37,12 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!("{}: scalar AOT artifact built", arguments[3]);
+        } else if is_build_app {
+            if let Err(error) = wings_compile::build_app(&text, Path::new(&arguments[3])) {
+                eprintln!("{path}: build-app failed: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!("{}: multi-actor bundle built", arguments[3]);
         } else {
             println!("{path}: check passed");
         }
