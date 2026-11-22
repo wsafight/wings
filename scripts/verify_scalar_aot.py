@@ -1567,6 +1567,9 @@ def main():
         scheduler = parent / "scheduler"
         command([COMPILER, "build", ROOT / "examples/scheduler.wings", "-o", scheduler])
         example("multi_worker", scheduler, loops)
+        session_bundle = parent / "session-service-bundle"
+        command([COMPILER, "build-app", ROOT / "examples/session-service.wings", "-o", session_bundle])
+        print(example("mvp_runtime", session_bundle, VM).stdout.strip())
         byte_buffers = parent / "bytes"
         command([COMPILER, "build", ROOT / "examples/bytes.wings", "-o", byte_buffers])
         bootstrap = example("vm_bootstrap", counter, byte_buffers)

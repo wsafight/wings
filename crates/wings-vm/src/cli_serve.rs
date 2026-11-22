@@ -913,11 +913,12 @@ fn extract_bytes_array(val: &Value) -> Result<&[Value], String> {
     if let Some(arr) = val.as_array() {
         return Ok(arr);
     }
-    if let Some(obj) = val.as_object()
-        && obj.len() == 1
-        && let Some(arr) = obj.get("bytes").and_then(Value::as_array)
-    {
-        return Ok(arr);
+    if let Some(obj) = val.as_object() {
+        if obj.len() == 1 {
+            if let Some(arr) = obj.get("bytes").and_then(Value::as_array) {
+                return Ok(arr);
+            }
+        }
     }
     Err("expected byte array or {\"bytes\": [...]} argument".into())
 }

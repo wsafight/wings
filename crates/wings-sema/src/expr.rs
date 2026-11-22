@@ -145,10 +145,10 @@ impl Checker {
             ExprKind::Field { value, name } => {
                 let ty = self.expression(value, scope);
                 if let Type::Struct(ref struct_name) = ty {
-                    if let Some((_, fields)) = self.structs.get(struct_name)
-                        && let Some((_, field_ty)) = fields.iter().find(|(f, _)| f == &name.text)
-                    {
-                        return field_ty.clone();
+                    if let Some((_, fields)) = self.structs.get(struct_name) {
+                        if let Some((_, field_ty)) = fields.iter().find(|(f, _)| f == &name.text) {
+                            return field_ty.clone();
+                        }
                     }
                 }
                 if !matches!(ty, Type::Unknown) {

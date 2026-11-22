@@ -847,11 +847,17 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
-        if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
-            && let Some(fast_slot) = self.shared.fast_slots.get(pid.slot as usize)
-            && let Some(mailbox) = fast_slot.get(pid.generation)
         {
+            self.shared
+                .fast_slots
+                .get(pid.slot as usize)
+                .and_then(|slot| slot.get(pid.generation))
+        } else {
+            None
+        };
+        if let Some(mailbox) = fast_mailbox {
             validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
             if handler.schema().reply.is_some() {
                 return Err("send requires a one-way handler".into());
@@ -933,11 +939,17 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
-        if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
-            && let Some(fast_slot) = self.shared.fast_slots.get(pid.slot as usize)
-            && let Some(mailbox) = fast_slot.get(pid.generation)
         {
+            self.shared
+                .fast_slots
+                .get(pid.slot as usize)
+                .and_then(|slot| slot.get(pid.generation))
+        } else {
+            None
+        };
+        if let Some(mailbox) = fast_mailbox {
             validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
             let Some(reply) = handler.schema().reply.filter(|ty| ty.is_supported_reply()) else {
                 return Err(

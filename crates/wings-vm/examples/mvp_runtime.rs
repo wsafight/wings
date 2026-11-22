@@ -3,43 +3,18 @@
     all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
 ))]
 
-use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use wings_compile::build_app;
 use wings_vm::{
     MessageValue, RequestOutcome, ResourceAccount, Resources, ScalarModule, ScalarWorker,
     Scheduler, SchedulerConfig, WorkerEvent,
 };
-
-static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(prefix: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "wings-mvp-{prefix}-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 struct ChildGuard(Child);
 
@@ -50,13 +25,23 @@ impl Drop for ChildGuard {
     }
 }
 
-#[test]
-fn scalar_worker_supports_nullable_pid_state_send_after_and_monitor_restart() {
-    let dir = TempDir::new("worker");
-    let bundle_dir = dir.0.join("bundle");
-    let source = include_str!("../../../examples/session-service.wings");
-    build_app(source, &bundle_dir).unwrap();
+fn main() {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    assert!(
+        arguments.len() == 3 && arguments[0] == "--trusted",
+        "usage: mvp_runtime --trusted <bundle_dir> <wings_vm_bin>"
+    );
+    let bundle_dir = Path::new(&arguments[1]);
+    let vm_bin = Path::new(&arguments[2]);
 
+    verify_scalar_worker_pid_timers_and_monitors(bundle_dir);
+    verify_scheduler_and_serve_tcp_http(bundle_dir, vm_bin);
+    println!(
+        "MVP runtime verified: nullable pid state, send_after, monitor restart, multi-worker bundle, and TCP/HTTP serve"
+    );
+}
+
+fn verify_scalar_worker_pid_timers_and_monitors(bundle_dir: &Path) {
     let limits = Resources {
         bytes: 64 << 20,
         processes: 32,
@@ -68,7 +53,7 @@ fn scalar_worker_supports_nullable_pid_state_send_after_and_monitor_restart() {
     {
         let tenant = vm.tenant_accounted(limits).unwrap();
         let (modules, entry_idx) =
-            unsafe { ScalarModule::load_bundle_accounted(&bundle_dir, &vm) }.unwrap();
+            unsafe { ScalarModule::load_bundle_accounted(bundle_dir, &vm) }.unwrap();
         let mut worker = ScalarWorker::new(&tenant, 16).unwrap();
         worker.enable_wait().unwrap();
         worker.register_modules(&modules).unwrap();
@@ -98,7 +83,6 @@ fn scalar_worker_supports_nullable_pid_state_send_after_and_monitor_restart() {
             drain_worker(&mut worker);
         }
 
-        // Dispatch normal job (SessionCommand { session_id: 7, prompt: "hello" })
         let req = worker
             .request_values(
                 manager,
@@ -114,7 +98,6 @@ fn scalar_worker_supports_nullable_pid_state_send_after_and_monitor_restart() {
             Some(RequestOutcome::Reply(1))
         );
 
-        // Crash child with "boom" -> monitor triggers on_worker_down and auto-restarts!
         let req = worker
             .request_values(
                 manager,
@@ -130,7 +113,6 @@ fn scalar_worker_supports_nullable_pid_state_send_after_and_monitor_restart() {
             Some(RequestOutcome::Reply(1))
         );
 
-        // Dispatch after restart -> new SessionWorker starts fresh at turn #1!
         let req = worker
             .request_values(
                 manager,
@@ -183,14 +165,7 @@ fn drain_worker(worker: &mut ScalarWorker) {
     }
 }
 
-#[test]
-fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
-    let dir = TempDir::new("serve");
-    let bundle_dir = dir.0.join("bundle");
-    let source = include_str!("../../../examples/session-service.wings");
-    build_app(source, &bundle_dir).unwrap();
-
-    // 1. Direct multi-worker Scheduler check + exact zero-leak accounting on drop
+fn verify_scheduler_and_serve_tcp_http(bundle_dir: &Path, vm_bin: &Path) {
     let limits = Resources {
         bytes: 128 << 20,
         processes: 64,
@@ -202,7 +177,7 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
     {
         let tenant = vm.tenant_accounted(limits).unwrap();
         let (modules, entry_idx) =
-            unsafe { ScalarModule::load_bundle_accounted(&bundle_dir, &vm) }.unwrap();
+            unsafe { ScalarModule::load_bundle_accounted(bundle_dir, &vm) }.unwrap();
         let scheduler = Scheduler::new(
             &tenant,
             SchedulerConfig {
@@ -230,13 +205,11 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
             boot.wait(Duration::from_secs(2)).unwrap(),
             Some(RequestOutcome::Reply(1))
         );
-        // Schedule a pending send_after and active monitor, then drop Scheduler cleanly to verify zero resource leaks
     }
     assert_eq!(vm.used(), bootstrap);
 
-    // 2. Test `wings-vm serve --http 127.0.0.1:0` end-to-end
     let mut http_child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_wings-vm"))
+        Command::new(vm_bin)
             .args([
                 "serve",
                 "--trusted",
@@ -260,7 +233,6 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
     assert_eq!(code, 200);
     assert_eq!(boot_resp["reply"], Value::Bool(true));
 
-    // Poll until bound_ok & heartbeat tick == 1
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let (code, st) = http_request(&http_addr, "POST", "/status", "[]");
@@ -275,7 +247,6 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
         thread::sleep(Duration::from_millis(5));
     }
 
-    // Send struct argument over HTTP POST /dispatch
     let (code, disp1) = http_request(
         &http_addr,
         "POST",
@@ -289,7 +260,6 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
         reply["turns"] == 1 && reply["last_reply"]["string"] == "s42#1:first"
     });
 
-    // Trigger child crash ("boom") and verify monitor restarts child automatically!
     let (code, _) = http_request(
         &http_addr,
         "POST",
@@ -302,7 +272,6 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
         reply["restarts"] == 1 && reply["alive"] == true
     });
 
-    // Send another step to the restarted worker -> turn resets to #1 on new child while manager turns == 2!
     let (code, _) = http_request(
         &http_addr,
         "POST",
@@ -319,9 +288,8 @@ fn scheduler_and_serve_tcp_http_handle_pid_timers_monitors_and_rich_json_rpc() {
 
     drop(http_child);
 
-    // 3. Test `wings-vm serve --tcp 127.0.0.1:0` end-to-end
     let mut tcp_child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_wings-vm"))
+        Command::new(vm_bin)
             .args([
                 "serve",
                 "--trusted",

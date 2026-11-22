@@ -307,9 +307,7 @@ pub(super) fn worker(
             shared.changed.clear_parked(bit);
             break;
         }
-        if let Some(duration) = sleep_duration
-            && !duration.is_zero()
-        {
+        if let Some(duration) = sleep_duration.filter(|d| !d.is_zero()) {
             std::thread::park_timeout(duration);
         }
         shared.changed.clear_parked(bit);
@@ -548,12 +546,14 @@ fn run_fast_claim(
                 }
                 let mapped = map_outcome(result);
                 if batch_step + 1 < MAX_BACKLOG_BATCH && mapped.is_ok() {
-                    if !shared.config.lock_statistics
+                    let can_batch_fast = !shared.config.lock_statistics
                         && !matches!(reply, Reply::Language(_))
                         && !shared.closed.load(Ordering::Acquire)
                         && (batch_step < 8
-                            || (shared.ready_mask.load(Ordering::Acquire) & watch) == 0)
-                        && let Some(next_msg) = mailbox.try_pop_batch_fast(BACKLOG_BATCH_THRESHOLD)
+                            || (shared.ready_mask.load(Ordering::Acquire) & watch) == 0);
+                    if let Some(next_msg) = can_batch_fast
+                        .then(|| mailbox.try_pop_batch_fast(BACKLOG_BATCH_THRESHOLD))
+                        .flatten()
                     {
                         let outcome = match mapped {
                             Ok(Some(value)) => value,

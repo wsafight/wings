@@ -1125,9 +1125,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         if segments.is_empty() {
             return ExprKind::String(String::new());
         }
-        if segments.len() == 1
-            && let RawSegment::Literal(lit) = &segments[0]
-        {
+        if let [RawSegment::Literal(lit)] = segments.as_slice() {
             return ExprKind::String(lit.clone());
         }
 

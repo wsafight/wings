@@ -22,11 +22,16 @@ impl Checker {
         }
         let mut current_ty = self.symbols[symbol].ty.clone();
         for field in &target.fields {
-            if let Type::Struct(struct_name) = &current_ty
-                && let Some((_, fields)) = self.structs.get(struct_name)
-                && let Some((_, field_ty)) = fields.iter().find(|(f, _)| f == &field.text)
-            {
-                current_ty = field_ty.clone();
+            let next_ty = match &current_ty {
+                Type::Struct(struct_name) => self
+                    .structs
+                    .get(struct_name)
+                    .and_then(|(_, fields)| fields.iter().find(|(f, _)| f == &field.text))
+                    .map(|(_, field_ty)| field_ty.clone()),
+                _ => None,
+            };
+            if let Some(field_ty) = next_ty {
+                current_ty = field_ty;
             } else {
                 self.error("T019", "unknown field or non-struct target", field.span);
                 return Type::Unknown;

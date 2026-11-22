@@ -427,9 +427,10 @@ impl Program {
             )?;
             self.validate_entry_calls(&handler.function, &acyclic_paths)?;
             for instruction in &handler.function.instructions {
-                if let Operation::SpawnActor(actor) = &instruction.operation
-                    && *actor >= self.external_actors.len()
-                {
+                if matches!(
+                    &instruction.operation,
+                    Operation::SpawnActor(actor) if *actor >= self.external_actors.len()
+                ) {
                     return Err("invalid external actor spawn index".into());
                 }
                 if let Operation::SendActor {

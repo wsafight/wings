@@ -347,9 +347,10 @@ pub fn analyze(text: &str) -> Analysis {
                         "'on reply' requires (id: req, status: int, value: <reply_type>)",
                         handler.name.span,
                     );
-                } else if let Type::Struct(name) = &parameters[2].1
-                    && !checker.expandable_struct(name)
-                {
+                } else if matches!(
+                    &parameters[2].1,
+                    Type::Struct(name) if !checker.expandable_struct(name)
+                ) {
                     checker.error(
                         "T011",
                         "struct completion expansion exceeds 64 total nodes",
@@ -541,9 +542,7 @@ pub fn analyze(text: &str) -> Analysis {
             .into_iter()
             .enumerate()
         {
-            if let Some(depth) = depth_opt
-                && depth > 32
-            {
+            if depth_opt.is_some_and(|depth| depth > 32) {
                 checker.error(
                     "T017",
                     "function call chain exceeds 32",
