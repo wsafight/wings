@@ -233,7 +233,7 @@ const copy =
         pendingTitle: '诚实披露的当前边界与后续演进',
         pendingItems: [
           '微秒级绝对尾延迟：Linux hot-queue 单收件人服务 p99（约 16 µs）虽通过 < 100 µs 门禁，但仍高于 BEAM 进程内归约循环（约 5 µs）',
-          '云端短窗与裸金属长稳：流水线采用 3–5s 窗口控制回归耗时，独占物理机仍建议运行默认 30s/60s 五对长稳脚本',
+          '日常增量与发布验收：提交仅运行增量检查，完整双平台 CI 与 3–5s 配对基准手动触发，独占物理机保留默认 30s/60s 五对长稳脚本',
           '动态装载器元数据：Rust 全局分配器外侧的 dyld / ld.so 内部结构按整进程 OS 物理占用对账，未做租户级拆分',
           '语言模块与监督树演进：跨文件模块导入与声明式监督策略位于 M1–M2 后续里程碑',
         ],
@@ -391,7 +391,7 @@ const copy =
         pendingTitle: 'Honest Caveats & Upcoming Roadmap',
         pendingItems: [
           'Hot-queue microsecond gap: Linux cgroup v2 hot-queue service p99 (~16 µs) passes the < 100 µs gate, though BEAM single-actor dispatch remains lower (~5 µs)',
-          'Cloud CI windows vs. bare-metal soaks: CI uses bounded 3–5s windows for fast PRs, while default 30s/60s 5-pair scripts remain for dedicated bare-metal sign-off',
+          'Incremental development vs. release verification: commits run scoped checks; full dual-platform CI and 3–5s paired benchmarks are manual, with 30s/60s 5-pair scripts for dedicated bare-metal sign-off',
           'Dynamic loader metadata: dyld / ld.so structures outside the Rust global allocator are audited via whole-process OS footprint/PSS rather than per-tenant accounts',
           'Language roadmap: multi-file module imports and declarative supervision trees are scheduled for M1–M2 milestones',
         ],

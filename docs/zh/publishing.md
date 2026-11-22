@@ -10,7 +10,8 @@
 
 ## 分支保护与手动发布流程
 
-- `main` 分支受保护：所有代码与文档变更必须通过 PR 合并，且通过 `native (macos-15, arm64)`、`native (ubuntu-24.04, x86_64)`、`msrv`（Rust `1.85.0`）与 `site` 四项 CI 检查。
+- 日常 PR 使用 `incremental` CI 检查。切换本流程时，仓库管理员需将分支保护中的旧 native/MSRV/site 必需检查改为 `incremental`；修改 workflow 文件不会自动更新 GitHub 分支保护。
+- 发布前针对确切发布提交手动触发 `.github/workflows/release.yml`，要求 `native (macos-15, arm64)`、`native (ubuntu-24.04, x86_64)`、`msrv`（Rust `1.85.0`）与 `site` 全部通过；验证性能声明时另行手动运行 `benchmark.yml`。增量缓存结果不得替代发布证据。
 - 包发布仅在维护者明确要求后从已合并 `main` 的干净源码手动执行，不由 PR 自动触发。crates.io 不允许覆盖同版本号，上传前必须逐包执行 `--dry-run` 核对归档内容与构建。
 
 ## 拓扑发布顺序
