@@ -26,7 +26,7 @@ Wings 的核心目标是**在相同业务负载下同时取得高于 BEAM 的持
   - 四组配对套件全部通过，物理内存占用均显著低于同机 BEAM：`hot-queue`（约 `45.0 MB` vs `70.7 MB`，服务 p99 约 `130 µs` vs `226 µs`）、`sparse-256`（约 `64.0–64.7 MB` vs `96.5–98.0 MB`）、`mixed-4k`（约 `36.1–37.3 MB` vs `65.3–65.8 MB`）与 `fairness`（约 `22.9–23.1 MB` vs `59.1–59.6 MB`）；本机 Apple Silicon 30s/60s 五对长测同样 5/5 通过（心跳 p99 中位数约 `645 µs`）。
 - **保留边界说明**：
   - 尽管 Linux `hot-queue` 已稳定通过 `< 100 µs` 服务延迟门禁，单收件人极限争用下的微秒级服务 p99（约 `16 µs`）绝对值仍约为 BEAM 进程内归约循环（约 `5 µs`）的 3 倍。
-  - 日常提交 CI（`ci.yml`）不重复跑长耗时性能测试；配对基准流水线采用有界 3–5s 窗口（`WINGS_BENCH_WINDOW`）适配云端共享 runner，独占物理机长稳验收仍使用默认 30s 预热 + 60s 采样 × 5 对脚本。
+  - 手动基准 CI 采用有界 3–5s 窗口（`WINGS_BENCH_WINDOW`）适配云端共享 runner；日常 `ci.yml` 仅执行增量正确性检查。`.github/workflows/benchmark.yml` 仅手动触发，独占物理机长稳验收仍使用默认 30s 预热 + 60s 采样 × 5 对脚本。
   - `WingsAllocator` 与 `native_memory_ledger` 已覆盖全局 Rust 堆请求/可用/碎片字节及 OS PSS/physical footprint 对账，Rust 分配器之外的系统动态装载器（`dyld`/`ld.so`）内部元数据按整进程物理内存口径观测。
 
 ## 优化实验纪律
@@ -37,7 +37,17 @@ Wings 的核心目标是**在相同业务负载下同时取得高于 BEAM 的持
 2. **先归因再改动**：利用内置可选锁统计（`--observe-locks`）与线程 CPU 区间观测定位真实瓶颈，区分发生器 OS 调度迟发与 VM 内部背压。
 3. **配对 A/B 验收与果断回退**：单项优化在同业务五对交替长测下对比吞吐、p99/p999、拒绝数与分口径内存（Linux RSS/PSS、macOS RSS/physical footprint）；无稳定收益或引发尾延迟退化时直接回退，不保留无效复杂度。
 
-## 常规验证命令
+## 日常增量验证
+
+`python3 scripts/verify_incremental.py` 根据暂存、未暂存、删除、重命名和未跟踪文件选择检查；`--base <ref>` 同时包含相对 merge-base 已提交的改动，基准引用无效时直接失败，不静默漏检。`--plan` 输出任务图，`--all` 选择全部增量检查，`--no-cache` 强制重新执行；这些选项均不会运行发布或性能验收。
+
+- Rust 改动通过 Cargo metadata 选择所属 crate 及其 workspace 传递依赖方，执行格式、依赖隔离、全 target 定向 Clippy，以及沿用 CPU/墙钟/core 限制的库/二进制/集成测试 harness。改动的示例 target 也执行其 harness，其余示例仅编译检查，全 target 执行保留在发布验证；选中 harness 内不再过滤单个测试。
+- 影响编译或执行的改动增加有界计数器/会话 AOT 冒烟，覆盖 TCP/HTTP 服务与故障恢复。共享构建步骤只执行一次，复用 Cargo 增量产物；完整 AOT 套件保留在发布验证中。
+- 脚本与 workflow 改动运行 Python 回归，文档与网站改动构建网站；未知路径保守扩大到全部增量检查。任务串行执行，本地文件锁防止调度器重叠运行。
+- 本地成功证据按相关文件内容、删除、权限、依赖、执行脚本、锁文件、工具版本、平台、Cargo 配置和环境摘要生成指纹；失败/中断不缓存，执行中输入变化则本轮不可采信。缓存与报告放在已忽略的 `target/incremental-validation/`，仅供本地提速，不是可信发布凭证。
+- 日常 PR 和 `main` 推送在 Linux 上以 `--no-cache` 运行同一调度器，`incremental` 检查替代日常全量 native/MSRV/site 任务，Pages 部署保持独立。发布前手动运行 `.github/workflows/release.yml` 的双平台、MSRV、doctest 与完整 AOT 检查，BEAM 配对另由 `benchmark.yml` 手动触发；增量通过不代表发布或性能验收通过。
+
+## 发布前验证命令
 
 ```sh
 # 1. 静态检查与全工作区单元测试

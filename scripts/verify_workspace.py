@@ -106,9 +106,14 @@ def execute(path, checksum, output):
     return record
 
 
-def run(profile, output):
+def run(profile, output, packages=(), targets=("--all-targets",)):
     output.mkdir(parents=True, exist_ok=False)
-    command = ["cargo", "test", "--workspace", "--all-targets", "--locked", "--no-run", "--message-format=json"]
+    command = ["cargo", "test", *targets, "--locked", "--no-run", "--message-format=json"]
+    if packages:
+        for package in sorted(set(packages)):
+            command.extend(["-p", package])
+    else:
+        command.append("--workspace")
     if profile == "release":
         command.append("--release")
     report = {
@@ -142,10 +147,13 @@ def run(profile, output):
 def main():
     parser = argparse.ArgumentParser(description="Build and execute every workspace libtest harness under fixed OS limits")
     parser.add_argument("--profile", choices=("debug", "release"), default="debug")
+    parser.add_argument("-p", "--package", action="append", default=[], help="select a package; repeatable, defaults to the workspace")
+    parser.add_argument("--core", action="store_true", help="run library, binary and integration harnesses instead of all targets")
     parser.add_argument("--output", type=Path, required=True, help="new directory for Cargo inventory, harness logs and report")
     arguments = parser.parse_args()
     try:
-        return 0 if run(arguments.profile, arguments.output.resolve()) else 1
+        targets = ("--lib", "--bins", "--tests") if arguments.core else ("--all-targets",)
+        return 0 if run(arguments.profile, arguments.output.resolve(), arguments.package, targets) else 1
     except OSError as error:
         parser.exit(1, f"workspace verification: {error}\n")
 

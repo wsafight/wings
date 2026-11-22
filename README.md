@@ -58,14 +58,17 @@ cargo run -p wings-vm -- serve --trusted target/session-bundle --workers 2 --tcp
 ### 3. Development & Verification Commands
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+# Inspect checks selected for staged, unstaged, and untracked changes
+python3 scripts/verify_incremental.py --plan
 
-# Build binaries & examples and run the full end-to-end AOT verification suite (requires Python 3)
-cargo build --locked -p wings-compile -p wings-vm --bins --examples
-python3 scripts/verify_scalar_aot.py
+# Run selected checks; reuse successful local results when inputs are unchanged
+python3 scripts/verify_incremental.py
+
+# Include committed branch changes relative to main
+python3 scripts/verify_incremental.py --base main
 ```
+
+Routine CI uses the same incremental scheduler. Full dual-platform, MSRV, and AOT checks run manually through `release.yml` before publishing; paired BEAM benchmarks remain a separate manual workflow. See [Evaluation](docs/evaluation.md) for scope and cache rules.
 
 ## Documentation
 

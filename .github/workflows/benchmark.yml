@@ -1,9 +1,6 @@
 name: Paired BEAM & CPU-Quota Benchmarks
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/benchmark.yml'
   workflow_dispatch:
     inputs:
       warmup_seconds:

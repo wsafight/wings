@@ -58,14 +58,17 @@ cargo run -p wings-vm -- serve --trusted target/session-bundle --workers 2 --tcp
 ### 3. 开发与验证命令
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+# 查看暂存、未暂存和未跟踪改动对应的验证计划
+python3 scripts/verify_incremental.py --plan
 
-# 构建二进制与验证示例并执行完整端到端 AOT 回归（需 Python 3）
-cargo build --locked -p wings-compile -p wings-vm --bins --examples
-python3 scripts/verify_scalar_aot.py
+# 执行选中的检查；输入未变时复用本地成功结果
+python3 scripts/verify_incremental.py
+
+# 同时检查当前分支相对 main 已提交的改动
+python3 scripts/verify_incremental.py --base main
 ```
+
+日常 CI 使用同一增量调度器；双平台、MSRV 与完整 AOT 检查仅在发布前手动运行 `release.yml`，BEAM 配对基准保留独立手动入口。验证范围与缓存规则见[评估与验收](docs/zh/evaluation.md)。
 
 ## 文档导航
 

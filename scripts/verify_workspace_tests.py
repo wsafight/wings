@@ -147,6 +147,38 @@ class WorkspaceVerification(unittest.TestCase):
             report = json.loads((destination / "report.json").read_text())
             self.assertEqual((report["status"], report["tests"], len(report["harnesses"])), ("passed", count, 1))
 
+    def test_selected_packages_are_built_once_without_workspace_or_test_filters(self):
+        path = self.executable("print('unused')")
+        inventory = [self.artifact(path), {"reason": "build-finished", "success": True}]
+
+        def build(command, **options):
+            self.assertNotIn("--workspace", command)
+            self.assertEqual(command.count("-p"), 2)
+            self.assertEqual(command[-4:], ["-p", "wings-source", "-p", "wings-vm"])
+            options["stdout"].write(("\n".join(map(json.dumps, inventory)) + "\n").encode())
+
+        with patch.object(workspace.subprocess, "run", side_effect=build) as build_call, patch.object(
+            workspace, "execute", return_value={"status": "passed", "tests": 3}
+        ):
+            self.assertTrue(workspace.run("debug", self.parent / "selected", ["wings-vm", "wings-source", "wings-vm"]))
+            self.assertEqual(build_call.call_count, 1)
+
+    def test_incremental_core_target_scope_does_not_change_full_runner_default(self):
+        path = self.executable("print('unused')")
+        inventory = [self.artifact(path), {"reason": "build-finished", "success": True}]
+
+        def build(command, **options):
+            self.assertNotIn("--all-targets", command)
+            for target in ("--lib", "--bins", "--tests", "--example", "beam_open_loop"):
+                self.assertIn(target, command)
+            options["stdout"].write(("\n".join(map(json.dumps, inventory)) + "\n").encode())
+
+        with patch.object(workspace.subprocess, "run", side_effect=build), patch.object(
+            workspace, "execute", return_value={"status": "passed", "tests": 3}
+        ):
+            self.assertTrue(workspace.run("debug", self.parent / "core", ["wings-vm"],
+                                          ["--lib", "--bins", "--tests", "--example", "beam_open_loop"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,12 +35,13 @@ This document applies to the entire repository. / 本文件适用于整个仓库
 
 - **Bilingual Sync**: Keep root `README.md` + `docs/*.md` (English default), `README.zh-CN.md` + `docs/zh/*.md` (Simplified Chinese), and the `site/` website synchronized. Keep prose concrete, restrained, and free of marketing hype.
 - **Minimal File Set**: Maintain only `README.md`, `README.zh-CN.md`, `AGENTS.md`, and the 7 core topic docs (`product.md`, `architecture.md`, `language.md`, `runtime.md`, `evaluation.md`, `roadmap.md`, `publishing.md`) in `docs/` and `docs/zh/`. Do not create ad-hoc verification logs, draft proposals, or fragmented ADR files.
-- **Pre-PR Checks** (`main` is protected and requires `native (macos-15, arm64)`, `native (ubuntu-24.04, x86_64)`, `msrv` `1.85.0`, and `site` CI jobs):
+- **Daily Checks**: Run `python3 scripts/verify_incremental.py` for working-tree changes, adding `--base main` for committed branch changes. Inspect with `--plan`; `--all` expands incremental scope only. Daily PR/`main` CI uses `incremental`; do not run full release CI or paired benchmarks for every edit/commit. Failed/interrupted checks must never become cached success.
+- **Pre-Release Checks** (manual `.github/workflows/release.yml`: dual native, MSRV `1.85.0`, and site jobs; branch protection must separately require `incremental`):
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets --locked -- -D warnings`
   - `cargo +1.85.0 check --workspace --all-targets --locked`
   - `cargo test --workspace --tests --locked && cargo test --workspace --doc --locked`
-  - Run `python3 scripts/verify_scalar_aot.py` when touching ABI, codegen, scheduler, or CLI protocols, and `npm run build` in `site/` when touching docs or website code.
+  - Run `python3 scripts/verify_scalar_aot.py` before release; daily ABI/codegen/scheduler/CLI changes use the scheduler's bounded AOT smoke. Build `site/` for documentation/website changes through the incremental scheduler.
 
 ---
 
@@ -74,6 +75,7 @@ This document applies to the entire repository. / 本文件适用于整个仓库
 
 ### 写作、验证与发布流程
 
+- 日常仅运行 `python3 scripts/verify_incremental.py`，包含分支已提交改动时加 `--base main`，`--plan` 查看计划；`--all` 也只是全部增量检查。PR/`main` CI 使用 `incremental`；完整双平台、MSRV、AOT 检查仅发布前手动触发 `release.yml`，BEAM 基准另行手动运行。分支保护需单独改为要求 `incremental`；失败或中断不得缓存为成功。
 - 仓库文档与 `site/` 官网保持中英双语同步：根目录默认 `README.md` 与 `docs/*.md` 为英文，`README.zh-CN.md` 与 `docs/zh/*.md` 为对应简体中文；表达具体、克制，不写空洞宣传语。
 - 保持文档精简：只维护根目录 `README.md`、`README.zh-CN.md`、`AGENTS.md` 与 `docs/`（含 `docs/zh/`）下的 7 篇核心主题文档（`product.md`、`architecture.md`、`language.md`、`runtime.md`、`evaluation.md`、`roadmap.md`、`publishing.md`）。不为每次日常提交新建独立的验证日志、提案草稿或碎片化 ADR 文件；设计变更直接同步更新中英双语主题文档。
 - 崩溃、非法访存与分配失败注入只能在带 CPU/墙钟/core 限制的隔离测试子进程内执行，不在宿主机直接制造无界资源耗尽。

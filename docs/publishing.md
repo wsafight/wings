@@ -10,7 +10,8 @@
 
 ## Branch Protection & Manual Release Workflow
 
-- `main` is protected: all code, site, and documentation changes land through pull requests passing `native (macos-15, arm64)`, `native (ubuntu-24.04, x86_64)`, `msrv` (Rust `1.85.0`), and `site` CI checks.
+- Daily pull requests use the `incremental` CI check. Repository administrators must update protected-branch required checks from the old native/MSRV/site jobs to `incremental` when adopting this workflow; editing workflow files does not update GitHub branch protection.
+- Before publishing, manually dispatch `.github/workflows/release.yml` on the exact release commit and require successful `native (macos-15, arm64)`, `native (ubuntu-24.04, x86_64)`, `msrv` (Rust `1.85.0`), and `site` jobs. Run the separate manual `benchmark.yml` when validating performance claims. Incremental cached results never replace release evidence.
 - Releases are executed manually from a clean `main` checkout only when explicitly requested by a maintainer. Because crates.io versions are immutable, every crate is verified with `--dry-run` before publishing.
 
 ## Topological Publish Order
