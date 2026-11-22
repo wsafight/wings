@@ -25,6 +25,14 @@ def cpu_model():
         "workers": [{"worker": worker, "status": "ok", "nanoseconds": 10} for worker in (0, 1)]}}
 
 
+def contention_model():
+    metrics = {"contended_acquisitions": 1, "failed_attempts": 3, "yield_calls": 0,
+               "wait_ns": 10, "max_wait_ns": 10, "saturated": False}
+    return {"scheduler_contention_statistics": {
+        "version": 1, "scope": "whole_scheduler_lifetime", "after_worker_join": True,
+        "fast_slot": copy.deepcopy(metrics), "mailbox": copy.deepcopy(metrics)}}
+
+
 class LockStatistics(unittest.TestCase):
     def test_cpu_switch_scope_and_version_are_explicit(self):
         value = cpu_model()
@@ -112,16 +120,44 @@ class LockStatistics(unittest.TestCase):
             value["worker_lock_statistics"]["workers"][1][phase]["acquisitions"] = 2
         diagnostic.validate_statistics(value, True)
 
-    def test_complete_handler_count_and_claims_are_required(self):
-        for phase in ("claim", "start", "finish"):
+    def test_phase_counts_allow_fast_paths_but_reject_impossible_counts(self):
+        value = model()
+        for phase in ("start", "finish"):
+            for row in value["worker_lock_statistics"]["workers"]:
+                row[phase] = {**dict.fromkeys(diagnostic.NUMBERS, 0), "saturated": False}
+        diagnostic.validate_statistics(value, True)
+        for phase in ("start", "finish"):
             forged = model()
-            forged["worker_lock_statistics"]["workers"][0][phase] = {**dict.fromkeys(diagnostic.NUMBERS, 0), "saturated": False}
+            forged["worker_lock_statistics"]["workers"][0][phase]["acquisitions"] = 3
             with self.assertRaises(ValueError):
                 diagnostic.validate_statistics(forged, True)
-        for committed in ([], [True], [-1], [2]):
+        diagnostic.validate_statistics({**model(), "committed": [2]}, True)
+        for committed in ([], [True], [-1]):
             forged = {**model(), "committed": committed}
             with self.assertRaises(ValueError):
                 diagnostic.validate_statistics(forged, True)
+
+    def test_contention_switch_schema_and_bounds_are_explicit(self):
+        value = contention_model()
+        self.assertEqual(diagnostic.validate_contention(value, True), value["scheduler_contention_statistics"])
+        self.assertIsNone(diagnostic.validate_contention({}, False))
+        with self.assertRaises(ValueError):
+            diagnostic.validate_contention(value, False)
+        with self.assertRaises(ValueError):
+            diagnostic.validate_contention({}, True)
+        for key, invalid in (("version", True), ("scope", "worker_only"), ("after_worker_join", False)):
+            forged = contention_model()
+            forged["scheduler_contention_statistics"][key] = invalid
+            with self.assertRaises(ValueError):
+                diagnostic.validate_contention(forged, True)
+        for lock in ("fast_slot", "mailbox"):
+            for key, invalid in (("failed_attempts", -1), ("yield_calls", 1 << 64),
+                                 ("max_wait_ns", 11), ("saturated", True),
+                                 ("contended_acquisitions", 0)):
+                forged = contention_model()
+                forged["scheduler_contention_statistics"][lock][key] = invalid
+                with self.assertRaises(ValueError):
+                    diagnostic.validate_contention(forged, True)
 
     def test_frozen_inputs_detect_mutation_and_missing_files(self):
         with tempfile.TemporaryDirectory() as directory:

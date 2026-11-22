@@ -16,6 +16,7 @@ import verify_scalar_aot as aot
 RATE = 80000
 PHASES = ("claim", "start", "snapshot", "finish")
 NUMBERS = ("acquisitions", "wait_ns", "held_ns", "max_wait_ns", "max_held_ns")
+CONTENTION_NUMBERS = ("contended_acquisitions", "failed_attempts", "yield_calls", "wait_ns", "max_wait_ns")
 
 
 def number(value):
@@ -58,7 +59,35 @@ def validate_statistics(result, enabled):
         measure.require(row["claim"]["acquisitions"] >= row["start"]["acquisitions"], "lock claims missing")
         starts += row["start"]["acquisitions"]
         finishes += row["finish"]["acquisitions"]
-    measure.require(starts == expected and finishes == expected, "lock handler count mismatch")
+    measure.require(starts <= expected and finishes <= expected, "lock phase count exceeds handler count")
+    return value
+
+
+def validate_contention(result, enabled):
+    measure.require(type(enabled) is bool, "contention observation switch")
+    if not enabled:
+        measure.require("scheduler_contention_statistics" not in result, "disabled contention statistics emitted")
+        return None
+    value = result.get("scheduler_contention_statistics")
+    measure.require(type(value) is dict and set(value) == {
+        "version", "scope", "after_worker_join", "fast_slot", "mailbox"
+    }, "scheduler contention fields")
+    for key, expected in {"version": 1, "scope": "whole_scheduler_lifetime", "after_worker_join": True}.items():
+        measure.require(type(value[key]) is type(expected) and value[key] == expected,
+                        f"scheduler contention {key}")
+    for lock in ("fast_slot", "mailbox"):
+        stats = value[lock]
+        measure.require(type(stats) is dict and set(stats) == {*CONTENTION_NUMBERS, "saturated"},
+                        f"{lock} contention fields")
+        measure.require(stats["saturated"] is False, f"{lock} contention statistics saturated")
+        for key in CONTENTION_NUMBERS:
+            number(stats[key])
+        measure.require(stats["max_wait_ns"] <= stats["wait_ns"], f"{lock} max wait exceeds total")
+        measure.require(stats["failed_attempts"] >= stats["contended_acquisitions"],
+                        f"{lock} contended acquisitions lack failed attempts")
+        if stats["contended_acquisitions"] == 0:
+            measure.require(all(stats[key] == 0 for key in CONTENTION_NUMBERS),
+                            f"{lock} uncontended lock has contention data")
     return value
 
 
@@ -171,6 +200,7 @@ def run(output):
                     summary = measure.validate_trace(path, case, rate, result)
                     summary["worker_lock_statistics"] = validate_statistics(result, enabled)
                     summary["worker_cpu_statistics"] = validate_cpu(result, enabled)
+                    summary["scheduler_contention_statistics"] = validate_contention(result, enabled)
                     summary["performance_or_memory_gate_proven"] = False
                     return summary
 

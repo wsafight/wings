@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use wings_abi::ValueType;
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig, SchedulerHandle, SchedulerLockMetrics, StackPool, WingsAllocator,
-    native_memory_ledger,
+    SchedulerConfig, SchedulerContentionMetrics, SchedulerContentionStatistics, SchedulerHandle,
+    SchedulerLockMetrics, StackPool, WingsAllocator, native_memory_ledger,
 };
 
 #[global_allocator]
@@ -141,7 +141,34 @@ fn lock_metrics(metrics: SchedulerLockMetrics) -> Result<Value, String> {
     )
 }
 
-fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<(Value, Value), String> {
+fn contention_metrics(metrics: SchedulerContentionMetrics) -> Result<Value, String> {
+    if metrics.saturated || metrics.max_wait_ns > metrics.wait_ns {
+        return Err("open-loop inconsistent contention metrics".into());
+    }
+    Ok(json!({
+        "contended_acquisitions": metrics.contended_acquisitions,
+        "failed_attempts": metrics.failed_attempts,
+        "yield_calls": metrics.yield_calls,
+        "wait_ns": metrics.wait_ns,
+        "max_wait_ns": metrics.max_wait_ns,
+        "saturated": metrics.saturated,
+    }))
+}
+
+fn contention_statistics(value: SchedulerContentionStatistics) -> Result<Value, String> {
+    Ok(json!({
+        "version": 1,
+        "scope": "whole_scheduler_lifetime",
+        "after_worker_join": true,
+        "fast_slot": contention_metrics(value.fast_slot)?,
+        "mailbox": contention_metrics(value.mailbox)?,
+    }))
+}
+
+fn lock_statistics(
+    handle: &SchedulerHandle,
+    committed: &[i64],
+) -> Result<(Value, Value, Value), String> {
     let expected = committed
         .iter()
         .try_fold(committed.len() as u64, |total, value| {
@@ -177,14 +204,20 @@ fn lock_statistics(handle: &SchedulerHandle, committed: &[i64]) -> Result<(Value
         };
         cpu_workers.push(json!({"worker": worker, "status": status, "nanoseconds": nanoseconds}));
     }
-    if starts != expected || finishes != expected {
-        return Err("open-loop lock handler count mismatch".into());
+    if starts > expected || finishes > expected {
+        return Err("open-loop lock phase count exceeds handler count".into());
     }
+    let contention = contention_statistics(
+        handle
+            .contention_statistics()
+            .ok_or("open-loop contention statistics missing")?,
+    )?;
     Ok((
         json!({"version": 1, "scope": "whole_scheduler_lifetime", "metric": "wall_time_not_cpu",
         "after_worker_join": true, "workers": workers}),
         json!({"version": 1, "scope": "worker_function_including_setup_cleanup",
         "metric": "thread_cpu_time_not_wall", "after_worker_join": true, "workers": cpu_workers}),
+        contention,
     ))
 }
 
@@ -621,9 +654,10 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             "os_footprint_bytes": native_ledger.os_process.map(|p| p.footprint_bytes),
         },
         "environment": {"runtime": "wings", "workers": 2}});
-    if let Some((statistics, cpu)) = statistics {
+    if let Some((statistics, cpu, contention)) = statistics {
         output["worker_lock_statistics"] = statistics;
         output["worker_cpu_statistics"] = cpu;
+        output["scheduler_contention_statistics"] = contention;
     }
     Ok(output)
 }

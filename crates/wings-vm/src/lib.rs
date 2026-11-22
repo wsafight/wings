@@ -68,11 +68,12 @@ pub use record_reply::{RecordReply, RecordReplyValues};
 pub use reply::{BytesReply, IntListReply, ReplyValue, StringReply};
 pub use resources::{Reservation, ResourceAccount, ResourceLevel, Resources};
 pub use scheduler::{
-    Scheduler, SchedulerChildId, SchedulerConfig, SchedulerExitReason, SchedulerExitSnapshot,
-    SchedulerHandle, SchedulerLockMetrics, SchedulerLockStatistics, SchedulerPid,
-    SchedulerRestartStatus, SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics,
-    SchedulerSnapshot, SchedulerSupervisor, SchedulerSupervisorEvent, SchedulerTermination,
-    SchedulerWorkerCpu, SchedulerYieldSample, SchedulerYieldStatistics,
+    Scheduler, SchedulerChildId, SchedulerConfig, SchedulerContentionMetrics,
+    SchedulerContentionStatistics, SchedulerExitReason, SchedulerExitSnapshot, SchedulerHandle,
+    SchedulerLockMetrics, SchedulerLockStatistics, SchedulerPid, SchedulerRestartStatus,
+    SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics, SchedulerSnapshot,
+    SchedulerSupervisor, SchedulerSupervisorEvent, SchedulerTermination, SchedulerWorkerCpu,
+    SchedulerYieldSample, SchedulerYieldStatistics,
 };
 pub use stack_pool::{StackPool, StackPoolStats};
 pub use supervision::{ChildId, RestartPolicy, RestartStatus, ScalarSupervisor, SupervisorEvent};

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wings_vm::{
     RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler, SchedulerConfig,
-    SchedulerLockMetrics,
+    SchedulerContentionMetrics, SchedulerContentionStatistics, SchedulerLockMetrics,
 };
 
 fn limits() -> Resources {
@@ -24,6 +24,30 @@ fn metrics(value: SchedulerLockMetrics) -> Result<Value, String> {
         "acquisitions": value.acquisitions, "wait_ns": value.wait_ns, "held_ns": value.held_ns,
         "max_wait_ns": value.max_wait_ns, "max_held_ns": value.max_held_ns,
         "saturated": value.saturated,
+    }))
+}
+
+fn contention_metrics(value: SchedulerContentionMetrics) -> Result<Value, String> {
+    if value.saturated || value.max_wait_ns > value.wait_ns {
+        return Err("inconsistent or saturated contention statistics".into());
+    }
+    Ok(json!({
+        "contended_acquisitions": value.contended_acquisitions,
+        "failed_attempts": value.failed_attempts,
+        "yield_calls": value.yield_calls,
+        "wait_ns": value.wait_ns,
+        "max_wait_ns": value.max_wait_ns,
+        "saturated": value.saturated,
+    }))
+}
+
+fn contention_statistics(value: SchedulerContentionStatistics) -> Result<Value, String> {
+    Ok(json!({
+        "version": 1,
+        "scope": "whole_scheduler_lifetime",
+        "after_worker_join": true,
+        "fast_slot": contention_metrics(value.fast_slot)?,
+        "mailbox": contention_metrics(value.mailbox)?,
     }))
 }
 
@@ -105,8 +129,15 @@ fn run(directory: &Path, workers: usize, enabled: bool) -> Result<Value, String>
             _ => return Err("lock statistics enablement mismatch".into()),
         }
     }
-    if enabled && (starts != 17 || finishes != 17 || snapshots == 0) {
-        return Err("worker lock phase counts do not match real handlers".into());
+    if enabled && (starts > 17 || finishes > 17 || snapshots == 0) {
+        return Err("worker lock phase counts exceed real handlers".into());
+    }
+    let contention = handle
+        .contention_statistics()
+        .map(contention_statistics)
+        .transpose()?;
+    if contention.is_some() != enabled {
+        return Err("contention statistics enablement mismatch".into());
     }
     if handle.lock_statistics(workers).is_ok() {
         return Err("invalid worker accepted".into());
@@ -118,6 +149,7 @@ fn run(directory: &Path, workers: usize, enabled: bool) -> Result<Value, String>
     Ok(
         json!({"workers": workers, "enabled": enabled, "replies": 16,
             "failed": 1, "committed": [8, 8], "statistics": rows,
+            "contention_statistics": contention,
             "resources_released": true, "bootstrap_bytes": baseline.bytes,
             "remaining_bytes": vm.used().bytes,
         }),

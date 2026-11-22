@@ -1284,6 +1284,17 @@ def main():
             assert case["replies"] == 16 and case["failed"] == 1 and case["committed"] == [8, 8]
             validate_resource_receipt(case)
             assert len(case["statistics"]) == (case["workers"] if case["enabled"] else 0)
+            assert (case["contention_statistics"] is not None) == case["enabled"]
+            if case["enabled"]:
+                contention = case["contention_statistics"]
+                assert contention["version"] == 1
+                assert contention["scope"] == "whole_scheduler_lifetime"
+                assert contention["after_worker_join"] is True
+                for lock in ("fast_slot", "mailbox"):
+                    metrics = contention[lock]
+                    assert metrics["saturated"] is False
+                    assert metrics["max_wait_ns"] <= metrics["wait_ns"]
+                    assert metrics["failed_attempts"] >= metrics["contended_acquisitions"]
             for worker in case["statistics"]:
                 assert type(worker["worker_cpu_ns"]) is int and 0 <= worker["worker_cpu_ns"] <= (1 << 64) - 3
                 for phase in ("claim", "start", "snapshot", "finish"):
@@ -1291,7 +1302,7 @@ def main():
                     assert values["saturated"] is False
                     assert 0 <= values["max_wait_ns"] <= values["wait_ns"]
                     assert 0 <= values["max_held_ns"] <= values["held_ns"]
-        print("Optional worker diagnostics verified: one/two worker real AOT, equal state/failure, stopped lock counts, joined thread CPU and cleanup; not full CPU attribution or performance acceptance")
+        print("Optional worker diagnostics verified: one/two worker real AOT, equal state/failure, phase lock timing, spin contention, joined thread CPU and cleanup; not full CPU attribution or performance acceptance")
         for count in (16, 64, 256):
             density = json.loads(example("scheduler_density", counter, count).stdout)
             assert density["actors"] == count and density["workers"] == 2

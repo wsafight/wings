@@ -24,6 +24,22 @@ pub struct SchedulerLockStatistics {
     pub finish: SchedulerLockMetrics,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SchedulerContentionMetrics {
+    pub contended_acquisitions: u64,
+    pub failed_attempts: u64,
+    pub yield_calls: u64,
+    pub wait_ns: u64,
+    pub max_wait_ns: u64,
+    pub saturated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SchedulerContentionStatistics {
+    pub fast_slot: SchedulerContentionMetrics,
+    pub mailbox: SchedulerContentionMetrics,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum LockPhase {
     Claim,
@@ -46,6 +62,122 @@ struct Counters {
 pub(super) struct WorkerLockObservation {
     pub(super) cpu: super::cpu::WorkerCpuObservation,
     phases: [Counters; 4],
+}
+
+#[derive(Default)]
+pub(super) struct ContentionCounters {
+    acquisitions: AtomicU64,
+    failures: AtomicU64,
+    yields: AtomicU64,
+    wait_ns: AtomicU64,
+    max_wait_ns: AtomicU64,
+    saturated: AtomicBool,
+}
+
+#[derive(Default)]
+pub(super) struct LockContentionObservation {
+    pub(super) fast_slot: ContentionCounters,
+    pub(super) mailbox: ContentionCounters,
+}
+
+impl ContentionCounters {
+    fn add(&self, counter: &AtomicU64, value: u64) {
+        let mut current = counter.load(Ordering::Relaxed);
+        loop {
+            let updated = current.saturating_add(value);
+            match counter.compare_exchange_weak(
+                current,
+                updated,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if current.checked_add(value).is_none() {
+                        self.saturated.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn record(&self, failures: u64, yields: u64, wait: Duration) {
+        let wait = u64::try_from(wait.as_nanos()).unwrap_or_else(|_| {
+            self.saturated.store(true, Ordering::Relaxed);
+            u64::MAX
+        });
+        self.add(&self.acquisitions, 1);
+        self.add(&self.failures, failures);
+        self.add(&self.yields, yields);
+        self.add(&self.wait_ns, wait);
+        self.max_wait_ns.fetch_max(wait, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> SchedulerContentionMetrics {
+        SchedulerContentionMetrics {
+            contended_acquisitions: self.acquisitions.load(Ordering::Relaxed),
+            failed_attempts: self.failures.load(Ordering::Relaxed),
+            yield_calls: self.yields.load(Ordering::Relaxed),
+            wait_ns: self.wait_ns.load(Ordering::Relaxed),
+            max_wait_ns: self.max_wait_ns.load(Ordering::Relaxed),
+            saturated: self.saturated.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl LockContentionObservation {
+    pub(super) fn snapshot(&self) -> SchedulerContentionStatistics {
+        SchedulerContentionStatistics {
+            fast_slot: self.fast_slot.snapshot(),
+            mailbox: self.mailbox.snapshot(),
+        }
+    }
+}
+
+pub(super) fn spin_lock(lock: &AtomicBool, observation: Option<&ContentionCounters>) {
+    if observation.is_none() {
+        let mut spins = 0u32;
+        while lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            if spins < 16 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        return;
+    }
+
+    let observation = observation.expect("checked contention observation");
+    let mut spins = 0u32;
+    let mut failures = 0u64;
+    let mut yields = 0u64;
+    let mut contended_at = None;
+    loop {
+        match lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(locked) => {
+                failures = failures.saturating_add(1);
+                if locked {
+                    contended_at.get_or_insert_with(Instant::now);
+                }
+                if spins < 16 {
+                    std::hint::spin_loop();
+                    spins += 1;
+                } else {
+                    yields = yields.saturating_add(1);
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+    if let Some(contended_at) = contended_at {
+        observation.record(failures, yields, contended_at.elapsed());
+    }
 }
 
 impl Counters {
@@ -252,6 +384,59 @@ mod tests {
     }
 
     #[test]
+    fn contention_counters_track_failures_yields_wait_and_saturation() {
+        let counters = ContentionCounters::default();
+        counters.record(3, 1, Duration::from_nanos(7));
+        counters.record(5, 2, Duration::from_nanos(11));
+        assert_eq!(
+            counters.snapshot(),
+            SchedulerContentionMetrics {
+                contended_acquisitions: 2,
+                failed_attempts: 8,
+                yield_calls: 3,
+                wait_ns: 18,
+                max_wait_ns: 11,
+                saturated: false,
+            }
+        );
+        counters.failures.store(u64::MAX, Ordering::Relaxed);
+        counters.record(1, 0, Duration::ZERO);
+        assert!(counters.snapshot().saturated);
+    }
+
+    #[test]
+    fn uncontended_spin_lock_does_not_report_contention() {
+        let lock = AtomicBool::new(false);
+        let counters = ContentionCounters::default();
+        spin_lock(&lock, Some(&counters));
+        lock.store(false, Ordering::Release);
+        assert_eq!(counters.snapshot(), SchedulerContentionMetrics::default());
+    }
+
+    #[test]
+    fn spin_lock_records_a_waiter_after_the_lock_is_released() {
+        let lock = AtomicBool::new(true);
+        let counters = ContentionCounters::default();
+        let (started, receiver) = std::sync::mpsc::sync_channel(0);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                started.send(()).unwrap();
+                spin_lock(&lock, Some(&counters));
+                lock.store(false, Ordering::Release);
+            });
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+            lock.store(false, Ordering::Release);
+            worker.join().unwrap();
+        });
+        let statistics = counters.snapshot();
+        assert_eq!(statistics.contended_acquisitions, 1);
+        assert!(statistics.failed_attempts > 0);
+        assert!(statistics.max_wait_ns <= statistics.wait_ns);
+        assert!(!statistics.saturated);
+    }
+
+    #[test]
     fn lock_statistics_concurrent_queries_do_not_lose_records() {
         let counters = Counters::default();
         std::thread::scope(|scope| {
@@ -285,6 +470,7 @@ mod tests {
             let handle = scheduler.handle();
             assert!(handle.lock_statistics(2).is_err());
             assert_eq!(handle.lock_statistics(0).unwrap().is_some(), enabled);
+            assert_eq!(handle.contention_statistics().is_some(), enabled);
             if let Some(statistics) = handle.lock_statistics(0).unwrap() {
                 assert_eq!(
                     statistics.worker_cpu,
@@ -395,7 +581,9 @@ mod tests {
         let observed = scheduler.handle.shared._charge.amount().bytes;
         assert_eq!(
             observed - unobserved,
-            (2 * std::mem::size_of::<WorkerLockObservation>()) as u64
+            (2 * std::mem::size_of::<WorkerLockObservation>()
+                + std::mem::size_of::<LockContentionObservation>()
+                + 2 * std::mem::size_of::<usize>()) as u64
         );
         let handle = scheduler.handle();
         drop(scheduler);
