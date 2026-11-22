@@ -17,9 +17,9 @@ Wings 用 Rust 实现运行时，通过 Cranelift 将 `wings-lang` 业务代码 
 
 - **语言与前端**：支持 `actor` 与顶层/局部不可变 `struct`、多 `state` 绑定、`int` / `bool` / `unit` / `[int]` / `bytes` / `str`、类型化 `pid<Actor>` 与可空 `pid?<Actor>`、分支与 `while` 循环、受管栈帧内的有界函数递归（含互递归），以及配套 `wings-lsp` 语言服务器。
 - **Actor 交互与容错**：支持 `spawn(Actor)`、单向消息（`!` / `.tell`）、带超时回调的异步请求（`.ask(..., timeout: ..., then: ...)`）、延时自定时消息（`send_after`）以及进程监控通知（`monitor`）。
-- **编译与运行时**：支持精确 CFG GC 根计算、进程内分块非移动 mark-sweep GC、O(1) `slot + generation` 能力寻址、可复用协程栈池、无锁快速邮箱、多 worker 抢占式 `Scheduler` 与 `VM -> Tenant -> Process` 三级资源准入。
+- **编译与运行时**：支持精确 CFG GC 根计算、进程内分块非移动 mark-sweep GC、O(1) `slot + generation` 能力寻址、可复用协程栈池、无锁快速邮箱、多 worker 抢占式 `Scheduler`、`VM -> Tenant -> Process` 三级资源准入，以及全局分配器与 OS 物理内存对账（`WingsAllocator` / `native_memory_ledger`）。
 - **应用打包与网络接入**：支持 `wings-compile build-app` 打包多 Actor 应用，并通过 `wings-vm serve` 提供 `stdio`、`--tcp`（JSON Lines）与 `--http`（JSON-RPC + `/healthz`）服务入口。
-- **当前未闭环项**：跨文件模块、语言级声明式监督树尚未实现；动态装载器/系统分配器内部开销尚未完全纳入三级账本；同负载 BEAM 的 hot-queue 服务 p99 与 cgroup CPU 硬配额双门禁仍在推进中（详见[评测与验收](docs/zh/evaluation.md)与[风险与里程碑](docs/zh/roadmap.md)）。
+- **配对基准与当前边界**：双平台配对基准流水线（`.github/workflows/benchmark.yml`）已在 Linux x86-64（`cgroup v2` 硬 2-vCPU 配额）与 macOS AArch64 上通过 `hot-queue`、`sparse-256`（1 万 Actor）、`mixed-4k` 与 `fairness` 四组 BEAM 对照门禁。当前边界包括：Linux 单点争用 `hot-queue` 服务 p99（约 `16 µs`）绝对值仍高于 BEAM（约 `5 µs`）、Rust 全局分配器之外的系统动态装载器（`dyld`/`ld.so`）元数据按整进程 RSS/PSS/footprint 口径对账，以及跨文件模块导入与声明式监督树位于后续里程碑（详见[评测与验收](docs/zh/evaluation.md)与[风险与里程碑](docs/zh/roadmap.md)）。
 
 ## 快速开始
 

@@ -8,6 +8,7 @@ fn fixed_core_invocation_reservation_covers_owned_payload_and_control() {
     let maximum = std::mem::size_of::<Invocation>()
         + std::mem::size_of::<ExecutionCoroutine>()
         + std::mem::size_of::<Checkpoint>()
+        + std::mem::size_of::<ProcessEffect>()
         + std::mem::size_of::<InvocationControl<'_>>()
         + std::mem::size_of::<ListPayload>()
         + std::mem::size_of::<BytePayload>()

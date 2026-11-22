@@ -484,20 +484,31 @@ unsafe fn prepare_effect_checkpoint(
             request.string_mask,
         )
     }?;
+    let boxed_effect = {
+        let layout = std::alloc::Layout::new::<ProcessEffect>();
+        let pointer = unsafe { std::alloc::alloc(layout) }.cast::<ProcessEffect>();
+        if pointer.is_null() {
+            return Err(wings_abi::STATUS_HEAP_EXHAUSTED);
+        }
+        unsafe {
+            pointer.write(ProcessEffect {
+                operation: request.operation,
+                target: request.target,
+                handler: request.handler as usize,
+                arguments: copied,
+                count,
+                callback: request.callback as usize,
+                timeout_ms: request.timeout_ms,
+                lists,
+                bytes,
+            });
+            Box::from_raw(pointer)
+        }
+    };
     Ok(Checkpoint {
         remaining_steps: context.remaining_steps,
         heap: unsafe { context.heap_data.cast::<AotHeap>().as_ref() }.map(AotHeap::stats),
-        effect: Some(ProcessEffect {
-            operation: request.operation,
-            target: request.target,
-            handler: request.handler as usize,
-            arguments: copied,
-            count,
-            callback: request.callback as usize,
-            timeout_ms: request.timeout_ms,
-            lists,
-            bytes,
-        }),
+        effect: Some(boxed_effect),
         yield_requested: None,
     })
 }

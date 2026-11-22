@@ -433,7 +433,19 @@ unsafe fn root_incoming(
         .heap
         .import_reference(encoded)
         .map_err(|_| STATUS_INVALID_ROOT)?;
-    heap.incoming[index] = Some(reference);
+    let slots = match heap.incoming.as_mut() {
+        Some(slots) => slots,
+        None => {
+            let layout = std::alloc::Layout::new::<[Option<HeapRef>; 64]>();
+            let pointer = unsafe { std::alloc::alloc(layout) }.cast::<[Option<HeapRef>; 64]>();
+            if pointer.is_null() {
+                return Err(STATUS_HEAP_EXHAUSTED);
+            }
+            unsafe { pointer.write([None; 64]) };
+            heap.incoming.insert(unsafe { Box::from_raw(pointer) })
+        }
+    };
+    slots[index] = Some(reference);
     heap.incoming_mask |= 1u64 << index;
     Ok(())
 }

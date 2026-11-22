@@ -4,12 +4,18 @@
 
 main(Arguments) ->
     try
-        {Count, Destination} = case Arguments of
-            ["10"] -> {100, none}; ["30"] -> {300, none};
-            ["--measure", Path] when Path =/= [] -> {900000, Path}; _ -> throw(invalid) end,
-        need(erlang:system_info(otp_release) =:= "29"),
+        {Count, WarmupSec, SampleSec, Destination} = case Arguments of
+            ["10"] -> {100, 0, 0, none};
+            ["30"] -> {300, 0, 0, none};
+            ["--measure", Path] when Path =/= [] ->
+                {W, S} = bench_window(),
+                {10000 * (W + S), W, S, Path};
+            _ -> throw(invalid)
+        end,
+        Otp = erlang:system_info(otp_release),
+        need(lists:member(Otp, ["27", "28", "29"])),
         load_gate(),
-        emit(run(Count, Destination)), halt(0)
+        emit(run(Count, WarmupSec, SampleSec, Destination)), halt(0)
     catch
         throw:invalid -> emit(#{version => version(Arguments), status => <<"invalid">>}), halt(2);
         _:_ -> emit(#{version => version(Arguments), status => <<"oracle_error">>}), halt(3)
@@ -21,6 +27,24 @@ version(_) -> 7.
 need(true) -> ok;
 need(false) -> throw(invalid).
 
+number(Text) ->
+    need(Text =/= [] andalso lists:all(fun(Digit) -> Digit >= $0 andalso Digit =< $9 end, Text)),
+    try list_to_integer(Text) catch _:_ -> throw(invalid) end.
+
+bench_window() ->
+    case os:getenv("WINGS_BENCH_WINDOW") of
+        false -> {30, 60};
+        "" -> {30, 60};
+        Raw ->
+            case string:split(Raw, ",", all) of
+                [WText, SText] ->
+                    W = number(WText), S = number(SText),
+                    need(W >= 1 andalso W =< 60 andalso S >= 1 andalso S =< 120),
+                    {W, S};
+                _ -> throw(invalid)
+            end
+    end.
+
 load_gate() ->
     Path = filename:join(filename:dirname(escript:script_name()), "beam_bounded_mailbox.erl"),
     {ok, beam_bounded_mailbox, Binary, []} = compile:file(Path, [binary, warnings_as_errors, return_errors, return_warnings]),
@@ -30,9 +54,9 @@ remaining(Deadline) ->
     Left = Deadline - erlang:monotonic_time(millisecond),
     case Left > 0 of true -> Left; false -> error(stage_deadline) end.
 
-run(Count, Destination) ->
+run(Count, WarmupSec, SampleSec, Destination) ->
     Measure = Destination =/= none,
-    Deadline = erlang:monotonic_time(millisecond) + case Measure of true -> 120000; false -> 3000 end,
+    Deadline = erlang:monotonic_time(millisecond) + case Measure of true -> (WarmupSec + SampleSec + 30) * 1000; false -> 3000 end,
     Recorder = case Measure of
         true -> {ok, File} = file:open(Destination, [write, binary, raw, exclusive]), {trace, File, [], 0};
         false -> {samples, array:new(Count, {fixed, true})}
@@ -49,10 +73,11 @@ run(Count, Destination) ->
         receive {ready, Pid, Identity} -> ok after remaining(Deadline) -> error(stage_deadline) end
     end, Entries),
     Routes = maps:from_list([{Identity, {Pid, Gate}} || {Identity, Pid, _, Gate} <- Entries]),
-    Initial = #{next => 0, count => Count, pending => #{}, hot_pending => none, hot => [], hot_count => 0,
+    Initial = #{next => 0, count => Count, warmup_sec => WarmupSec, sample_sec => SampleSec,
+        pending => #{}, hot_pending => none, hot => [], hot_count => 0,
         values => #{}, received => #{}, routes => Routes, recorder => Recorder, sampling => false,
         start => erlang:monotonic_time(nanosecond), deadline => Deadline},
-    case Measure of true -> emit(#{event => <<"start">>, warmup_seconds => 30, sample_seconds => 60}); false -> ok end,
+    case Measure of true -> emit(#{event => <<"start">>, warmup_seconds => WarmupSec, sample_seconds => SampleSec}); false -> ok end,
     Result = loop(Initial),
     MeasurementElapsed = elapsed(Result),
     Values = maps:get(values, Result),
@@ -72,7 +97,7 @@ run(Count, Destination) ->
       hot => lists:reverse(maps:get(hot, Result)), states_verified => true,
       measurement_elapsed_ns => MeasurementElapsed,
       committed => [maps:get(Identity, Values, 0) || Identity <- lists:seq(1, 101)],
-      environment => #{runtime => <<"beam">>, otp => <<"29">>, schedulers => erlang:system_info(schedulers_online)}}.
+      environment => #{runtime => <<"beam">>, otp => list_to_binary(erlang:system_info(otp_release)), schedulers => erlang:system_info(schedulers_online)}}.
 
 initialize(Parent, Identity) ->
     State = <<0:64/signed-big, Identity:64, 0:1920>>,
@@ -116,8 +141,9 @@ planned(Index) -> Index div 100 * 10000000.
 loop(State) ->
     _ = remaining(maps:get(deadline, State)),
     Current = sampling(start_hot(collect(State, 32))),
-    #{next := Next, count := Count, pending := Pending, hot_pending := Hot} = Current,
-    Active = case maps:get(recorder, Current) of {trace, _, _, _} -> elapsed(Current) < 90000000000; _ -> false end,
+    #{next := Next, count := Count, warmup_sec := WarmupSec, sample_sec := SampleSec, pending := Pending, hot_pending := Hot} = Current,
+    TotalNs = (WarmupSec + SampleSec) * 1000000000,
+    Active = case maps:get(recorder, Current) of {trace, _, _, _} -> elapsed(Current) < TotalNs; _ -> false end,
     case Next =:= Count andalso map_size(Pending) =:= 0 andalso Hot =:= none andalso not Active of
         true -> Current;
         false ->
@@ -127,8 +153,9 @@ loop(State) ->
             end
     end.
 
-start_hot(#{next := Next, count := Count, hot_pending := none, hot_count := Completed, routes := Routes, recorder := Recorder} = State) ->
-    Active = case Recorder of {trace, _, _, _} -> elapsed(State) < 90000000000; _ -> false end,
+start_hot(#{next := Next, count := Count, warmup_sec := WarmupSec, sample_sec := SampleSec, hot_pending := none, hot_count := Completed, routes := Routes, recorder := Recorder} = State) ->
+    TotalNs = (WarmupSec + SampleSec) * 1000000000,
+    Active = case Recorder of {trace, _, _, _} -> elapsed(State) < TotalNs; _ -> false end,
     case Next < Count orelse Active of
         true ->
             true = Completed < case Recorder of {trace, _, _, _} -> 1000000; _ -> 10000 end,
@@ -183,8 +210,8 @@ collect(#{routes := Routes, hot_pending := Hot, hot := History, hot_count := Com
 
 emit(Value) -> io:put_chars([json:encode(Value), $\n]).
 
-sampling(#{recorder := {trace, _, _, _}, sampling := false} = State) ->
-    case elapsed(State) >= 30000000000 of
+sampling(#{recorder := {trace, _, _, _}, warmup_sec := WarmupSec, sampling := false} = State) ->
+    case elapsed(State) >= WarmupSec * 1000000000 of
         true -> emit(#{event => <<"sampling">>, elapsed_ns => elapsed(State)}), State#{sampling := true};
         false -> State
     end;

@@ -21,7 +21,7 @@
 ## 无锁快速邮箱与 M:N 调度器
 
 - **单发送者 FIFO 与显式背压**：每个 Actor 拥有固定容量邮箱，满槽立即返回显式 `mailbox_full` 错误，不静默丢消息，也不无限扩张内存。
-- **无锁投递与批量消费快路径**：`Scheduler` 为活跃槽位维护代次绑定的快速邮箱通道，常见跨线程投递与同 Actor 连续积压消息批处理（有界 batch）无需反复争抢全局调度锁。
+- **无锁投递、亲和性与批量快路径**：`Scheduler` 维护代次绑定的无锁快速邮箱、按 worker 定向唤醒位图（`WorkerWakeHub`）、优先复用上次 worker 且空闲窃取的亲和路由，以及无竞争时的有界积压批处理（单轮上限 32 条），并将短路径消息与已挂起长任务按 1:1 切片交错推进。
 - **抢占式公平调度**：
   - 编译代码在分支/循环/调用点扣减 `slice_remaining` 步数片，同时后台计时线程按时间片（quantum）原子置位 `yield_request`。
   - 长计算或死循环 handler 到达安全点后自动挂起活栈并排回就绪队列尾部，同 worker 上的其他健康 Actor 继续获得推进机会。
@@ -36,7 +36,7 @@
 
 ## 三级资源准入与外部服务入口
 
-- **三级四维账本（`Resources`）**：围绕 `bytes`、`processes`、`messages`、`requests` 四个维度建立 `VM -> Tenant -> Process` 树形账户。容量预留在分配前原子扣减，任一层级超限立即回滚，跨层级转移只更新非共享祖先路径，句柄释放（`Drop`）自动退账。
+- **三级四维账本（`Resources`）与全局分配器对账（`WingsAllocator`）**：围绕 `bytes`、`processes`、`messages`、`requests` 四个维度建立 `VM -> Tenant -> Process` 树形账户。容量预留在分配前原子扣减，任一层级超限立即回滚，跨层级转移只更新非共享祖先路径，句柄释放（`Drop`）自动退账。同时通过 `WingsAllocator` 与 `native_memory_ledger` 统计全局 Rust 堆请求字节、尺寸分级可用字节、分配器碎片、峰值占用、可选全局硬上限及内核物理占用（macOS `ri_phys_footprint`、Linux `/proc/self/smaps_rollup` `Pss`）。
 - **运行入口**：
   - `wings-vm run --trusted <artifact-dir>`：单 Actor 原生标准输入/输出 JSON Lines 执行器。
   - `wings-vm serve --trusted <dir> [--workers N] [--tcp ADDR | --http ADDR]`：支持单模块或多 Actor 应用包（`bundle.json`），内置有界连接与请求体限制，支持结构化 JSON 参数自动展开为具名 `struct` / `str` / `bytes` / `[int]` 消息并流式序列化具名记录回复。

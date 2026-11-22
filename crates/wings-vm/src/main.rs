@@ -1,7 +1,12 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use wings_vm::{ResourceAccount, Resources, ScalarModule, Scheduler, SchedulerConfig, StackPool};
+use wings_vm::{
+    ResourceAccount, Resources, ScalarModule, Scheduler, SchedulerConfig, StackPool, WingsAllocator,
+};
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: WingsAllocator = WingsAllocator::new();
 
 mod cli;
 mod cli_args;

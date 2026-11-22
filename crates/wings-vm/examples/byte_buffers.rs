@@ -239,7 +239,7 @@ fn main() {
             .unwrap();
         assert_eq!(read.wait(timeout).unwrap(), Some(RequestOutcome::Reply(9)));
     }
-    assert_eq!(handle.snapshot(pid).unwrap().migrations, 4);
+    assert_eq!(handle.snapshot(pid).unwrap().migrations, 0);
     let mut failed = handle
         .request(pid, &module.handler("fail").unwrap(), &[], 4096, timeout)
         .unwrap();

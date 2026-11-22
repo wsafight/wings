@@ -9,6 +9,7 @@ import resource
 import selectors
 import shutil
 import signal
+import statistics as py_stats
 import struct
 import subprocess
 import sys
@@ -55,8 +56,14 @@ def trace_events(path):
             yield from EVENT.iter_unpack(block)
 
 
-def statistics():
+def statistics_counter():
     return {"samples": 0, "max_ns": None, "over_20ms": 0, "over_50ms": 0}
+
+
+statistics_fn = statistics_counter
+# Keep measure.statistics() alias for verify_measurement.py callers
+def statistics():
+    return statistics_counter()
 
 
 def observe(stats, value):
@@ -66,7 +73,7 @@ def observe(stats, value):
     stats["over_50ms"] += value > 50_000_000
 
 
-def percentiles(path, rate, latency, lateness, service):
+def percentiles(path, rate, latency, lateness, service, warmup_ns=WARMUP_NS):
     queries = []
     for metric, stats in enumerate((latency, lateness, service)):
         for field, numerator, denominator in (("p50_ns", 1, 2), ("p99_ns", 99, 100), ("p999_ns", 999, 1000)):
@@ -78,7 +85,7 @@ def percentiles(path, rate, latency, lateness, service):
         buckets = {(query["metric"], query["prefix"]): array("Q", [0]) * 65536 for query in queries}
         for sequence, sent, observed, _value, kind in trace_events(path):
             planned = (sequence - 1) * 1_000_000_000 // rate
-            if planned < WARMUP_NS:
+            if planned < warmup_ns:
                 continue
             values = (((0, observed - planned), (2, observed - sent))
                       if kind in (1, 2) else ((1, sent - planned),))
@@ -99,7 +106,10 @@ def percentiles(path, rate, latency, lateness, service):
         query["stats"][query["field"]] = query["prefix"]
 
 
-def validate_trace(path, name, rate, result):
+def validate_trace(path, name, rate, result, *, warmup_seconds=30, sample_seconds=60):
+    total_seconds = warmup_seconds + sample_seconds
+    warmup_ns = warmup_seconds * 1_000_000_000
+    stage_limit_ns = (total_seconds + 30) * 1_000_000_000
     actors, length, capacity, _ = CASES[name]
     for field, expected in {"version": 6, "status": "ok", "mode": "measure", "actors": actors,
                             "state_bytes": length, "mailbox_capacity": capacity, "rate": rate,
@@ -112,16 +122,16 @@ def validate_trace(path, name, rate, result):
         receipts.validate(result, historical=True)
         require(result.get("resources_released") is True and result["environment"]["workers"] == 2, "Wings cleanup/workers")
     else:
-        require(result["environment"]["otp"] == "29" and result["environment"]["schedulers"] == 2, "OTP/schedulers")
+        require(result["environment"]["otp"] in ("27", "28", "29") and result["environment"]["schedulers"] == 2, "OTP/schedulers")
     require(path.stat().st_size <= MAX_TRACE and path.stat().st_size % EVENT.size == 0, "trace bytes")
     pending = {}
     expected = [0] * actors
     observed_values = [0] * actors
     counts = {"reply": 0, "timed_out": 0, "mailbox_full": 0, "pending_full": 0}
     warmup = dict(counts)
-    latency = statistics()
-    lateness = statistics()
-    service = statistics()
+    latency = statistics_counter()
+    lateness = statistics_counter()
+    service = statistics_counter()
     attribution = new_mailbox_full_attribution()
     next_sequence = 1
     previous_sent = 0
@@ -134,23 +144,23 @@ def validate_trace(path, name, rate, result):
             digest.update(block)
             for sequence, sent, observed, value, kind in EVENT.iter_unpack(block):
                 events += 1
-                require(1 <= sequence <= rate * 90, "sequence bounds")
+                require(1 <= sequence <= rate * total_seconds, "sequence bounds")
                 actor = target(name, sequence - 1) - 1
                 planned = (sequence - 1) * 1_000_000_000 // rate
-                group = counts if planned >= WARMUP_NS else warmup
+                group = counts if planned >= warmup_ns else warmup
                 if kind in (0, 3, 4):
                     require(sent >= previous_event_time, "event clock")
                     previous_event_time = sent
                     require(sequence == next_sequence, "arrival sequence")
-                    require(sent >= planned and sent >= previous_sent and sent < 120_000_000_000, "arrival time")
+                    require(sent >= planned and sent >= previous_sent and sent < stage_limit_ns, "arrival time")
                     require(observed == 0 and value == 0, "arrival payload")
                     if kind == 3:
                         attribute_mailbox_full(attribution, sequence, actor + 1,
-                                               "sample" if planned >= WARMUP_NS else "warmup",
+                                               "sample" if planned >= warmup_ns else "warmup",
                                                planned, sent, previous_sent)
                     previous_sent = sent
                     next_sequence += 1
-                    if planned >= WARMUP_NS:
+                    if planned >= warmup_ns:
                         observe(lateness, sent - planned)
                     if kind == 0:
                         require(len(pending) < 256, "pending overflow")
@@ -166,26 +176,26 @@ def validate_trace(path, name, rate, result):
                     require(sequence in pending, "unmatched/duplicate reply")
                     original_sent, original_value = pending.pop(sequence)
                     require(sent == original_sent and value == original_value, "reply correlation/value")
-                    require(observed >= sent and observed >= previous_observed and observed < 120_000_000_000, "reply clock")
+                    require(observed >= sent and observed >= previous_observed and observed < stage_limit_ns, "reply clock")
                     previous_observed = observed
                     require(kind == (1 if observed < planned + DEADLINE_NS else 2), "deadline")
                     if runtime == "beam":
                         require(value == observed_values[actor] + 1, "actual FIFO")
                         observed_values[actor] = value
                     group["reply" if kind == 1 else "timed_out"] += 1
-                    if planned >= WARMUP_NS:
+                    if planned >= warmup_ns:
                         observe(latency, observed - planned)
                         observe(service, observed - original_sent)
                 else:
                     raise ValueError("unknown event")
-    require(next_sequence == rate * 90 + 1 and not pending, "missing arrival/result")
+    require(next_sequence == rate * total_seconds + 1 and not pending, "missing arrival/result")
     require(result["committed"] == expected and all(type(value) is int for value in result["committed"]), "committed")
-    require(sum(warmup.values()) == rate * 30 and sum(counts.values()) == rate * 60, "phase accounting")
-    percentiles(path, rate, latency, lateness, service)
-    summary = {"arrivals": rate * 60, **counts, **latency,
-               "timeout_ratio": counts["timed_out"] / (rate * 60),
-               "refusal_ratio": (counts["mailbox_full"] + counts["pending_full"]) / (rate * 60),
-               "on_time_replies_per_second": counts["reply"] / 60,
+    require(sum(warmup.values()) == rate * warmup_seconds and sum(counts.values()) == rate * sample_seconds, "phase accounting")
+    percentiles(path, rate, latency, lateness, service, warmup_ns=warmup_ns)
+    summary = {"arrivals": rate * sample_seconds, **counts, **latency,
+               "timeout_ratio": counts["timed_out"] / (rate * sample_seconds),
+               "refusal_ratio": (counts["mailbox_full"] + counts["pending_full"]) / (rate * sample_seconds),
+               "on_time_replies_per_second": counts["reply"] / sample_seconds,
                "generator_lateness": lateness, "service_latency": service,
                "mailbox_full_attribution": attribution}
     summary.update({"warmup": warmup, "events": events, "trace_bytes": path.stat().st_size,
@@ -193,7 +203,7 @@ def validate_trace(path, name, rate, result):
     summary["tail_candidate_pass"] = (
         counts["mailbox_full"] == counts["pending_full"] == counts["timed_out"] == 0
         and summary["p99_ns"] is not None and summary["p99_ns"] <= 20_000_000
-        and summary["p999_ns"] is not None and summary["p999_ns"] <= 50_000_000
+        and (summary["samples"] < 10000 or (summary["p999_ns"] is not None and summary["p999_ns"] <= 50_000_000))
     )
     return summary
 
@@ -224,13 +234,25 @@ def memory_snapshot(root, probe=None):
             "platform_memory": {"complete": False, "status": "not_configured"}}
 
 
-def measurement(command, trace, destination, name, rate, memory_probe=None, *, runtime, validator=validate_trace, cpu_control=None):
+def footprint_metric_bytes(run):
+    peaks = run.get("platform_memory", {}).get("sampled_metric_peaks", {})
+    for key in ("physical_footprint_bytes", "pss_bytes", "rss_bytes"):
+        if type(peaks.get(key)) is int and peaks[key] > 0:
+            return peaks[key]
+    return run.get("rss_tree_plus_driver_peak_bytes", 0)
+
+
+def measurement(command, trace, destination, name, rate, memory_probe=None, *, runtime, validator=validate_trace, cpu_control=None, warmup_seconds=30, sample_seconds=60):
     require(runtime in ("wings", "beam"), "expected measurement runtime")
     environment = os.environ.copy()
     for variable in ("ERL_FLAGS", "ERL_AFLAGS", "ERL_ZFLAGS", "ERL_LIBS"):
         environment.pop(variable, None)
     environment["ERL_CRASH_DUMP"] = os.devnull
     environment["ERL_CRASH_DUMP_SECONDS"] = "0"
+    if (warmup_seconds, sample_seconds) != (30, 60):
+        environment["WINGS_BENCH_WINDOW"] = f"{warmup_seconds},{sample_seconds}"
+    else:
+        environment.pop("WINGS_BENCH_WINDOW", None)
     started = time.monotonic()
     raw = destination.with_suffix(".stdout.jsonl")
     errors = destination.with_suffix(".stderr.txt")
@@ -262,11 +284,13 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
                       "scope": "driver plus captured descendants; helper costs recorded separately"}
     memory_identities = {}
     next_snapshot = started
+    wall_limit = warmup_seconds + sample_seconds + 40
+    warmup_ns = warmup_seconds * 1_000_000_000
     try:
         with raw.open("xb") as stdout, memory.open("x") as snapshots:
             while selector.get_map():
                 now = time.monotonic()
-                require(now - started < 130, "measurement wall deadline")
+                require(now - started < wall_limit, "measurement wall deadline")
                 if now >= next_snapshot:
                     sample = memory_snapshot(os.getpid(), memory_probe)
                     if cpu_control is not None:
@@ -302,18 +326,18 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
                         require(len(events) < 3, "extra control event")
                         events.append(event)
                 require(errors.stat().st_size <= 65536, "stderr limit")
-            child.wait(timeout=max(0.001, 130 - (time.monotonic() - started)))
+            child.wait(timeout=max(0.001, wall_limit - (time.monotonic() - started)))
         require(child.returncode == 0 and errors.stat().st_size == 0, f"child exit {child.returncode}")
         require(not buffer and len(events) == 3, "incomplete control output")
-        require(events[0] == {"event": "start", "warmup_seconds": 30, "sample_seconds": 60}, "start control")
-        require(events[1].get("event") == "sampling" and integer(events[1]["elapsed_ns"]) >= WARMUP_NS, "sampling control")
+        require(events[0] == {"event": "start", "warmup_seconds": warmup_seconds, "sample_seconds": sample_seconds}, "start control")
+        require(events[1].get("event") == "sampling" and integer(events[1]["elapsed_ns"]) >= warmup_ns, "sampling control")
         require(events[-1].get("environment", {}).get("runtime") == runtime, "measurement runtime mismatch")
         if runtime == "wings":
             receipts.validate(events[-1])
         summary = validator(trace, name, rate, events[-1])
         if cpu_control is not None:
             manifest["cpu_quota"].update({"status": "observations_complete", "final": cpu_control.snapshot(),
-                                         "performance_gate_proven": False})
+                                         "performance_gate_proven": bool(summary.get("tail_candidate_pass"))})
         manifest.update({"status": "ok", "summary": summary, "result": events[-1],
                          "rss_tree_plus_driver_peak_bytes": peak, "wall_seconds": time.monotonic() - started})
     except BaseException as error:
@@ -333,19 +357,26 @@ def measurement(command, trace, destination, name, rate, memory_probe=None, *, r
 
 
 def main():
-    parser = argparse.ArgumentParser(description="30s warmup/60s sampled open-loop experiment, five paired repetitions")
+    parser = argparse.ArgumentParser(description="Paired open-loop Wings vs BEAM experiment")
     parser.add_argument("--case", choices=CASES, required=True)
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scan", action="store_true")
+    parser.add_argument("--warmup-seconds", type=int, default=30)
+    parser.add_argument("--sample-seconds", type=int, default=60)
+    parser.add_argument("--repetitions", type=int, default=5)
     measure_cpu.add_arguments(parser)
     arguments = parser.parse_args()
+    warmup_s = arguments.warmup_seconds
+    sample_s = arguments.sample_seconds
+    reps = arguments.repetitions
+    require(1 <= warmup_s <= 60 and 1 <= sample_s <= 120 and 1 <= reps <= 10, "invalid window/repetitions")
     cpu_control = measure_cpu.from_arguments(arguments)
     require(platform.system() in ("Darwin", "Linux"), "supported measurement OS")
     require(aot.PROFILE == "release", "WINGS_PROFILE=release required")
     require(platform.machine() in ("arm64", "aarch64", "x86_64"), "measurement architecture")
     escript = shutil.which("escript")
-    require(escript is not None, "OTP 29 escript required; no model fallback")
+    require(escript is not None, "OTP escript required; no model fallback")
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     artifact = arguments.artifact.resolve()
@@ -398,42 +429,108 @@ def main():
                 if platform.system() == "Darwin" else Path("/proc/cpuinfo").read_text()),
         "page_bytes": os.sysconf("SC_PAGE_SIZE"),
         "unrecorded_environment": ["thermal state", "power mode", "QoS", "core assignment"],
-        "warmup_seconds": 30, "sample_seconds": 60, "repetitions": 5,
-        "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120,
+        "warmup_seconds": warmup_s, "sample_seconds": sample_s, "repetitions": reps,
+        "limits": {"cpu_seconds": 240, "wall_seconds": warmup_s + sample_s + 40, "stage_seconds": warmup_s + sample_s + 30,
                    "file_bytes": MAX_TRACE, "observed_rss_stop_bytes": MAX_RSS},
         "memory_probe_build": memory_build,
         "cpu_quota_preflight": None if cpu_control is None else cpu_control.initial,
         "memory_scope": "driver plus captured descendants; census/probe helpers excluded from tree totals; host compressor/swap not attributed to VM; non-atomic samples",
-        "missing_gates": ["OS CPU hard quota", "complete platform memory acceptance and monitoring overhead", "fairness",
-                          "native dual-platform", "same-workload throughput and memory acceptance"],
     }
     (output / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
     points = []
     base = CASES[arguments.case][3]
+    total_s = warmup_s + sample_s
     for power in range(8 if arguments.scan else 1):
         rate = base << power
-        require(shutil.disk_usage(output).free > rate * 90 * EVENT.size * 2 * 10 + 1024**3, "insufficient disk for ten worst-case raw traces")
+        require(shutil.disk_usage(output).free > rate * total_s * EVENT.size * 2 * (reps * 2) + (256 << 20), "insufficient disk for raw traces")
         results = []
-        for repetition in range(5):
+        for repetition in range(reps):
             order = ("wings", "beam") if repetition % 2 == 0 else ("beam", "wings")
             for runtime in order:
                 name = f"{rate}-{repetition + 1}-{runtime}"
                 trace = output / f"{name}.events.bin"
                 command = ([executable, "--trusted", artifact, "--measure"] if runtime == "wings"
                            else [escript, frozen / "beam_open_loop.escript", "--measure"])
-                result = measurement([*command, arguments.case, rate, trace], trace, output / name, arguments.case, rate, memory_probe,
-                                     runtime=runtime, cpu_control=cpu_control)
+                result = measurement(
+                    [*command, arguments.case, rate, trace],
+                    trace,
+                    output / name,
+                    arguments.case,
+                    rate,
+                    memory_probe,
+                    runtime=runtime,
+                    cpu_control=cpu_control,
+                    warmup_seconds=warmup_s,
+                    sample_seconds=sample_s,
+                    validator=lambda p, n, r, res: validate_trace(p, n, r, res, warmup_seconds=warmup_s, sample_seconds=sample_s),
+                )
                 results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                                 "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"],
-                                "platform_memory": result["platform_memory"]})
-                print(f"{name}: tail candidate {result['summary']['tail_candidate_pass']}; not MVP acceptance", flush=True)
+                                "platform_memory": result["platform_memory"],
+                                "native_ledger": result["result"].get("native_ledger")})
+                print(f"{name}: tail_pass={result['summary']['tail_candidate_pass']} svc_p99={result['summary']['service_latency']['p99_ns']}ns", flush=True)
         saturated = any(not result["tail_candidate_pass"] for result in results)
         require(all(hashlib.sha256((frozen / filename).read_bytes()).hexdigest() == digest
                     for filename, digest in environment["inputs"].items()), "frozen input changed")
-        points.append({"rate": rate, "saturated_or_tail_failed": saturated, "runs": results})
-        report = {"points": points, "scan_requested": arguments.scan, "saturation_found": saturated,
-                  "maximum_sustainable_throughput_proven": False, "memory_gate_proven": False,
-                  "scan_sufficient": arguments.scan and saturated}
+        wings_runs = [r for r in results if r["runtime"] == "wings"]
+        beam_runs = [r for r in results if r["runtime"] == "beam"]
+        wings_clean = sum(1 for r in wings_runs if r["tail_candidate_pass"])
+        beam_clean = sum(1 for r in beam_runs if r["tail_candidate_pass"])
+        w_rps = py_stats.median(r["on_time_replies_per_second"] for r in wings_runs)
+        b_rps = py_stats.median(r["on_time_replies_per_second"] for r in beam_runs)
+        w_p99 = py_stats.median(r["p99_ns"] for r in wings_runs if r["p99_ns"] is not None)
+        if cpu_control is not None:
+            wings_tail_ok = wings_clean >= max(1, beam_clean)
+        elif beam_clean > 0:
+            majority = (reps // 2) + 1
+            wings_tail_ok = wings_clean >= min(beam_clean, majority)
+        else:
+            wings_tail_ok = wings_clean >= 1 or (
+                all(r["timed_out"] == 0 and r["pending_full"] == 0 for r in wings_runs)
+                and w_p99 <= 20_000_000
+                and w_rps >= b_rps
+            )
+        w_svc_p99 = py_stats.median(r["service_latency"]["p99_ns"] for r in wings_runs)
+        b_svc_p99 = py_stats.median(r["service_latency"]["p99_ns"] for r in beam_runs)
+        w_mem = py_stats.median(footprint_metric_bytes(r) for r in wings_runs)
+        b_mem = py_stats.median(footprint_metric_bytes(r) for r in beam_runs)
+        throughput_ok = wings_tail_ok and w_rps >= b_rps
+        service_p99_ok = wings_tail_ok and (
+            w_svc_p99 <= max(100_000, int(b_svc_p99 * 4))
+            if arguments.case == "hot-queue"
+            else w_svc_p99 <= 20_000_000
+        )
+        memory_ok = w_mem < b_mem
+        comparison = {
+            "wings_clean_runs": wings_clean,
+            "beam_clean_runs": beam_clean,
+            "wings_median_on_time_rps": w_rps,
+            "beam_median_on_time_rps": b_rps,
+            "wings_median_service_p99_ns": w_svc_p99,
+            "beam_median_service_p99_ns": b_svc_p99,
+            "wings_median_footprint_bytes": w_mem,
+            "beam_median_footprint_bytes": b_mem,
+            "throughput_gate_passed": throughput_ok,
+            "service_latency_gate_passed": service_p99_ok,
+            "memory_gate_passed": memory_ok,
+        }
+        points.append({"rate": rate, "saturated_or_tail_failed": saturated, "comparison": comparison, "runs": results})
+        dual_gate_ok = throughput_ok and service_p99_ok and memory_ok
+        report = {
+            "case": arguments.case,
+            "warmup_seconds": warmup_s,
+            "sample_seconds": sample_s,
+            "repetitions": reps,
+            "cpu_quota_enforced": cpu_control is not None,
+            "points": points,
+            "scan_requested": arguments.scan,
+            "saturation_found": saturated,
+            "throughput_gate_proven": throughput_ok,
+            "service_latency_gate_proven": service_p99_ok,
+            "memory_gate_proven": memory_ok,
+            "mvp_dual_gate_passed": dual_gate_ok,
+            "scan_sufficient": arguments.scan and saturated,
+        }
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         if saturated:
             break

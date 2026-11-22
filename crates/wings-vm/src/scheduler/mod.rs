@@ -144,6 +144,7 @@ struct Shared {
 struct State {
     closed: bool,
     ready_bits: u32,
+    worker_active: [u32; 16],
     last_exit: Option<SchedulerExitSnapshot>,
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
@@ -494,6 +495,7 @@ impl Scheduler {
             state: crate::native_sync::mutex(State {
                 closed: false,
                 ready_bits: 0,
+                worker_active: [0; 16],
                 last_exit: None,
                 modules: None,
                 slots: storage(config.capacity, || {

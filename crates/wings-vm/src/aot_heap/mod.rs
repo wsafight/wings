@@ -21,7 +21,7 @@ pub(crate) struct AotHeap {
     cons_list: RecordLayout,
     committed: Option<HeapRef>,
     incoming_mask: u64,
-    incoming: [Option<HeapRef>; 64],
+    incoming: Option<Box<[Option<HeapRef>; 64]>>,
     named: Box<[NamedLayout]>,
     _named_charge: Reservation,
     _metadata: Reservation,
@@ -78,7 +78,7 @@ impl AotHeap {
         }
         let mut heap = RecordHeap::new(account, capacity, 2 + records.len())?;
         let metadata = account.reserve(Resources {
-            bytes: (std::mem::size_of::<Self>()
+            bytes: (std::mem::size_of::<Self>() + std::mem::size_of::<[Option<HeapRef>; 64]>()
                 - std::mem::size_of::<RecordHeap>()
                 - std::mem::size_of::<ShadowRoots>()) as u64,
             ..Resources::default()
@@ -140,7 +140,7 @@ impl AotHeap {
                 cons_list,
                 committed: None,
                 incoming_mask: 0,
-                incoming: [None; 64],
+                incoming: None,
                 named: named.into_boxed_slice(),
                 _named_charge: named_charge,
                 _metadata: metadata,
@@ -279,18 +279,23 @@ impl AotHeap {
             count += 1;
         }
         let mut incoming_bits = self.incoming_mask;
-        while incoming_bits != 0 {
-            let slot = incoming_bits.trailing_zeros() as usize;
-            incoming_bits &= incoming_bits - 1;
-            if let Some(reference) = self.incoming[slot] {
-                self.heap
-                    .import_reference(reference.encoded())
-                    .map_err(|_| ShadowRootError::Invalid)?;
-                references[count] = Some(reference);
-                count += 1;
+        if incoming_bits != 0 {
+            let incoming = self.incoming.as_ref().ok_or(ShadowRootError::Invalid)?;
+            while incoming_bits != 0 {
+                let slot = incoming_bits.trailing_zeros() as usize;
+                incoming_bits &= incoming_bits - 1;
+                if let Some(reference) = incoming[slot] {
+                    self.heap
+                        .import_reference(reference.encoded())
+                        .map_err(|_| ShadowRootError::Invalid)?;
+                    references[count] = Some(reference);
+                    count += 1;
+                }
             }
         }
-        self.roots.replace(&references[..count]);
+        self.roots
+            .try_replace(&references[..count])
+            .map_err(|_| ShadowRootError::Exhausted)?;
         Ok(())
     }
 
@@ -315,10 +320,12 @@ impl AotHeap {
     pub(crate) fn clear_incoming(&mut self) {
         let mut bits = self.incoming_mask;
         if bits != 0 {
-            while bits != 0 {
-                let slot = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                self.incoming[slot] = None;
+            if let Some(incoming) = self.incoming.as_mut() {
+                while bits != 0 {
+                    let slot = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    incoming[slot] = None;
+                }
             }
             self.incoming_mask = 0;
         }

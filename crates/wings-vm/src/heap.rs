@@ -110,6 +110,7 @@ pub(crate) struct ByteBuffer {
 pub struct ShadowRoots {
     heap: u64,
     slots: Box<[Option<HeapRef>]>,
+    max_capacity: usize,
     count: usize,
     charge: Reservation,
 }
@@ -616,26 +617,45 @@ impl ShadowRoots {
         self.slots[values.len()..self.count.max(values.len())].fill(None);
         self.count = values.len();
     }
+
+    pub(crate) fn try_replace(&mut self, values: &[Option<HeapRef>]) -> Result<(), ()> {
+        if values.len() > self.max_capacity {
+            return Err(());
+        }
+        if values.len() > self.slots.len() {
+            let next_cap = values.len().next_power_of_two().min(self.max_capacity);
+            self.slots = allocate_array(next_cap, None).map_err(|_| ())?;
+        }
+        self.replace(values);
+        Ok(())
+    }
+
     pub fn new(heap: &RecordHeap, capacity: usize) -> Result<Self, String> {
         if !(1..=MAX_ROOTS).contains(&capacity) {
             return Err("shadow roots require 1..=64 slots".into());
         }
-        Self::allocate(heap, capacity)
+        Self::allocate(heap, capacity, capacity)
     }
 
     pub(crate) fn with_state_root(heap: &RecordHeap) -> Result<Self, String> {
-        Self::allocate(heap, MAX_ROOTS + 65)
+        Self::allocate(heap, 4, MAX_ROOTS + 65)
     }
 
-    fn allocate(heap: &RecordHeap, capacity: usize) -> Result<Self, String> {
-        let bytes = std::mem::size_of::<Self>() + capacity * std::mem::size_of::<Option<HeapRef>>();
+    fn allocate(
+        heap: &RecordHeap,
+        initial_capacity: usize,
+        max_capacity: usize,
+    ) -> Result<Self, String> {
+        let bytes =
+            std::mem::size_of::<Self>() + max_capacity * std::mem::size_of::<Option<HeapRef>>();
         let charge = heap.account.reserve(Resources {
             bytes: bytes as u64,
             ..Resources::default()
         })?;
         Ok(Self {
             heap: heap.identity,
-            slots: allocate_array(capacity, None)?,
+            slots: allocate_array(initial_capacity, None)?,
+            max_capacity,
             count: 0,
             charge,
         })

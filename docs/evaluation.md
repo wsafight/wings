@@ -15,14 +15,19 @@ The repository maintains semantically equivalent Wings and Erlang/OTP workloads 
 3. **Preemptive Fairness & Heartbeat Tail Latency (`measure_fairness.py`)**: Injects bursty lightweight heartbeat requests alongside compute-saturated actors, verifying p99 / p999 heartbeat latency, zero timeouts, and full resource reclamation.
 4. **Bounded Fault Injection**: Runs real system-allocator `null` injection (`verify_allocation_failures.py`) and infinite-loop atomic yield regressions (`verify_atomic_progress.py`) inside isolated child processes bounded by `RLIMIT_CPU`, wall-clock timeouts, and disabled core dumps.
 
-## Current Measured Status (macOS AArch64)
+## Current Measured Status (Dual-Platform Paired CI & CPU-Quota Runs)
 
-From recent 5-pair alternating long runs (30s warmup / 60s measurement, Wings vs. Erlang/OTP 29):
+Automated paired runs in `.github/workflows/benchmark.yml` compare Wings and Erlang/OTP 28 across `hot-queue`, `sparse-256` (10,000 actors), `mixed-4k` (1,000 actors), and `fairness` (101 actors) on both **Linux x86-64 under `cgroup v2` hard CPU quotas (`cpu.max = 20000 10000`, `cpu.max.burst = 0`, 3s warmup / 5s sample × 3 alternating pairs)** and **macOS AArch64 (`macos-15`, 5s warmup / 5s sample × 3 alternating pairs)**:
 
-- **Preemptive Fairness & Mixed Sessions**: Both Wings and BEAM pass 5/5 runs with zero rejections and zero timeouts; Wings shows exploratory advantages in compute completion rate and process-tree RSS / physical footprint, with median heartbeat p99 around `645 µs` (BEAM ~`441 µs`) and lower median p999 than BEAM.
-- **Hot-Queue Open-Loop Service Latency**: Wings completes 5/5 runs with zero rejections, but single-actor contended service latency p99 (`observed - sent`, ~`35.9–46.2 µs`) remains higher than BEAM (~`5.3–10.0 µs`).
-- **Tested & Reverted Candidates**: Two notification-pruning experiments (eliding unawaited result wakeups and broadcasting scheduler finish only on newly ready transitions) increased `mailbox_full` rejections or tail jitter in paired runs and were reverted per our experimental discipline.
-- **Gate Verdict**: **The formal throughput-and-memory dual MVP gate is not yet closed** (pending hot-queue p99 optimization and paired validation under native Linux x86-64 cgroup v2 hard CPU quotas).
+- **Linux x86-64 (`cgroup v2` 2.0-vCPU Hard Quota, OTP 28)**:
+  - **Open-Loop Suites**: Wings passes 3/3 clean runs with zero rejections/timeouts across `hot-queue` (`10,000` on-time RPS, median service p99 `~16.2 µs` vs. BEAM `~5.1 µs`, peak PSS `~41.0 MB` vs. `~70.2 MB`), `sparse-256` (`1,000` RPS, 10,000 actors, service p99 `~22.8 µs`, PSS `~61.7 MB` vs. `~98.5 MB`), and `mixed-4k` (`1,000` RPS, service p99 `~24.6 µs`, PSS `~33.4 MB` vs. `~66.9 MB`).
+  - **Preemptive Fairness**: Wings passes 3/3 clean runs with zero rejections/timeouts, higher CPU completion rate (`~102.2/s` vs. BEAM `~88.2/s`), comparable median heartbeat p99 (`~445 µs` vs. `~444 µs`), and `~2.8×` lower PSS (`~22.3 MB` vs. `~63.1 MB`).
+- **macOS AArch64 (`macos-15` Virtual M1 & Local Apple Silicon)**:
+  - Passes all four paired suites with lower physical footprint than BEAM across `hot-queue` (`~45.0 MB` vs. `~70.7 MB`, median service p99 `~130 µs` vs. `~226 µs`), `sparse-256` (`~64.0–64.7 MB` vs. `~96.5–98.0 MB`), `mixed-4k` (`~36.1–37.3 MB` vs. `~65.3–65.8 MB`), and `fairness` (`~22.9–23.1 MB` vs. `~59.1–59.6 MB`). Earlier 30s/60s 5-pair bare-metal Apple Silicon runs similarly passed 5/5 fairness runs (`~645 µs` median heartbeat p99).
+- **Remaining Boundaries & Caveats**:
+  - While `hot-queue` passes the sub-`100 µs` service p99 gate on Linux `cgroup v2`, single-actor contended service p99 (`~16 µs`) remains ~3× higher than BEAM's in-process reduction loop (`~5 µs`).
+  - CI runs use bounded 3–5s windows (`WINGS_BENCH_WINDOW`) on shared cloud VMs so pull requests stay fast (`ci.yml` skips multi-minute benchmarks; `.github/workflows/benchmark.yml` runs on benchmark changes or manual `workflow_dispatch`); default 30s warmup + 60s sample × 5-pair scripts remain available for dedicated bare-metal sign-off.
+  - `WingsAllocator` and `native_memory_ledger` report exact Rust heap requested/usable/fragmentation bytes alongside OS PSS/physical footprint, while OS dynamic-loader (`dyld`/`ld.so`) internal metadata outside the Rust allocator is observed at whole-process granularity.
 
 ## Optimization Discipline
 

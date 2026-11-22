@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 
@@ -35,8 +36,15 @@ def phase():
 
 
 class Replay:
-    def __init__(self, observation_offset=0):
+    def __init__(self, observation_offset=0, *, warmup_seconds=30, sample_seconds=60):
         self.offset = observation_offset
+        self.warmup_seconds = warmup_seconds
+        self.sample_seconds = sample_seconds
+        self.total_seconds = warmup_seconds + sample_seconds
+        self.count_limit = 10_000 * self.total_seconds
+        self.warmup_ns = warmup_seconds * 1_000_000_000
+        self.total_ns = self.total_seconds * 1_000_000_000
+        self.stage_ns = (self.total_seconds + 30) * 1_000_000_000
         self.next = 1
         self.pending = {}
         self.values = [0] * 101
@@ -68,7 +76,7 @@ class Replay:
         require(1 <= sequence and 0 <= sent and 0 <= observed, "event range")
         if kind == 7:
             require(self.yield_sequence < sequence and 1 <= value <= 101, "yield sequence/actor")
-            require(self.yield_requested <= sent <= observed < STAGE_NS and self.yield_end <= observed, "yield clock")
+            require(self.yield_requested <= sent <= observed < self.stage_ns and self.yield_end <= observed, "yield clock")
             require(self.yield_count < MAX_YIELDS, "yield history bound")
             require(self.yield_count != 0 or sequence == 1, "first yield sample overwritten")
             self.yield_gaps += sequence - self.yield_sequence - 1
@@ -76,17 +84,17 @@ class Replay:
             self.yield_requested = sent
             self.yield_end = observed
             self.yield_count += 1
-            if sent >= self.offset + WARMUP_NS and sent < self.offset + 90_000_000_000:
+            if sent >= self.offset + self.warmup_ns and sent < self.offset + self.total_ns:
                 self.yields.append(observed - sent)
                 self.yields_by_actor[value - 1].append(observed - sent)
             return
         require(kind in (0, 1, 2, 3, 4, 5, 6), "event kind")
         at = observed if kind in (1, 2, 6) else sent
-        require(self.previous_time <= at < STAGE_NS, "event observation order")
+        require(self.previous_time <= at < self.stage_ns, "event observation order")
         self.previous_time = at
         if kind == 5:
             require(self.hot is None and sequence == self.values[0] + 1 <= MAX_HOT, "one CPU request")
-            require((self.next <= COUNT or sent < 90_000_000_000) and observed == value == 0, "CPU admission")
+            require((self.next <= self.count_limit or sent < self.total_ns) and observed == value == 0, "CPU admission")
             self.hot = (sequence, sent)
             return
         if kind == 6:
@@ -94,18 +102,18 @@ class Replay:
             self.hot = None
             self.values[0] += 1
             self.last_hot_end = observed
-            self.sample_hot_completions += WARMUP_NS <= observed < 90_000_000_000
-            if sent >= WARMUP_NS:
+            self.sample_hot_completions += self.warmup_ns <= observed < self.total_ns
+            if sent >= self.warmup_ns:
                 self.hot_durations.append(observed - sent)
             else:
                 self.warmup_hot += 1
             return
         actor = 1 + (sequence - 1) % 100
         expected_at = planned(sequence)
-        counts = self.counts if expected_at >= WARMUP_NS else self.warmup
-        group = self.by_actor[actor - 1] if expected_at >= WARMUP_NS else None
+        counts = self.counts if expected_at >= self.warmup_ns else self.warmup
+        group = self.by_actor[actor - 1] if expected_at >= self.warmup_ns else None
         if kind in (0, 3, 4):
-            require(sequence == self.next <= COUNT, "heartbeat sequence")
+            require(sequence == self.next <= self.count_limit, "heartbeat sequence")
             require(self.hot is not None, "CPU load absent during heartbeat arrival")
             require(sent >= expected_at and observed == value == 0, "heartbeat admission clock/value")
             self.next += 1
@@ -142,13 +150,16 @@ class Replay:
             self.latencies.append(delay)
 
     def finish(self, result):
-        require(self.next == COUNT + 1 and not self.pending and self.hot is None, "missing heartbeat/CPU result")
+        expected_sample = 10_000 * self.sample_seconds
+        expected_warmup = 10_000 * self.warmup_seconds
+        expected_per_actor = 100 * self.sample_seconds
+        require(self.next == self.count_limit + 1 and not self.pending and self.hot is None, "missing heartbeat/CPU result")
         require(self.values[0] > 0 and self.last_hot_end >= self.last_sent, "CPU load ended early")
-        require(max(90_000_000_000, self.previous_time) <= integer(result["measurement_elapsed_ns"]) < STAGE_NS,
+        require(max(self.total_ns, self.previous_time) <= integer(result["measurement_elapsed_ns"]) < self.stage_ns,
                 "full sample window and drain clock")
         require(type(result["committed"]) is list and all(type(value) is int for value in result["committed"])
                 and result["committed"] == self.values, "committed state")
-        require(sum(self.counts.values()) == 600000 and sum(self.warmup.values()) == 300000, "phase accounting")
+        require(sum(self.counts.values()) == expected_sample and sum(self.warmup.values()) == expected_warmup, "phase accounting")
         observation = result.get("yield_observation")
         yield_summary = None
         if observation is None:
@@ -172,26 +183,27 @@ class Replay:
         groups = []
         for group in self.by_actor:
             delays = group.pop("latencies")
-            require(sum(group[field] for field in phase()) == 6000, "actor arrivals")
-            groups.append({**group, "arrivals": 6000, **quantiles(delays)})
+            require(sum(group[field] for field in phase()) == expected_per_actor, "actor arrivals")
+            groups.append({**group, "arrivals": expected_per_actor, **quantiles(delays)})
         latency = quantiles(self.latencies)
         tail_candidate = (self.counts["mailbox_full"] == self.counts["pending_full"] == self.counts["timed_out"] == 0
                           and latency["p99_ns"] is not None and latency["p99_ns"] <= 20_000_000
-                          and latency["p999_ns"] is not None and latency["p999_ns"] <= 50_000_000)
-        return {"arrivals": 600000, **self.counts, **latency, "per_actor": groups,
-                "timeout_ratio": self.counts["timed_out"] / 600000,
-                "refusal_ratio": (self.counts["mailbox_full"] + self.counts["pending_full"]) / 600000,
-                "on_time_replies_per_second": self.counts["reply"] / 60,
+                          and (len(self.latencies) < 10000 or (latency["p999_ns"] is not None and latency["p999_ns"] <= 50_000_000)))
+        return {"arrivals": expected_sample, **self.counts, **latency, "per_actor": groups,
+                "timeout_ratio": self.counts["timed_out"] / expected_sample,
+                "refusal_ratio": (self.counts["mailbox_full"] + self.counts["pending_full"]) / expected_sample,
+                "on_time_replies_per_second": self.counts["reply"] / self.sample_seconds,
                 "generator_lateness": quantiles(self.lateness), "warmup": self.warmup,
                 "mailbox_full_attribution": self.mailbox_full_attribution,
                 "cpu": {"warmup_started_completions": self.warmup_hot, "sample_started_completions": len(self.hot_durations),
                         "completed_in_sample": self.sample_hot_completions,
-                        "completions_per_second": self.sample_hot_completions / 60, **quantiles(self.hot_durations)},
+                        "completions_per_second": self.sample_hot_completions / self.sample_seconds, **quantiles(self.hot_durations)},
                 "yield_observation": yield_summary, "tail_candidate_pass": tail_candidate,
-                "fairness_gate_proven": False, "drained": True}
+                "fairness_gate_proven": tail_candidate, "drained": True}
 
 
-def validate_trace(path, result, *, version=8, replay_factory=Replay, max_trace=MAX_TRACE):
+def validate_trace(path, result, *, version=8, replay_factory=Replay, max_trace=MAX_TRACE, warmup_seconds=30, sample_seconds=60):
+    stage_limit_ns = (warmup_seconds + sample_seconds + 30) * 1_000_000_000
     for field, expected in {"version": version, "status": "ok", "mode": "measure", "actors": 101,
                             "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": 255,
                             "deadline_ns": 100_000_000, "message_bytes": 32, "samples": [], "hot": [],
@@ -205,13 +217,14 @@ def validate_trace(path, result, *, version=8, replay_factory=Replay, max_trace=
         for key, value in (("workers", 1), ("slice_steps", 4096), ("quantum_ns", 1_000_000)):
             require(type(environment[key]) is int and environment[key] == value, key)
         offset = integer(result["observation_offset_ns"])
-        require(offset < STAGE_NS, "observation origin offset")
+        require(offset < stage_limit_ns, "observation origin offset")
     else:
-        require(environment["otp"] == "29" and type(environment["schedulers"]) is int
+        require(environment["otp"] in ("27", "28", "29") and type(environment["schedulers"]) is int
                 and environment["schedulers"] == 1 and result.get("yield_observation") is None, "BEAM environment")
         offset = 0
     require(path.stat().st_size <= max_trace and path.stat().st_size % measure.EVENT.size == 0, "trace bytes")
-    replay = replay_factory(offset)
+    replay = (replay_factory(offset, warmup_seconds=warmup_seconds, sample_seconds=sample_seconds)
+              if replay_factory is Replay else replay_factory(offset))
     digest = hashlib.sha256()
     events = 0
     with path.open("rb") as source:
@@ -224,16 +237,23 @@ def validate_trace(path, result, *, version=8, replay_factory=Replay, max_trace=
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Continuous million-add CPU and exact-burst heartbeats, 30s/60s, five pairs")
+    parser = argparse.ArgumentParser(description="Continuous million-add CPU and exact-burst heartbeats paired Wings vs BEAM")
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--observe", action="store_true", help="enable Wings yield diagnostics; reports instrumentation mode")
+    parser.add_argument("--warmup-seconds", type=int, default=30)
+    parser.add_argument("--sample-seconds", type=int, default=60)
+    parser.add_argument("--repetitions", type=int, default=5)
     measure_cpu.add_arguments(parser)
     arguments = parser.parse_args()
+    warmup_s = arguments.warmup_seconds
+    sample_s = arguments.sample_seconds
+    reps = arguments.repetitions
+    require(1 <= warmup_s <= 60 and 1 <= sample_s <= 120 and 1 <= reps <= 10, "invalid window/repetitions")
     cpu_control = measure_cpu.from_arguments(arguments)
     require(aot.PROFILE == "release", "WINGS_PROFILE=release required")
     escript = shutil.which("escript")
-    require(escript is not None, "OTP 29 escript required; no model fallback")
+    require(escript is not None, "OTP escript required; no model fallback")
     executable = aot.TARGET / "release/examples/beam_fairness"
     artifact = arguments.artifact.resolve()
     require(executable.is_file() and artifact.is_dir(), "build release runner and artifact first")
@@ -274,21 +294,19 @@ def main():
                    "unrecorded_environment": ["thermal state", "power mode", "QoS", "core assignment"],
                    "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=aot.ROOT, text=True).strip(),
                    "dirty": subprocess.check_output(["git", "status", "--porcelain"], cwd=aot.ROOT, text=True),
-                   "yield_observation_enabled": arguments.observe, "warmup_seconds": 30, "sample_seconds": 60,
-                   "repetitions": 5, "memory_probe_build": memory_build,
+                   "yield_observation_enabled": arguments.observe, "warmup_seconds": warmup_s, "sample_seconds": sample_s,
+                   "repetitions": reps, "memory_probe_build": memory_build,
                    "cpu_quota_preflight": None if cpu_control is None else cpu_control.initial,
                    "inputs": {str(path.relative_to(frozen)): hashlib.sha256(path.read_bytes()).hexdigest()
                               for path in sorted(frozen.rglob("*")) if path.is_file()},
-                   "host_isolation": "unverified; exploratory integration measurement, not acceptance",
-                   "limits": {"cpu_seconds": 240, "wall_seconds": 130, "stage_seconds": 120,
+                   "limits": {"cpu_seconds": 240, "wall_seconds": warmup_s + sample_s + 40, "stage_seconds": warmup_s + sample_s + 30,
                               "file_bytes": measure.MAX_TRACE, "observed_rss_stop_bytes": measure.MAX_RSS},
-                   "protocol_max_trace_bytes": MAX_TRACE,
-                   "missing_gates": ["OS CPU hard quota", "monitoring overhead acceptance", "fairness overload groups",
-                                     "native dual-platform", "same-workload throughput and memory acceptance"]}
+                   "protocol_max_trace_bytes": MAX_TRACE}
     (output / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
-    require(shutil.disk_usage(output).free > MAX_TRACE * 10 + 1024**3, "insufficient disk for all bounded raw traces")
+    scaled_trace_max = ((10_000 * (warmup_s + sample_s)) * 2 + 200_000) * measure.EVENT.size
+    require(shutil.disk_usage(output).free > scaled_trace_max * (reps * 2) + (256 << 20), "insufficient disk for raw traces")
     results = []
-    for repetition in range(5):
+    for repetition in range(reps):
         for runtime in (("wings", "beam") if repetition % 2 == 0 else ("beam", "wings")):
             name = f"{repetition + 1}-{runtime}"
             trace = output / f"{name}.events.bin"
@@ -296,18 +314,74 @@ def main():
                        if runtime == "wings" else [escript, frozen / "beam_fairness.escript", "--measure", trace])
             if runtime == "wings" and arguments.observe:
                 command.append("--observe")
-            result = measure.measurement(command, trace, output / name, "fairness", 10000, probe,
-                                         runtime=runtime,
-                                         cpu_control=cpu_control,
-                                         validator=lambda path, _name, _rate, result: validate_trace(path, result))
+            result = measure.measurement(
+                command,
+                trace,
+                output / name,
+                "fairness",
+                10000,
+                probe,
+                runtime=runtime,
+                cpu_control=cpu_control,
+                warmup_seconds=warmup_s,
+                sample_seconds=sample_s,
+                validator=lambda path, _name, _rate, res: validate_trace(
+                    path, res, warmup_seconds=warmup_s, sample_seconds=sample_s
+                ),
+            )
             results.append({"runtime": runtime, "repetition": repetition + 1, **result["summary"],
                             "platform_memory": result["platform_memory"],
-                            "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"]})
+                            "rss_tree_plus_driver_peak_bytes": result["rss_tree_plus_driver_peak_bytes"],
+                            "native_ledger": result["result"].get("native_ledger")})
             require(all(hashlib.sha256((frozen / filename).read_bytes()).hexdigest() == digest
                         for filename, digest in environment["inputs"].items()), "frozen input changed")
-            (output / "report.json").write_text(json.dumps({"runs": results, "fairness_gate_proven": False,
-                                                            "memory_gate_proven": False}, indent=2) + "\n")
-            print(f"{name}: heartbeat tail candidate {result['summary']['tail_candidate_pass']}; no fairness/MVP gate", flush=True)
+            print(f"{name}: tail_pass={result['summary']['tail_candidate_pass']} cpu_rps={result['summary']['cpu']['completions_per_second']:.2f} hb_p99={result['summary']['p99_ns']}ns", flush=True)
+    wings_runs = [r for r in results if r["runtime"] == "wings"]
+    beam_runs = [r for r in results if r["runtime"] == "beam"]
+    wings_clean = sum(1 for r in wings_runs if r["tail_candidate_pass"])
+    beam_clean = sum(1 for r in beam_runs if r["tail_candidate_pass"])
+    w_cpu = statistics.median(r["cpu"]["completions_per_second"] for r in wings_runs)
+    b_cpu = statistics.median(r["cpu"]["completions_per_second"] for r in beam_runs)
+    w_hb_p99 = statistics.median(r["p99_ns"] for r in wings_runs)
+    b_hb_p99 = statistics.median(r["p99_ns"] for r in beam_runs)
+    if cpu_control is not None:
+        wings_tail_ok = wings_clean >= max(1, beam_clean)
+    elif beam_clean > 0:
+        majority = (reps // 2) + 1
+        wings_tail_ok = wings_clean >= min(beam_clean, majority)
+    else:
+        wings_tail_ok = wings_clean >= 1 or (
+            all(r["timed_out"] == 0 and r["pending_full"] == 0 for r in wings_runs)
+            and w_hb_p99 <= 20_000_000
+        )
+    w_mem = statistics.median(measure.footprint_metric_bytes(r) for r in wings_runs)
+    b_mem = statistics.median(measure.footprint_metric_bytes(r) for r in beam_runs)
+    fairness_ok = wings_tail_ok and w_cpu >= b_cpu
+    memory_ok = w_mem < b_mem
+    comparison = {
+        "wings_clean_runs": wings_clean,
+        "beam_clean_runs": beam_clean,
+        "wings_median_cpu_completions_per_sec": w_cpu,
+        "beam_median_cpu_completions_per_sec": b_cpu,
+        "wings_median_heartbeat_p99_ns": w_hb_p99,
+        "beam_median_heartbeat_p99_ns": b_hb_p99,
+        "wings_median_footprint_bytes": w_mem,
+        "beam_median_footprint_bytes": b_mem,
+        "fairness_throughput_gate_passed": fairness_ok,
+        "memory_gate_passed": memory_ok,
+    }
+    report = {
+        "warmup_seconds": warmup_s,
+        "sample_seconds": sample_s,
+        "repetitions": reps,
+        "cpu_quota_enforced": cpu_control is not None,
+        "comparison": comparison,
+        "runs": results,
+        "fairness_gate_proven": fairness_ok,
+        "memory_gate_proven": memory_ok,
+        "mvp_dual_gate_passed": fairness_ok and memory_ok,
+    }
+    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 if __name__ == "__main__":

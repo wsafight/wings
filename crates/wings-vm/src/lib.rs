@@ -9,6 +9,7 @@ use wings_abi::{
 };
 use wings_artifact::Manifest;
 
+mod allocator;
 mod aot_heap;
 mod control_flag;
 mod detached;
@@ -22,6 +23,7 @@ mod message_values;
 mod module;
 mod module_image;
 mod module_path;
+mod native_memory;
 mod native_stack;
 mod native_sync;
 mod preemption;
@@ -39,6 +41,10 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
+pub use allocator::{
+    NativeAllocatorStats, WingsAllocator, allocator_usable_size, global_allocator_stats,
+    set_global_allocator_limit,
+};
 pub use detached::DetachedProcess;
 pub use error::VmError;
 pub use execution::{
@@ -52,6 +58,9 @@ pub use host_values::MessageValue;
 pub use ingress::{IngressSender, IngressWake};
 pub use ingress_requests::IngressRequest;
 pub use module::{HandlerId, ScalarModule};
+pub use native_memory::{
+    NativeMemoryLedger, NativeProcessMemory, native_memory_ledger, sample_process_memory,
+};
 pub use preemption::{
     PreemptionCounters, PreemptionObservation, PreemptionToken, YieldObservation,
 };

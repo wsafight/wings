@@ -7,8 +7,12 @@ use serde_json::{Value, json};
 use wings_abi::ValueType;
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig, SchedulerHandle, SchedulerPid, SchedulerSliceOutcome,
+    SchedulerConfig, SchedulerHandle, SchedulerPid, SchedulerSliceOutcome, WingsAllocator,
+    native_memory_ledger,
 };
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: WingsAllocator = WingsAllocator::new();
 
 const ACTORS: usize = 101;
 const MAX_PENDING: usize = 255;
@@ -79,6 +83,25 @@ fn decode(text: &str) -> Result<usize, String> {
     }
 }
 
+fn bench_window() -> Result<(u64, u64), String> {
+    match std::env::var("WINGS_BENCH_WINDOW") {
+        Err(std::env::VarError::NotPresent) => Ok((30, 60)),
+        Err(_) => Err("invalid WINGS_BENCH_WINDOW".into()),
+        Ok(raw) if raw.is_empty() => Ok((30, 60)),
+        Ok(raw) => {
+            let Some((w, s)) = raw.split_once(',') else {
+                return Err("invalid WINGS_BENCH_WINDOW".into());
+            };
+            let warmup: u64 = w.parse().map_err(|_| "invalid warmup".to_string())?;
+            let sample: u64 = s.parse().map_err(|_| "invalid sample".to_string())?;
+            if !(1..=60).contains(&warmup) || !(1..=120).contains(&sample) {
+                return Err("WINGS_BENCH_WINDOW bounds".into());
+            }
+            Ok((warmup, sample))
+        }
+    }
+}
+
 fn planned(index: usize) -> u64 {
     index as u64 / 100 * 10_000_000
 }
@@ -111,12 +134,18 @@ fn collect(
     start: Instant,
     trace: &mut Option<BufWriter<File>>,
 ) -> Result<(), String> {
+    let mut blocked_actor = [false; ACTORS];
     let mut index = 0;
-    for _ in 0..pending.len().min(64) {
-        if index >= pending.len() {
-            break;
+    let mut polled = 0;
+    while index < pending.len() && polled < 64 {
+        let actor = 1 + pending[index].index % 100;
+        if blocked_actor[actor] {
+            index += 1;
+            continue;
         }
+        polled += 1;
         let Some(outcome) = pending[index].request.try_take()? else {
+            blocked_actor[actor] = true;
             index += 1;
             continue;
         };
@@ -250,6 +279,7 @@ fn collect_slices(
 fn execute(
     directory: &Path,
     count: usize,
+    (warmup_seconds, sample_seconds): (u64, u64),
     observe: bool,
     observe_slices: bool,
     bounded_slices: bool,
@@ -314,7 +344,14 @@ fn execute(
         bounded: bounded_slices,
         ..SliceTrace::default()
     };
-    let deadline = observation_start + Duration::from_secs(if measure { 120 } else { 3 });
+    let total_ns = (warmup_seconds + sample_seconds) * 1_000_000_000;
+    let warmup_ns = warmup_seconds * 1_000_000_000;
+    let deadline = observation_start
+        + Duration::from_secs(if measure {
+            warmup_seconds + sample_seconds + 30
+        } else {
+            3
+        });
     let mut pids = Vec::with_capacity(ACTORS);
     for identity in 1..=ACTORS {
         remaining(deadline)?;
@@ -354,7 +391,11 @@ fn execute(
     if measure {
         println!(
             "{}",
-            json!({"event": "start", "warmup_seconds": 30, "sample_seconds": 60})
+            json!({
+                "event": "start",
+                "warmup_seconds": warmup_seconds,
+                "sample_seconds": sample_seconds,
+            })
         );
         std::io::stdout()
             .flush()
@@ -363,7 +404,7 @@ fn execute(
     while next < count
         || !pending.is_empty()
         || hot_request.is_some()
-        || measure && elapsed(start) < 90_000_000_000
+        || measure && elapsed(start) < total_ns
     {
         remaining(deadline)?;
         if observe_slices {
@@ -384,7 +425,7 @@ fn execute(
                 &mut trace,
             )?;
         }
-        if measure && !sampling && elapsed(start) >= 30_000_000_000 {
+        if measure && !sampling && elapsed(start) >= warmup_ns {
             println!(
                 "{}",
                 json!({"event": "sampling", "elapsed_ns": elapsed(start)})
@@ -412,7 +453,7 @@ fn execute(
                 hot_request = None;
             }
         }
-        if hot_request.is_none() && (next < count || measure && elapsed(start) < 90_000_000_000) {
+        if hot_request.is_none() && (next < count || measure && elapsed(start) < total_ns) {
             if hot_count == if measure { 1_000_000 } else { 10000 } {
                 return Err("fairness CPU sample limit".into());
             }
@@ -428,9 +469,41 @@ fn execute(
                 event(trace, hot_count + 1, hot_sent, 0, 0, 5)?;
             }
         }
-        if next == count || elapsed(start) < planned(next) {
-            std::thread::yield_now();
-            continue;
+        let now_ns = elapsed(start);
+        if next == count || now_ns < planned(next) {
+            #[cfg(target_os = "macos")]
+            {
+                if next == count && pending.is_empty() {
+                    for _ in 0..64 {
+                        std::hint::spin_loop();
+                    }
+                } else {
+                    for _ in 0..32 {
+                        std::hint::spin_loop();
+                    }
+                }
+                continue;
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if !pending.is_empty() {
+                    for _ in 0..16 {
+                        std::hint::spin_loop();
+                    }
+                } else if next < count {
+                    let gap = planned(next).saturating_sub(now_ns);
+                    if gap > 90_000 {
+                        std::thread::sleep(Duration::from_nanos(gap - 55_000));
+                    } else {
+                        for _ in 0..16 {
+                            std::hint::spin_loop();
+                        }
+                    }
+                } else {
+                    std::thread::yield_now();
+                }
+                continue;
+            }
         }
         let actor = 1 + next % 100;
         let sent = elapsed(start);
@@ -571,11 +644,21 @@ fn execute(
     if vm.used() != bootstrap {
         return Err("fairness retained resources".into());
     }
+    let native_ledger = native_memory_ledger(&vm);
     let mut result = json!({"version": if bounded_slices { 13 } else if observe_slices { 12 } else if measure { 8 } else { 7 }, "status": "ok", "mode": if measure { "measure" } else { "smoke" }, "actors": ACTORS,
         "state_bytes": 256, "mailbox_capacity": 1, "pending_capacity": MAX_PENDING,
         "deadline_ns": DEADLINE_NS, "message_bytes": 32, "samples": samples, "hot": hot_samples,
         "committed": committed.to_vec(), "states_verified": true, "resources_released": true,
         "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
+        "native_ledger": {
+            "vm_ledger_bytes": native_ledger.vm_ledger_bytes,
+            "allocator_requested_bytes": native_ledger.allocator.requested_bytes,
+            "allocator_usable_bytes": native_ledger.allocator.usable_bytes,
+            "allocator_fragmentation_bytes": native_ledger.allocator.fragmentation_bytes,
+            "allocator_peak_usable_bytes": native_ledger.allocator.peak_usable_bytes,
+            "os_resident_bytes": native_ledger.os_process.map(|p| p.resident_bytes),
+            "os_footprint_bytes": native_ledger.os_process.map(|p| p.footprint_bytes),
+        },
         "yield_observation": yield_observation,
         "observation_offset_ns": observation_offset,
         "measurement_elapsed_ns": measurement_elapsed,
@@ -602,25 +685,26 @@ fn main() {
     let observe = arguments
         .last()
         .is_some_and(|argument| argument == "--observe");
-    let count = if measure
+    let decoded = if measure
         && arguments
             .first()
             .is_some_and(|argument| argument == "--trusted")
         && (arguments.len() == 4 && !observe || arguments.len() == 5 && observe)
     {
-        Ok(900000)
+        bench_window().map(|(w, s)| (10_000usize * (w + s) as usize, w, s))
     } else if !measure
         && (arguments.len() == 3 || arguments.len() == 4 && observe)
         && arguments[0] == "--trusted"
     {
-        decode(&arguments[2])
+        decode(&arguments[2]).map(|c| (c, 0, 0))
     } else {
         Err("arguments".into())
     };
-    let (code, result) = match count {
-        Ok(count) => match execute(
+    let (code, result) = match decoded {
+        Ok((count, warmup_seconds, sample_seconds)) => match execute(
             Path::new(&arguments[1]),
             count,
+            (warmup_seconds, sample_seconds),
             observe,
             observe_slices,
             bounded_slices,

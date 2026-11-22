@@ -7,8 +7,12 @@ use serde_json::{Value, json};
 use wings_abi::ValueType;
 use wings_vm::{
     IngressRequest, RequestOutcome, ResourceAccount, Resources, ScalarModule, Scheduler,
-    SchedulerConfig, SchedulerHandle, SchedulerLockMetrics, StackPool,
+    SchedulerConfig, SchedulerHandle, SchedulerLockMetrics, StackPool, WingsAllocator,
+    native_memory_ledger,
 };
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: WingsAllocator = WingsAllocator::new();
 
 const PENDING: usize = 256;
 const DEADLINE_NS: u64 = 100_000_000;
@@ -22,7 +26,28 @@ struct Workload {
     rate: u64,
     count: usize,
     measure: bool,
+    warmup_seconds: u64,
+    sample_seconds: u64,
     observe_locks: bool,
+}
+
+fn bench_window() -> Result<(u64, u64), String> {
+    match std::env::var("WINGS_BENCH_WINDOW") {
+        Err(std::env::VarError::NotPresent) => Ok((30, 60)),
+        Err(_) => Err("invalid WINGS_BENCH_WINDOW".into()),
+        Ok(raw) if raw.is_empty() => Ok((30, 60)),
+        Ok(raw) => {
+            let Some((w, s)) = raw.split_once(',') else {
+                return Err("invalid WINGS_BENCH_WINDOW".into());
+            };
+            let warmup = number(w)?;
+            let sample = number(s)?;
+            if !(1..=60).contains(&warmup) || !(1..=120).contains(&sample) {
+                return Err("WINGS_BENCH_WINDOW bounds".into());
+            }
+            Ok((warmup, sample))
+        }
+    }
 }
 
 fn number(text: &str) -> Result<u64, String> {
@@ -57,6 +82,8 @@ fn decode(name: &str, duration: &str, rate: &str) -> Result<Workload, String> {
         rate,
         count,
         measure: false,
+        warmup_seconds: 0,
+        sample_seconds: 0,
         observe_locks: false,
     })
 }
@@ -67,7 +94,10 @@ fn decode_measure(name: &str, rate: &str) -> Result<Workload, String> {
     if !(0..8).any(|power| workload.rate == base << power) {
         return Err("measurement rate".into());
     }
-    workload.count = workload.rate as usize * 90;
+    let (warmup_seconds, sample_seconds) = bench_window()?;
+    workload.warmup_seconds = warmup_seconds;
+    workload.sample_seconds = sample_seconds;
+    workload.count = workload.rate as usize * (warmup_seconds + sample_seconds) as usize;
     workload.measure = true;
     Ok(workload)
 }
@@ -363,7 +393,12 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
         },
     )?;
     let handle = scheduler.handle();
-    let deadline = Instant::now() + Duration::from_secs(if workload.measure { 120 } else { 3 });
+    let deadline = Instant::now()
+        + Duration::from_secs(if workload.measure {
+            workload.warmup_seconds + workload.sample_seconds + 30
+        } else {
+            3
+        });
     let initializer_pool = StackPool::new_accounted(&tenant, 1, 1)?;
     let mut pids = Vec::with_capacity(workload.actors);
     for _ in 0..workload.actors {
@@ -409,7 +444,11 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     if workload.measure {
         println!(
             "{}",
-            json!({"event": "start", "warmup_seconds": 30, "sample_seconds": 60})
+            json!({
+                "event": "start",
+                "warmup_seconds": workload.warmup_seconds,
+                "sample_seconds": workload.sample_seconds,
+            })
         );
         std::io::stdout()
             .flush()
@@ -418,10 +457,11 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     let start = Instant::now();
     let mut next = 0;
     let mut sampling = false;
+    let warmup_ns = workload.warmup_seconds * 1_000_000_000;
     while next < workload.count || !pending.is_empty() {
         remaining(deadline, "arrival/reply")?;
         collect(&mut pending, &mut recorder, workload, start, &mut cursor)?;
-        if workload.measure && !sampling && elapsed(start) >= 30_000_000_000 {
+        if workload.measure && !sampling && elapsed(start) >= warmup_ns {
             println!(
                 "{}",
                 json!({"event": "sampling", "elapsed_ns": elapsed(start)})
@@ -432,9 +472,43 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             sampling = true;
         }
         let index = next;
-        if index == workload.count || elapsed(start) < workload.planned(index) {
-            std::thread::yield_now();
-            continue;
+        let now_ns = elapsed(start);
+        let next_planned = if index < workload.count {
+            Some(workload.planned(index))
+        } else {
+            None
+        };
+        if next_planned.is_none_or(|planned| now_ns < planned) {
+            #[cfg(target_os = "macos")]
+            {
+                if pending.is_empty() {
+                    if let Some(planned) = next_planned {
+                        let gap = planned.saturating_sub(now_ns);
+                        if gap > 2_500_000 {
+                            std::thread::sleep(Duration::from_nanos(gap - 1_800_000));
+                            continue;
+                        }
+                    }
+                }
+                for _ in 0..32 {
+                    std::hint::spin_loop();
+                }
+                continue;
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if pending.is_empty() {
+                    if let Some(planned) = next_planned {
+                        let gap = planned.saturating_sub(now_ns);
+                        if gap > 65_000 {
+                            std::thread::sleep(Duration::from_nanos(gap - 45_000));
+                            continue;
+                        }
+                    }
+                }
+                std::thread::yield_now();
+                continue;
+            }
         }
         let target = workload.target(index);
         let planned = workload.planned(index);
@@ -530,12 +604,22 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
     if vm.used() != bootstrap {
         return Err("open-loop resources retained".into());
     }
+    let native_ledger = native_memory_ledger(&vm);
     let mut output = json!({"version": if workload.measure { 6 } else { 5 }, "status": "ok", "mode": if workload.measure { "measure" } else { "smoke" }, "actors": workload.actors,
         "state_bytes": workload.state_bytes, "mailbox_capacity": workload.mailbox,
         "rate": workload.rate, "deadline_ns": DEADLINE_NS, "pending_capacity": PENDING,
         "message_bytes": 32, "samples": samples, "committed": committed,
         "states_verified": true, "resources_released": true,
         "bootstrap_bytes": bootstrap.bytes, "remaining_bytes": vm.used().bytes,
+        "native_ledger": {
+            "vm_ledger_bytes": native_ledger.vm_ledger_bytes,
+            "allocator_requested_bytes": native_ledger.allocator.requested_bytes,
+            "allocator_usable_bytes": native_ledger.allocator.usable_bytes,
+            "allocator_fragmentation_bytes": native_ledger.allocator.fragmentation_bytes,
+            "allocator_peak_usable_bytes": native_ledger.allocator.peak_usable_bytes,
+            "os_resident_bytes": native_ledger.os_process.map(|p| p.resident_bytes),
+            "os_footprint_bytes": native_ledger.os_process.map(|p| p.footprint_bytes),
+        },
         "environment": {"runtime": "wings", "workers": 2}});
     if let Some((statistics, cpu)) = statistics {
         output["worker_lock_statistics"] = statistics;

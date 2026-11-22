@@ -5,7 +5,8 @@
 main(Arguments) ->
     try
         Config = validate(Arguments),
-        need(erlang:system_info(otp_release) =:= "29"),
+        Otp = erlang:system_info(otp_release),
+        need(lists:member(Otp, ["27", "28", "29"])),
         load_gate(),
         emit(run(Config)), halt(0)
     catch
@@ -23,12 +24,27 @@ number(Text) ->
     need(Text =/= [] andalso lists:all(fun(Digit) -> Digit >= $0 andalso Digit =< $9 end, Text)),
     try list_to_integer(Text) catch _:_ -> throw(invalid) end.
 
+bench_window() ->
+    case os:getenv("WINGS_BENCH_WINDOW") of
+        false -> {30, 60};
+        "" -> {30, 60};
+        Raw ->
+            case string:split(Raw, ",", all) of
+                [WText, SText] ->
+                    W = number(WText), S = number(SText),
+                    need(W >= 1 andalso W =< 60 andalso S >= 1 andalso S =< 120),
+                    {W, S};
+                _ -> throw(invalid)
+            end
+    end.
+
 validate(["--measure", Name, RateText, Path]) ->
     Config = validate([Name, "1", RateText]),
     #{rate := Rate, hot := Hot} = Config,
     Base = case Hot of true -> 10000; false -> 1000 end,
     need(lists:member(Rate, [Base bsl Power || Power <- lists:seq(0, 7)])),
-    Config#{count := Rate * 90, trace => Path};
+    {WarmupSec, SampleSec} = bench_window(),
+    Config#{count := Rate * (WarmupSec + SampleSec), warmup_sec => WarmupSec, sample_sec => SampleSec, trace => Path};
 validate([Name, DurationText, RateText]) ->
     {Actors, Bytes, Capacity, Hot} = case Name of
         "sparse-256" -> {10000, 256, 1, false};
@@ -62,7 +78,9 @@ run(#{actors := Count, bytes := Bytes, capacity := Capacity, rate := Rate, count
             {trace, File, [], 0};
         false -> {samples, array:new(Samples, {fixed, true})}
     end,
-    Deadline = erlang:monotonic_time(millisecond) + case Measure of true -> 120000; false -> 3000 end,
+    WarmupSec = maps:get(warmup_sec, Config, 30),
+    SampleSec = maps:get(sample_sec, Config, 60),
+    Deadline = erlang:monotonic_time(millisecond) + case Measure of true -> (WarmupSec + SampleSec + 30) * 1000; false -> 3000 end,
     Parent = self(),
     Entries = [begin
         _ = remaining(Deadline),
@@ -75,7 +93,7 @@ run(#{actors := Count, bytes := Bytes, capacity := Capacity, rate := Rate, count
         receive {ready, Pid, Identity} -> ok after remaining(Deadline) -> error(stage_deadline) end
     end, Entries),
     Routes = maps:from_list([{Identity, {Pid, Gate}} || {Identity, Pid, _, Gate} <- Entries]),
-    case Measure of true -> emit(#{event => <<"start">>, warmup_seconds => 30, sample_seconds => 60}); false -> ok end,
+    case Measure of true -> emit(#{event => <<"start">>, warmup_seconds => WarmupSec, sample_seconds => SampleSec}); false -> ok end,
     Initial = #{config => Config, routes => Routes, next => 0, pending => #{},
         recorder => Recorder, sampling => false, values => #{}, received => #{},
         start => erlang:monotonic_time(nanosecond), deadline => Deadline},
@@ -99,7 +117,7 @@ run(#{actors := Count, bytes := Bytes, capacity := Capacity, rate := Rate, count
       message_bytes => 32, states_verified => true,
       samples => OutputSamples,
       committed => [maps:get(Identity, Values, 0) || Identity <- lists:seq(1, Count)],
-      environment => #{runtime => <<"beam">>, otp => <<"29">>,
+      environment => #{runtime => <<"beam">>, otp => list_to_binary(erlang:system_info(otp_release)),
         erts => list_to_binary(erlang:system_info(version)),
         architecture => list_to_binary(erlang:system_info(system_architecture)),
         emu_flavor => erlang:system_info(emu_flavor), schedulers => erlang:system_info(schedulers_online)}}.
@@ -188,7 +206,8 @@ collect(#{pending := Pending, recorder := Recorder, received := Received, config
     end.
 
 sampling(#{config := Config, sampling := false} = State) ->
-    case maps:is_key(trace, Config) andalso elapsed(State) >= 30000000000 of
+    WarmupNs = maps:get(warmup_sec, Config, 30) * 1000000000,
+    case maps:is_key(trace, Config) andalso elapsed(State) >= WarmupNs of
         true -> emit(#{event => <<"sampling">>, elapsed_ns => elapsed(State)}), State#{sampling := true};
         false -> State
     end;
