@@ -88,10 +88,7 @@ fn main() {
                 );
             }
             let after = handle.snapshot(pid).unwrap();
-            assert_eq!(
-                after.migrations - before.migrations,
-                if workers == 1 { 0 } else { 3 }
-            );
+            assert_eq!(after.migrations - before.migrations, 0);
         }
         let busy = handle.spawn(&loops, limits(), 1).unwrap();
         handle
@@ -179,7 +176,7 @@ fn main() {
         let diagnostic = handle.last_exit().unwrap();
         assert_eq!(diagnostic.pid, failing);
         assert_eq!(diagnostic.handler(), "fail");
-        assert_eq!(diagnostic.worker, (last_worker + 1) % workers);
+        assert_eq!(diagnostic.worker, last_worker);
         assert_eq!(diagnostic.committed_state, Some(10));
         assert_eq!(
             diagnostic.reason,

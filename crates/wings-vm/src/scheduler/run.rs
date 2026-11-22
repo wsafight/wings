@@ -6,8 +6,8 @@ use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarProcess, ScalarTask};
 use std::collections::VecDeque;
 
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(25);
-const BACKLOG_BATCH_THRESHOLD: usize = 8;
+const HOT_SPIN_WINDOW: Duration = Duration::from_micros(120);
+const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
 pub(super) struct Running {
@@ -149,19 +149,17 @@ pub(super) fn worker(
                     true
                 };
                 let popped = actor.mailbox.pop_for_claim(is_starting);
-                (
-                    Some(Claim {
-                        pid,
-                        image: actor.image.take().expect("unowned actor image"),
-                        message: popped,
-                        mailbox: (*actor.mailbox).clone(),
-                        account: actor.account.clone(),
-                        cancellation: actor.cancellation.clone(),
-                        fused_direct,
-                    }),
-                    wake,
-                    false,
-                )
+                let claim = Claim {
+                    pid,
+                    image: actor.image.take().expect("unowned actor image"),
+                    message: popped,
+                    mailbox: (*actor.mailbox).clone(),
+                    account: actor.account.clone(),
+                    cancellation: actor.cancellation.clone(),
+                    fused_direct,
+                };
+                state.worker_active[index] += 1;
+                (Some(claim), wake, false)
             } else {
                 (None, wake, false)
             };
@@ -547,13 +545,18 @@ fn run_fast_claim(
                 }
                 let mapped = map_outcome(result);
                 if batch_step + 1 < MAX_BACKLOG_BATCH && mapped.is_ok() {
+                    let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
                     let can_batch_fast = !shared.config.lock_statistics
                         && !matches!(reply, Reply::Language(_))
                         && !shared.closed.load(Ordering::Acquire)
-                        && (batch_step < 8
-                            || (shared.ready_mask.load(Ordering::Acquire) & watch) == 0);
+                        && (!sibling_ready || batch_step < SIBLING_BATCH_THRESHOLD);
+                    let fast_threshold = if sibling_ready {
+                        SIBLING_BATCH_THRESHOLD
+                    } else {
+                        1
+                    };
                     if let Some(next_msg) = can_batch_fast
-                        .then(|| mailbox.try_pop_batch_fast(BACKLOG_BATCH_THRESHOLD))
+                        .then(|| mailbox.try_pop_batch_fast(fast_threshold))
                         .flatten()
                     {
                         let outcome = match mapped {
@@ -580,7 +583,7 @@ fn run_fast_claim(
                                 .actor(shared.identity, pid)
                                 .expect("finishing batched actor");
                             !actor.stopping
-                                && actor.mailbox.count() >= BACKLOG_BATCH_THRESHOLD
+                                && actor.mailbox.count() >= SIBLING_BATCH_THRESHOLD
                                 && actor.mailbox.front_is_fast()
                         };
                         if can_continue {
@@ -790,6 +793,7 @@ fn start(
 
 fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     let mut state = shared.worker_lock(index, LockPhase::Start);
+    state.worker_active[index] = state.worker_active[index].saturating_sub(1);
     let closed = state.closed;
     let actor = state
         .actor_mut(shared.identity, claim.pid)
@@ -888,6 +892,7 @@ fn finish_process(
         .then(|| image.byte_state_snapshot())
         .flatten();
     let mut state = shared.worker_lock(index, LockPhase::Finish);
+    state.worker_active[index] = state.worker_active[index].saturating_sub(1);
     let closed = state.closed;
     let actor = state
         .actor_mut(shared.identity, pid)

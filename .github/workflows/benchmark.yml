@@ -1,0 +1,210 @@
+name: Paired BEAM & CPU-Quota Benchmarks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/benchmark.yml'
+  workflow_dispatch:
+    inputs:
+      warmup_seconds:
+        description: 'Warmup window in seconds per run'
+        required: false
+        default: '3'
+        type: string
+      sample_seconds:
+        description: 'Measurement sample window in seconds per run'
+        required: false
+        default: '5'
+        type: string
+      repetitions:
+        description: 'Number of alternating paired Wings vs BEAM repetitions'
+        required: false
+        default: '3'
+        type: string
+      cpu_quota_us:
+        description: 'Linux cgroup v2 hard CPU quota in microseconds per 10000us period'
+        required: false
+        default: '20000'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  paired-benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            os: linux
+          - runner: macos-15
+            arch: arm64
+            os: macos
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-release-${{ matrix.os }}-${{ matrix.arch }}
+
+      - name: Install Erlang/OTP (Linux x86_64)
+        if: matrix.os == 'linux'
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '28'
+
+      - name: Install Erlang/OTP (macOS arm64)
+        if: matrix.os == 'macos'
+        run: |
+          if ! command -v escript >/dev/null 2>&1; then
+            brew install erlang
+          fi
+          erl -eval 'io:format("OTP=~s~n", [erlang:system_info(otp_release)]), halt().' -noshell
+
+      - name: Build release binaries, runners, and AOT artifacts
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          cargo build --release --locked -p wings-compile -p wings-vm --bins --examples
+          mkdir -p target/bench-artifacts
+          target/release/wings-compile build examples/beam-multi-counter.wings -o target/bench-artifacts/counter
+          target/release/wings-compile build examples/beam-fairness.wings -o target/bench-artifacts/fairness
+
+      - name: Run paired Wings vs BEAM benchmarks under Linux cgroup v2 hard CPU quota
+        if: matrix.os == 'linux'
+        env:
+          WARMUP_S: ${{ inputs.warmup_seconds || '3' }}
+          SAMPLE_S: ${{ inputs.sample_seconds || '5' }}
+          REPS: ${{ inputs.repetitions || '3' }}
+          QUOTA_US: ${{ inputs.cpu_quota_us || '20000' }}
+        run: |
+          set -euo pipefail
+          OUT_ROOT="$PWD/target/bench-results-linux-x86_64"
+          mkdir -p "$OUT_ROOT"
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+          CURRENT_PATH="$PATH"
+          CURRENT_HOME="$HOME"
+
+          run_in_leaf_cgroup() {
+            local label="$1"
+            shift
+            sudo bash -euo pipefail -c '
+              LABEL="$1"; UID_VAL="$2"; GID_VAL="$3"; PATH_VAL="$4"; HOME_VAL="$5"; QUOTA="$6"
+              shift 6
+              CG_PARENT="/sys/fs/cgroup/system.slice/wings_bench_root"
+              if ! (
+                mkdir -p "$CG_PARENT" &&
+                (grep -qw cpu /sys/fs/cgroup/system.slice/cgroup.subtree_control || echo "+cpu" > /sys/fs/cgroup/system.slice/cgroup.subtree_control) &&
+                (grep -qw cpu "$CG_PARENT/cgroup.subtree_control" || echo "+cpu" > "$CG_PARENT/cgroup.subtree_control")
+              ) 2>/dev/null; then
+                CG_PARENT="/sys/fs/cgroup/wings_bench_root"
+                mkdir -p "$CG_PARENT"
+                grep -qw cpu /sys/fs/cgroup/cgroup.subtree_control || echo "+cpu" > /sys/fs/cgroup/cgroup.subtree_control
+                grep -qw cpu "$CG_PARENT/cgroup.subtree_control" || echo "+cpu" > "$CG_PARENT/cgroup.subtree_control"
+              fi
+              LEAF_CG="${CG_PARENT}/${LABEL}_$$"
+              mkdir -p "$LEAF_CG"
+              echo "${QUOTA} 10000" > "$LEAF_CG/cpu.max"
+              if [ -f "$LEAF_CG/cpu.max.burst" ]; then
+                echo "0" > "$LEAF_CG/cpu.max.burst"
+              fi
+              echo $$ > "$LEAF_CG/cgroup.procs"
+              exec setpriv --reuid="$UID_VAL" --regid="$GID_VAL" --init-groups \
+                env PATH="$PATH_VAL" HOME="$HOME_VAL" WINGS_PROFILE=release "$@"
+            ' _ "$label" "$RUNNER_UID" "$RUNNER_GID" "$CURRENT_PATH" "$CURRENT_HOME" "$QUOTA_US" "$@"
+          }
+
+          for CASE in hot-queue sparse-256 mixed-4k; do
+            run_in_leaf_cgroup "open_${CASE//-/_}" \
+              python3 scripts/measure_open_loop.py \
+                --case "$CASE" \
+                --artifact target/bench-artifacts/counter \
+                --output "$OUT_ROOT/$CASE" \
+                --warmup-seconds "$WARMUP_S" \
+                --sample-seconds "$SAMPLE_S" \
+                --repetitions "$REPS" \
+                --cpu-quota-us "$QUOTA_US" \
+                --cpu-period-us 10000
+          done
+
+          run_in_leaf_cgroup "fairness" \
+            python3 scripts/measure_fairness.py \
+              --artifact target/bench-artifacts/fairness \
+              --output "$OUT_ROOT/fairness" \
+              --warmup-seconds "$WARMUP_S" \
+              --sample-seconds "$SAMPLE_S" \
+              --repetitions "$REPS" \
+              --cpu-quota-us "$QUOTA_US" \
+              --cpu-period-us 10000
+
+          python3 - "$OUT_ROOT" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          summary = {}
+          for sub in ("hot-queue", "sparse-256", "mixed-4k", "fairness"):
+              rep = json.loads((root / sub / "report.json").read_text())
+              summary[sub] = {
+                  "mvp_dual_gate_passed": rep["mvp_dual_gate_passed"],
+                  "cpu_quota_enforced": rep["cpu_quota_enforced"],
+                  "comparison": rep["points"][0]["comparison"] if "points" in rep else rep["comparison"],
+              }
+              assert rep["cpu_quota_enforced"] is True, f"{sub} missing cgroup v2 enforcement"
+              assert rep["mvp_dual_gate_passed"] is True, f"{sub} failed dual gate: {summary[sub]}"
+          (root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Run paired Wings vs BEAM benchmarks on macOS AArch64
+        if: matrix.os == 'macos'
+        env:
+          WARMUP_S: ${{ inputs.warmup_seconds || '3' }}
+          SAMPLE_S: ${{ inputs.sample_seconds || '5' }}
+          REPS: ${{ inputs.repetitions || '3' }}
+        run: |
+          set -euo pipefail
+          OUT_ROOT="$PWD/target/bench-results-macos-arm64"
+          mkdir -p "$OUT_ROOT"
+          for CASE in hot-queue sparse-256 mixed-4k; do
+            WINGS_PROFILE=release python3 scripts/measure_open_loop.py \
+              --case "$CASE" \
+              --artifact target/bench-artifacts/counter \
+              --output "$OUT_ROOT/$CASE" \
+              --warmup-seconds "$WARMUP_S" \
+              --sample-seconds "$SAMPLE_S" \
+              --repetitions "$REPS"
+          done
+          WINGS_PROFILE=release python3 scripts/measure_fairness.py \
+            --artifact target/bench-artifacts/fairness \
+            --output "$OUT_ROOT/fairness" \
+            --warmup-seconds "$WARMUP_S" \
+            --sample-seconds "$SAMPLE_S" \
+            --repetitions "$REPS"
+
+          python3 - "$OUT_ROOT" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          summary = {}
+          for sub in ("hot-queue", "sparse-256", "mixed-4k", "fairness"):
+              rep = json.loads((root / sub / "report.json").read_text())
+              summary[sub] = {
+                  "mvp_dual_gate_passed": rep["mvp_dual_gate_passed"],
+                  "comparison": rep["points"][0]["comparison"] if "points" in rep else rep["comparison"],
+              }
+              assert rep["mvp_dual_gate_passed"] is True, f"{sub} failed dual gate: {summary[sub]}"
+          (root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload benchmark summary & reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-benchmarks-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            target/bench-results-*/summary.json
+            target/bench-results-*/*/report.json
+            target/bench-results-*/*/environment.json
+          if-no-files-found: ignore

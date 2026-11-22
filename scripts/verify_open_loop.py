@@ -52,7 +52,7 @@ def validate(result, name, duration, rate, runtime):
         require(result.get("resources_released") is True, "resources")
         require(integer(result["environment"]["workers"]) == 2, "workers")
     else:
-        require(result["environment"]["otp"] == "29", "OTP")
+        require(result["environment"]["otp"] in ("27", "28", "29"), "OTP")
         require(integer(result["environment"]["schedulers"]) == 2, "schedulers")
     samples = result["samples"]
     require(type(samples) is list and len(samples) == (duration * rate + 999) // 1000, "sample count")

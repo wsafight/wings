@@ -8,6 +8,7 @@ pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
 pub(super) struct ReadyQueue {
     pub(super) head: Option<usize>,
     tail: Option<usize>,
+    pub(super) len: usize,
 }
 
 pub(super) struct WorkerWakeHub {
@@ -123,6 +124,36 @@ impl State {
         }
     }
 
+    fn select_worker(&self, slot_index: usize, last_worker: Option<usize>) -> usize {
+        let workers = self.ready.len();
+        if workers <= 1 {
+            return 0;
+        }
+        let preferred = last_worker
+            .filter(|&w| w < workers)
+            .unwrap_or(slot_index % workers);
+        if self.worker_active[preferred] == 0 {
+            return preferred;
+        }
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            if self.worker_active[candidate] == 0 && self.ready[candidate].head.is_none() {
+                return candidate;
+            }
+        }
+        let mut best = preferred;
+        let mut best_load = self.ready[preferred].len + self.worker_active[preferred] as usize;
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            let load = self.ready[candidate].len + self.worker_active[candidate] as usize;
+            if load < best_load {
+                best = candidate;
+                best_load = load;
+            }
+        }
+        best
+    }
+
     fn link_ready(&mut self, index: usize, worker: usize) -> WakeSignal {
         let previous = self.ready[worker].tail;
         if let Some(previous) = previous {
@@ -131,6 +162,7 @@ impl State {
             self.ready[worker].head = Some(index);
         }
         self.ready[worker].tail = Some(index);
+        self.ready[worker].len += 1;
         let slot = &mut self.slots[index];
         slot.ready_previous = previous;
         slot.ready_next = None;
@@ -155,11 +187,7 @@ impl State {
         if !actor.mailbox.mark_enqueued_if_nonempty() {
             return WakeSignal::NONE;
         }
-        let worker = actor
-            .last_worker
-            .map_or(index % self.ready.len(), |previous| {
-                (previous + 1) % self.ready.len()
-            });
+        let worker = self.select_worker(index, actor.last_worker);
         self.link_ready(index, worker)
     }
 
@@ -183,11 +211,7 @@ impl State {
         if !actor.mailbox.keep_active_if_nonempty() {
             return WakeSignal::NONE;
         }
-        let worker = actor
-            .last_worker
-            .map_or(index % self.ready.len(), |previous| {
-                (previous + 1) % self.ready.len()
-            });
+        let worker = self.select_worker(index, actor.last_worker);
         self.link_ready(index, worker)
     }
 
@@ -196,6 +220,7 @@ impl State {
         let worker = slot.ready_worker.take()?;
         let previous = slot.ready_previous.take();
         let next = slot.ready_next.take();
+        self.ready[worker].len = self.ready[worker].len.saturating_sub(1);
         if let Some(previous) = previous {
             self.slots[previous].ready_next = next;
         } else {

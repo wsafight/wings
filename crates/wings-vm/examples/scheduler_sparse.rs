@@ -82,7 +82,7 @@ fn run(directory: &Path, count: usize) -> Result<(), String> {
     for index in 0..100 {
         let snapshot = handle.snapshot(pids[index * step])?;
         if snapshot.committed_state != Some(6 * (index as i64 + 1))
-            || snapshot.migrations != 5
+            || snapshot.last_worker.is_none()
             || snapshot.owner.is_some()
         {
             return Err("sparse scheduler state/owner/migration mismatch".into());

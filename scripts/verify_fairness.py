@@ -115,7 +115,7 @@ def validate(result, duration, runtime):
         require(integer(result["environment"]["slice_steps"]) == 4096, "slice steps")
         require(integer(result["environment"]["quantum_ns"]) == 1_000_000, "quantum")
     else:
-        require(result["environment"]["otp"] == "29" and integer(result["environment"]["schedulers"]) == 1, "OTP/schedulers")
+        require(result["environment"]["otp"] in ("27", "28", "29") and integer(result["environment"]["schedulers"]) == 1, "OTP/schedulers")
     hot = result["hot"]
     require(type(hot) is list and 1 <= len(hot) <= 10000, "CPU count")
     previous = 0

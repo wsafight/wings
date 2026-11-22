@@ -1309,7 +1309,11 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
     actor.owner = None;
     actor.last_worker = Some(0);
     state.enqueue(replacement);
+    assert_eq!(state.pop_ready(0), Some(2));
+    state.worker_active[0] = 1;
+    state.enqueue(replacement);
     assert_eq!(state.pop_ready(1), Some(2));
+    state.worker_active[0] = 0;
     state
         .actor_mut(handle.shared.identity, replacement)
         .unwrap()
