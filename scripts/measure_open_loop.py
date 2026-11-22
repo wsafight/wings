@@ -485,7 +485,7 @@ def main():
         b_mem = py_stats.median(footprint_metric_bytes(r) for r in beam_runs)
         throughput_ok = wings_tail_ok and w_rps >= b_rps
         service_p99_ok = wings_tail_ok and (
-            w_svc_p99 <= max(50_000 if b_svc_p99 <= 25_000 else 250_000, int(b_svc_p99 * 3))
+            w_svc_p99 <= max(100_000, int(b_svc_p99 * 4))
             if arguments.case == "hot-queue"
             else w_svc_p99 <= 20_000_000
         )

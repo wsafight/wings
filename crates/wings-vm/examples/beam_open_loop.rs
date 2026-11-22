@@ -500,8 +500,8 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
                 if pending.is_empty() {
                     if let Some(planned) = next_planned {
                         let gap = planned.saturating_sub(now_ns);
-                        if gap > 150_000 {
-                            std::thread::sleep(Duration::from_nanos(gap - 80_000));
+                        if gap > 65_000 {
+                            std::thread::sleep(Duration::from_nanos(gap - 45_000));
                             continue;
                         }
                     }
