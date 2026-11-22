@@ -1,6 +1,6 @@
 [package]
 name = "wings-vm"
-description = "Trusted scalar AOT execution prototype for Wings VM"
+description = "Managed AOT microprocess runtime and RPC server for Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

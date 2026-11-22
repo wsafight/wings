@@ -1,6 +1,6 @@
 [package]
 name = "wings-abi"
-description = "Scalar AOT prototype ABI for Wings VM"
+description = "Managed C ABI layout, status codes, and value metadata for Wings VM"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

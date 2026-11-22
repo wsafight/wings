@@ -1043,17 +1043,17 @@ impl SchedulerHandle {
         } else {
             None
         };
-        let wake = state
-            .maintain(self.shared.identity)
-            .combine(state.wake_all_parked());
-        self.shared.publish_signal(&state);
-        drop(state);
         if let Some(mut retired) = retired {
             retired.actor.mailbox.retire_clear();
             clear_timers(&mut retired.timers);
             clear_monitors(&mut retired.monitors);
             drop(retired.actor);
         }
+        let wake = state
+            .maintain(self.shared.identity)
+            .combine(state.wake_all_parked());
+        self.shared.publish_signal(&state);
+        drop(state);
         wake.fire(&self.shared.changed);
         Ok(())
     }

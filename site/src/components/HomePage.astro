@@ -1,0 +1,1534 @@
+---
+import { Code } from 'astro:components';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { type Locale, getDocItems, localePath } from '../lib/docs';
+
+interface Props {
+  locale?: Locale;
+}
+
+const { locale = 'en' } = Astro.props;
+const docItems = getDocItems(locale);
+const installCmd = 'cargo install wings-compile wings-vm wings-lsp --version 0.0.3 --locked';
+
+const sampleCodeEn = `struct Command { session_id: int, prompt: str }
+struct Reply   { session_id: int, turn: int, output: str }
+
+actor Worker {
+  state turns = 0
+
+  on step(cmd: Command) -> Reply {
+    turns += 1
+    Reply {
+      session_id: cmd.session_id,
+      turn: turns,
+      output: f"s{cmd.session_id}#{turns}:{cmd.prompt}",
+    }
+  }
+}
+
+actor Supervisor {
+  state worker: pid?<Worker> = null
+  state mon_id = 0
+  state restarts = 0
+
+  on boot -> bool {
+    if worker.is_null() {
+      let child = spawn(Worker)
+      worker = child
+      mon_id = monitor(child, on_down)
+      let _t = send_after(1000, tick(1))
+    }
+    true
+  }
+
+  on tick(n: int) { /* periodic heartbeat */ }
+
+  on on_down(id: int, reason: int) {
+    if id == mon_id {
+      restarts += 1
+      let next = spawn(Worker)
+      worker = next
+      mon_id = monitor(next, on_down)
+    }
+  }
+}`;
+
+const sampleCodeZh = sampleCodeEn.replace('/* periodic heartbeat */', '/* 周期自定时心跳 */');
+const sampleCode = locale === 'zh' ? sampleCodeZh : sampleCodeEn;
+
+const cliCodeEn = `# 1. Static type, state & protocol verification
+$ wings-compile check examples/session-service.wings
+
+# 2. Emit native AOT bundle (Cranelift 0.118 + ShadowFrame GC roots)
+$ wings-compile build-app examples/session-service.wings -o target/session-bundle
+
+# 3. Launch preemptive multi-worker HTTP JSON-RPC server
+$ wings-vm serve --trusted target/session-bundle --workers 4 --http 127.0.0.1:8080
+
+# 4. Dispatch typed actor message & inspect health
+$ curl -s http://127.0.0.1:8080/healthz
+{"ok":true,"status":"ready","workers":4}`;
+
+const cliCodeZh = `# 1. 静态类型、不可变值与消息协议检查
+$ wings-compile check examples/session-service.wings
+
+# 2. 编译多 Actor 原生 AOT 产物包（Cranelift 0.118 + 精确 GC 根）
+$ wings-compile build-app examples/session-service.wings -o target/session-bundle
+
+# 3. 启动多 Worker 抢占式 HTTP JSON-RPC 服务
+$ wings-vm serve --trusted target/session-bundle --workers 4 --http 127.0.0.1:8080
+
+# 4. 探活与状态检查
+$ curl -s http://127.0.0.1:8080/healthz
+{"ok":true,"status":"ready","workers":4}`;
+
+const cliCode = locale === 'zh' ? cliCodeZh : cliCodeEn;
+
+const copy =
+  locale === 'zh'
+    ? {
+        pageTitle: 'Wings VM — 面向高并发有状态应用的受管 AOT 微进程虚拟机',
+        pageDesc:
+          '通过 Cranelift 将静态类型 wings-lang AOT 编译为受管原生机器码，兼具消息隔离、强制抢占调度、精确 GC 与三级资源配额。',
+        eyebrowTag: 'v0.0.3 PREVIEW',
+        eyebrow: 'Rust 微进程运行时 + Cranelift 0.118 原生 AOT',
+        h1Prefix: '面向高并发有状态应用的',
+        h1Highlight: '受管 AOT 微进程虚拟机',
+        lead: 'Wings 将静态不可变值语言 wings-lang 提前编译为带安全点插桩与精确引用根的原生机器码，在保留消息隔离、抢占式公平调度、监控恢复与三级配额账本的同时，面向高密度有状态会话追求更低的内存斜率与更高的吞吐上限。',
+        copyLabel: '复制',
+        ctaPrimary: '快速开始',
+        ctaSecondary: '架构设计',
+        ctaGithub: 'GitHub 仓库',
+        tabActor: 'session-service.wings',
+        tabCli: 'AOT 编译与服务化',
+        codeTag: '零共享可变内存 · 编译期契约',
+        pipeline: ['wings-lang AST', 'SSA + 精确根活跃分析', 'Cranelift 原生 AOT', 'wings-vm M:N 调度'],
+        metrics: [
+          {
+            value: '0 B',
+            unit: 'IDLE STACK',
+            label: '空闲驻留原生栈',
+            detail: '挂起期间零原生栈占用，调度唤醒时按需借用 256 KiB 池化协程栈',
+          },
+          {
+            value: 'O(1)',
+            unit: 'SLOT + GEN',
+            label: '能力句柄寻址',
+            detail: '槽位索引与代次校验直接路由消息，杜绝进程退出后的幽灵 PID 复用',
+          },
+          {
+            value: '16-node',
+            unit: 'CHUNKED GC',
+            label: '分块精确非移动 GC',
+            detail: '显式 ShadowFrame 根链追踪，每 16 节点轮询预算且严禁跨 C ABI 展开',
+          },
+          {
+            value: '3-Tier',
+            unit: 'QUOTA LEDGER',
+            label: '分层资源准入账本',
+            detail: 'VM → Tenant → Process 四维预留记账，超限拒绝并原子回滚',
+          },
+        ],
+        archKicker: 'CO-DESIGNED COMPILER & RUNTIME',
+        archTitle: '端到端受管 AOT 执行拓扑',
+        archSub: '前端编译器与微进程运行时围绕窄受管 C ABI 协同设计，将安全检查点、引用根与配额准入内化为确定性机制。',
+        archBoxes: [
+          {
+            step: 'STAGE 01 · FRONTEND',
+            title: 'wings-lang 静态前端',
+            items: ['actor / struct / 多 state', '可空 pid?<Actor> 与消息契约', '零后端重依赖 wings-lsp'],
+          },
+          {
+            step: 'STAGE 02 · AOT COMPILER',
+            title: 'SSA + Cranelift 0.118',
+            items: ['CFG 精确活跃引用根分析', '回边/调用点强制 safepoint', '产物包 manifest / bundle.json'],
+          },
+          {
+            step: 'STAGE 03 · MANAGED ABI',
+            title: '受管 C ABI 隔离边界',
+            items: ['显式 ShadowFrame 根栈链', '严禁 Rust panic/unwind 跨越', '副作用即时生效 / 状态返回提交'],
+          },
+          {
+            step: 'STAGE 04 · MICROPROCESS VM',
+            title: 'wings-vm 抢占运行时',
+            items: ['无锁快速邮箱 + 每轮 8 条批处理', '256 KiB 协程栈池 + 定时器/监控', 'VM → Tenant → Process 准入'],
+          },
+        ],
+        pillarsKicker: 'CORE MECHANISMS',
+        pillarsTitle: '核心机制与工程边界',
+        pillarsSub: '专用前端、受管 C ABI 与轻量微进程运行时一体演进，绝不靠牺牲抢占或配额安全换取合成跑分。',
+        pillars: [
+          {
+            tag: 'Language & LSP',
+            metric: 'Zero Blocking Receive',
+            title: '静态不可变值与编译期消息契约',
+            body: '一等公民 actor、共享不可变 struct、多 state、可空 pid?<Actor>、str / bytes / [int] 与受管栈帧有界递归；采用非阻塞 .ask(..., timeout, then) 回调，配套轻量 wings-lsp。',
+          },
+          {
+            tag: 'Cranelift AOT & Precise GC',
+            metric: 'Exact CFG Roots',
+            title: '精确 CFG 引用根与分块非移动 GC',
+            body: '在循环回边、调用点与分配点自动插桩步数/栈界检查与 ShadowFrame 根链；进程独立堆 mark-sweep GC 按 16 节点分块轮询预算与取消，彻底杜绝跨 ABI 栈展开。',
+          },
+          {
+            tag: 'Stack Pool & M:N Scheduler',
+            metric: '256 KiB Pooled Stacks',
+            title: '空闲零原生栈与无锁快速邮箱',
+            body: '休眠微进程不持有原生执行栈，激活时按需借用池化协程栈或走直接栈快路径；搭配代次绑定的无锁快速邮箱与有界消息批处理（每轮上限 8 条）。',
+          },
+          {
+            tag: 'Admission & Supervision',
+            metric: '4 Quota Dimensions',
+            title: '三级四维账本与有界故障恢复',
+            body: '围绕 bytes / processes / messages / requests 建立三级原子预留；handler 异常退出自动丢弃未提交状态、触发 monitor 通知，原生提供 stdio / --tcp / --http 服务入口。',
+          },
+        ],
+        compareKicker: 'ARCHITECTURE TRADE-OFFS',
+        compareTitle: '主流并发运行时取舍对照',
+        compareSub: '主动放弃任意第三方原生库直接混跑，换取静态紧凑值布局、确定性抢占安全点与细粒度进程级内存账本。',
+        compareCols: ['运行时方案', '执行形态', '抢占与配额隔离边界', '核心工程权衡'],
+        compareRows: [
+          {
+            name: '普通 Rust Actor（Tokio）',
+            mode: '原生机器码',
+            boundary: '无计算死循环自动抢占；无细粒度进程内存账本',
+            tradeoff: '裸吞吐上限高，但公平调度、配额防打爆与零可变共享完全依赖人工自律',
+            highlight: false,
+          },
+          {
+            name: 'WASM Actor（Wasmtime）',
+            mode: 'JIT / AOT 线性内存沙箱',
+            boundary: '面向多租户不可信代码的强硬件/页级沙箱边界',
+            tradeoff: '每实例独立线性内存、表与宿主桥接成本对百万级微小会话偏重',
+            highlight: false,
+          },
+          {
+            name: 'BEAM（Erlang / Elixir）',
+            mode: 'JIT 字节码虚拟机',
+            boundary: '工业级独立进程堆、归约计数抢占与成熟 OTP 监督树',
+            tradeoff: '动态标签字与运行时动态派发在高密度会话与混合计算场景仍有压缩空间',
+            highlight: false,
+          },
+          {
+            name: 'Wings VM',
+            mode: '受管 wings-lang 原生 AOT',
+            boundary: '编译期强制 safepoint + 精确 GC + 三级预留账本',
+            tradeoff: '聚焦可信自研业务（--trusted），兼顾原生 AOT 紧凑布局与软实时故障隔离',
+            highlight: true,
+          },
+        ],
+        statusKicker: 'VERIFICATION & TRANSPARENCY',
+        statusTitle: '工程进展与正式 MVP 门禁透明度',
+        statusSub: '严格区分“功能跑通”与“正式性能签收”：所有基准数据均附带宿主机环境、配对负载与尾延迟边界。',
+        okBadge: 'VERIFIED IN CI · v0.0.3',
+        okTitle: '已落地并纳入自动化回归的能力',
+        okItems: [
+          '单模块 build、多 Actor 应用包 build-app 与 wings-vm serve（stdio / --tcp / --http）完整闭环',
+          'spawn、! / .tell、非阻塞 .ask(..., timeout, then)、send_after 定时器与 monitor 崩溃恢复',
+          'macOS AArch64 与 Linux x86-64 双平台原生 CI + Rust 1.85.0 MSRV 编译门禁',
+          '同语义 BEAM 配对 Fairness 五轮长测零拒绝、零超时通过，含完整子进程限额故障注入回归',
+        ],
+        pendingBadge: 'OPEN MVP GATES',
+        pendingTitle: '尚未关闭的正式 MVP 签收门禁',
+        pendingItems: [
+          'Hot-queue 尾延迟调优：单收件人高争用开环服务 p99（约 35.9–46.2 µs）仍高于同机 BEAM（约 5.3–10.0 µs）',
+          'Linux cgroup v2 硬配额双门禁：待完成硬 CPU 配额下相对 BEAM 的持续吞吐与整机内存双目标同时签收',
+          '原生分配器账本闭环：dlopen 装载器元数据与全局分配器碎片尚未完全计入三级账本（评测同步披露 OS RSS/PSS）',
+          '语言模块与监督树演进：跨文件模块导入与声明式监督策略位于后续里程碑',
+        ],
+        docsKicker: 'CANONICAL DOCS',
+        docsTitle: '深入阅读 7 篇核心文档',
+        docsSub: '与仓库 docs/zh/ 实时同源构建，克制、具体、无空洞宣传语。',
+      }
+    : {
+        pageTitle: 'Wings VM — Managed AOT Microprocess VM for Stateful Concurrency',
+        pageDesc:
+          'Ahead-of-time compile statically typed wings-lang actors to native code via Cranelift with message isolation, preemptive scheduling, precise GC, and 3-tier quotas.',
+        eyebrowTag: 'v0.0.3 PREVIEW',
+        eyebrow: 'Rust Microprocess Runtime + Cranelift 0.118 Native AOT',
+        h1Prefix: 'Managed AOT Microprocess VM for ',
+        h1Highlight: 'Stateful Concurrency',
+        lead: 'Wings compiles the statically typed, immutable-value language wings-lang ahead-of-time into native machine code with compiler-enforced safepoints and exact GC roots—combining BEAM-grade fault isolation, preemptive fairness, and three-tier resource quotas with compact native value layouts.',
+        copyLabel: 'Copy',
+        ctaPrimary: 'Quick Start',
+        ctaSecondary: 'Architecture',
+        ctaGithub: 'GitHub Source',
+        tabActor: 'session-service.wings',
+        tabCli: 'Build & Serve CLI',
+        codeTag: 'Zero Shared State · Typed Contracts',
+        pipeline: ['wings-lang AST', 'SSA + Exact Root Liveness', 'Cranelift Native AOT', 'wings-vm M:N Runtime'],
+        metrics: [
+          {
+            value: '0 B',
+            unit: 'IDLE STACK',
+            label: 'Idle Native Stack',
+            detail: 'Dormant actors hold zero native stack, borrowing 256 KiB pooled stacks only while running',
+          },
+          {
+            value: 'O(1)',
+            unit: 'SLOT + GEN',
+            label: 'Capability Addressing',
+            detail: 'Direct slot index + generation guard prevents stale PID reuse after termination',
+          },
+          {
+            value: '16-node',
+            unit: 'CHUNKED GC',
+            label: 'Chunked Precise GC',
+            detail: 'Explicit ShadowFrame root chains, budget-polled mark-sweep, zero C-ABI unwind',
+          },
+          {
+            value: '3-Tier',
+            unit: 'QUOTA LEDGER',
+            label: 'Resource Admission',
+            detail: 'Atomic VM → Tenant → Process reservation across 4 dimensions with clean rollback',
+          },
+        ],
+        archKicker: 'CO-DESIGNED COMPILER & RUNTIME',
+        archTitle: 'End-to-End Managed AOT Execution Pipeline',
+        archSub:
+          'Frontend semantics, AOT codegen, and runtime scheduling are co-designed around a narrow managed C ABI—making preemption, exact GC roots, and quota accounting deterministic.',
+        archBoxes: [
+          {
+            step: 'STAGE 01 · FRONTEND',
+            title: 'wings-lang Static Frontend',
+            items: ['actor / struct / multi-state', 'Nullable pid?<Actor> contracts', 'Zero-backend-dep wings-lsp'],
+          },
+          {
+            step: 'STAGE 02 · AOT COMPILER',
+            title: 'SSA + Cranelift 0.118',
+            items: ['Exact CFG root liveness', 'Backedge & call safepoints', 'manifest.json / bundle.json'],
+          },
+          {
+            step: 'STAGE 03 · MANAGED ABI',
+            title: 'Narrow C ABI Boundary',
+            items: ['Explicit ShadowFrame root chain', 'Zero Rust panic/unwind across ABI', 'Atomic state commit on return'],
+          },
+          {
+            step: 'STAGE 04 · MICROPROCESS VM',
+            title: 'wings-vm Preemptive Runtime',
+            items: ['Lock-free mailboxes (batch ≤ 8)', '256 KiB stack pool + timers/monitors', 'VM → Tenant → Process ledger'],
+          },
+        ],
+        pillarsKicker: 'CORE MECHANISMS',
+        pillarsTitle: 'Core Mechanisms & Design Boundaries',
+        pillarsSub:
+          'Co-evolving language, compiler, and runtime—never sacrificing preemption or admission safety for synthetic benchmark numbers.',
+        pillars: [
+          {
+            tag: 'Language & LSP',
+            metric: 'Zero Blocking Receive',
+            title: 'Static Immutable Values & Typed Protocols',
+            body: 'First-class actors, shared immutable structs, multi-state bindings, nullable pid?<Actor>, str / bytes / [int], and bounded recursion—paired with non-blocking .ask(..., timeout, then) continuations and wings-lsp.',
+          },
+          {
+            tag: 'Cranelift AOT & Precise GC',
+            metric: 'Exact CFG Roots',
+            title: 'Exact CFG Root Liveness & Chunked Mark-Sweep',
+            body: 'Automatically instruments loop backedges, calls, and allocations with reduction/stack checks and explicit ShadowFrame chains; per-process GC polls budget every 16 nodes with zero unwind across C ABI.',
+          },
+          {
+            tag: 'Stack Pool & M:N Scheduler',
+            metric: '256 KiB Pooled Stacks',
+            title: 'Zero Idle Native Stack & Lock-Free Mailboxes',
+            body: 'Suspended microprocesses hold zero native stack memory, borrowing 256 KiB pooled coroutine stacks or direct-stack fast paths on demand, backed by generation-bound lock-free fast mailboxes.',
+          },
+          {
+            tag: 'Admission & Supervision',
+            metric: '4 Quota Dimensions',
+            title: '3-Tier Ledger & Bounded Crash Recovery',
+            body: 'Reserves bytes, processes, messages, and requests across VM → Tenant → Process upfront; discards uncommitted state on fault, fires monitor notifications, and serves stdio / --tcp / --http.',
+          },
+        ],
+        compareKicker: 'ARCHITECTURE TRADE-OFFS',
+        compareTitle: 'Runtime Trade-Off Matrix',
+        compareSub:
+          'Trading arbitrary third-party native crate linking inside actors for compact static layouts, compiler safepoints, and exact per-actor memory accounting.',
+        compareCols: ['Runtime', 'Execution Model', 'Preemption & Quota Boundary', 'Primary Engineering Trade-Off'],
+        compareRows: [
+          {
+            name: 'Native Rust Actors (Tokio)',
+            mode: 'Unrestricted native code',
+            boundary: 'Cooperative yield only; no automatic loop preemption or per-actor heap ledger',
+            tradeoff: 'Peak raw throughput, but fairness, memory containment, and state isolation rely on developer discipline',
+            highlight: false,
+          },
+          {
+            name: 'WASM Actors (Wasmtime)',
+            mode: 'JIT / AOT linear-memory sandbox',
+            boundary: 'Hardware/trap isolation designed for untrusted multi-tenant code',
+            tradeoff: 'Per-instance linear memory, tables, and host marshaling add overhead for millions of tiny sessions',
+            highlight: false,
+          },
+          {
+            name: 'BEAM (Erlang / Elixir)',
+            mode: 'JIT bytecode VM',
+            boundary: 'Battle-tested per-process heaps, reduction preemption & OTP supervision',
+            tradeoff: 'Dynamic tagged words and dispatch leave headroom in dense session and compute-mixed workloads',
+            highlight: false,
+          },
+          {
+            name: 'Wings VM',
+            mode: 'Managed wings-lang Native AOT',
+            boundary: 'Compiler safepoints + exact GC + 3-tier admission ledger',
+            tradeoff: 'Purpose-built for trusted first-party workloads (--trusted) needing high session density & fault containment',
+            highlight: true,
+          },
+        ],
+        statusKicker: 'VERIFICATION & TRANSPARENCY',
+        statusTitle: 'Engineering Status & Honest MVP Gates',
+        statusSub:
+          'Functional completeness is kept strictly separate from formal performance sign-off; every benchmark claim states host environment and tail-latency bounds.',
+        okBadge: 'VERIFIED IN CI · v0.0.3',
+        okTitle: 'Implemented & Guarded in CI',
+        okItems: [
+          'Single-actor build, multi-actor build-app bundles, and wings-vm serve over stdio, --tcp, and --http',
+          'spawn, ! / .tell, non-blocking .ask(..., timeout, then), send_after timers, and monitor recovery',
+          'Automated CI across macOS AArch64 and Linux x86-64 plus Rust 1.85.0 MSRV verification',
+          'All five paired fairness runs pass with zero rejections/timeouts, plus OS-bounded fault-injection suites',
+        ],
+        pendingBadge: 'OPEN MVP GATES',
+        pendingTitle: 'Remaining Formal MVP Sign-Off Gates',
+        pendingItems: [
+          'Hot-queue tail latency: single-recipient open-loop service p99 (~35.9–46.2 µs) remains above same-host BEAM (~5.3–10.0 µs)',
+          'Linux cgroup v2 hard CPU quota: simultaneous sustained-throughput + whole-machine-memory sign-off vs. BEAM is pending',
+          'Native allocator ledger: dlopen metadata and global allocator fragmentation sit outside the 3-tier ledger (OS RSS/PSS reported alongside)',
+          'Language roadmap: multi-file module imports and declarative supervision trees are scheduled for upcoming milestones',
+        ],
+        docsKicker: 'CANONICAL DOCS',
+        docsTitle: 'Explore the 7 Core Documents',
+        docsSub: 'Rendered directly from docs/ in the repository—concise, concrete, and free of marketing hype.',
+      };
+---
+
+<BaseLayout locale={locale} title={copy.pageTitle} description={copy.pageDesc} activeNav="home">
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <div class="eyebrow">
+          <span class="eyebrow-pill">{copy.eyebrowTag}</span>
+          <span>{copy.eyebrow}</span>
+        </div>
+
+        <h1>
+          {copy.h1Prefix}<span class="highlight">{copy.h1Highlight}</span>
+        </h1>
+
+        <p class="lead">{copy.lead}</p>
+
+        <div class="install-bar">
+          <div class="install-cmd">
+            <span class="install-tag">cargo</span>
+            <code>{installCmd}</code>
+          </div>
+          <button type="button" class="copy-btn" data-copy={installCmd}>
+            {copy.copyLabel}
+          </button>
+        </div>
+
+        <div class="hero-actions">
+          <a class="btn-primary" href={localePath(locale, '/docs/')}>
+            <span>{copy.ctaPrimary}</span>
+            <span class="btn-arrow" aria-hidden="true">→</span>
+          </a>
+          <a class="btn-secondary" href={localePath(locale, '/docs/architecture/')}>{copy.ctaSecondary}</a>
+          <a
+            class="btn-secondary"
+            href="https://github.com/wsafight/wings"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {copy.ctaGithub} ↗
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-code-card">
+          <div class="code-topbar">
+            <div class="code-topbar-left">
+              <div class="window-dots" aria-hidden="true">
+                <span class="dot-r"></span>
+                <span class="dot-y"></span>
+                <span class="dot-g"></span>
+              </div>
+              <div class="code-tabs" role="tablist">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  class="code-tab active"
+                  data-hero-tab="actor"
+                  data-raw-code={sampleCode}
+                >
+                  {copy.tabActor}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  class="code-tab"
+                  data-hero-tab="cli"
+                  data-raw-code={cliCode}
+                >
+                  {copy.tabCli}
+                </button>
+              </div>
+            </div>
+
+            <div class="code-topbar-right">
+              <span class="code-tag">{copy.codeTag}</span>
+              <button type="button" class="copy-btn" id="hero-copy-btn" data-copy={sampleCode}>
+                {copy.copyLabel}
+              </button>
+            </div>
+          </div>
+
+          <div class="hero-shiki" data-hero-pane="actor">
+            <Code code={sampleCode} lang="rust" theme="github-dark-default" />
+          </div>
+          <div class="hero-shiki" data-hero-pane="cli" hidden>
+            <Code code={cliCode} lang="sh" theme="github-dark-default" />
+          </div>
+
+          <div class="pipeline-strip" aria-label="Compilation pipeline">
+            {copy.pipeline.map((step, idx) => (
+              <>
+                <span class="pipe-step">{step}</span>
+                {idx < copy.pipeline.length - 1 && <span class="pipe-arrow">→</span>}
+              </>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry Strip -->
+    <div class="container metrics-strip">
+      {copy.metrics.map((m) => (
+        <div class="metric-card spotlight-card">
+          <div class="metric-top">
+            <div class="metric-val">{m.value}</div>
+            <span class="metric-unit">{m.unit}</span>
+          </div>
+          <div class="metric-label">{m.label}</div>
+          <p class="metric-detail">{m.detail}</p>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <!-- End-to-End Architecture Pipeline Schematic -->
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-kicker">{copy.archKicker}</span>
+        <h2>{copy.archTitle}</h2>
+        <p>{copy.archSub}</p>
+      </div>
+
+      <div class="arch-flow">
+        {copy.archBoxes.map((box, idx) => (
+          <div class:list={['arch-stage', 'spotlight-card', { accent: idx === 3 }]}>
+            <div class="arch-step-row">
+              <span class="arch-step">{box.step}</span>
+              {idx < copy.archBoxes.length - 1 && <span class="arch-connector" aria-hidden="true">→</span>}
+            </div>
+            <h3>{box.title}</h3>
+            <ul>
+              {box.items.map((it) => (
+                <li>{it}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- Core Mechanisms Bento -->
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-kicker">{copy.pillarsKicker}</span>
+        <h2>{copy.pillarsTitle}</h2>
+        <p>{copy.pillarsSub}</p>
+      </div>
+
+      <div class="pillar-grid">
+        {copy.pillars.map((pillar, idx) => (
+          <div class="pillar-card spotlight-card">
+            <div class="pillar-header">
+              <div class="pillar-header-left">
+                <div class="pillar-icon" aria-hidden="true">
+                  {idx === 0 && (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="16 18 22 12 16 6" />
+                      <polyline points="8 6 2 12 8 18" />
+                    </svg>
+                  )}
+                  {idx === 1 && (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="6" cy="6" r="3" />
+                      <circle cx="18" cy="6" r="3" />
+                      <circle cx="12" cy="18" r="3" />
+                      <line x1="8.5" y1="7.5" x2="10.8" y2="15.3" />
+                      <line x1="15.5" y1="7.5" x2="13.2" y2="15.3" />
+                    </svg>
+                  )}
+                  {idx === 2 && (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                      <polyline points="2 12 12 17 22 12" />
+                      <polyline points="2 17 12 22 22 17" />
+                    </svg>
+                  )}
+                  {idx === 3 && (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                      <polyline points="9 12 11 14 15 10" />
+                    </svg>
+                  )}
+                </div>
+                <span class="pillar-tag">{pillar.tag}</span>
+              </div>
+              <span class="pillar-metric">{pillar.metric}</span>
+            </div>
+            <h3>{pillar.title}</h3>
+            <p>{pillar.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- Baseline Comparison -->
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-kicker">{copy.compareKicker}</span>
+        <h2>{copy.compareTitle}</h2>
+        <p>{copy.compareSub}</p>
+      </div>
+
+      <div class="table-wrap">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              {copy.compareCols.map((col) => (
+                <th>{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {copy.compareRows.map((row) => (
+              <tr class={row.highlight ? 'highlight-row' : ''}>
+                <td>
+                  <div class="runtime-cell">
+                    {row.highlight && <span class="runtime-dot" aria-hidden="true"></span>}
+                    <strong>{row.name}</strong>
+                  </div>
+                </td>
+                <td>
+                  <span class:list={['mode-pill', { accent: row.highlight }]}>{row.mode}</span>
+                </td>
+                <td>{row.boundary}</td>
+                <td>{row.tradeoff}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Engineering Status & Open Gates -->
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-kicker">{copy.statusKicker}</span>
+        <h2>{copy.statusTitle}</h2>
+        <p>{copy.statusSub}</p>
+      </div>
+
+      <div class="status-grid">
+        <div class="status-box ok spotlight-card">
+          <span class="status-badge ok">{copy.okBadge}</span>
+          <h3>{copy.okTitle}</h3>
+          <ul class="status-list">
+            {copy.okItems.map((item) => (
+              <li>
+                <span class="status-icon-badge ok" aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div class="status-box pending spotlight-card">
+          <span class="status-badge pending">{copy.pendingBadge}</span>
+          <h3>{copy.pendingTitle}</h3>
+          <ul class="status-list">
+            {copy.pendingItems.map((item) => (
+              <li>
+                <span class="status-icon-badge pending" aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9" />
+                    <polyline points="12 7 12 12 15 14" />
+                  </svg>
+                </span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Docs Jump Cards -->
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="section-kicker">{copy.docsKicker}</span>
+        <h2>{copy.docsTitle}</h2>
+        <p>{copy.docsSub}</p>
+      </div>
+
+      <div class="docs-grid">
+        {docItems.map((doc) => (
+          <a class="doc-card spotlight-card" href={localePath(locale, `/docs/${doc.slug}/`)}>
+            <div class="doc-card-top">
+              <span class="doc-num">0{doc.order} · {doc.group}</span>
+              <span class="doc-arrow" aria-hidden="true">↗</span>
+            </div>
+            <h3>{doc.title}</h3>
+            <p>{doc.summary}</p>
+          </a>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <script is:inline>
+    (() => {
+      const tabs = Array.from(document.querySelectorAll('[data-hero-tab]'));
+      const panes = Array.from(document.querySelectorAll('[data-hero-pane]'));
+      const copyBtn = document.getElementById('hero-copy-btn');
+      if (!tabs.length || !panes.length) return;
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          const target = tab.getAttribute('data-hero-tab');
+          tabs.forEach((t) => {
+            const active = t === tab;
+            t.classList.toggle('active', active);
+            t.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          panes.forEach((p) => {
+            p.hidden = p.getAttribute('data-hero-pane') !== target;
+          });
+          if (copyBtn) {
+            copyBtn.setAttribute('data-copy', tab.getAttribute('data-raw-code') || '');
+          }
+        });
+      });
+    })();
+  </script>
+</BaseLayout>
+
+<style>
+  .hero {
+    padding: 4.4rem 0 2.6rem;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.03fr 0.97fr;
+    gap: 2.8rem;
+    align-items: center;
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.26rem 0.85rem 0.26rem 0.32rem;
+    border-radius: 999px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--specular);
+    color: var(--text-muted);
+    font-size: 0.79rem;
+    font-weight: 500;
+    margin-bottom: 1.35rem;
+  }
+
+  .eyebrow-pill {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.18rem 0.54rem;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #ff9848, #ea580c);
+    color: #fff;
+  }
+
+  .hero-copy h1 {
+    margin: 0 0 1.2rem;
+    font-size: clamp(2.25rem, 3.95vw, 3.38rem);
+    line-height: 1.11;
+    letter-spacing: -0.034em;
+    text-wrap: balance;
+  }
+
+  .highlight {
+    display: block;
+    background: linear-gradient(96deg, #ff9544 0%, #ffb877 45%, #38bdf8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  html[data-theme="light"] .highlight {
+    background: linear-gradient(96deg, #ea580c 0%, #d97706 48%, #0284c7 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .lead {
+    margin: 0 0 1.65rem;
+    color: var(--text-muted);
+    font-size: 1.03rem;
+    line-height: 1.76;
+  }
+
+  .install-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.58rem 0.65rem 0.58rem 0.68rem;
+    border-radius: 13px;
+    background: var(--bg-code);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow: 0 18px 38px -22px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    margin-bottom: 1.6rem;
+  }
+
+  html[data-theme="light"] .install-bar {
+    border-color: rgba(15, 23, 42, 0.2);
+    box-shadow: 0 16px 32px -20px rgba(15, 23, 42, 0.25);
+  }
+
+  .install-cmd {
+    display: flex;
+    align-items: center;
+    gap: 0.62rem;
+    overflow-x: auto;
+    font-size: 0.81rem;
+    color: #f8fafc;
+    white-space: nowrap;
+  }
+
+  .install-tag {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.18rem 0.46rem;
+    border-radius: 6px;
+    background: rgba(255, 140, 59, 0.18);
+    border: 1px solid rgba(255, 140, 59, 0.35);
+    color: #ffb067;
+    user-select: none;
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.82rem;
+  }
+
+  /* Hero IDE Window with Ambient Halo */
+  .hero-visual {
+    position: relative;
+  }
+
+  .hero-glow {
+    position: absolute;
+    inset: -18px;
+    border-radius: 28px;
+    background: radial-gradient(circle at 35% 25%, rgba(255, 140, 59, 0.2), rgba(56, 189, 248, 0.14) 55%, transparent 76%);
+    filter: blur(26px);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .hero-code-card {
+    border-radius: 17px;
+    background: var(--bg-code);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    box-shadow: var(--shadow-float);
+    overflow: hidden;
+  }
+
+  .code-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    padding: 0.55rem 0.85rem;
+    background: var(--bg-code-bar);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.75rem;
+  }
+
+  .code-topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .window-dots {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .window-dots span {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+  }
+
+  .dot-r {
+    background: #fb7185;
+    opacity: 0.78;
+  }
+  .dot-y {
+    background: #fbbf24;
+    opacity: 0.78;
+  }
+  .dot-g {
+    background: #34d399;
+    opacity: 0.78;
+  }
+
+  .code-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 3px;
+    border-radius: 9px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .code-tab {
+    border: none;
+    background: transparent;
+    color: #94a3b8;
+    font-family: var(--font-mono);
+    font-size: 0.73rem;
+    padding: 0.26rem 0.62rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.14s ease, background 0.14s ease;
+    white-space: nowrap;
+  }
+
+  .code-tab:hover {
+    color: #e2e8f0;
+  }
+
+  .code-tab.active {
+    background: rgba(255, 140, 59, 0.18);
+    color: #ffb067;
+    font-weight: 600;
+  }
+
+  .code-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-shrink: 0;
+  }
+
+  .code-tag {
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 500;
+  }
+
+  .hero-shiki[hidden] {
+    display: none !important;
+  }
+
+  .hero-shiki :global(pre) {
+    margin: 0 !important;
+    padding: 1.05rem 1.25rem !important;
+    background: transparent !important;
+    overflow-x: auto;
+    font-size: 0.78rem;
+    line-height: 1.56;
+    max-height: 430px;
+  }
+
+  .pipeline-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.42rem;
+    padding: 0.62rem 0.9rem;
+    background: var(--bg-code-bar);
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    font-family: var(--font-mono);
+    font-size: 0.71rem;
+  }
+
+  .pipe-step {
+    padding: 0.16rem 0.52rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #e2e8f0;
+  }
+
+  .pipe-arrow {
+    color: #ff9848;
+  }
+
+  /* Telemetry Strip */
+  .metrics-strip {
+    margin-top: 3rem;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.05rem;
+  }
+
+  .metric-card {
+    padding: 1.25rem 1.35rem;
+    border-radius: 15px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+    transition: border-color 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .metric-card:hover {
+    border-color: var(--accent-border);
+    transform: translateY(-3px);
+  }
+
+  .metric-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .metric-val {
+    font-family: var(--font-mono);
+    font-size: 1.55rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    background: linear-gradient(95deg, var(--accent), var(--accent-bright));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .metric-unit {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+
+  .metric-label {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.32rem;
+  }
+
+  .metric-detail {
+    margin: 0;
+    font-size: 0.81rem;
+    line-height: 1.52;
+    color: var(--text-muted);
+  }
+
+  /* Section Headers */
+  .section {
+    padding: 3.6rem 0;
+  }
+
+  .section-head {
+    margin-bottom: 1.9rem;
+  }
+
+  .section-kicker {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: var(--accent);
+    margin-bottom: 0.45rem;
+  }
+
+  .section-head h2 {
+    margin: 0 0 0.48rem;
+    font-size: clamp(1.55rem, 2.5vw, 1.92rem);
+    letter-spacing: -0.025em;
+  }
+
+  .section-head p {
+    margin: 0;
+    color: var(--text-muted);
+    max-width: 780px;
+    font-size: 0.98rem;
+  }
+
+  /* 4-Stage Architecture Flow */
+  .arch-flow {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  .arch-stage {
+    padding: 1.3rem 1.35rem;
+    border-radius: 15px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+    transition: border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .arch-stage:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
+  }
+
+  .arch-stage.accent {
+    border-color: var(--accent-border);
+    background: linear-gradient(165deg, var(--accent-soft), var(--bg-card) 62%);
+  }
+
+  .arch-step-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.55rem;
+  }
+
+  .arch-step {
+    font-family: var(--font-mono);
+    font-size: 0.69rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--cyan);
+  }
+
+  .arch-stage.accent .arch-step {
+    color: var(--accent);
+  }
+
+  .arch-connector {
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+
+  .arch-stage h3 {
+    margin: 0 0 0.65rem;
+    font-size: 1.02rem;
+    letter-spacing: -0.015em;
+  }
+
+  .arch-stage ul {
+    margin: 0;
+    padding-left: 1.05rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1.62;
+  }
+
+  .arch-stage li {
+    margin: 0.25rem 0;
+  }
+
+  .arch-stage li::marker {
+    color: var(--accent);
+  }
+
+  /* Bento Pillars */
+  .pillar-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.2rem;
+  }
+
+  .pillar-card {
+    padding: 1.6rem 1.7rem;
+    border-radius: 17px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+    transition: border-color 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .pillar-card:hover {
+    border-color: var(--accent-border);
+    transform: translateY(-3px);
+  }
+
+  .pillar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.95rem;
+  }
+
+  .pillar-header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.68rem;
+  }
+
+  .pillar-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+  }
+
+  .pillar-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .pillar-tag {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--cyan);
+  }
+
+  .pillar-metric {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.16rem 0.52rem;
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+
+  .pillar-card h3 {
+    margin: 0 0 0.55rem;
+    font-size: 1.16rem;
+    letter-spacing: -0.015em;
+  }
+
+  .pillar-card p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.7;
+  }
+
+  /* Comparison Table */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 16px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+  }
+
+  .compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+
+  .compare-table th,
+  .compare-table td {
+    padding: 1rem 1.2rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  .compare-table th {
+    background: var(--bg-subtle);
+    font-weight: 600;
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .compare-table td {
+    color: var(--text-muted);
+  }
+
+  .compare-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .runtime-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text);
+  }
+
+  .runtime-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+  }
+
+  .mode-pill {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.2rem 0.58rem;
+    border-radius: 7px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .mode-pill.accent {
+    background: var(--accent-soft);
+    border-color: var(--accent-border);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .highlight-row td {
+    background: linear-gradient(90deg, var(--accent-soft), transparent 88%);
+    color: var(--text);
+  }
+
+  /* Status Cards */
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+  }
+
+  .status-box {
+    padding: 1.65rem 1.75rem;
+    border-radius: 17px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+  }
+
+  .status-box.ok {
+    border-top: 3px solid var(--green);
+  }
+
+  .status-box.pending {
+    border-top: 3px solid var(--amber);
+  }
+
+  .status-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.2rem 0.62rem;
+    border-radius: 999px;
+    margin-bottom: 0.7rem;
+  }
+
+  .status-badge.ok {
+    color: var(--green);
+    background: var(--green-soft);
+    border: 1px solid var(--green-border);
+  }
+
+  .status-badge.pending {
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--amber-border);
+  }
+
+  .status-box h3 {
+    margin: 0 0 1rem;
+    font-size: 1.16rem;
+    letter-spacing: -0.015em;
+  }
+
+  .status-box ul,
+  .status-list {
+    list-style: none !important;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.78rem;
+    color: var(--text-body);
+    font-size: 0.9rem;
+    line-height: 1.62;
+  }
+
+  .status-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.68rem;
+    list-style: none !important;
+  }
+
+  .status-icon-badge {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 0.16rem;
+  }
+
+  .status-icon-badge svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .status-icon-badge.ok {
+    color: var(--green);
+    background: var(--green-soft);
+    border: 1px solid var(--green-border);
+  }
+
+  .status-icon-badge.pending {
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--amber-border);
+  }
+
+  /* Docs Explorer Grid */
+  .docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(295px, 1fr));
+    gap: 1.1rem;
+  }
+
+  .doc-card {
+    display: flex;
+    flex-direction: column;
+    padding: 1.38rem 1.48rem;
+    border-radius: 15px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.18s ease, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), background 0.18s ease;
+  }
+
+  .doc-card:hover {
+    border-color: var(--accent-border);
+    background: var(--bg-card-hover);
+    transform: translateY(-3px);
+  }
+
+  .doc-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+  }
+
+  .doc-num {
+    font-family: var(--font-mono);
+    font-size: 0.73rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .doc-arrow {
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    transition: transform 0.18s ease, color 0.18s ease;
+  }
+
+  .doc-card:hover .doc-arrow {
+    color: var(--accent);
+    transform: translate(2px, -2px);
+  }
+
+  .doc-card h3 {
+    margin: 0 0 0.45rem;
+    font-size: 1.08rem;
+    letter-spacing: -0.014em;
+  }
+
+  .doc-card p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.87rem;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 1080px) {
+    .hero-grid,
+    .pillar-grid,
+    .status-grid {
+      grid-template-columns: 1fr;
+    }
+    .metrics-strip,
+    .arch-flow {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .arch-connector,
+    .code-tag {
+      display: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .hero {
+      padding-top: 2.8rem;
+    }
+    .metrics-strip,
+    .arch-flow {
+      grid-template-columns: 1fr;
+    }
+    .pillar-metric {
+      display: none;
+    }
+  }
+</style>

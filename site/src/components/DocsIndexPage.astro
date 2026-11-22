@@ -1,0 +1,258 @@
+---
+import { Code } from 'astro:components';
+import DocsLayout from '../layouts/DocsLayout.astro';
+import { type Locale, getDocItems, localePath } from '../lib/docs';
+
+interface Props {
+  locale?: Locale;
+}
+
+const { locale = 'en' } = Astro.props;
+const docItems = getDocItems(locale);
+
+const installSnippet = `cargo install wings-compile wings-vm wings-lsp --version 0.0.3 --locked`;
+const cloneSnippet = `git clone https://github.com/wsafight/wings.git
+cd wings
+cargo test --workspace --locked`;
+
+const singleActorSnippet =
+  locale === 'zh'
+    ? `# 静态语法、类型与协议检查
+wings-compile check examples/counter.wings
+
+# 编译单 Actor 原生 AOT 产物（输出目录须不存在）
+wings-compile build examples/counter.wings -o target/counter-aot
+
+# 通过标准输入 JSON Lines 执行消息流
+wings-vm run --trusted target/counter-aot < examples/counter.messages.jsonl`
+    : `# Static syntax, type, and protocol check
+wings-compile check examples/counter.wings
+
+# Build a single-actor native AOT artifact (output directory must not exist)
+wings-compile build examples/counter.wings -o target/counter-aot
+
+# Execute a JSON Lines message stream over stdin
+wings-vm run --trusted target/counter-aot < examples/counter.messages.jsonl`;
+
+const multiActorSnippet =
+  locale === 'zh'
+    ? `# 编译多 Actor 应用包（含监督重启与 send_after 定时心跳）
+wings-compile build-app examples/session-service.wings -o target/session-bundle
+
+# 启动多 worker HTTP JSON-RPC 服务（含 GET /healthz）
+wings-vm serve --trusted target/session-bundle --workers 2 --http 127.0.0.1:8080
+
+# 或启动 TCP JSON Lines 服务
+wings-vm serve --trusted target/session-bundle --workers 2 --tcp 127.0.0.1:9000`
+    : `# Compile a multi-actor application bundle (supervision + send_after heartbeats)
+wings-compile build-app examples/session-service.wings -o target/session-bundle
+
+# Start a multi-worker HTTP JSON-RPC server (includes GET /healthz)
+wings-vm serve --trusted target/session-bundle --workers 2 --http 127.0.0.1:8080
+
+# Or start a TCP JSON Lines server
+wings-vm serve --trusted target/session-bundle --workers 2 --tcp 127.0.0.1:9000`;
+
+const headings =
+  locale === 'zh'
+    ? [
+        { depth: 2, slug: 'install', text: '1. 安装工具链' },
+        { depth: 2, slug: 'single-actor', text: '2. 单 Actor 编译与运行' },
+        { depth: 2, slug: 'multi-actor', text: '3. 多 Actor 打包与服务化' },
+        { depth: 2, slug: 'chapters', text: '核心文档导览' },
+      ]
+    : [
+        { depth: 2, slug: 'install', text: '1. Install the Toolchain' },
+        { depth: 2, slug: 'single-actor', text: '2. Single-Actor Build & Run' },
+        { depth: 2, slug: 'multi-actor', text: '3. Multi-Actor Bundle & Serve' },
+        { depth: 2, slug: 'chapters', text: 'Core Documentation Guide' },
+      ];
+---
+
+{
+  locale === 'zh' ? (
+    <DocsLayout
+      locale="zh"
+      title="快速开始与总览"
+      summary="从安装 wings-compile / wings-vm / wings-lsp 到编译运行单模块与多 Actor HTTP/TCP 服务。"
+      group="入门指南"
+      currentSlug="index"
+      sourceFile="README.zh-CN.md"
+      headings={headings}
+      nextDoc={docItems[0]}
+    >
+      <blockquote>
+        <p>
+          <strong>早期阶段声明（0.0.x）</strong>：项目处于快速演进阶段，不承诺语法、受管 C ABI、产物清单（
+          <code>manifest.json</code> / <code>bundle.json</code>）或 Rust 接口的向后兼容；升级版本后请直接重新编译源码。
+        </p>
+      </blockquote>
+
+      <h2 id="install">1. 安装工具链</h2>
+      <p>
+        环境要求：<strong>Rust 1.85+</strong>，以及系统 C 链接器（<code>cc</code>，可通过环境变量 <code>CC</code>{' '}
+        指定）。首要支持 <strong>macOS AArch64（Apple Silicon）</strong> 与 <strong>Linux x86-64</strong>：
+      </p>
+      <Code code={installSnippet} lang="sh" theme="github-dark-default" />
+      <p>也可以在克隆源码仓库后直接通过 Cargo 构建并运行全量工作区测试：</p>
+      <Code code={cloneSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="single-actor">2. 单 Actor 编译与运行</h2>
+      <p>
+        使用 <code>wings-compile check</code> 进行静态类型与消息协议校验，<code>build</code>{' '}
+        生成原生 AOT 共享库与清单（输出目录须不存在），再由 <code>wings-vm run --trusted</code> 执行消息流：
+      </p>
+      <Code code={singleActorSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="multi-actor">3. 多 Actor 打包与服务化</h2>
+      <p>
+        针对包含多个 Actor、共享不可变 <code>struct</code>、异步 <code>.ask</code>、<code>send_after</code> 定时与{' '}
+        <code>monitor</code> 监控重启的应用，使用 <code>build-app</code> 打包并通过 <code>serve</code> 启动服务：
+      </p>
+      <Code code={multiActorSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="chapters">核心文档导览</h2>
+      <p>
+        以下 7 篇章节直接同源构建自仓库 <code>docs/zh/</code> 目录：
+      </p>
+      <div class="chapter-grid">
+        {docItems.map((item) => (
+          <a class="chapter-card spotlight-card" href={localePath('zh', `/docs/${item.slug}/`)}>
+            <div class="chapter-top">
+              <span class="chapter-group">0{item.order} · {item.group}</span>
+              <span class="chapter-arrow" aria-hidden="true">↗</span>
+            </div>
+            <strong>{item.title}</strong>
+            <span>{item.summary}</span>
+          </a>
+        ))}
+      </div>
+    </DocsLayout>
+  ) : (
+    <DocsLayout
+      locale="en"
+      title="Quick Start & Overview"
+      summary="Install wings-compile, wings-vm, and wings-lsp, then compile and serve single-actor and multi-actor native AOT bundles."
+      group="Getting Started"
+      currentSlug="index"
+      sourceFile="README.md"
+      headings={headings}
+      nextDoc={docItems[0]}
+    >
+      <blockquote>
+        <p>
+          <strong>Early-Stage Notice (0.0.x)</strong>: Wings is under rapid iteration with{' '}
+          <strong>no backward-compatibility guarantees</strong> across syntax, the managed C ABI, artifact manifests (
+          <code>manifest.json</code> / <code>bundle.json</code>), CLI flags, or Rust APIs. Always recompile{' '}
+          <code>.wings</code> sources after upgrading.
+        </p>
+      </blockquote>
+
+      <h2 id="install">1. Install the Toolchain</h2>
+      <p>
+        Prerequisites: <strong>Rust 1.85+</strong> and a system C linker (<code>cc</code>, overridable via{' '}
+        <code>CC</code>). Primary supported targets are <strong>macOS AArch64 (Apple Silicon)</strong> and{' '}
+        <strong>Linux x86-64</strong>:
+      </p>
+      <Code code={installSnippet} lang="sh" theme="github-dark-default" />
+      <p>Or clone the repository directly to build and run the workspace test suite from source:</p>
+      <Code code={cloneSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="single-actor">2. Single-Actor Build &amp; Run</h2>
+      <p>
+        Run <code>wings-compile check</code> for static type and protocol verification, <code>build</code> to emit a
+        native AOT shared library and manifest (the output directory must not already exist), and{' '}
+        <code>wings-vm run --trusted</code> to process a JSON Lines message stream:
+      </p>
+      <Code code={singleActorSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="multi-actor">3. Multi-Actor Bundle &amp; Serve</h2>
+      <p>
+        For applications combining multiple actors, shared immutable <code>struct</code> types, non-blocking{' '}
+        <code>.ask</code> requests, <code>send_after</code> timers, and <code>monitor</code> crash recovery, bundle with{' '}
+        <code>build-app</code> and launch a multi-worker server:
+      </p>
+      <Code code={multiActorSnippet} lang="sh" theme="github-dark-default" />
+
+      <h2 id="chapters">Core Documentation Guide</h2>
+      <p>
+        Every chapter below is rendered directly from the canonical Markdown files in <code>docs/</code>:
+      </p>
+      <div class="chapter-grid">
+        {docItems.map((item) => (
+          <a class="chapter-card spotlight-card" href={localePath('en', `/docs/${item.slug}/`)}>
+            <div class="chapter-top">
+              <span class="chapter-group">0{item.order} · {item.group}</span>
+              <span class="chapter-arrow" aria-hidden="true">↗</span>
+            </div>
+            <strong>{item.title}</strong>
+            <span>{item.summary}</span>
+          </a>
+        ))}
+      </div>
+    </DocsLayout>
+  )
+}
+
+<style>
+  .chapter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+    gap: 1.05rem;
+    margin-top: 1.2rem;
+  }
+
+  .chapter-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.42rem;
+    padding: 1.2rem 1.3rem;
+    border-radius: 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-card);
+    text-decoration: none !important;
+    transition: border-color 0.16s ease, transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), background 0.16s ease;
+  }
+
+  .chapter-card:hover {
+    border-color: var(--accent-border);
+    background: var(--bg-card-hover);
+    transform: translateY(-2px);
+  }
+
+  .chapter-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .chapter-group {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .chapter-arrow {
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    transition: transform 0.16s ease, color 0.16s ease;
+  }
+
+  .chapter-card:hover .chapter-arrow {
+    color: var(--accent);
+    transform: translate(2px, -2px);
+  }
+
+  .chapter-card strong {
+    color: var(--text);
+    font-size: 1.02rem;
+  }
+
+  .chapter-card span {
+    color: var(--text-muted);
+    font-size: 0.86rem;
+    line-height: 1.58;
+  }
+</style>

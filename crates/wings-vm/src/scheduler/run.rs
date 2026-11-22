@@ -480,6 +480,7 @@ fn run_fast_claim(
                 .and_then(|deadline| timer.arm(deadline).ok());
             let Some(()) = armed else {
                 drop(prepared);
+                drop((mailbox, account, cancellation));
                 finish_process(
                     shared,
                     index,
@@ -559,12 +560,12 @@ fn run_fast_claim(
                             Ok(Some(value)) => value,
                             _ => RequestOutcome::Failed,
                         };
+                        drop((handler, _charge, _message_charge));
                         if let Reply::External(publisher) =
                             std::mem::replace(&mut reply, Reply::None)
                         {
                             complete_external(publisher, outcome);
                         }
-                        drop((handler, _charge, _message_charge));
                         already_started = true;
                         current_message = Some(next_msg);
                         continue;
@@ -604,11 +605,11 @@ fn run_fast_claim(
                             }
                             let wake = state.maintain(shared.identity);
                             shared.publish_signal(&state);
+                            drop((handler, _charge, _message_charge));
                             drop(state);
                             if let Some((publisher, outcome)) = external_reply {
                                 complete_external(publisher, outcome);
                             }
-                            drop((handler, _charge, _message_charge));
                             wake.fire(&shared.changed);
                             already_started = false;
                             current_message = Some(next_msg);
@@ -616,6 +617,7 @@ fn run_fast_claim(
                         }
                     }
                 }
+                drop((mailbox, account, cancellation));
                 finish_process(
                     shared,
                     index,
@@ -797,11 +799,11 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     actor.mailbox.set_starting(false);
     actor.image = Some(claim.image);
     actor.mailbox.restore(claim.message);
-    if closed {
-        if let Some(publisher) = actor.termination.as_mut() {
-            publisher.set(SchedulerTermination::Closed);
-        }
-    }
+    let mut closed_termination = if closed {
+        actor.termination.take()
+    } else {
+        None
+    };
     let failed = actor.stopping || closed;
     if failed {
         shared.fast_slots[claim.pid.slot as usize].clear();
@@ -816,21 +818,22 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     } else {
         None
     };
-    let wake = state
-        .finish_enqueue(claim.pid, failed)
-        .combine(state.maintain(shared.identity));
-    shared.publish_signal(&state);
-    drop(state);
-    wake.fire(&shared.changed);
     if let Some(mut retired) = retired {
         retired.actor.mailbox.retire_clear();
         clear_timers(&mut retired.timers);
         clear_monitors(&mut retired.monitors);
         drop(retired.actor);
     }
-    drop(claim.mailbox);
-    drop(claim.account);
-    drop(claim.cancellation);
+    drop((claim.mailbox, claim.account, claim.cancellation));
+    let wake = state
+        .finish_enqueue(claim.pid, failed)
+        .combine(state.maintain(shared.identity));
+    shared.publish_signal(&state);
+    drop(state);
+    if let Some(mut publisher) = closed_termination.take() {
+        publisher.set(SchedulerTermination::Closed);
+    }
+    wake.fire(&shared.changed);
 }
 
 fn finish(
@@ -927,21 +930,26 @@ fn finish_process(
     } else {
         None
     };
+    drop((handler, _charge, _message_charge));
     actor.owner = None;
     actor.image = Some(image);
     actor.execution = snapshot;
     actor.committed_state = committed_state;
+    let mut termination = None;
     if failed {
         shared.fast_slots[pid.slot as usize].clear();
-        if let Some(publisher) = actor.termination.as_mut() {
-            publisher.set(if closed {
-                SchedulerTermination::Closed
-            } else if let Some(diagnostic) = diagnostic {
-                SchedulerTermination::Failed(diagnostic)
-            } else {
-                SchedulerTermination::Stopped
-            });
-        }
+        termination = actor.termination.take().map(|publisher| {
+            (
+                publisher,
+                if closed {
+                    SchedulerTermination::Closed
+                } else if let Some(diagnostic) = diagnostic {
+                    SchedulerTermination::Failed(diagnostic)
+                } else {
+                    SchedulerTermination::Stopped
+                },
+            )
+        });
     }
     if let Some(diagnostic) = diagnostic {
         state.last_exit = Some(diagnostic);
@@ -961,6 +969,12 @@ fn finish_process(
     } else {
         None
     };
+    if let Some(mut retired) = retired {
+        retired.actor.mailbox.retire_clear();
+        clear_timers(&mut retired.timers);
+        clear_monitors(&mut retired.monitors);
+        drop(retired.actor);
+    }
     let wake = state
         .finish_enqueue(pid, failed)
         .combine(state.maintain(shared.identity));
@@ -969,12 +983,8 @@ fn finish_process(
     if let Some((publisher, outcome)) = external_reply {
         complete_external(publisher, outcome);
     }
-    drop((handler, _charge, _message_charge));
-    if let Some(mut retired) = retired {
-        retired.actor.mailbox.retire_clear();
-        clear_timers(&mut retired.timers);
-        clear_monitors(&mut retired.monitors);
-        drop(retired.actor);
+    if let Some((mut publisher, reason)) = termination {
+        publisher.set(reason);
     }
     wake.fire(&shared.changed);
 }

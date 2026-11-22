@@ -1,0 +1,529 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import {
+  type DocMeta,
+  type Locale,
+  UI_COPY,
+  getDocItems,
+  localePath,
+  switchLocaleHref,
+} from '../lib/docs';
+
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface Props {
+  locale?: Locale;
+  title: string;
+  summary: string;
+  group?: string;
+  currentSlug: string;
+  sourceFile?: string;
+  headings?: Heading[];
+  prevDoc?: DocMeta;
+  nextDoc?: DocMeta;
+}
+
+const {
+  locale = 'en',
+  title,
+  summary,
+  group,
+  currentSlug,
+  sourceFile,
+  headings = [],
+  prevDoc,
+  nextDoc,
+} = Astro.props;
+
+const copy = UI_COPY[locale];
+const docItems = getDocItems(locale);
+const resolvedGroup = group ?? copy.docs.defaultGroup;
+const groups = Array.from(new Set(docItems.map((d) => d.group)));
+const tocHeadings = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const altLangHref = switchLocaleHref(Astro.url.pathname, locale === 'en' ? 'zh' : 'en');
+---
+
+<BaseLayout
+  locale={locale}
+  title={`${title} — ${copy.docs.titleSuffix}`}
+  description={summary}
+  activeNav="docs"
+>
+  <div class="reading-progress" id="reading-progress" aria-hidden="true"></div>
+
+  <div class="container docs-shell">
+    <aside class="docs-sidebar" aria-label={copy.docs.sidebarAria}>
+      <div class="sidebar-group">
+        <div class="sidebar-label">{copy.docs.gettingStartedGroup}</div>
+        <a
+          href={localePath(locale, '/docs/')}
+          class:list={['sidebar-link', { active: currentSlug === 'index' }]}
+        >
+          <span class="sidebar-num">00</span>
+          <span>{copy.docs.overviewLink}</span>
+        </a>
+      </div>
+
+      {groups.map((g) => (
+        <div class="sidebar-group">
+          <div class="sidebar-label">{g}</div>
+          {docItems
+            .filter((item) => item.group === g)
+            .map((item) => (
+              <a
+                href={localePath(locale, `/docs/${item.slug}/`)}
+                class:list={['sidebar-link', { active: currentSlug === item.slug }]}
+              >
+                <span class="sidebar-num">0{item.order}</span>
+                <span>{item.shortTitle}</span>
+              </a>
+            ))}
+        </div>
+      ))}
+    </aside>
+
+    <main class="docs-main" id="doc-top">
+      <div class="doc-header">
+        <div class="doc-eyebrow">
+          <nav class="doc-breadcrumbs" aria-label="Breadcrumb">
+            <a href={localePath(locale, '/docs/')}>{copy.docs.breadcrumbRoot}</a>
+            <span class="crumb-sep">/</span>
+            <span class="crumb-group">{resolvedGroup}</span>
+          </nav>
+
+          <div class="doc-meta-actions">
+            <a class="alt-lang-pill" href={altLangHref}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+              <span>{copy.docs.readInOtherLang}</span>
+            </a>
+            {sourceFile && (
+              <a
+                class="source-link"
+                href={`https://github.com/wsafight/wings/blob/main/${sourceFile}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span>{sourceFile}</span>
+                <span aria-hidden="true">↗</span>
+              </a>
+            )}
+          </div>
+        </div>
+        <h1>{title}</h1>
+        <p class="doc-summary">{summary}</p>
+      </div>
+
+      <article class="prose">
+        <slot />
+      </article>
+
+      {(prevDoc || nextDoc) && (
+        <nav class="doc-pager" aria-label={copy.docs.pagerAria}>
+          {prevDoc ? (
+            <a class="pager-card spotlight-card" href={localePath(locale, `/docs/${prevDoc.slug}/`)}>
+              <span class="pager-dir">← {copy.docs.prevChapter}</span>
+              <strong>{prevDoc.title}</strong>
+            </a>
+          ) : (
+            <a class="pager-card spotlight-card" href={localePath(locale, '/docs/')}>
+              <span class="pager-dir">← {copy.docs.backToOverview}</span>
+              <strong>{copy.docs.overviewLink}</strong>
+            </a>
+          )}
+          {nextDoc ? (
+            <a class="pager-card pager-next spotlight-card" href={localePath(locale, `/docs/${nextDoc.slug}/`)}>
+              <span class="pager-dir">{copy.docs.nextChapter} →</span>
+              <strong>{nextDoc.title}</strong>
+            </a>
+          ) : (
+            <div />
+          )}
+        </nav>
+      )}
+    </main>
+
+    {tocHeadings.length > 0 && (
+      <aside class="docs-toc" aria-label={copy.docs.tocAria}>
+        <div class="toc-title">{copy.docs.tocTitle}</div>
+        <ul id="doc-toc-list">
+          {tocHeadings.map((h) => (
+            <li class={h.depth === 3 ? 'toc-sub' : ''}>
+              <a href={`#${h.slug}`} data-toc-link={h.slug}>
+                {h.text}
+              </a>
+            </li>
+          ))}
+        </ul>
+        <a class="back-top-link" href="#doc-top">↑ {copy.docs.backToTop}</a>
+      </aside>
+    )}
+  </div>
+
+  <script is:inline>
+    (() => {
+      // 1. Reading progress bar
+      const bar = document.getElementById('reading-progress');
+      const updateProgress = () => {
+        if (!bar) return;
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        const pct = max > 0 ? Math.min(100, Math.max(0, (window.scrollY / max) * 100)) : 0;
+        bar.style.transform = `scaleX(${pct / 100})`;
+      };
+      window.addEventListener('scroll', updateProgress, { passive: true });
+      updateProgress();
+
+      // 2. Scrollspy TOC
+      const tocLinks = Array.from(document.querySelectorAll('[data-toc-link]'));
+      if (!tocLinks.length) return;
+      const headings = tocLinks
+        .map((a) => document.getElementById(a.getAttribute('data-toc-link') || ''))
+        .filter(Boolean);
+      if (!headings.length) return;
+
+      const setActive = (id) => {
+        tocLinks.forEach((link) => {
+          link.classList.toggle('active', link.getAttribute('data-toc-link') === id);
+        });
+      };
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const visible = entries
+            .filter((e) => e.isIntersecting)
+            .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          if (visible.length > 0) {
+            setActive(visible[0].target.id);
+          }
+        },
+        { rootMargin: '-84px 0px -68% 0px', threshold: [0, 1] }
+      );
+
+      headings.forEach((h) => observer.observe(h));
+      setActive(headings[0].id);
+    })();
+  </script>
+</BaseLayout>
+
+<style>
+  .reading-progress {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    z-index: 59;
+    background: linear-gradient(90deg, var(--accent), var(--cyan));
+    transform-origin: 0 50%;
+    transform: scaleX(0);
+    pointer-events: none;
+  }
+
+  .docs-shell {
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr) 224px;
+    gap: 2.8rem;
+    padding-top: 2.5rem;
+    align-items: start;
+  }
+
+  .docs-sidebar {
+    position: sticky;
+    top: 90px;
+    display: flex;
+    flex-direction: column;
+    gap: 1.35rem;
+    padding: 1.05rem 0.85rem;
+    border-radius: 15px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+  }
+
+  .sidebar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .sidebar-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-dim);
+    padding: 0.22rem 0.65rem;
+  }
+
+  .sidebar-link {
+    display: flex;
+    align-items: center;
+    gap: 0.58rem;
+    padding: 0.46rem 0.68rem;
+    border-radius: 9px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    border-left: 2px solid transparent;
+    transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+  }
+
+  .sidebar-num {
+    font-family: var(--font-mono);
+    font-size: 0.71rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .sidebar-link:hover {
+    color: var(--text);
+    background: rgba(148, 163, 184, 0.09);
+  }
+
+  .sidebar-link.active {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+
+  .sidebar-link.active .sidebar-num {
+    color: var(--accent);
+  }
+
+  .docs-main {
+    min-width: 0;
+  }
+
+  .doc-header {
+    padding-bottom: 1.55rem;
+    margin-bottom: 1.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .doc-eyebrow {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .doc-breadcrumbs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .doc-breadcrumbs a:hover {
+    color: var(--accent);
+  }
+
+  .crumb-sep {
+    color: var(--text-dim);
+  }
+
+  .crumb-group {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .doc-meta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .alt-lang-pill,
+  .source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.36rem;
+    font-size: 0.74rem;
+    font-weight: 600;
+    padding: 0.24rem 0.64rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    color: var(--text-muted);
+    box-shadow: var(--specular);
+    transition: color 0.14s ease, border-color 0.14s ease;
+  }
+
+  .alt-lang-pill svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  .source-link {
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
+
+  .alt-lang-pill:hover,
+  .source-link:hover {
+    color: var(--text);
+    border-color: var(--accent-border);
+  }
+
+  .doc-header h1 {
+    margin: 0 0 0.65rem;
+    font-size: clamp(1.85rem, 2.9vw, 2.3rem);
+    letter-spacing: -0.028em;
+    line-height: 1.2;
+  }
+
+  .doc-summary {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 1.02rem;
+    line-height: 1.66;
+  }
+
+  .doc-pager {
+    margin-top: 3.4rem;
+    padding-top: 1.7rem;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.05rem;
+  }
+
+  .pager-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 1.1rem 1.25rem;
+    border-radius: 14px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.16s ease, transform 0.16s ease;
+  }
+
+  .pager-card:hover {
+    border-color: var(--accent-border);
+    transform: translateY(-2px);
+  }
+
+  .pager-next {
+    text-align: right;
+  }
+
+  .pager-dir {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .docs-toc {
+    position: sticky;
+    top: 90px;
+    font-size: 0.81rem;
+    border-left: 1px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  .toc-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text);
+    margin-bottom: 0.7rem;
+  }
+
+  .docs-toc ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.44rem;
+  }
+
+  .docs-toc li a {
+    position: relative;
+    color: var(--text-dim);
+    line-height: 1.44;
+    display: block;
+    transition: color 0.14s ease, transform 0.14s ease;
+  }
+
+  .docs-toc li a:hover {
+    color: var(--text);
+  }
+
+  .docs-toc li a.active {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .docs-toc li a.active::before {
+    content: "";
+    position: absolute;
+    left: -1.06rem;
+    top: 0.15rem;
+    bottom: 0.15rem;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .toc-sub {
+    padding-left: 0.78rem;
+  }
+
+  .toc-sub a.active::before {
+    left: -1.84rem;
+  }
+
+  .back-top-link {
+    display: inline-block;
+    margin-top: 1.15rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    transition: color 0.14s ease;
+  }
+
+  .back-top-link:hover {
+    color: var(--accent);
+  }
+
+  @media (max-width: 1120px) {
+    .docs-shell {
+      grid-template-columns: 228px minmax(0, 1fr);
+    }
+    .docs-toc {
+      display: none;
+    }
+  }
+
+  @media (max-width: 780px) {
+    .docs-shell {
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+    }
+    .docs-sidebar {
+      position: static;
+    }
+    .doc-pager {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

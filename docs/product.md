@@ -1,40 +1,40 @@
-# 产品定位
+# Product Positioning
 
-[返回概览](../README.md) · [架构设计](architecture.md) · [风险与里程碑](roadmap.md)
+**English** | [简体中文](zh/product.md) · [Back to Overview](../README.md) · [Architecture](architecture.md) · [Risks & Roadmap](roadmap.md)
 
-## 一句话定位
+## One-Sentence Summary
 
-Wings 是面向有状态高并发服务的微进程虚拟机，目标是**在相同业务负载下比 BEAM 更快、更省内存**，同时保留消息隔离、公平抢占调度、多级资源配额与故障恢复模型。
+Wings is a microprocess virtual machine built for stateful, high-concurrency services, aiming to **run faster and consume less memory than BEAM under identical workloads** while preserving message isolation, fair preemptive scheduling, hierarchical resource quotas, and fault recovery.
 
-项目当前处于 `0.0.x` 早期演进阶段，优先打磨执行模型、运行时效率与代码简洁度，**不承诺语法、ABI、产物格式或宿主 API 的向后兼容**。
+The project is currently in its `0.0.x` early evolution phase, prioritizing execution-model soundness, runtime efficiency, and code simplicity **without promising backward compatibility for syntax, ABI, artifact manifests, or host APIs**.
 
-## 核心比较基线
+## Baseline Comparison
 
-大量小状态会话既需要轻量进程隔离，也需要控制消息调度延迟和单机内存斜率：
+High-density stateful session workloads require both lightweight per-session fault isolation and tight control over scheduling tail latency and memory slope:
 
-| 方案 | 执行方式 | 故障与资源边界 | 主要权衡 |
+| Approach | Execution Model | Fault & Resource Boundary | Primary Trade-off |
 |---|---|---|---|
-| 普通 Rust Actor（Tokio / kameo） | 原生机器码 | 可捕获部分 panic；无自动 CPU 抢占或细粒度内存配额 | 吞吐上限高，但死循环、配额隔离与状态防共享完全依赖业务自律 |
-| WASM Actor（Wasmtime） | JIT / AOT 沙箱 | 线性内存与 trap 强隔离不可信代码 | 每实例线性内存/表/宿主桥接开销较重，面向细粒度百万会话成本偏高 |
-| BEAM（Erlang / Elixir） | JIT 字节码 VM | 成熟进程堆隔离、抢占调度与 OTP 监督树 | 动态标签、消息复制与调度开销在计算/高频会话场景仍有优化空间 |
-| **Wings VM** | 受管 `wings-lang` AOT | 受限不可变值语言 + 强制 safepoint + 三级资源准入 | 牺牲任意原生库直接混跑与生态存量，换取静态布局、低内存密度与 AOT 吞吐潜力 |
+| Native Rust Actors (Tokio / kameo) | Native machine code | Partial panic catching; no automatic CPU preemption or per-actor memory quotas | High raw throughput ceiling, but infinite loops, memory fairness, and state isolation rely entirely on developer discipline |
+| WASM Actors (Wasmtime) | JIT / AOT sandbox | Strong linear-memory & trap isolation for untrusted code | Per-instance linear memory, tables, and host-bridge overhead are heavy for millions of tiny stateful sessions |
+| BEAM (Erlang / Elixir) | JIT bytecode VM | Battle-tested process heap isolation, preemptive scheduling, and OTP supervision | Dynamic tagging, message copying, and dispatch overhead leave room for improvement in compute-mixed and dense session workloads |
+| **Wings VM** | Managed `wings-lang` AOT | Immutable domain language + compiler-enforced safepoints + 3-level resource admission | Trades arbitrary native Rust library reuse and OTP ecosystem breadth for static layouts, low memory density, and native AOT throughput |
 
-BEAM 是性能与内存的主基线；Tokio 原生实现用于观察硬件成本下限，Wasmtime 用于对照另一种受管运行时边界。
+BEAM serves as the primary throughput and memory baseline; native Tokio implementations establish hardware lower bounds, while Wasmtime contrasts an alternative managed runtime boundary.
 
-## 目标场景与非目标
+## Target Workloads & Non-Goals
 
-优先面向可信团队自研、能接受专用领域语言的有状态服务：
+Wings targets stateful backend services built by trusted engineering teams willing to adopt a focused domain language:
 
-1. **IM / IoT 会话接入与路由层**：大量小状态、低活跃比例长连接会话，由受管 Actor 维护会话状态机。
-2. **AI Agent 会话与工作流编排**：长生命周期上下文、异步子任务派发（`spawn` / `ask`）、心跳定时（`send_after`）与异常重启（`monitor`）。
-3. **软实时房间与状态协调**：游戏房间、协同编辑或撮合状态分片，要求单点故障隔离且不因单个慢请求阻塞全局 worker。
+1. **IM / IoT Session Gateways & Routing**: Hundreds of thousands of small-state, low-duty-cycle persistent sessions managed as isolated state-machine actors.
+2. **AI Agent Session & Workflow Orchestration**: Long-lived conversational state, asynchronous sub-task fan-out (`spawn` / `ask`), periodic heartbeats (`send_after`), and crash recovery (`monitor`).
+3. **Soft-Realtime Rooms & Coordination Shards**: Game rooms, collaborative state shards, or matching coordinators requiring single-actor fault containment without stalling peer actors on shared worker threads.
 
-明确不做：
-- 硬实时控制（不承诺微秒级确定性硬截止时间）。
-- 敌对多租户安全沙箱（`--trusted` 仅运行可信构建产物；不可信扩展须走独立 OS 子进程隔离）。
-- 任意 Rust 第三方库直接进入受管栈帧，或完整复刻 OTP 标准库与分布式集群协议。
+Explicit non-goals:
+- Hard real-time control systems (microsecond deterministic deadlines are not guaranteed).
+- Hostile multi-tenant security sandboxing (`--trusted` loads locally trusted build artifacts only; untrusted extensions belong in separate OS subprocesses).
+- Running arbitrary third-party Rust crates directly on managed coroutine stacks, or replicating the full Erlang/OTP standard library and distributed clustering protocol.
 
-## 成功标准
+## Success Criteria
 
-- 在 macOS AArch64 与 Linux x86-64 同机同负载下，相对 BEAM 同时取得**更高的持续吞吐**与**更低的整机内存占用**，并满足相同尾延迟（p99 / p999）与零饿死要求。
-- 空闲、混合活跃与热点队列场景分别实测报告，不拼接不同负载的局部最优数字，也不通过移除强制抢占或资源准入换取跑分。
+- Under identical workloads on the same macOS AArch64 and Linux x86-64 hosts, achieve **both higher sustained throughput and lower whole-machine memory usage** than BEAM while meeting the same p99 / p999 tail-latency and zero-starvation constraints.
+- Report idle, mixed-active, and hot-queue workloads separately without cherry-picking partial metrics across incompatible configurations or disabling mandatory safepoints and resource admission.
