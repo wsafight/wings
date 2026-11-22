@@ -468,15 +468,8 @@ fn execute(
             #[cfg(target_os = "macos")]
             {
                 if next == count && pending.is_empty() {
-                    std::thread::sleep(Duration::from_micros(250));
-                } else if pending.is_empty() && next < count {
-                    let gap = planned(next).saturating_sub(now_ns);
-                    if gap > 2_000_000 {
-                        std::thread::sleep(Duration::from_nanos(gap - 1_200_000));
-                    } else {
-                        for _ in 0..32 {
-                            std::hint::spin_loop();
-                        }
+                    for _ in 0..64 {
+                        std::hint::spin_loop();
                     }
                 } else {
                     for _ in 0..32 {
