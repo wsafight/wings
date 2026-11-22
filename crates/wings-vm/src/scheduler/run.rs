@@ -6,7 +6,7 @@ use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarProcess, ScalarTask};
 use std::collections::VecDeque;
 
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(120);
+const HOT_SPIN_WINDOW: Duration = Duration::from_micros(60);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 

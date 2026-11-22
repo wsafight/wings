@@ -479,20 +479,16 @@ fn execute(directory: &Path, workload: Workload, trace: Option<&Path>) -> Result
             None
         };
         if next_planned.is_none_or(|planned| now_ns < planned) {
-            if !pending.is_empty() {
-                for _ in 0..16 {
-                    std::hint::spin_loop();
-                }
-            } else if let Some(planned) = next_planned {
-                let gap = planned.saturating_sub(now_ns);
-                if gap > 90_000 {
-                    std::thread::sleep(Duration::from_nanos(gap - 55_000));
-                } else {
-                    for _ in 0..16 {
-                        std::hint::spin_loop();
+            if pending.is_empty() {
+                if let Some(planned) = next_planned {
+                    let gap = planned.saturating_sub(now_ns);
+                    if gap > 150_000 {
+                        std::thread::sleep(Duration::from_nanos(gap - 80_000));
+                        continue;
                     }
                 }
             }
+            std::thread::yield_now();
             continue;
         }
         let target = workload.target(index);

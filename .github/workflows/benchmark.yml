@@ -67,6 +67,7 @@ jobs:
       - name: Build release binaries, runners, and AOT artifacts
         run: |
           test "$(uname -m)" = "${{ matrix.arch }}"
+          rm -rf target/bench-artifacts target/bench-results-*
           cargo build --release --locked -p wings-compile -p wings-vm --bins --examples
           mkdir -p target/bench-artifacts
           target/release/wings-compile build examples/beam-multi-counter.wings -o target/bench-artifacts/counter
@@ -160,13 +161,18 @@ jobs:
       - name: Run paired Wings vs BEAM benchmarks on macOS AArch64
         if: matrix.os == 'macos'
         env:
-          WARMUP_S: ${{ inputs.warmup_seconds || '3' }}
+          WARMUP_S: ${{ inputs.warmup_seconds || '5' }}
           SAMPLE_S: ${{ inputs.sample_seconds || '5' }}
           REPS: ${{ inputs.repetitions || '3' }}
         run: |
           set -euo pipefail
           OUT_ROOT="$PWD/target/bench-results-macos-arm64"
           mkdir -p "$OUT_ROOT"
+          target/release/examples/beam_open_loop --trusted target/bench-artifacts/counter hot-queue 10 1000 >/dev/null
+          escript scripts/beam_open_loop.escript hot-queue 10 1000 >/dev/null
+          target/release/examples/beam_fairness --trusted target/bench-artifacts/fairness 10 >/dev/null
+          escript scripts/beam_fairness.escript 10 >/dev/null
+          sleep 2
           for CASE in hot-queue sparse-256 mixed-4k; do
             WINGS_PROFILE=release python3 scripts/measure_open_loop.py \
               --case "$CASE" \
