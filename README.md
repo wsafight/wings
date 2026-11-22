@@ -1,6 +1,6 @@
 # Wings VM
 
-**English** | [简体中文](README.zh-CN.md)
+**English** | [简体中文](README.zh-CN.md) · [Website & Docs](https://wsafight.github.io/wings/) · [crates.io](https://crates.io/crates/wings-vm)
 
 A managed AOT microprocess virtual machine for high-concurrency stateful applications.
 

@@ -1,6 +1,6 @@
 # Wings VM
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** · [官网与文档](https://wsafight.github.io/wings/zh/) · [crates.io](https://crates.io/crates/wings-vm)
 
 面向高并发有状态应用的受管 AOT 微进程虚拟机。
 
