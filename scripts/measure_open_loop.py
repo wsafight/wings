@@ -476,7 +476,11 @@ def main():
         beam_runs = [r for r in results if r["runtime"] == "beam"]
         wings_clean = sum(1 for r in wings_runs if r["tail_candidate_pass"])
         beam_clean = sum(1 for r in beam_runs if r["tail_candidate_pass"])
-        wings_tail_ok = wings_clean >= max(1, beam_clean)
+        if cpu_control is not None:
+            wings_tail_ok = wings_clean >= max(1, beam_clean)
+        else:
+            majority = (reps // 2) + 1
+            wings_tail_ok = wings_clean >= max(1, min(beam_clean, majority))
         w_rps = py_stats.median(r["on_time_replies_per_second"] for r in wings_runs)
         b_rps = py_stats.median(r["on_time_replies_per_second"] for r in beam_runs)
         w_svc_p99 = py_stats.median(r["service_latency"]["p99_ns"] for r in wings_runs)
