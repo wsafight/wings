@@ -134,12 +134,18 @@ fn collect(
     start: Instant,
     trace: &mut Option<BufWriter<File>>,
 ) -> Result<(), String> {
+    let mut blocked_actor = [false; ACTORS];
     let mut index = 0;
-    for _ in 0..pending.len().min(64) {
-        if index >= pending.len() {
-            break;
+    let mut polled = 0;
+    while index < pending.len() && polled < 64 {
+        let actor = 1 + pending[index].index % 100;
+        if blocked_actor[actor] {
+            index += 1;
+            continue;
         }
+        polled += 1;
         let Some(outcome) = pending[index].request.try_take()? else {
+            blocked_actor[actor] = true;
             index += 1;
             continue;
         };

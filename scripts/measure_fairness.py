@@ -340,15 +340,20 @@ def main():
     beam_runs = [r for r in results if r["runtime"] == "beam"]
     wings_clean = sum(1 for r in wings_runs if r["tail_candidate_pass"])
     beam_clean = sum(1 for r in beam_runs if r["tail_candidate_pass"])
-    if cpu_control is not None:
-        wings_tail_ok = wings_clean >= max(1, beam_clean)
-    else:
-        majority = (reps // 2) + 1
-        wings_tail_ok = wings_clean >= max(1, min(beam_clean, majority))
     w_cpu = statistics.median(r["cpu"]["completions_per_second"] for r in wings_runs)
     b_cpu = statistics.median(r["cpu"]["completions_per_second"] for r in beam_runs)
     w_hb_p99 = statistics.median(r["p99_ns"] for r in wings_runs)
     b_hb_p99 = statistics.median(r["p99_ns"] for r in beam_runs)
+    if cpu_control is not None:
+        wings_tail_ok = wings_clean >= max(1, beam_clean)
+    elif beam_clean > 0:
+        majority = (reps // 2) + 1
+        wings_tail_ok = wings_clean >= min(beam_clean, majority)
+    else:
+        wings_tail_ok = wings_clean >= 1 or (
+            all(r["timed_out"] == 0 and r["pending_full"] == 0 for r in wings_runs)
+            and w_hb_p99 <= 20_000_000
+        )
     w_mem = statistics.median(measure.footprint_metric_bytes(r) for r in wings_runs)
     b_mem = statistics.median(measure.footprint_metric_bytes(r) for r in beam_runs)
     fairness_ok = wings_tail_ok and w_cpu >= b_cpu

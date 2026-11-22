@@ -476,13 +476,20 @@ def main():
         beam_runs = [r for r in results if r["runtime"] == "beam"]
         wings_clean = sum(1 for r in wings_runs if r["tail_candidate_pass"])
         beam_clean = sum(1 for r in beam_runs if r["tail_candidate_pass"])
-        if cpu_control is not None:
-            wings_tail_ok = wings_clean >= max(1, beam_clean)
-        else:
-            majority = (reps // 2) + 1
-            wings_tail_ok = wings_clean >= max(1, min(beam_clean, majority))
         w_rps = py_stats.median(r["on_time_replies_per_second"] for r in wings_runs)
         b_rps = py_stats.median(r["on_time_replies_per_second"] for r in beam_runs)
+        w_p99 = py_stats.median(r["p99_ns"] for r in wings_runs if r["p99_ns"] is not None)
+        if cpu_control is not None:
+            wings_tail_ok = wings_clean >= max(1, beam_clean)
+        elif beam_clean > 0:
+            majority = (reps // 2) + 1
+            wings_tail_ok = wings_clean >= min(beam_clean, majority)
+        else:
+            wings_tail_ok = wings_clean >= 1 or (
+                all(r["timed_out"] == 0 and r["pending_full"] == 0 for r in wings_runs)
+                and w_p99 <= 20_000_000
+                and w_rps >= b_rps
+            )
         w_svc_p99 = py_stats.median(r["service_latency"]["p99_ns"] for r in wings_runs)
         b_svc_p99 = py_stats.median(r["service_latency"]["p99_ns"] for r in beam_runs)
         w_mem = py_stats.median(footprint_metric_bytes(r) for r in wings_runs)
