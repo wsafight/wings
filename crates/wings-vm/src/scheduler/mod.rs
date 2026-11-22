@@ -23,7 +23,10 @@ mod state;
 mod supervisor;
 mod yields;
 pub use cpu::SchedulerWorkerCpu;
-pub use locks::{SchedulerLockMetrics, SchedulerLockStatistics};
+pub use locks::{
+    SchedulerContentionMetrics, SchedulerContentionStatistics, SchedulerLockMetrics,
+    SchedulerLockStatistics,
+};
 pub use slices::{SchedulerSliceOutcome, SchedulerSliceSample, SchedulerSliceStatistics};
 pub use supervisor::{
     SchedulerChildId, SchedulerRestartStatus, SchedulerSupervisor, SchedulerSupervisorEvent,
@@ -138,6 +141,7 @@ struct Shared {
     observations: Box<[yields::WorkerObservation]>,
     slice_observations: Box<[slices::WorkerSliceObservation]>,
     lock_observations: Box<[locks::WorkerLockObservation]>,
+    contention_observation: Option<Arc<locks::LockContentionObservation>>,
     _charge: Reservation,
 }
 
@@ -268,38 +272,35 @@ impl Default for FastSlot {
 }
 
 impl FastSlot {
-    fn lock(&self) -> FastSlotGuard<'_> {
-        let mut spins = 0u32;
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            if spins < 16 {
-                std::hint::spin_loop();
-                spins += 1;
-            } else {
-                std::thread::yield_now();
-            }
-        }
+    fn lock(&self, observation: Option<&locks::ContentionCounters>) -> FastSlotGuard<'_> {
+        locks::spin_lock(&self.locked, observation);
         FastSlotGuard(self)
     }
 
-    fn set(&self, generation: u32, mailbox: &SharedMailbox) {
-        let mut guard = self.lock();
+    fn set(
+        &self,
+        generation: u32,
+        mailbox: &SharedMailbox,
+        observation: Option<&locks::ContentionCounters>,
+    ) {
+        let mut guard = self.lock(observation);
         *guard = Some((generation, Arc::downgrade(&mailbox.inner)));
     }
 
-    fn clear(&self) {
+    fn clear(&self, observation: Option<&locks::ContentionCounters>) {
         let current = {
-            let mut guard = self.lock();
+            let mut guard = self.lock(observation);
             guard.take()
         };
         drop(current);
     }
 
-    fn get(&self, generation: u32) -> Option<SharedMailbox> {
-        let guard = self.lock();
+    fn get(
+        &self,
+        generation: u32,
+        observation: Option<&locks::ContentionCounters>,
+    ) -> Option<SharedMailbox> {
+        let guard = self.lock(observation);
         match guard.as_ref() {
             Some((slot_gen, weak)) if *slot_gen == generation => weak
                 .upgrade()
@@ -344,6 +345,7 @@ struct SharedMailboxInner {
     occupancy_atomic: AtomicUsize,
     retired: AtomicBool,
     locked: AtomicBool,
+    contention_observation: Option<Arc<locks::LockContentionObservation>>,
     state: UnsafeCell<Mailbox>,
 }
 
@@ -438,6 +440,8 @@ impl Scheduler {
             }
             + if config.lock_statistics {
                 config.workers * std::mem::size_of::<locks::WorkerLockObservation>()
+                    + std::mem::size_of::<locks::LockContentionObservation>()
+                    + 2 * std::mem::size_of::<usize>()
             } else {
                 0
             }
@@ -460,6 +464,9 @@ impl Scheduler {
             ..Resources::default()
         })?;
         let identity = next_identity(&NEXT_SCHEDULER)?;
+        let contention_observation = config
+            .lock_statistics
+            .then(|| Arc::new(locks::LockContentionObservation::default()));
         let mut observations = Vec::new();
         if config.yield_samples != 0 {
             observations
@@ -541,6 +548,7 @@ impl Scheduler {
                 },
                 locks::WorkerLockObservation::default,
             )?,
+            contention_observation,
             _charge: charge,
         });
         let mut scheduler = Self {
@@ -590,7 +598,7 @@ impl Drop for Scheduler {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         for index in 0..state.slots.len() {
-            self.handle.shared.fast_slots[index].clear();
+            self.handle.shared.fast_slots[index].clear(self.handle.shared.fast_slot_contention());
             let mut actor = state.slots[index].actor.take();
             if let Some(actor_ref) = actor.as_ref() {
                 actor_ref.mailbox.retire_clear();
@@ -689,6 +697,13 @@ impl SchedulerHandle {
             .lock_observations
             .get(worker)
             .map(locks::WorkerLockObservation::snapshot))
+    }
+
+    pub fn contention_statistics(&self) -> Option<SchedulerContentionStatistics> {
+        self.shared
+            .contention_observation
+            .as_deref()
+            .map(locks::LockContentionObservation::snapshot)
     }
 
     pub fn take_yield_sample(&self, worker: usize) -> Result<Option<SchedulerYieldSample>, String> {
@@ -794,7 +809,12 @@ impl SchedulerHandle {
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
             let cancellation = CancellationToken::new_accounted(&account)?;
-            let shared_mailbox = SharedMailbox::new(module.clone(), account.clone(), slots);
+            let shared_mailbox = SharedMailbox::new(
+                module.clone(),
+                account.clone(),
+                slots,
+                self.shared.contention_observation.clone(),
+            );
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
@@ -823,7 +843,11 @@ impl SchedulerHandle {
         state.slots[pid.slot as usize].creating = false;
         match result {
             Ok(actor) if !state.closed => {
-                self.shared.fast_slots[pid.slot as usize].set(pid.generation, &actor.mailbox);
+                self.shared.fast_slots[pid.slot as usize].set(
+                    pid.generation,
+                    &actor.mailbox,
+                    self.shared.fast_slot_contention(),
+                );
                 state.slots[pid.slot as usize].actor = Some(actor);
                 drop(state);
                 Ok(pid)
@@ -855,7 +879,7 @@ impl SchedulerHandle {
             self.shared
                 .fast_slots
                 .get(pid.slot as usize)
-                .and_then(|slot| slot.get(pid.generation))
+                .and_then(|slot| slot.get(pid.generation, self.shared.fast_slot_contention()))
         } else {
             None
         };
@@ -947,7 +971,7 @@ impl SchedulerHandle {
             self.shared
                 .fast_slots
                 .get(pid.slot as usize)
-                .and_then(|slot| slot.get(pid.generation))
+                .and_then(|slot| slot.get(pid.generation, self.shared.fast_slot_contention()))
         } else {
             None
         };
@@ -1039,7 +1063,7 @@ impl SchedulerHandle {
         actor.stopping = true;
         actor.mailbox.mark_stopping();
         actor.cancellation.cancel();
-        self.shared.fast_slots[pid.slot as usize].clear();
+        self.shared.fast_slots[pid.slot as usize].clear(self.shared.fast_slot_contention());
         let retired = if actor.owner.is_none() {
             state.retire_with_reason(self.shared.identity, pid, 0)
         } else {
@@ -1211,6 +1235,12 @@ impl Shared {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    pub(super) fn fast_slot_contention(&self) -> Option<&locks::ContentionCounters> {
+        self.contention_observation
+            .as_deref()
+            .map(|observation| &observation.fast_slot)
+    }
+
     pub(super) fn publish_signal(&self, state: &State) {
         self.ready_mask
             .store(state.signal_bits(), Ordering::Release);
@@ -1221,7 +1251,7 @@ impl Shared {
         state.closed = true;
         self.closed.store(true, Ordering::Release);
         for index in 0..self.fast_slots.len() {
-            self.fast_slots[index].clear();
+            self.fast_slots[index].clear(self.fast_slot_contention());
         }
         for actor in state.slots.iter().filter_map(|slot| slot.actor.as_ref()) {
             actor.mailbox.mark_stopping();
@@ -1299,7 +1329,12 @@ impl Drop for MailboxGuard<'_> {
 }
 
 impl SharedMailbox {
-    fn new(module: ScalarModule, account: ResourceAccount, slots: Box<[Option<Envelope>]>) -> Self {
+    fn new(
+        module: ScalarModule,
+        account: ResourceAccount,
+        slots: Box<[Option<Envelope>]>,
+        contention_observation: Option<Arc<locks::LockContentionObservation>>,
+    ) -> Self {
         let capacity = slots.len();
         Self {
             inner: Arc::new(SharedMailboxInner {
@@ -1310,6 +1345,7 @@ impl SharedMailbox {
                 occupancy_atomic: AtomicUsize::new(0),
                 retired: AtomicBool::new(false),
                 locked: AtomicBool::new(false),
+                contention_observation,
                 state: UnsafeCell::new(Mailbox {
                     slots,
                     head: 0,
@@ -1323,20 +1359,12 @@ impl SharedMailbox {
     }
 
     fn lock(&self) -> MailboxGuard<'_> {
-        let mut spins = 0u32;
-        while self
+        let observation = self
             .inner
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            if spins < 16 {
-                std::hint::spin_loop();
-                spins += 1;
-            } else {
-                std::thread::yield_now();
-            }
-        }
+            .contention_observation
+            .as_deref()
+            .map(|observation| &observation.mailbox);
+        locks::spin_lock(&self.inner.locked, observation);
         MailboxGuard(&self.inner)
     }
 

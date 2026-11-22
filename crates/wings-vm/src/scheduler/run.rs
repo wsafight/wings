@@ -124,15 +124,14 @@ pub(super) fn worker(
                 let pid = state.pid(shared.identity, slot);
                 let actor = state.slots[slot].actor.as_mut().expect("ready actor");
                 assert!(!actor.stopping && actor.owner.is_none() && actor.mailbox.count() > 0);
-                let can_fuse = !shared.config.lock_statistics
-                    && actor.image.as_ref().is_some_and(|image| {
-                        actor.mailbox.front_can_run_direct(
-                            image,
-                            &fibers,
-                            shared.config.slice_steps,
-                            yield_observed,
-                        )
-                    });
+                let can_fuse = actor.image.as_ref().is_some_and(|image| {
+                    actor.mailbox.front_can_run_direct(
+                        image,
+                        &fibers,
+                        shared.config.slice_steps,
+                        yield_observed,
+                    )
+                });
                 let fused_direct = if can_fuse {
                     let failed = actor.image.as_ref().expect("actor image").is_failed();
                     fibers.prepare_direct_account(failed, &actor.account).ok()
@@ -580,8 +579,7 @@ fn run_fast_claim(
                 let mapped = map_outcome(result);
                 if batch_step + 1 < max_batch && mapped.is_ok() {
                     let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
-                    let can_batch_fast = !shared.config.lock_statistics
-                        && !matches!(reply, Reply::Language(_))
+                    let can_batch_fast = !matches!(reply, Reply::Language(_))
                         && !shared.closed.load(Ordering::Acquire)
                         && (!sibling_ready || batch_step < SIBLING_BATCH_THRESHOLD);
                     let fast_threshold = if sibling_ready {
@@ -608,7 +606,7 @@ fn run_fast_claim(
                         continue;
                     }
 
-                    if shared.config.lock_statistics || matches!(reply, Reply::Language(_)) {
+                    if matches!(reply, Reply::Language(_)) {
                         let committed_state = (!process.module().manifest().state.is_reference())
                             .then_some(process.state);
                         let mut state = shared.worker_lock(index, LockPhase::Finish);
@@ -844,7 +842,7 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     };
     let failed = actor.stopping || closed;
     if failed {
-        shared.fast_slots[claim.pid.slot as usize].clear();
+        shared.fast_slots[claim.pid.slot as usize].clear(shared.fast_slot_contention());
     }
     let exit_reason = if closed {
         i64::from(wings_abi::STATUS_CANCELLED)
@@ -976,7 +974,7 @@ fn finish_process(
     actor.committed_state = committed_state;
     let mut termination = None;
     if failed {
-        shared.fast_slots[pid.slot as usize].clear();
+        shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
         termination = actor.termination.take().map(|publisher| {
             (
                 publisher,

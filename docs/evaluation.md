@@ -34,7 +34,7 @@ Automated paired runs in `.github/workflows/benchmark.yml` compare Wings and Erl
 Aggressive throughput or memory optimizations (superblock check coalescing, fiber reuse, lock-free mailbox batching, buffer pooling, compact object layouts, or future generational/compacting GC) must follow three rules:
 
 1. **Never Trade Away Safety Boundaries**: Mandatory safepoints, native stack bounds checks, and 3-level resource admission must never be disabled to inflate benchmark numbers.
-2. **Attribute Before Changing**: Use built-in optional lock statistics (`--observe-locks`) and per-thread CPU attribution to separate OS generator scheduling slip from internal VM contention.
+2. **Attribute Before Changing**: Optional `--observe-locks` reports scheduler mutex wait/hold by phase, worker-thread CPU, and FastSlot/mailbox spin contention (contended acquisitions, failed attempts, yields, and wait time). It preserves direct and batch fast paths. Treat observed runs as diagnostic evidence only, not performance acceptance.
 3. **Paired A/B Validation & Decisive Rollback**: Evaluate each candidate across 5 alternating paired runs measuring throughput, p99/p999, rejections, and platform memory (Linux RSS/PSS, macOS RSS/physical footprint); revert any change that adds complexity without durable gains.
 
 ## Incremental Development Checks
