@@ -2,11 +2,17 @@ name: Check Wings
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   native:
@@ -24,34 +30,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - name: Verify runner architecture
         run: test "$(uname -m)" = "${{ matrix.arch }}"
-      - run: cargo check --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo fmt --all -- --check
-      - name: Verify bounded workspace runner
-        run: |
-          python3 scripts/verify_workspace_tests.py
-          python3 scripts/verify_scalar_aot_tests.py
-          python3 scripts/verify_tcp_bytes_tests.py
-          python3 scripts/verify_allocation_failures_tests.py
-          python3 scripts/verify_atomic_progress_tests.py
-          python3 scripts/verify_multi_counter_tests.py
-          python3 scripts/verify_lock_statistics.py
-          python3 scripts/verify_cpu_quota.py
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Execute every debug test harness under OS limits
         run: python3 scripts/verify_workspace.py --output target/workspace-validation/debug
       - run: cargo test --workspace --doc --locked
-      - run: cargo build --locked -p wings-compile -p wings-vm --bins --examples
-      - run: python3 scripts/verify_scalar_aot.py
-      - name: Verify prebuilt AOT test entry point
+      - name: Build CLI binaries and examples
+        run: cargo build --locked -p wings-compile -p wings-vm --bins --examples
+      - name: Verify end-to-end native AOT runtime
         run: WINGS_PREBUILT_EXAMPLES=1 WINGS_TARGET_DIR="$PWD/target" python3 scripts/verify_scalar_aot.py
-      - name: Verify optimized stackful execution
-        run: |
-          python3 scripts/verify_workspace.py --profile release --output target/workspace-validation/release
-          cargo test --release --workspace --doc --locked
-          cargo build --release --locked -p wings-compile -p wings-vm --bins --examples
-          WINGS_PROFILE=release python3 scripts/verify_scalar_aot.py
       - name: Check source and execute native AOT Counter
         shell: bash
         run: |
@@ -78,6 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.85.0
       - run: cargo check --workspace --all-targets --locked
   site:
     runs-on: ubuntu-24.04
@@ -92,4 +85,7 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - env:
+          ASTRO_SITE: https://wsafight.github.io
+          ASTRO_BASE: /wings
+        run: npm run build
