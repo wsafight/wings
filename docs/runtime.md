@@ -21,7 +21,7 @@
 ## Lock-Free Fast Mailboxes & M:N Scheduler
 
 - **Per-Sender FIFO & Explicit Backpressure**: Every actor owns a bounded mailbox; full queues reject immediately with an explicit `mailbox_full` error rather than silently dropping messages or growing memory without bound.
-- **Lock-Free Enqueue & Bounded Batching**: `Scheduler` maintains generation-checked lock-free fast mailbox slots for active actors, enabling common cross-thread sends and bounded backlog batching on the same actor without repeatedly contending on the global scheduler lock.
+- **Lock-Free Enqueue, Affinity & Bounded Batching**: `Scheduler` maintains generation-checked lock-free fast mailbox slots, per-worker wake bitmasks (`WorkerWakeHub`), sticky worker affinity with idle-worker stealing, and bounded backlog batching (up to 32 fast messages when no sibling work is queued), while interleaving short direct/reusable claims 1-for-1 with suspended long-running fibers.
 - **Preemptive Fairness**:
   - Compiled code decrements `slice_remaining` at branches, loop backedges, and calls while a background timer thread atomically sets `yield_request` on quantum expiry.
   - Compute-heavy or infinite-loop handlers suspend their live stack at the next safepoint and re-queue at the tail of the ready list so sibling actors on the same worker continue making progress.
@@ -36,7 +36,7 @@
 
 ## Three-Level Resource Ledger & Network Serving
 
-- **3-Level, 4-Dimension Ledger (`Resources`)**: Tracks `bytes`, `processes`, `messages`, and `requests` across a `VM -> Tenant -> Process` hierarchy. Reservations charge atomically prior to allocation, roll back immediately if any ancestor exceeds quota, update only non-shared ancestors on transfer, and release automatically on `Drop`.
+- **3-Level, 4-Dimension Ledger (`Resources`) & Global Allocator Accounting (`WingsAllocator`)**: Tracks `bytes`, `processes`, `messages`, and `requests` across a `VM -> Tenant -> Process` hierarchy. Reservations charge atomically prior to allocation, roll back immediately if any ancestor exceeds quota, update only non-shared ancestors on transfer, and release automatically on `Drop`. `WingsAllocator` and `native_memory_ledger` additionally track global Rust heap requested/usable bytes, size-class fragmentation, peak usable bytes, optional hard global heap limits, and kernel process footprint (`ri_phys_footprint` on macOS, `/proc/self/smaps_rollup` `Pss` on Linux).
 - **CLI Entry Points**:
   - `wings-vm run --trusted <artifact-dir>`: Single-actor `stdio` JSON Lines runner.
   - `wings-vm serve --trusted <dir> [--workers N] [--tcp ADDR | --http ADDR]`: Serves single-actor artifacts or multi-actor bundles (`bundle.json`) with bounded connection/body limits, automatic JSON-to-`struct`/`str`/`bytes`/`[int]` marshaling, and streaming JSON-RPC responses.

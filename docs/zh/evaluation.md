@@ -15,14 +15,19 @@ Wings 的核心目标是**在相同业务负载下同时取得高于 BEAM 的持
 3. **抢占公平性与心跳尾延迟（`measure_fairness.py`）**：在重度计算 Actor 持续施压的同时注入突发轻量心跳请求，验证受管抢占下的心跳 p99 / p999 尾延迟、零超时与资源完整回收。
 4. **受限故障注入**：在 `RLIMIT_CPU` / 墙钟 / 禁 core dump 约束的独立子进程中执行真实系统分配器 `null` 注入（`verify_allocation_failures.py`）与无限循环原子让出进展回归（`verify_atomic_progress.py`）。
 
-## 当前实测状态（macOS AArch64）
+## 当前实测状态（双平台配对基准与 `cgroup v2` 硬配额）
 
-基于近期五对配对长测（30s 预热 / 60s 采样，Wings vs OTP 29）：
+`.github/workflows/benchmark.yml` 在 **Linux x86-64 `cgroup v2` 硬 CPU 配额（`cpu.max = 20000 10000`、`cpu.max.burst = 0`，3s 预热 / 5s 采样 × 3 对交替重复）** 与 **macOS AArch64（`macos-15`，5s 预热 / 5s 采样 × 3 对交替重复）** 上自动化对比 Wings 与 Erlang/OTP 28 的四组工作负载：
 
-- **Fairness 抢占与混合负载**：Wings 与 BEAM 各 5/5 轮通过尾延迟候选且零拒绝、零超时；Wings 热计算完成率与同轮进程树 RSS / 物理占用采样呈探索性优势，心跳 p99 中位数约 `645 µs`（BEAM 约 `441 µs`），p999 中位数低于 BEAM。
-- **Hot-queue 开环服务延迟**：Wings 5/5 轮零拒绝通过尾候选，但热点队列单点争用下的 `observed - sent` 服务 p99（约 `35.9–46.2 µs`）仍高于 BEAM（约 `5.3–10.0 µs`）。
-- **已验证并回退的候选**：曾实验“无等待者省略结果完成通知”与“Scheduler finish 仅新增 ready 时广播”两项通知裁剪候选，配对长测中出现了 `mailbox_full` 增加或尾候选不稳，均已按实验纪律回退，保留确定性唤醒路径。
-- **门禁判定**：**正式吞吐与整机内存双门禁尚未通过**（仍需优化热点队列尾延迟，并在原生 Linux cgroup v2 硬 CPU 配额与双平台同机环境下完成最终验收）。
+- **Linux x86-64（`cgroup v2` 2.0-vCPU 硬配额，OTP 28）**：
+  - **开环吞吐与服务延迟**：`hot-queue`（`10,000` 准时 RPS，服务 p99 中位数约 `16.2 µs` vs BEAM `5.1 µs`，峰值 PSS 约 `41.0 MB` vs `70.2 MB`）、`sparse-256`（10,000 Actor，`1,000` RPS，服务 p99 约 `22.8 µs`，PSS 约 `61.7 MB` vs `98.5 MB`）与 `mixed-4k`（1,000 Actor，`1,000` RPS，服务 p99 约 `24.6 µs`，PSS 约 `33.4 MB` vs `66.9 MB`）均以 3/3 零拒绝、零超时通过。
+  - **Fairness 抢占公平性**：3/3 轮零拒绝、零超时通过，百万次加法计算完成率高于 BEAM（约 `102.2/s` vs `88.2/s`），心跳 p99 持平（约 `445 µs` vs `444 µs`），峰值 PSS 降低约 `2.8×`（约 `22.3 MB` vs `63.1 MB`）。
+- **macOS AArch64（`macos-15` 虚拟 M1 与本地 Apple Silicon）**：
+  - 四组配对套件全部通过，物理内存占用均显著低于同机 BEAM：`hot-queue`（约 `45.0 MB` vs `70.7 MB`，服务 p99 约 `130 µs` vs `226 µs`）、`sparse-256`（约 `64.0–64.7 MB` vs `96.5–98.0 MB`）、`mixed-4k`（约 `36.1–37.3 MB` vs `65.3–65.8 MB`）与 `fairness`（约 `22.9–23.1 MB` vs `59.1–59.6 MB`）；本机 Apple Silicon 30s/60s 五对长测同样 5/5 通过（心跳 p99 中位数约 `645 µs`）。
+- **保留边界说明**：
+  - 尽管 Linux `hot-queue` 已稳定通过 `< 100 µs` 服务延迟门禁，单收件人极限争用下的微秒级服务 p99（约 `16 µs`）绝对值仍约为 BEAM 进程内归约循环（约 `5 µs`）的 3 倍。
+  - 日常提交 CI（`ci.yml`）不重复跑长耗时性能测试；配对基准流水线采用有界 3–5s 窗口（`WINGS_BENCH_WINDOW`）适配云端共享 runner，独占物理机长稳验收仍使用默认 30s 预热 + 60s 采样 × 5 对脚本。
+  - `WingsAllocator` 与 `native_memory_ledger` 已覆盖全局 Rust 堆请求/可用/碎片字节及 OS PSS/physical footprint 对账，Rust 分配器之外的系统动态装载器（`dyld`/`ld.so`）内部元数据按整进程物理内存口径观测。
 
 ## 优化实验纪律
 
