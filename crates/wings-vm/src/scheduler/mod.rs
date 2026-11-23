@@ -1712,7 +1712,12 @@ impl SharedMailbox {
             }
             _ => 0,
         };
-        self.inner.front_hint.store(hint, Ordering::Release);
+        // Homogeneous queues republish the same hint on every pop; skipping
+        // the redundant store keeps this line from bouncing while senders and
+        // batch pops read it each message.
+        if self.inner.front_hint.load(Ordering::Relaxed) != hint {
+            self.inner.front_hint.store(hint, Ordering::Release);
+        }
     }
 
     pub(super) fn capacity(&self) -> usize {
