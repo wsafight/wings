@@ -390,6 +390,10 @@ fn run_fast_claim(
     // into one reservation instead of refunding per message; the merged charge
     // releases once the batch ends (or is handed to a suspended task).
     let mut batch_charge: Option<Reservation> = None;
+    // `closed` only transitions once; hoisting the load out of the batch loop
+    // lets a closed scheduler finish the current batch (bounded by
+    // `max_batch`) before the worker unwinds through `finish_process`.
+    let scheduler_open = !shared.closed.load(Ordering::Acquire);
     for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
         let run_direct = if batch_step == 0 && cached_direct.is_some() {
@@ -554,7 +558,7 @@ fn run_fast_claim(
                 if batch_step + 1 < max_batch && mapped.is_ok() {
                     let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
                     let can_batch_fast = !matches!(reply, Reply::Language(_))
-                        && !shared.closed.load(Ordering::Acquire)
+                        && scheduler_open
                         && (!sibling_ready || batch_step < SIBLING_BATCH_THRESHOLD);
                     let fast_threshold = if sibling_ready {
                         SIBLING_BATCH_THRESHOLD
