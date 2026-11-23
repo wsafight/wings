@@ -140,15 +140,28 @@ impl DeadlineTimer {
                 break;
             }
         }
-        self.control
-            .deadline_ns
-            .store(DISARMED_NS, Ordering::SeqCst);
+        if self.control.deadline_ns.load(Ordering::Relaxed) != DISARMED_NS {
+            self.control
+                .deadline_ns
+                .store(DISARMED_NS, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn arm_after(&self, quantum: Duration) -> Result<(), String> {
+        let now = Instant::now();
+        let deadline = now
+            .checked_add(quantum)
+            .ok_or("scheduler timer deadline overflow")?;
+        self.arm_with_now(now, deadline)
     }
 
     pub(crate) fn arm(&self, deadline: Instant) -> Result<(), String> {
+        self.arm_with_now(Instant::now(), deadline)
+    }
+
+    fn arm_with_now(&self, now: Instant, deadline: Instant) -> Result<(), String> {
         self.disarm_bits();
         self.preemption.clear();
-        let now = Instant::now();
         if deadline <= now {
             self.preemption.request();
             return Ok(());
@@ -205,6 +218,7 @@ impl Drop for DeadlineTimer {
 }
 
 fn run(control: Arc<Control>, preemption: PreemptionToken) {
+    let mut coaster_until_ns = 0u64;
     loop {
         let bits = control.state_bits.load(Ordering::SeqCst);
         if bits & ARMED_BIT != 0 {
@@ -223,6 +237,7 @@ fn run(control: Arc<Control>, preemption: PreemptionToken) {
                 }
                 continue;
             }
+            coaster_until_ns = coaster_until_ns.max(target_ns);
             let state = control
                 .state
                 .lock()
@@ -255,6 +270,27 @@ fn run(control: Arc<Control>, preemption: PreemptionToken) {
             if state.stopped {
                 break;
             }
+            let now_ns = offset_ns(control.base, Instant::now());
+            if now_ns < coaster_until_ns {
+                control
+                    .sleeping_until_ns
+                    .store(coaster_until_ns, Ordering::SeqCst);
+                if control.state_bits.load(Ordering::SeqCst) & ARMED_BIT != 0
+                    && control.deadline_ns.load(Ordering::SeqCst) < coaster_until_ns
+                {
+                    control.sleeping_until_ns.store(0, Ordering::SeqCst);
+                    continue;
+                }
+                drop(
+                    control
+                        .changed
+                        .wait_timeout(state, Duration::from_nanos(coaster_until_ns - now_ns))
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                control.sleeping_until_ns.store(0, Ordering::SeqCst);
+                continue;
+            }
+            coaster_until_ns = 0;
             control
                 .sleeping_until_ns
                 .store(DISARMED_NS, Ordering::SeqCst);

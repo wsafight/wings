@@ -191,6 +191,34 @@ impl State {
         self.link_ready(index, worker)
     }
 
+    pub(super) fn enqueue_fast_pushed(
+        &mut self,
+        pid: SchedulerPid,
+        mailbox: &SharedMailbox,
+    ) -> WakeSignal {
+        let index = pid.slot as usize;
+        let slot = &self.slots[index];
+        if self.closed || slot.generation != pid.generation {
+            mailbox.set_active_or_queued(false);
+            return WakeSignal::NONE;
+        }
+        let Some(actor) = slot.actor.as_ref() else {
+            mailbox.set_active_or_queued(false);
+            return WakeSignal::NONE;
+        };
+        if actor.stopping {
+            if actor.owner.is_none() {
+                mailbox.set_active_or_queued(false);
+            }
+            return WakeSignal::NONE;
+        }
+        if slot.ready_worker.is_some() || actor.owner.is_some() {
+            return WakeSignal::NONE;
+        }
+        let worker = self.select_worker(index, actor.last_worker);
+        self.link_ready(index, worker)
+    }
+
     pub(super) fn finish_enqueue(&mut self, pid: SchedulerPid, failed: bool) -> WakeSignal {
         let index = pid.slot as usize;
         let slot = &self.slots[index];

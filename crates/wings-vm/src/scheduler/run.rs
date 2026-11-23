@@ -16,9 +16,11 @@ const MAX_BACKLOG_BATCH: usize = 32;
 pub(super) struct Running {
     pid: SchedulerPid,
     task: ScalarTask,
+    mailbox: SharedMailbox,
     handler: usize,
     max_steps: u64,
     reply: Reply,
+    snapshot_published: bool,
     _charge: crate::resources::EnvelopeCharge,
 }
 
@@ -310,11 +312,8 @@ fn run_active_slice(
     fibers: &mut WorkerFibers,
     local: &mut VecDeque<Running>,
 ) {
-    match Instant::now()
-        .checked_add(shared.config.quantum)
-        .and_then(|deadline| timer.arm(deadline).ok())
-    {
-        Some(()) => {
+    match timer.arm_after(shared.config.quantum) {
+        Ok(()) => {
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
             let result = active
                 .task
@@ -337,17 +336,22 @@ fn run_active_slice(
                     let (status, value) = shared.effect(active.pid, effect, active.max_steps, pool);
                     active.task.acknowledge_effect(status, value);
                 }
-                let mut state = shared.worker_lock(index, LockPhase::Snapshot);
-                if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
-                    actor.execution = active.task.snapshot();
+                let snapshot = active.task.snapshot();
+                active.mailbox.set_live_execution(snapshot);
+                if !active.snapshot_published {
+                    let mut state = shared.worker_lock(index, LockPhase::Snapshot);
+                    if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
+                        actor.execution = snapshot;
+                    }
+                    drop(state);
+                    active.snapshot_published = true;
                 }
-                drop(state);
                 local.push_back(active);
             } else {
                 finish(shared, index, active, map_outcome(result));
             }
         }
-        None => {
+        Err(_) => {
             finish(shared, index, active, Err("scheduler timer failure".into()));
         }
     }
@@ -366,7 +370,7 @@ fn run_fast_claim(
     yield_observed: bool,
     max_batch: usize,
 ) -> bool {
-    let mut process = match claim.image.attach_scheduled(pool, &claim.account) {
+    let mut process = match claim.image.attach_trusted_scheduled() {
         Ok(process) => process,
         Err(_) => {
             if let Some(prepared) = claim.fused_direct.take() {
@@ -504,10 +508,7 @@ fn run_fast_claim(
                 _charge,
                 ..
             } = message;
-            let armed = Instant::now()
-                .checked_add(shared.config.quantum)
-                .and_then(|deadline| timer.arm(deadline).ok());
-            let Some(()) = armed else {
+            if timer.arm_after(shared.config.quantum).is_err() {
                 drop(prepared);
                 drop((mailbox, account, cancellation));
                 finish_process(
@@ -522,7 +523,7 @@ fn run_fast_claim(
                     Err("scheduler timer failure".into()),
                 );
                 return true;
-            };
+            }
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
             let outcome = prepared.run_first_slice(
                 fibers,
@@ -676,6 +677,7 @@ fn run_fast_claim(
                     task.acknowledge_effect(status, value);
                 }
                 let snapshot = task.snapshot();
+                mailbox.set_live_execution(snapshot);
                 let mut state = shared.worker_lock(index, LockPhase::Snapshot);
                 if let Ok(actor) = state.actor_mut(shared.identity, pid) {
                     actor.execution = snapshot;
@@ -684,9 +686,11 @@ fn run_fast_claim(
                 local.push_back(Running {
                     pid,
                     task,
+                    mailbox,
                     handler,
                     max_steps,
                     reply,
+                    snapshot_published: true,
                     _charge,
                 });
                 return true;
@@ -708,7 +712,7 @@ fn start(
         prepared.release(fibers);
     }
     if claim.message.fast_eligible {
-        let prepared = match claim.image.attach_scheduled(pool, &claim.account) {
+        let prepared = match claim.image.attach_trusted_scheduled() {
             Ok(process) => match fibers.prepare(&process, &claim.account) {
                 Ok(prepared) => {
                     match prepared.into_ready_task(
@@ -746,9 +750,11 @@ fn start(
                 Some(Running {
                     pid: claim.pid,
                     task,
+                    mailbox: claim.mailbox,
                     handler,
                     max_steps,
                     reply,
+                    snapshot_published: false,
                     _charge,
                 })
             }
@@ -792,9 +798,11 @@ fn start(
             Some(Running {
                 pid: claim.pid,
                 task,
+                mailbox: claim.mailbox,
                 handler,
                 max_steps,
                 reply,
+                snapshot_published: false,
                 _charge,
             })
         }
@@ -863,11 +871,15 @@ fn finish(
     let Running {
         pid,
         task,
+        mailbox,
         handler,
         max_steps: _,
         reply,
+        snapshot_published: _,
         _charge,
     } = active;
+    mailbox.set_live_execution(None);
+    drop(mailbox);
     let snapshot = task.snapshot();
     let process = task.into_process();
     finish_process(

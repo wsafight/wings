@@ -467,6 +467,8 @@ struct SharedMailboxInner {
     front_fast: AtomicBool,
     retired: AtomicBool,
     locked: AtomicBool,
+    live_execution_locked: AtomicBool,
+    live_execution: UnsafeCell<Option<ExecutionSnapshot>>,
     contention_observation: Option<Arc<locks::LockContentionObservation>>,
     state: UnsafeCell<Mailbox>,
 }
@@ -1042,8 +1044,8 @@ impl SchedulerHandle {
                     Ok(true) => return Ok(()),
                     Ok(false) => {
                         let mut state = self.shared.lock();
+                        let wake = state.enqueue_fast_pushed(pid, &mailbox);
                         if !state.closed {
-                            let wake = state.enqueue(pid);
                             self.shared.publish_signal(&state);
                             drop(state);
                             wake.fire(&self.shared.changed);
@@ -1129,8 +1131,8 @@ impl SchedulerHandle {
                     Ok(true) => return Ok(request),
                     Ok(false) => {
                         let mut state = self.shared.lock();
+                        let wake = state.enqueue_fast_pushed(pid, &mailbox);
                         if !state.closed {
-                            let wake = state.enqueue(pid);
                             self.shared.publish_signal(&state);
                             drop(state);
                             wake.fire(&self.shared.changed);
@@ -1304,13 +1306,18 @@ impl SchedulerHandle {
         let state = self.shared.lock();
         state.open()?;
         let actor = state.actor(self.shared.identity, pid)?;
+        let execution = if actor.owner.is_some() {
+            actor.mailbox.live_execution().or(actor.execution)
+        } else {
+            actor.execution
+        };
         Ok(SchedulerSnapshot {
             owner: actor.owner,
             last_worker: actor.last_worker,
             migrations: actor.migrations,
             queued: actor.mailbox.count(),
             stopping: actor.stopping,
-            execution: actor.execution,
+            execution,
             committed_state: actor.committed_state,
             resources: actor.account.used(),
         })
@@ -1427,10 +1434,13 @@ impl std::ops::DerefMut for MailboxGuard<'_> {
 impl Drop for MailboxGuard<'_> {
     fn drop(&mut self) {
         let state = unsafe { &*self.0.state.get() };
-        self.0.count_atomic.store(state.count, Ordering::Release);
-        self.0
-            .occupancy_atomic
-            .store(state.count + usize::from(state.starting), Ordering::Release);
+        if self.0.count_atomic.load(Ordering::Relaxed) != state.count {
+            self.0.count_atomic.store(state.count, Ordering::Release);
+        }
+        let occupancy = state.count + usize::from(state.starting);
+        if self.0.occupancy_atomic.load(Ordering::Relaxed) != occupancy {
+            self.0.occupancy_atomic.store(occupancy, Ordering::Relaxed);
+        }
         self.0.locked.store(false, Ordering::Release);
     }
 }
@@ -1455,6 +1465,8 @@ impl SharedMailbox {
                 front_fast: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 locked: AtomicBool::new(false),
+                live_execution_locked: AtomicBool::new(false),
+                live_execution: UnsafeCell::new(None),
                 contention_observation,
                 state: UnsafeCell::new(Mailbox {
                     slots,
@@ -1466,6 +1478,25 @@ impl SharedMailbox {
                 }),
             }),
         }
+    }
+
+    pub(super) fn set_live_execution(&self, snapshot: Option<ExecutionSnapshot>) {
+        locks::spin_lock(&self.inner.live_execution_locked, None);
+        unsafe {
+            *self.inner.live_execution.get() = snapshot;
+        }
+        self.inner
+            .live_execution_locked
+            .store(false, Ordering::Release);
+    }
+
+    pub(super) fn live_execution(&self) -> Option<ExecutionSnapshot> {
+        locks::spin_lock(&self.inner.live_execution_locked, None);
+        let snapshot = unsafe { *self.inner.live_execution.get() };
+        self.inner
+            .live_execution_locked
+            .store(false, Ordering::Release);
+        snapshot
     }
 
     fn lock(&self) -> MailboxGuard<'_> {
@@ -1593,7 +1624,9 @@ impl SharedMailbox {
         if was_empty {
             self.publish_front_hint(&guard);
         }
-        Ok(guard.active_or_queued)
+        let was_active_or_queued = guard.active_or_queued;
+        guard.active_or_queued = true;
+        Ok(was_active_or_queued)
     }
 
     pub(super) fn push(&self, message: Envelope) -> Result<(), String> {

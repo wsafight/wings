@@ -141,6 +141,7 @@ pub struct RecordHeap {
     collections: u64,
     allocated: usize,
     retired: usize,
+    free_hint: usize,
     account: ResourceAccount,
     charge: Reservation,
     overflow_bytes: u64,
@@ -245,6 +246,7 @@ impl RecordHeap {
             collections: 0,
             allocated: 0,
             retired: 0,
+            free_hint: 0,
             account: account.clone(),
             charge,
             overflow_bytes: 0,
@@ -324,10 +326,19 @@ impl RecordHeap {
             };
         }
         let end = (*cursor + WORK_CHUNK).min(self.slots.len());
-        let Some(offset) = self.slots[*cursor..end]
-            .iter()
-            .position(|slot| !slot.occupied && slot.generation != 0)
-        else {
+        let found = if *cursor == 0
+            && self.free_hint < end
+            && !self.slots[self.free_hint].occupied
+            && self.slots[self.free_hint].generation != 0
+        {
+            Some(self.free_hint)
+        } else {
+            self.slots[*cursor..end]
+                .iter()
+                .position(|slot| !slot.occupied && slot.generation != 0)
+                .map(|offset| *cursor + offset)
+        };
+        let Some(index) = found else {
             *cursor = end;
             return if end == self.slots.len() {
                 Err("record heap capacity exhausted".into())
@@ -335,7 +346,6 @@ impl RecordHeap {
                 Ok(None)
             };
         };
-        let index = *cursor + offset;
         if schema.count > INLINE_RECORD_FIELDS && self.slots[index].overflow_fields.is_none() {
             let overflow_req = Resources {
                 bytes: OVERFLOW_FIELD_BYTES,
@@ -361,6 +371,9 @@ impl RecordHeap {
         slot.layout = layout.index;
         slot.occupied = true;
         self.allocated += 1;
+        if self.free_hint == index {
+            self.free_hint = index + 1;
+        }
         Ok(Some(HeapRef {
             heap: self.identity,
             slot: index as u32,
@@ -565,6 +578,8 @@ impl RecordHeap {
                         self.allocated -= 1;
                         if slot.generation == 0 {
                             self.retired += 1;
+                        } else {
+                            self.free_hint = self.free_hint.min(collection.cursor + index);
                         }
                     }
                 }
@@ -639,6 +654,8 @@ impl RecordHeap {
         self.allocated -= 1;
         if slot.generation == 0 {
             self.retired += 1;
+        } else {
+            self.free_hint = self.free_hint.min(old_idx);
         }
     }
 
@@ -687,10 +704,19 @@ impl RecordHeap {
             return Err("incomplete byte buffer".into());
         }
         let end = (*cursor + WORK_CHUNK).min(self.slots.len());
-        let Some(offset) = self.slots[*cursor..end]
-            .iter()
-            .position(|slot| !slot.occupied && slot.generation != 0)
-        else {
+        let found = if *cursor == 0
+            && self.free_hint < end
+            && !self.slots[self.free_hint].occupied
+            && self.slots[self.free_hint].generation != 0
+        {
+            Some(self.free_hint)
+        } else {
+            self.slots[*cursor..end]
+                .iter()
+                .position(|slot| !slot.occupied && slot.generation != 0)
+                .map(|offset| *cursor + offset)
+        };
+        let Some(index) = found else {
             *cursor = end;
             return if end == self.slots.len() {
                 Err("record heap capacity exhausted".into())
@@ -698,13 +724,15 @@ impl RecordHeap {
                 Ok(None)
             };
         };
-        let index = *cursor + offset;
         let slot = &mut self.slots[index];
         slot.layout = BYTES_LAYOUT;
         slot.occupied = true;
         self.buffer_bytes += data._charge.amount().bytes;
         self.buffers[index] = buffer.take();
         self.allocated += 1;
+        if self.free_hint == index {
+            self.free_hint = index + 1;
+        }
         Ok(Some(HeapRef {
             heap: self.identity,
             slot: index as u32,

@@ -183,7 +183,7 @@ impl ResourceAccount {
             let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
                 return false;
             };
-            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
+            match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
             {
                 Ok(_) => return true,
                 Err(actual) => current = actual,
@@ -193,7 +193,7 @@ impl ResourceAccount {
 
     #[inline]
     fn sub_dim(&self, index: usize, delta: u64) {
-        self.node.used[index].fetch_sub(delta, Ordering::AcqRel);
+        self.node.used[index].fetch_sub(delta, Ordering::Relaxed);
     }
 
     fn reserve_dim_status(&self, index: usize, delta: u64) -> Result<(), ResourceLevel> {

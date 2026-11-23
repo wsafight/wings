@@ -331,6 +331,7 @@ impl AotHeap {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn clear_incoming(&mut self) {
         let mut bits = self.incoming_mask;
         if bits != 0 {

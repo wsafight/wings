@@ -91,21 +91,45 @@ unsafe fn byte_call(
         (bytes.len(), Some(reference), index, value)
     };
     let mut buffer = unsafe { acquire_managed_buffer(context, length) }?;
-    let mut start = 0;
-    while start < length {
-        let batch_chunks =
-            crate::execution::runtime_checkpoint_batch(context, (length - start).div_ceil(256))?;
-        let end = start
-            .saturating_add(batch_chunks.saturating_mul(256))
-            .min(length);
-        if let Some(source) = source {
-            let heap = unsafe { &*pointer };
-            let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
-            buffer.data.extend_from_slice(&bytes[start..end]);
+    let total_chunks = length.div_ceil(256);
+    if total_chunks > 0 {
+        let first_batch = crate::execution::runtime_checkpoint_batch(context, total_chunks)?;
+        if first_batch >= total_chunks {
+            if let Some(source) = source {
+                let heap = unsafe { &*pointer };
+                let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
+                buffer.data.extend_from_slice(bytes);
+            } else {
+                buffer.data.resize(length, value as u8);
+            }
         } else {
-            buffer.data.resize(end, value as u8);
+            let mut end = first_batch.saturating_mul(256).min(length);
+            if let Some(source) = source {
+                let heap = unsafe { &*pointer };
+                let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
+                buffer.data.extend_from_slice(&bytes[..end]);
+            } else {
+                buffer.data.resize(end, value as u8);
+            }
+            let mut start = end;
+            while start < length {
+                let batch_chunks = crate::execution::runtime_checkpoint_batch(
+                    context,
+                    (length - start).div_ceil(256),
+                )?;
+                end = start
+                    .saturating_add(batch_chunks.saturating_mul(256))
+                    .min(length);
+                if let Some(source) = source {
+                    let heap = unsafe { &*pointer };
+                    let bytes = heap.heap.bytes(source).map_err(|_| STATUS_INVALID_ROOT)?;
+                    buffer.data.extend_from_slice(&bytes[start..end]);
+                } else {
+                    buffer.data.resize(end, value as u8);
+                }
+                start = end;
+            }
         }
-        start = end;
     }
     if source.is_some() {
         if width == 8 {

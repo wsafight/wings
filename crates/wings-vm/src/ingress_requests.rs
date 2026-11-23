@@ -26,10 +26,34 @@ pub(crate) struct ReplyPublisher {
     generation: u64,
 }
 
+#[repr(align(64))]
+struct AlignedWord(AtomicU64);
+
+impl Deref for AlignedWord {
+    type Target = AtomicU64;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[repr(align(64))]
+struct AlignedWaiters(AtomicUsize);
+
+impl Deref for AlignedWaiters {
+    type Target = AtomicUsize;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 pub(crate) struct ReplyTable {
     slots: Box<[ReplySlot]>,
-    free: [AtomicU64; MAX_BITMAP_WORDS],
-    waiters: AtomicUsize,
+    free: [AlignedWord; MAX_BITMAP_WORDS],
+    waiters: AlignedWaiters,
     wait_lock: Mutex<()>,
     changed: Condvar,
     account: ResourceAccount,
@@ -127,8 +151,8 @@ impl ReplyTable {
         }
         Ok(Arc::new(Self {
             slots: slots.into_boxed_slice(),
-            free: mask.map(AtomicU64::new),
-            waiters: AtomicUsize::new(0),
+            free: mask.map(|word| AlignedWord(AtomicU64::new(word))),
+            waiters: AlignedWaiters(AtomicUsize::new(0)),
             wait_lock: crate::native_sync::mutex(()),
             changed: crate::native_sync::condvar(),
             account: account.clone(),
@@ -396,36 +420,29 @@ impl Drop for IngressRequest {
 }
 
 impl ReplyPublisher {
+    #[inline]
+    fn finish_once(self, outcome: RequestOutcome) {
+        let me = std::mem::ManuallyDrop::new(self);
+        let table = unsafe { std::ptr::read(&me.table) };
+        table.finish(me.slot, me.generation, outcome);
+    }
+
     pub(crate) fn complete_string(self, value: crate::StringReply) {
-        self.table.finish(
-            self.slot,
-            self.generation,
-            RequestOutcome::ReplyString(value),
-        );
+        self.finish_once(RequestOutcome::ReplyString(value));
     }
     pub(crate) fn complete_list(self, value: crate::IntListReply) {
-        self.table
-            .finish(self.slot, self.generation, RequestOutcome::ReplyList(value));
+        self.finish_once(RequestOutcome::ReplyList(value));
     }
 
     pub(crate) fn complete_bytes(self, value: crate::BytesReply) {
-        self.table.finish(
-            self.slot,
-            self.generation,
-            RequestOutcome::ReplyBytes(value),
-        );
+        self.finish_once(RequestOutcome::ReplyBytes(value));
     }
     pub(crate) fn complete(self, value: i64) {
-        self.table
-            .finish(self.slot, self.generation, RequestOutcome::Reply(value));
+        self.finish_once(RequestOutcome::Reply(value));
     }
 
     pub(crate) fn complete_record(self, value: crate::RecordReply) {
-        self.table.finish(
-            self.slot,
-            self.generation,
-            RequestOutcome::ReplyRecord(value),
-        );
+        self.finish_once(RequestOutcome::ReplyRecord(value));
     }
 }
 
