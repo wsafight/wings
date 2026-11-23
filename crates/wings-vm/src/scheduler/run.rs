@@ -755,8 +755,16 @@ fn start(
             claim.message.max_steps,
             || (claim.cancellation.clone(), preemption.clone()),
             &bound,
-            &claim.message.lists,
-            &mut claim.message.bytes,
+            claim
+                .message
+                .lists
+                .as_deref()
+                .unwrap_or(ListPayload::empty_ref()),
+            claim
+                .message
+                .bytes
+                .get_or_insert_with(Box::default)
+                .as_mut(),
         ) {
             Ok(()) => Ok(task),
             Err(error) => {

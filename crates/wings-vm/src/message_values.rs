@@ -167,6 +167,22 @@ pub(crate) struct BytePayload {
 }
 
 impl BytePayload {
+    /// Shared empty payload for read-only access; callers that mutate must
+    /// materialize their own value instead.
+    #[cfg(test)]
+    pub(crate) fn empty_ref() -> &'static Self {
+        static EMPTY: BytePayload = BytePayload {
+            mask: 0,
+            string_mask: 0,
+            data: Vec::new(),
+            charge: None,
+            reply: None,
+            record_reply: None,
+            completion: false,
+        };
+        &EMPTY
+    }
+
     pub(crate) fn new(account: &ResourceAccount, mask: u64, length: usize) -> Result<Self, String> {
         if mask == 0 || length > MAX_MESSAGE_BYTES {
             return Err("invalid byte message capacity or mask".into());
@@ -405,6 +421,20 @@ pub(crate) struct ListPayload {
 }
 
 impl ListPayload {
+    /// Shared empty payload for read-only access; callers that mutate must
+    /// materialize their own value instead.
+    pub(crate) fn empty_ref() -> &'static Self {
+        static EMPTY: ListPayload = ListPayload {
+            mask: 0,
+            values: ListValues {
+                inline: [0; INLINE_LIST_ELEMENTS],
+                overflow: None,
+                len: 0,
+            },
+        };
+        &EMPTY
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.values.len
     }

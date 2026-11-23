@@ -269,17 +269,19 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                             )
                         ]
                     );
+                    let lists = message.lists.as_deref().unwrap_or(ListPayload::empty_ref());
+                    let bytes = message.bytes.as_deref().unwrap_or(BytePayload::empty_ref());
                     if reply_type == ValueType::ListRef {
-                        assert!(message.lists.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                        assert!(lists.valid(&message.arguments[..3], 4));
+                        assert_eq!(lists.values[..2], [i64::MIN, i64::MAX]);
                     } else if reply_type == ValueType::StringRef {
-                        assert!(message.bytes.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.bytes.string_mask, 4);
-                        assert_eq!(message.bytes.as_slice(), "中😀".as_bytes());
+                        assert!(bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(bytes.string_mask, 4);
+                        assert_eq!(bytes.as_slice(), "中😀".as_bytes());
                     } else {
-                        assert!(message.bytes.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.bytes.as_slice(), [0, 255]);
-                        assert!(message.bytes.data.is_empty());
+                        assert!(bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(bytes.as_slice(), [0, 255]);
+                        assert!(bytes.data.is_empty());
                     }
                     state.remove_ready(owner.slot as usize);
                 }

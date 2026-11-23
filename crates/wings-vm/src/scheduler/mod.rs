@@ -490,11 +490,21 @@ pub(crate) struct Envelope {
     handler: usize,
     arguments: MessageArguments,
     max_steps: u64,
-    lists: ListPayload,
-    bytes: BytePayload,
+    // List/byte payloads stay boxed behind `None` for scalar messages so the
+    // envelope copies at claim, restore, and batch-pop time stay small.
+    lists: Option<Box<ListPayload>>,
+    bytes: Option<Box<BytePayload>>,
     reply: Reply,
     fast_eligible: bool,
     _charge: crate::resources::EnvelopeCharge,
+}
+
+fn box_list_payload(payload: ListPayload) -> Option<Box<ListPayload>> {
+    (payload.mask != 0 || !payload.is_empty()).then(|| Box::new(payload))
+}
+
+fn box_byte_payload(payload: BytePayload) -> Option<Box<BytePayload>> {
+    (!payload.is_trivially_empty()).then(|| Box::new(payload))
 }
 
 fn envelope_fast_eligible(handler: &HandlerId, lists: &ListPayload, bytes: &BytePayload) -> bool {
@@ -1037,8 +1047,8 @@ impl SchedulerHandle {
                     handler: handler.index,
                     arguments: message_arguments,
                     max_steps,
-                    lists: ListPayload::default(),
-                    bytes: BytePayload::default(),
+                    lists: None,
+                    bytes: None,
                     reply: Reply::None,
                     fast_eligible: meta.fast_scalar(),
                     _charge: charge,
@@ -1124,8 +1134,8 @@ impl SchedulerHandle {
                     handler: handler.index,
                     arguments: message_arguments,
                     max_steps,
-                    lists: ListPayload::default(),
-                    bytes: BytePayload::default(),
+                    lists: None,
+                    bytes: None,
                     reply: Reply::External(publisher),
                     fast_eligible: meta.fast_scalar(),
                     _charge: charge,
@@ -1522,8 +1532,8 @@ impl EffectSendTarget {
                     handler: handler.index,
                     arguments,
                     max_steps: budget,
-                    lists,
-                    bytes,
+                    lists: box_list_payload(lists),
+                    bytes: box_byte_payload(bytes),
                     reply: Reply::None,
                     fast_eligible,
                     _charge: charge,
@@ -1969,7 +1979,13 @@ impl SharedMailbox {
     #[cfg(test)]
     pub(super) fn with_slot0_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let guard = self.lock();
-        f(&guard.slots[0].as_ref().unwrap().bytes.data)
+        f(&guard.slots[0]
+            .as_ref()
+            .unwrap()
+            .bytes
+            .as_deref()
+            .unwrap_or(BytePayload::empty_ref())
+            .data)
     }
 }
 
@@ -2058,8 +2074,8 @@ fn envelope_precopied(
         handler: handler.index,
         arguments,
         max_steps,
-        lists: ListPayload::default(),
-        bytes: BytePayload::default(),
+        lists: None,
+        bytes: None,
         reply,
         fast_eligible,
         _charge: charge,
@@ -2121,8 +2137,8 @@ fn delayed_envelope_checked(
         handler: handler.index,
         arguments,
         max_steps,
-        lists,
-        bytes,
+        lists: box_list_payload(lists),
+        bytes: box_byte_payload(bytes),
         reply,
         fast_eligible,
         _charge: charge,
