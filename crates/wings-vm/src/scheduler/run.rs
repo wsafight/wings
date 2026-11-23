@@ -31,6 +31,7 @@ struct Claim {
     mailbox: SharedMailbox,
     account: ResourceAccount,
     cancellation: CancellationToken,
+    fuse: bool,
     fused_direct: Option<PreparedDirect>,
 }
 
@@ -125,7 +126,7 @@ pub(super) fn worker(
                 let pid = state.pid(shared.identity, slot);
                 let actor = state.slots[slot].actor.as_mut().expect("ready actor");
                 assert!(!actor.stopping && actor.owner.is_none() && actor.mailbox.count() > 0);
-                let can_fuse = actor.image.as_ref().is_some_and(|image| {
+                let fuse = actor.image.as_ref().is_some_and(|image| {
                     actor.mailbox.front_can_run_direct(
                         image,
                         &fibers,
@@ -133,25 +134,12 @@ pub(super) fn worker(
                         yield_observed,
                     )
                 });
-                let fused_direct = if can_fuse {
-                    let failed = actor.image.as_ref().expect("actor image").is_failed();
-                    fibers.prepare_direct_account(failed, &actor.account).ok()
-                } else {
-                    None
-                };
                 actor.owner = Some(index);
-                let is_starting = if fused_direct.is_some() {
-                    actor.starting = false;
-                    if actor.last_worker.is_some_and(|previous| previous != index) {
-                        actor.migrations += 1;
-                    }
-                    actor.last_worker = Some(index);
-                    false
-                } else {
-                    actor.starting = true;
-                    true
-                };
-                let popped = actor.mailbox.pop_for_claim(is_starting);
+                if actor.last_worker.is_some_and(|previous| previous != index) {
+                    actor.migrations += 1;
+                }
+                actor.last_worker = Some(index);
+                let popped = actor.mailbox.pop_for_claim();
                 let claim = Claim {
                     pid,
                     image: actor.image.take().expect("unowned actor image"),
@@ -159,16 +147,34 @@ pub(super) fn worker(
                     mailbox: (*actor.mailbox).clone(),
                     account: actor.account.clone(),
                     cancellation: actor.cancellation.clone(),
-                    fused_direct,
+                    fuse,
+                    fused_direct: None,
                 };
                 state.worker_active[index] += 1;
                 (Some(claim), wake, false)
             } else {
                 (None, wake, false)
             };
-            shared.publish_signal(&state);
+            shared.publish_signal(&mut state);
             out
         };
+        // Preparing the fused direct lease reserves through three account
+        // levels; keep that off the shared mutex so other workers and the
+        // fast-push path are not stalled behind it.
+        let claim = claim.map(|mut claim| {
+            if claim.fuse {
+                claim.fused_direct = fibers
+                    .prepare_direct_account(claim.image.is_failed(), &claim.account)
+                    .ok();
+                if claim.fused_direct.is_some() {
+                    // A fused claim consumes the message directly; matching the
+                    // old `starting = false` fast path frees the reserved slot
+                    // for senders right away instead of at handler start.
+                    claim.mailbox.release_in_flight();
+                }
+            }
+            claim
+        });
         wake.fire(&shared.changed);
         if should_exit {
             break;
@@ -265,15 +271,15 @@ pub(super) fn worker(
             if !attempted && (shared.ready_mask.load(Ordering::SeqCst) & watch != 0) {
                 (false, None)
             } else {
-                let state = shared.lock();
+                let mut state = shared.lock();
                 if state.closed && local.is_empty() {
-                    shared.publish_signal(&state);
+                    shared.publish_signal(&mut state);
                     (true, None)
                 } else {
                     let sleep = state
                         .should_park(index, false, attempted)
                         .then(|| state.next_park_timeout(Duration::from_millis(1)));
-                    shared.publish_signal(&state);
+                    shared.publish_signal(&mut state);
                     (false, sleep)
                 }
             };
@@ -286,20 +292,6 @@ pub(super) fn worker(
         }
         shared.changed.clear_parked(bit);
     }
-}
-
-fn mark_started(shared: &Shared, index: usize, pid: SchedulerPid) {
-    let mut state = shared.worker_lock(index, LockPhase::Start);
-    let actor = state
-        .actor_mut(shared.identity, pid)
-        .expect("claimed actor");
-    assert_eq!(actor.owner, Some(index));
-    actor.starting = false;
-    actor.mailbox.set_starting(false);
-    if actor.last_worker.is_some_and(|previous| previous != index) {
-        actor.migrations += 1;
-    }
-    actor.last_worker = Some(index);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -384,7 +376,6 @@ fn run_fast_claim(
     let mailbox = claim.mailbox;
     let account = claim.account;
     let cancellation = claim.cancellation;
-    let mut already_started = claim.fused_direct.is_some();
     let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
     for batch_step in 0..max_batch {
@@ -412,6 +403,7 @@ fn run_fast_claim(
                                 mailbox,
                                 account,
                                 cancellation,
+                                fuse: false,
                                 fused_direct: None,
                             },
                         );
@@ -428,19 +420,7 @@ fn run_fast_claim(
         };
 
         let step = if run_direct {
-            if !already_started {
-                if batch_step == 0 {
-                    mark_started(shared, index, pid);
-                } else {
-                    let mut state = shared.worker_lock(index, LockPhase::Start);
-                    let actor = state
-                        .actor_mut(shared.identity, pid)
-                        .expect("batched actor");
-                    assert_eq!(actor.owner, Some(index));
-                    actor.starting = false;
-                    actor.mailbox.set_starting(false);
-                }
-            }
+            mailbox.mark_started();
             let Envelope {
                 handler,
                 arguments,
@@ -483,23 +463,14 @@ fn run_fast_claim(
                             mailbox,
                             account,
                             cancellation,
+                            fuse: false,
                             fused_direct: None,
                         },
                     );
                     return batch_step > 0;
                 }
             };
-            if batch_step == 0 {
-                mark_started(shared, index, pid);
-            } else if !already_started {
-                let mut state = shared.worker_lock(index, LockPhase::Start);
-                let actor = state
-                    .actor_mut(shared.identity, pid)
-                    .expect("batched actor");
-                assert_eq!(actor.owner, Some(index));
-                actor.starting = false;
-                actor.mailbox.set_starting(false);
-            }
+            mailbox.mark_started();
             let Envelope {
                 handler,
                 arguments,
@@ -589,7 +560,6 @@ fn run_fast_claim(
                         {
                             complete_external(publisher, outcome);
                         }
-                        already_started = true;
                         current_message = Some(next_msg);
                         continue;
                     }
@@ -614,8 +584,7 @@ fn run_fast_claim(
                             let actor = state
                                 .actor_mut(shared.identity, pid)
                                 .expect("continuing batched actor");
-                            let next_msg = actor.mailbox.pop_for_claim(true);
-                            actor.starting = true;
+                            let next_msg = actor.mailbox.pop_for_claim();
                             actor.execution = Some(snapshot);
                             actor.committed_state = committed_state;
                             let mut external_reply = None;
@@ -627,14 +596,13 @@ fn run_fast_claim(
                                 Reply::None => {}
                             }
                             let wake = state.maintain(shared.identity);
-                            shared.publish_signal(&state);
+                            shared.publish_signal(&mut state);
                             drop(_charge);
                             drop(state);
                             if let Some((publisher, outcome)) = external_reply {
                                 complete_external(publisher, outcome);
                             }
                             wake.fire(&shared.changed);
-                            already_started = false;
                             current_message = Some(next_msg);
                             continue;
                         }
@@ -739,7 +707,7 @@ fn start(
         };
         return match prepared {
             Ok(task) => {
-                mark_started(shared, index, claim.pid);
+                claim.mailbox.mark_started();
                 let Envelope {
                     handler,
                     max_steps,
@@ -787,7 +755,7 @@ fn start(
     })();
     match result {
         Ok(task) => {
-            mark_started(shared, index, claim.pid);
+            claim.mailbox.mark_started();
             let Envelope {
                 handler,
                 max_steps,
@@ -821,8 +789,6 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
         .actor_mut(shared.identity, claim.pid)
         .expect("failed claim actor");
     actor.owner = None;
-    actor.starting = false;
-    actor.mailbox.set_starting(false);
     actor.image = Some(claim.image);
     actor.mailbox.restore(claim.message);
     let mut closed_termination = if closed {
@@ -854,7 +820,7 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     let wake = state
         .finish_enqueue(claim.pid, failed)
         .combine(state.maintain(shared.identity));
-    shared.publish_signal(&state);
+    shared.publish_signal(&mut state);
     drop(state);
     if let Some(mut publisher) = closed_termination.take() {
         publisher.set(SchedulerTermination::Closed);
@@ -1001,7 +967,7 @@ fn finish_process(
     let wake = state
         .finish_enqueue(pid, failed)
         .combine(state.maintain(shared.identity));
-    shared.publish_signal(&state);
+    shared.publish_signal(&mut state);
     drop(state);
     drop(deferred_charge);
     if let Some((publisher, outcome)) = external_reply {

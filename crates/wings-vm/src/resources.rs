@@ -570,6 +570,19 @@ impl EnvelopeCharge {
             gated,
         }
     }
+
+    pub(crate) fn into_reservation(self) -> Reservation {
+        let reservation = Reservation {
+            account: self.account.clone(),
+            amount: Resources {
+                bytes: self.bytes,
+                messages: u64::from(self.messages),
+                ..Resources::default()
+            },
+        };
+        std::mem::forget(self);
+        reservation
+    }
 }
 
 impl Drop for EnvelopeCharge {

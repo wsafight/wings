@@ -300,14 +300,13 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        if !self.table.slots[self.slot].ready.load(Ordering::Acquire)
-            && Instant::now() < self.deadline
-        {
+        let now = Instant::now();
+        if !self.table.slots[self.slot].ready.load(Ordering::Acquire) && now < self.deadline {
             return Ok(None);
         }
         let mut slot = self.table.slots[self.slot].lock();
         let pending = slot.pending.as_mut().expect("live ingress request");
-        if pending.outcome.is_none() && Instant::now() >= pending.deadline {
+        if pending.outcome.is_none() && now >= pending.deadline {
             pending.outcome = Some(RequestOutcome::TimedOut);
         }
         let outcome = if !pending.publisher {

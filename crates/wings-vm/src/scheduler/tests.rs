@@ -816,8 +816,7 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             .unwrap();
             actor.mailbox.push(message).unwrap();
         }
-        let first = actor.mailbox.pop();
-        actor.starting = true;
+        let first = actor.mailbox.pop_for_claim();
         let baseline_full = actor.account.used();
         assert!(
             envelope(
@@ -834,7 +833,6 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
         );
         assert_eq!(actor.account.used(), baseline_full);
         actor.mailbox.restore(first);
-        actor.starting = false;
         for sequence in 1..=capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
@@ -1170,14 +1168,14 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         Some(RequestOutcome::Cancelled)
     );
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
-    drop(actor.mailbox.pop());
-    actor.starting = true;
+    drop(actor.mailbox.pop_for_claim());
     state.maintain(handle.shared.identity);
     assert!(state.requests[0].pending.is_some());
     state
         .actor_mut(handle.shared.identity, pid)
         .unwrap()
-        .starting = false;
+        .mailbox
+        .mark_started();
     state.maintain(handle.shared.identity);
     assert!(
         state.requests[0]

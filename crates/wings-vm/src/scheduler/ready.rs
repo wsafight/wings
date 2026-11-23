@@ -191,6 +191,10 @@ impl State {
         self.link_ready(index, worker)
     }
 
+    // enqueue keeps its mailbox flag update lock-free: a racing sender either
+    // observes `active_or_queued` set (and skips the slow enqueue path) or takes
+    // the `enqueue_fast_pushed` path which re-validates under this same lock.
+
     pub(super) fn enqueue_fast_pushed(
         &mut self,
         pid: SchedulerPid,

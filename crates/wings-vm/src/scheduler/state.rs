@@ -314,8 +314,7 @@ impl State {
                 let can_deliver = match self.actor(identity, target) {
                     Ok(actor) => {
                         !actor.stopping
-                            && actor.mailbox.count()
-                                + usize::from(actor.starting || actor.mailbox.is_starting())
+                            && actor.mailbox.count() + actor.mailbox.in_flight()
                                 < actor.mailbox.capacity()
                     }
                     Err(_) => {
@@ -329,13 +328,23 @@ impl State {
                     kept_tail = &mut slot.next;
                     continue;
                 }
-                self.timer_count -= 1;
-                self.actor_mut(identity, target)
+                let envelope = node.envelope;
+                match self
+                    .actor_mut(identity, target)
                     .expect("timer target")
                     .mailbox
-                    .push(node.envelope)
-                    .expect("checked timer mailbox capacity");
-                wake = wake.combine(self.enqueue(target));
+                    .push_admitted(envelope)
+                {
+                    None => {
+                        self.timer_count -= 1;
+                        wake = wake.combine(self.enqueue(target));
+                    }
+                    Some(envelope) => {
+                        node.envelope = envelope;
+                        let slot = kept_tail.insert(node);
+                        kept_tail = &mut slot.next;
+                    }
+                }
             }
             self.timers = kept_head;
         }
@@ -354,8 +363,7 @@ impl State {
                 let can_deliver = match self.actor(identity, owner) {
                     Ok(actor) => {
                         !actor.stopping
-                            && actor.mailbox.count()
-                                + usize::from(actor.starting || actor.mailbox.is_starting())
+                            && actor.mailbox.count() + actor.mailbox.in_flight()
                                 < actor.mailbox.capacity()
                     }
                     Err(_) => {
@@ -369,7 +377,6 @@ impl State {
                     kept_tail = &mut slot.next;
                     continue;
                 }
-                self.monitor_count -= 1;
                 let message = Envelope {
                     handler: entry.handler_index,
                     arguments: MessageArguments::from_inline(&[entry.target_capability, reason]),
@@ -380,12 +387,22 @@ impl State {
                     fast_eligible: entry.fast_eligible,
                     _charge: entry.envelope_charge,
                 };
-                self.actor_mut(identity, owner)
+                match self
+                    .actor_mut(identity, owner)
                     .expect("monitor owner")
                     .mailbox
-                    .push(message)
-                    .expect("checked monitor mailbox capacity");
-                wake = wake.combine(self.enqueue(owner));
+                    .push_admitted(message)
+                {
+                    None => {
+                        self.monitor_count -= 1;
+                        wake = wake.combine(self.enqueue(owner));
+                    }
+                    Some(message) => {
+                        entry.envelope_charge = message._charge;
+                        let slot = kept_tail.insert(entry);
+                        kept_tail = &mut slot.next;
+                    }
+                }
             }
             self.pending_monitors = kept_head;
         }
@@ -434,9 +451,7 @@ impl State {
             };
             if pending.outcome.is_none()
                 || actor.stopping
-                || actor.mailbox.count()
-                    + usize::from(actor.starting || actor.mailbox.is_starting())
-                    == actor.mailbox.capacity()
+                || actor.mailbox.count() + actor.mailbox.in_flight() >= actor.mailbox.capacity()
             {
                 continue;
             }
@@ -511,7 +526,6 @@ impl State {
                     continue;
                 }
             };
-            self.requests.retire_index(index);
             if completion.handler.schema().completion_reply() == Some(wings_abi::ValueType::ListRef)
             {
                 lists.mask = 4;
@@ -539,12 +553,28 @@ impl State {
                 fast_eligible,
                 _charge: crate::resources::EnvelopeCharge::from_reservation(completion.charge),
             };
-            self.actor_mut(identity, owner)
+            match self
+                .actor_mut(identity, owner)
                 .expect("completion owner")
                 .mailbox
-                .push(message)
-                .expect("reserved completion slot");
-            wake = wake.combine(self.enqueue(owner));
+                .push_admitted(message)
+            {
+                None => {
+                    self.requests.retire_index(index);
+                    wake = wake.combine(self.enqueue(owner));
+                }
+                Some(returned) => {
+                    self.requests.slots[index]
+                        .pending
+                        .as_mut()
+                        .expect("ready completion")
+                        .completion = Some(Completion {
+                        handler: completion.handler,
+                        max_steps: completion.max_steps,
+                        charge: returned._charge.into_reservation(),
+                    });
+                }
+            }
         }
         wake
     }
@@ -941,7 +971,7 @@ impl Shared {
                 _ => Err(crate::VmError::InvalidHandler),
             }
         })();
-        self.publish_signal(&state);
+        self.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.changed);
         match result {

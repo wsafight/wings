@@ -148,6 +148,7 @@ struct Shared {
 struct State {
     closed: bool,
     ready_bits: u32,
+    published_signals: u32,
     worker_active: [u32; 16],
     last_exit: Option<SchedulerExitSnapshot>,
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
@@ -226,7 +227,6 @@ struct Actor {
     account: ResourceAccount,
     image: Option<DetachedProcess>,
     owner: Option<usize>,
-    starting: bool,
     last_worker: Option<usize>,
     migrations: u64,
     execution: Option<ExecutionSnapshot>,
@@ -462,9 +462,13 @@ struct SharedMailboxInner {
     capacity: usize,
     count_atomic: AtomicUsize,
     occupancy_atomic: AtomicUsize,
-    front_handler: AtomicUsize,
-    front_max_steps: AtomicU64,
-    front_fast: AtomicBool,
+    // Packed lock-free hint for the head envelope:
+    // bit 63 = fast_eligible, bits 31..62 = min(max_steps, u32::MAX),
+    // bits 0..30 = handler index (only meaningful while bit 63 is set).
+    front_hint: AtomicU64,
+    in_flight: AtomicUsize,
+    stopping: AtomicBool,
+    active_or_queued: AtomicBool,
     retired: AtomicBool,
     locked: AtomicBool,
     live_execution_locked: AtomicBool,
@@ -480,9 +484,6 @@ struct Mailbox {
     slots: Box<[Option<Envelope>]>,
     head: usize,
     count: usize,
-    starting: bool,
-    stopping: bool,
-    active_or_queued: bool,
 }
 
 struct Envelope {
@@ -629,6 +630,7 @@ impl Scheduler {
             state: crate::native_sync::mutex(State {
                 closed: false,
                 ready_bits: 0,
+                published_signals: 0,
                 worker_active: [0; 16],
                 last_exit: None,
                 modules: None,
@@ -917,11 +919,13 @@ impl SchedulerHandle {
                 bytes: (std::mem::size_of::<Actor>()
                     + std::mem::size_of::<SharedMailboxInner>()
                     + 2 * std::mem::size_of::<usize>()
-                    + mailbox * std::mem::size_of::<Option<Envelope>>())
+                    + (mailbox + 1) * std::mem::size_of::<Option<Envelope>>())
                     as u64,
                 ..Resources::default()
             })?;
-            let slots = storage(mailbox, || None)?;
+            // One spare ring slot keeps the in-flight reservation physical, so
+            // `restore` can never overwrite a concurrently admitted message.
+            let slots = storage(mailbox + 1, || None)?;
             let temporary;
             let pool = if let Some(pool) = pool {
                 pool
@@ -950,7 +954,6 @@ impl SchedulerHandle {
                 account,
                 image: Some(image),
                 owner: None,
-                starting: false,
                 last_worker: None,
                 migrations: 0,
                 execution: None,
@@ -1046,7 +1049,7 @@ impl SchedulerHandle {
                         let mut state = self.shared.lock();
                         let wake = state.enqueue_fast_pushed(pid, &mailbox);
                         if !state.closed {
-                            self.shared.publish_signal(&state);
+                            self.shared.publish_signal(&mut state);
                             drop(state);
                             wake.fire(&self.shared.changed);
                         }
@@ -1067,7 +1070,7 @@ impl SchedulerHandle {
         let message = envelope_precopied(actor, handler, arguments, max_steps, Reply::None)?;
         actor.mailbox.push(message)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.shared.changed);
         Ok(())
@@ -1133,7 +1136,7 @@ impl SchedulerHandle {
                         let mut state = self.shared.lock();
                         let wake = state.enqueue_fast_pushed(pid, &mailbox);
                         if !state.closed {
-                            self.shared.publish_signal(&state);
+                            self.shared.publish_signal(&mut state);
                             drop(state);
                             wake.fire(&self.shared.changed);
                         }
@@ -1159,7 +1162,7 @@ impl SchedulerHandle {
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.shared.changed);
         Ok(request)
@@ -1187,7 +1190,7 @@ impl SchedulerHandle {
         let wake = state
             .maintain(self.shared.identity)
             .combine(state.wake_all_parked());
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.shared.changed);
         Ok(())
@@ -1240,9 +1243,7 @@ impl SchedulerHandle {
                 return Err("host message module, phase or handler mode mismatch".into());
             }
             HostMessage::validate(handler, values)?;
-            if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-                == actor.mailbox.capacity()
-            {
+            if actor.mailbox.count() + actor.mailbox.in_flight() >= actor.mailbox.capacity() {
                 return Err("mailbox_full".into());
             }
             actor.account.clone()
@@ -1296,7 +1297,7 @@ impl SchedulerHandle {
         };
         actor.mailbox.push(envelope)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.shared.changed);
         Ok(request)
@@ -1355,9 +1356,12 @@ impl Shared {
             .map(|observation| &observation.fast_slot)
     }
 
-    pub(super) fn publish_signal(&self, state: &State) {
-        self.ready_mask
-            .store(state.signal_bits(), Ordering::Release);
+    pub(super) fn publish_signal(&self, state: &mut State) {
+        let bits = state.signal_bits();
+        if bits != state.published_signals {
+            state.published_signals = bits;
+            self.ready_mask.store(bits, Ordering::Release);
+        }
     }
 
     fn close(&self) {
@@ -1372,7 +1376,7 @@ impl Shared {
             actor.cancellation.cancel();
         }
         let wake = state.wake_all_parked();
-        self.publish_signal(&state);
+        self.publish_signal(&mut state);
         drop(state);
         wake.fire(&self.changed);
     }
@@ -1416,6 +1420,10 @@ enum FastPushError {
     ClosedOrStopped,
 }
 
+const FRONT_HINT_FAST: u64 = 1 << 63;
+const FRONT_HINT_HANDLER_MAX: usize = (1 << 31) - 1;
+const FRONT_HINT_HANDLER_MASK: u64 = (1 << 31) - 1;
+
 struct MailboxGuard<'mb>(&'mb SharedMailboxInner);
 
 impl std::ops::Deref for MailboxGuard<'_> {
@@ -1437,7 +1445,7 @@ impl Drop for MailboxGuard<'_> {
         if self.0.count_atomic.load(Ordering::Relaxed) != state.count {
             self.0.count_atomic.store(state.count, Ordering::Release);
         }
-        let occupancy = state.count + usize::from(state.starting);
+        let occupancy = state.count + self.0.in_flight.load(Ordering::Relaxed);
         if self.0.occupancy_atomic.load(Ordering::Relaxed) != occupancy {
             self.0.occupancy_atomic.store(occupancy, Ordering::Relaxed);
         }
@@ -1452,7 +1460,9 @@ impl SharedMailbox {
         slots: Box<[Option<Envelope>]>,
         contention_observation: Option<Arc<locks::LockContentionObservation>>,
     ) -> Self {
-        let capacity = slots.len();
+        // The ring has one spare slot over the advertised capacity; admission
+        // checks compare `count + in_flight` against `slots.len()`.
+        let capacity = slots.len() - 1;
         Self {
             inner: Arc::new(SharedMailboxInner {
                 module,
@@ -1460,9 +1470,10 @@ impl SharedMailbox {
                 capacity,
                 count_atomic: AtomicUsize::new(0),
                 occupancy_atomic: AtomicUsize::new(0),
-                front_handler: AtomicUsize::new(0),
-                front_max_steps: AtomicU64::new(0),
-                front_fast: AtomicBool::new(false),
+                front_hint: AtomicU64::new(0),
+                in_flight: AtomicUsize::new(0),
+                stopping: AtomicBool::new(false),
+                active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 locked: AtomicBool::new(false),
                 live_execution_locked: AtomicBool::new(false),
@@ -1472,9 +1483,6 @@ impl SharedMailbox {
                     slots,
                     head: 0,
                     count: 0,
-                    starting: false,
-                    stopping: false,
-                    active_or_queued: false,
                 }),
             }),
         }
@@ -1515,20 +1523,17 @@ impl SharedMailbox {
         } else {
             mailbox.slots[mailbox.head].as_ref()
         };
-        let Some(message) = message else {
-            self.inner.front_fast.store(false, Ordering::Release);
-            return;
+        let hint = match message {
+            // `try_pop_batch_fast` re-reads eligibility under the lock, so a
+            // conservative `0` (not fast) for oversized handler indices is fine.
+            Some(message) if message.fast_eligible && message.handler <= FRONT_HINT_HANDLER_MAX => {
+                FRONT_HINT_FAST
+                    | (message.max_steps.min(u32::MAX as u64) << 31)
+                    | message.handler as u64
+            }
+            _ => 0,
         };
-        let fast = message.fast_eligible;
-        if fast {
-            self.inner
-                .front_handler
-                .store(message.handler, Ordering::Relaxed);
-            self.inner
-                .front_max_steps
-                .store(message.max_steps, Ordering::Relaxed);
-        }
-        self.inner.front_fast.store(fast, Ordering::Release);
+        self.inner.front_hint.store(hint, Ordering::Release);
     }
 
     pub(super) fn capacity(&self) -> usize {
@@ -1547,16 +1552,45 @@ impl SharedMailbox {
         self.inner.retired.load(Ordering::Acquire)
     }
 
-    pub(super) fn is_starting(&self) -> bool {
-        self.lock().starting
+    pub(super) fn in_flight(&self) -> usize {
+        self.inner.in_flight.load(Ordering::Acquire)
     }
 
-    pub(super) fn set_starting(&self, starting: bool) {
-        self.lock().starting = starting;
+    /// Releases one `in_flight` slot reservation. Saturates so a fused claim
+    /// that already released at prepare time can call this unconditionally.
+    pub(super) fn release_in_flight(&self) {
+        let mut current = self.inner.in_flight.load(Ordering::Relaxed);
+        let previous = loop {
+            if current == 0 {
+                break 0;
+            }
+            match self.inner.in_flight.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break current,
+                Err(actual) => current = actual,
+            }
+        };
+        // Keep the sender-side occupancy hint fresh without taking the lock;
+        // a racing push publishes its own value on the next guard drop.
+        let occupancy =
+            self.inner.count_atomic.load(Ordering::Relaxed) + previous.saturating_sub(1);
+        if self.inner.occupancy_atomic.load(Ordering::Relaxed) != occupancy {
+            self.inner
+                .occupancy_atomic
+                .store(occupancy, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn mark_started(&self) {
+        self.release_in_flight();
     }
 
     pub(super) fn mark_stopping(&self) {
-        self.lock().stopping = true;
+        self.inner.stopping.store(true, Ordering::Release);
     }
 
     pub(super) fn retire_clear(&self) {
@@ -1564,9 +1598,9 @@ impl SharedMailbox {
         let mut drained = Vec::new();
         {
             let mut guard = self.lock();
-            guard.stopping = true;
-            guard.starting = false;
-            guard.active_or_queued = false;
+            self.inner.stopping.store(true, Ordering::Relaxed);
+            self.inner.in_flight.store(0, Ordering::Relaxed);
+            self.inner.active_or_queued.store(false, Ordering::Relaxed);
             if guard.count > 0 {
                 let _ = drained.try_reserve_exact(guard.count);
                 while guard.count > 0 {
@@ -1585,13 +1619,12 @@ impl SharedMailbox {
     }
 
     pub(super) fn set_active_or_queued(&self, active: bool) {
-        self.lock().active_or_queued = active;
+        self.inner.active_or_queued.store(active, Ordering::Release);
     }
 
     pub(super) fn mark_enqueued_if_nonempty(&self) -> bool {
-        let mut guard = self.lock();
-        if !guard.stopping && guard.count > 0 {
-            guard.active_or_queued = true;
+        if !self.inner.stopping.load(Ordering::Acquire) && self.count() > 0 {
+            self.inner.active_or_queued.store(true, Ordering::Release);
             true
         } else {
             false
@@ -1599,22 +1632,25 @@ impl SharedMailbox {
     }
 
     pub(super) fn keep_active_if_nonempty(&self) -> bool {
-        let mut guard = self.lock();
-        if !guard.stopping && guard.count > 0 {
-            guard.active_or_queued = true;
-            true
-        } else {
-            guard.active_or_queued = false;
-            false
-        }
+        // Unlike `mark_enqueued_if_nonempty` (whose callers just pushed under
+        // the same global lock, so their count is already published), this can
+        // race a fast push that committed its enqueue but has not published
+        // `count_atomic` yet — take the lock so the emptiness check is fresh.
+        let guard = self.lock();
+        let keep = !self.inner.stopping.load(Ordering::Acquire) && guard.count > 0;
+        self.inner.active_or_queued.store(keep, Ordering::Release);
+        keep
     }
 
     fn try_push_fast(&self, closed: &AtomicBool, message: Envelope) -> Result<bool, FastPushError> {
         let mut guard = self.lock();
-        if closed.load(Ordering::Acquire) || guard.stopping || self.is_retired() {
+        if closed.load(Ordering::Acquire)
+            || self.inner.stopping.load(Ordering::Relaxed)
+            || self.is_retired()
+        {
             return Err(FastPushError::ClosedOrStopped);
         }
-        if guard.count + usize::from(guard.starting) == guard.slots.len() {
+        if guard.count + self.inner.in_flight.load(Ordering::Relaxed) >= guard.slots.len() {
             return Err(FastPushError::MailboxFull);
         }
         let was_empty = guard.count == 0;
@@ -1624,19 +1660,25 @@ impl SharedMailbox {
         if was_empty {
             self.publish_front_hint(&guard);
         }
-        let was_active_or_queued = guard.active_or_queued;
-        guard.active_or_queued = true;
-        Ok(was_active_or_queued)
+        Ok(self.inner.active_or_queued.swap(true, Ordering::AcqRel))
     }
 
     pub(super) fn push(&self, message: Envelope) -> Result<(), String> {
-        self.push_checked(message).map_err(String::from)
+        self.push_admitted(message)
+            .map_or_else(|| Ok(()), |_| Err("mailbox_full".into()))
     }
 
     pub(super) fn push_checked(&self, message: Envelope) -> Result<(), crate::VmError> {
+        self.push_admitted(message)
+            .map_or_else(|| Ok(()), |_| Err(crate::VmError::MailboxFull))
+    }
+
+    /// Atomically admits and enqueues one envelope; returns it back when the
+    /// mailbox has no free (unreserved) slot left.
+    pub(super) fn push_admitted(&self, message: Envelope) -> Option<Envelope> {
         let mut guard = self.lock();
-        if guard.count == guard.slots.len() {
-            return Err(crate::VmError::MailboxFull);
+        if guard.count + self.inner.in_flight.load(Ordering::Relaxed) >= guard.slots.len() {
+            return Some(message);
         }
         let was_empty = guard.count == 0;
         let tail = (guard.head + guard.count) % guard.slots.len();
@@ -1645,16 +1687,18 @@ impl SharedMailbox {
         if was_empty {
             self.publish_front_hint(&guard);
         }
-        Ok(())
+        None
     }
 
-    pub(super) fn pop_for_claim(&self, starting: bool) -> Envelope {
+    /// Pops the head envelope for a claim and keeps one slot reserved as
+    /// `in_flight` until `mark_started` or `restore` releases it.
+    pub(super) fn pop_for_claim(&self) -> Envelope {
         let mut guard = self.lock();
         let head = guard.head;
         let message = guard.slots[head].take().expect("ready mailbox");
         guard.head = (head + 1) % guard.slots.len();
         guard.count -= 1;
-        guard.starting = starting;
+        self.inner.in_flight.fetch_add(1, Ordering::Relaxed);
         self.publish_front_hint(&guard);
         message
     }
@@ -1671,7 +1715,7 @@ impl SharedMailbox {
     }
 
     pub(super) fn front_is_fast(&self) -> bool {
-        self.inner.front_fast.load(Ordering::Acquire)
+        self.inner.front_hint.load(Ordering::Acquire) & FRONT_HINT_FAST != 0
     }
 
     pub(super) fn front_can_run_direct(
@@ -1681,25 +1725,26 @@ impl SharedMailbox {
         slice_steps: u64,
         yield_observed: bool,
     ) -> bool {
-        if !self.inner.front_fast.load(Ordering::Acquire) {
+        let hint = self.inner.front_hint.load(Ordering::Acquire);
+        if hint & FRONT_HINT_FAST == 0 {
             return false;
         }
         fibers.can_run_direct_image_index(
             &self.inner.module,
             image,
-            self.inner.front_handler.load(Ordering::Relaxed),
-            self.inner.front_max_steps.load(Ordering::Relaxed),
+            (hint & FRONT_HINT_HANDLER_MASK) as usize,
+            (hint >> 31) & u32::MAX as u64,
             slice_steps,
             yield_observed,
         )
     }
 
     pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
-        if self.count() < threshold || !self.inner.front_fast.load(Ordering::Acquire) {
+        if self.count() < threshold || !self.front_is_fast() {
             return None;
         }
         let mut guard = self.lock();
-        if guard.stopping || guard.count < threshold {
+        if self.inner.stopping.load(Ordering::Relaxed) || guard.count < threshold {
             return None;
         }
         let is_fast = guard.slots[guard.head]
@@ -1712,16 +1757,33 @@ impl SharedMailbox {
         let message = guard.slots[head].take().expect("batch mailbox");
         guard.head = (head + 1) % guard.slots.len();
         guard.count -= 1;
+        self.inner.in_flight.fetch_add(1, Ordering::Relaxed);
         self.publish_front_hint(&guard);
         Some(message)
     }
 
+    /// Reinserts a popped message at the head and releases its `in_flight`
+    /// slot reservation when one is still held; the spare ring slot keeps the
+    /// write position free regardless.
     pub(super) fn restore(&self, message: Envelope) {
         let mut guard = self.lock();
         let head = (guard.head + guard.slots.len() - 1) % guard.slots.len();
         guard.head = head;
+        debug_assert!(guard.slots[head].is_none());
         guard.slots[head] = Some(message);
         guard.count += 1;
+        let mut current = self.inner.in_flight.load(Ordering::Relaxed);
+        while current != 0 {
+            match self.inner.in_flight.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         self.publish_front_hint(&guard);
     }
 
@@ -1805,9 +1867,7 @@ fn envelope_precopied(
     max_steps: u64,
     reply: Reply,
 ) -> Result<Envelope, String> {
-    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-        == actor.mailbox.capacity()
-    {
+    if actor.mailbox.count() + actor.mailbox.in_flight() >= actor.mailbox.capacity() {
         return Err(crate::VmError::MailboxFull.into());
     }
     let charge = actor.account.reserve_envelope(
@@ -1855,9 +1915,7 @@ fn envelope_checked(
     _system: bool,
     reply: Reply,
 ) -> Result<Envelope, crate::VmError> {
-    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-        == actor.mailbox.capacity()
-    {
+    if actor.mailbox.count() + actor.mailbox.in_flight() >= actor.mailbox.capacity() {
         return Err(crate::VmError::MailboxFull);
     }
     delayed_envelope_checked(actor, handler, arguments, max_steps, lists, bytes, reply)

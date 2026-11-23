@@ -307,7 +307,7 @@ impl DerefMut for WorkerStateGuard<'_> {
 
 impl Drop for WorkerStateGuard<'_> {
     fn drop(&mut self) {
-        if let Some(state) = self.state.as_deref() {
+        if let Some(state) = self.state.as_deref_mut() {
             self.shared.publish_signal(state);
         }
         let measured = self.measurement.as_ref().map(|measurement| {
