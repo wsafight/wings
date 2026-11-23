@@ -477,7 +477,7 @@ impl ScalarTask {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_scheduled(
         &mut self,
-        handler: &HandlerId,
+        handler_index: usize,
         arguments: &[i64],
         max_steps: u64,
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
@@ -491,12 +491,12 @@ impl ScalarTask {
         if self.process.failed {
             return Err("scalar process has failed and must be restarted".into());
         }
-        if !std::sync::Arc::ptr_eq(&self.process.module.inner, &handler.module.inner) {
+        if handler_index >= self.process.module.inner.entries.len() {
             return Err("handler belongs to a different module".into());
         }
         self.invocation = Some(Invocation::new(
             &mut self.process,
-            handler.index,
+            handler_index,
             arguments,
             true,
             max_steps,

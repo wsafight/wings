@@ -236,7 +236,8 @@ impl AotHeap {
         &mut self,
         mut frame: *const ShadowFrame,
     ) -> Result<(), ShadowRootError> {
-        let mut references = [None; MAX_SHADOW_ROOTS + 65];
+        let mut references: [std::mem::MaybeUninit<Option<HeapRef>>; MAX_SHADOW_ROOTS + 65] =
+            [const { std::mem::MaybeUninit::uninit() }; MAX_SHADOW_ROOTS + 65];
         let mut count = 0;
         let mut depth = 0;
         let mut slow = frame;
@@ -254,11 +255,11 @@ impl AotHeap {
             }
             for index in 0..current.count {
                 let encoded = unsafe { *current.slots.add(index) };
-                references[count] = Some(
+                references[count].write(Some(
                     self.heap
                         .import_reference(encoded)
                         .map_err(|_| ShadowRootError::Invalid)?,
-                );
+                ));
                 count += 1;
             }
             depth += 1;
@@ -275,7 +276,7 @@ impl AotHeap {
             self.heap
                 .import_reference(committed.encoded())
                 .map_err(|_| ShadowRootError::Invalid)?;
-            references[count] = Some(committed);
+            references[count].write(Some(committed));
             count += 1;
         }
         let mut incoming_bits = self.incoming_mask;
@@ -288,13 +289,16 @@ impl AotHeap {
                     self.heap
                         .import_reference(reference.encoded())
                         .map_err(|_| ShadowRootError::Invalid)?;
-                    references[count] = Some(reference);
+                    references[count].write(Some(reference));
                     count += 1;
                 }
             }
         }
+        let initialized = unsafe {
+            std::slice::from_raw_parts(references.as_ptr().cast::<Option<HeapRef>>(), count)
+        };
         self.roots
-            .try_replace(&references[..count])
+            .try_replace(initialized)
             .map_err(|_| ShadowRootError::Exhausted)?;
         Ok(())
     }

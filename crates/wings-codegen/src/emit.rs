@@ -145,56 +145,60 @@ pub(super) fn poll_control(
     live: &[usize],
     registers: &[Value],
 ) {
+    let readonly = MemFlags::new().with_readonly();
     let poll = builder.create_block();
     builder.ins().jump(poll, &[]);
     builder.switch_to_block(poll);
     let cancellation = builder.ins().load(
         pointer_type,
-        MemFlags::new(),
+        readonly,
         context,
         std::mem::offset_of!(ScalarContext, cancellation) as i32,
     );
-    let requested = builder
+    let cancel_flag = builder
         .ins()
         .atomic_load(types::I32, MemFlags::new(), cancellation);
-    let cancelled = builder.ins().icmp_imm(IntCC::NotEqual, requested, 0);
-    fail_if_to(builder, cancelled, STATUS_CANCELLED, exit);
+    let yield_request = builder.ins().load(
+        pointer_type,
+        readonly,
+        context,
+        std::mem::offset_of!(ScalarContext, yield_request) as i32,
+    );
+    let yield_flag = builder
+        .ins()
+        .atomic_load(types::I32, MemFlags::new(), yield_request);
     let remaining = builder.ins().load(
         types::I64,
         MemFlags::new(),
         context,
         std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
     );
-    let exhausted = builder.ins().icmp_imm(IntCC::Equal, remaining, 0);
-    fail_if_to(builder, exhausted, STATUS_BUDGET_EXHAUSTED, exit);
-    let yield_request = builder.ins().load(
-        pointer_type,
-        MemFlags::new(),
-        context,
-        std::mem::offset_of!(ScalarContext, yield_request) as i32,
-    );
-    let requested = builder
-        .ins()
-        .atomic_load(types::I32, MemFlags::new(), yield_request);
-    let requested = builder.ins().icmp_imm(IntCC::NotEqual, requested, 0);
     let slice = builder.ins().load(
         types::I64,
         MemFlags::new(),
         context,
         std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
     );
-    let expired = builder.ins().icmp_imm(IntCC::Equal, slice, 0);
-    let should_yield = builder.ins().bor(requested, expired);
-    let slow_path = builder.create_block();
+    let any_flag = builder.ins().bor(cancel_flag, yield_flag);
+    let clean_flags = builder.ins().icmp_imm(IntCC::Equal, any_flag, 0);
+    let min_budget = builder.ins().umin(remaining, slice);
+    let has_budget = builder.ins().icmp_imm(IntCC::NotEqual, min_budget, 0);
+    let can_continue = builder.ins().band(clean_flags, has_budget);
     let continuation = builder.create_block();
+    let slow_check = builder.create_block();
     builder
         .ins()
-        .brif(should_yield, slow_path, &[], continuation, &[]);
-    builder.switch_to_block(slow_path);
+        .brif(can_continue, continuation, &[], slow_check, &[]);
+
+    builder.switch_to_block(slow_check);
+    let cancelled = builder.ins().icmp_imm(IntCC::NotEqual, cancel_flag, 0);
+    fail_if_to(builder, cancelled, STATUS_CANCELLED, exit);
+    let exhausted = builder.ins().icmp_imm(IntCC::Equal, remaining, 0);
+    fail_if_to(builder, exhausted, STATUS_BUDGET_EXHAUSTED, exit);
     publish_roots(builder, pointer_type, roots, live, registers);
     let callback = builder.ins().load(
         pointer_type,
-        MemFlags::new(),
+        readonly,
         context,
         std::mem::offset_of!(ScalarContext, slow_path) as i32,
     );
@@ -205,10 +209,8 @@ pub(super) fn poll_control(
         .call_indirect(slow_signature, callback, &[context]);
     let status = builder.inst_results(call)[0];
     let success = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-    let failure = builder.create_block();
-    builder.ins().brif(success, poll, &[], failure, &[]);
-    builder.switch_to_block(failure);
-    builder.ins().jump(exit, &[status]);
+    builder.ins().brif(success, poll, &[], exit, &[status]);
+
     builder.switch_to_block(continuation);
     let remaining = builder.ins().iadd_imm(remaining, -1);
     builder.ins().store(
@@ -265,7 +267,7 @@ pub(super) fn call_heap(
 ) -> Value {
     let callback = builder.ins().load(
         pointer_type,
-        MemFlags::new(),
+        MemFlags::new().with_readonly(),
         context,
         std::mem::offset_of!(ScalarContext, heap_call) as i32,
     );

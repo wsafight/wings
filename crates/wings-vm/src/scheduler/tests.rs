@@ -306,49 +306,50 @@ unsafe extern "C" fn entry(
 }
 
 pub(super) fn module() -> ScalarModule {
+    let manifest = Manifest {
+        records: Vec::new(),
+        format: wings_artifact::FORMAT_VERSION,
+        abi: wings_abi::SCALAR_ABI_VERSION,
+        target: wings_abi::host_target().unwrap().into(),
+        process: "SchedulerInvariant".into(),
+        state: ValueType::Int,
+        handlers: vec![
+            Handler {
+                name: "Done".into(),
+                parameters: vec![
+                    ("id".into(), ValueType::RequestId),
+                    ("status".into(), ValueType::Int),
+                    ("value".into(), ValueType::Int),
+                ],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Store".into(),
+                parameters: vec![
+                    ("record".into(), ValueType::Int),
+                    ("list".into(), ValueType::ListRef),
+                ],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Drop".into(),
+                parameters: vec![],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Read".into(),
+                parameters: vec![],
+                reply: Some(ValueType::Int),
+                completion: None,
+            },
+        ],
+    };
     ScalarModule {
         inner: Arc::new(ModuleData {
-            manifest: Manifest {
-                records: Vec::new(),
-                format: wings_artifact::FORMAT_VERSION,
-                abi: wings_abi::SCALAR_ABI_VERSION,
-                target: wings_abi::host_target().unwrap().into(),
-                process: "SchedulerInvariant".into(),
-                state: ValueType::Int,
-                handlers: vec![
-                    Handler {
-                        name: "Done".into(),
-                        parameters: vec![
-                            ("id".into(), ValueType::RequestId),
-                            ("status".into(), ValueType::Int),
-                            ("value".into(), ValueType::Int),
-                        ],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Store".into(),
-                        parameters: vec![
-                            ("record".into(), ValueType::Int),
-                            ("list".into(), ValueType::ListRef),
-                        ],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Drop".into(),
-                        parameters: vec![],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Read".into(),
-                        parameters: vec![],
-                        reply: Some(ValueType::Int),
-                        completion: None,
-                    },
-                ],
-            },
+            manifest,
             initializer: entry,
             entries: vec![entry as wings_abi::ScalarEntry; 4].into_boxed_slice(),
             direct_meta: Box::new([]),

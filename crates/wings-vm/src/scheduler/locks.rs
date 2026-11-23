@@ -102,6 +102,10 @@ impl ContentionCounters {
         }
     }
 
+    pub(super) fn record_contended(&self, failures: u64, yields: u64, wait: Duration) {
+        self.record(failures, yields, wait);
+    }
+
     fn record(&self, failures: u64, yields: u64, wait: Duration) {
         let wait = u64::try_from(wait.as_nanos()).unwrap_or_else(|_| {
             self.saturated.store(true, Ordering::Relaxed);

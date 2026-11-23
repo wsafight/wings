@@ -51,6 +51,77 @@ impl DirectHandlerMeta {
     }
 }
 
+const HANDLER_FLAG_COMPLETION: u8 = 1 << 0;
+const HANDLER_FLAG_ALL_PLAIN_INT: u8 = 1 << 1;
+const HANDLER_FLAG_FAST_SCALAR: u8 = 1 << 2;
+const HANDLER_FLAG_SUPPORTED_REPLY: u8 = 1 << 3;
+
+#[derive(Clone, Copy)]
+pub(crate) struct HandlerFastMeta {
+    pub param_count: u8,
+    pub flags: u8,
+    pub reply: Option<wings_abi::ValueType>,
+}
+
+impl HandlerFastMeta {
+    pub(crate) fn from_schema(handler: &Handler) -> Self {
+        let mut flags = 0u8;
+        if handler.is_completion() {
+            flags |= HANDLER_FLAG_COMPLETION;
+        }
+        if handler.parameters.len() <= crate::message_values::MAX_ARGUMENTS
+            && handler
+                .parameters
+                .iter()
+                .all(|(_, ty)| *ty == wings_abi::ValueType::Int)
+        {
+            flags |= HANDLER_FLAG_ALL_PLAIN_INT;
+        }
+        if !matches!(
+            handler.reply,
+            Some(
+                wings_abi::ValueType::ListRef
+                    | wings_abi::ValueType::BytesRef
+                    | wings_abi::ValueType::StringRef
+                    | wings_abi::ValueType::RecordRef(_)
+            )
+        ) {
+            flags |= HANDLER_FLAG_FAST_SCALAR;
+        }
+        if handler
+            .reply
+            .is_some_and(wings_abi::ValueType::is_supported_reply)
+        {
+            flags |= HANDLER_FLAG_SUPPORTED_REPLY;
+        }
+        Self {
+            param_count: handler.parameters.len().min(usize::from(u8::MAX)) as u8,
+            flags,
+            reply: handler.reply,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_completion(self) -> bool {
+        (self.flags & HANDLER_FLAG_COMPLETION) != 0
+    }
+
+    #[inline]
+    pub(crate) fn all_plain_int(self) -> bool {
+        (self.flags & HANDLER_FLAG_ALL_PLAIN_INT) != 0
+    }
+
+    #[inline]
+    pub(crate) fn fast_scalar(self) -> bool {
+        (self.flags & HANDLER_FLAG_FAST_SCALAR) != 0
+    }
+
+    #[inline]
+    pub(crate) fn has_supported_reply(self) -> bool {
+        (self.flags & HANDLER_FLAG_SUPPORTED_REPLY) != 0
+    }
+}
+
 pub(crate) struct ModuleData {
     pub manifest: Manifest,
     pub initializer: ScalarEntry,
@@ -71,6 +142,7 @@ pub(crate) struct ModuleLease {
 pub struct HandlerId {
     pub(crate) module: ScalarModule,
     pub(crate) index: usize,
+    pub(crate) meta: HandlerFastMeta,
 }
 
 impl ScalarModule {
@@ -309,19 +381,23 @@ impl ScalarModule {
             .iter()
             .position(|handler| handler.name == name)
             .ok_or(crate::VmError::UnknownHandler)?;
+        let meta = HandlerFastMeta::from_schema(&self.inner.manifest.handlers[index]);
         Ok(HandlerId {
             module: self.clone(),
             index,
+            meta,
         })
     }
 
     pub(crate) fn handler_by_index(&self, index: usize) -> Result<HandlerId, crate::VmError> {
-        if index >= self.inner.manifest.handlers.len() {
+        let Some(schema) = self.inner.manifest.handlers.get(index) else {
             return Err(crate::VmError::InvalidHandler);
-        }
+        };
+        let meta = HandlerFastMeta::from_schema(schema);
         Ok(HandlerId {
             module: self.clone(),
             index,
+            meta,
         })
     }
 
@@ -382,6 +458,18 @@ impl ScalarModule {
         )?;
         self.instantiate_owned(pool, Some(heap))
     }
+    #[inline]
+    pub(crate) fn direct_max_steps(
+        &self,
+        index: usize,
+        heap: Option<&crate::aot_heap::AotHeap>,
+    ) -> Option<u64> {
+        self.inner
+            .direct_meta
+            .get(index)
+            .copied()
+            .and_then(|meta| meta.max_steps(heap))
+    }
 }
 
 impl HandlerId {
@@ -389,13 +477,9 @@ impl HandlerId {
         &self.module.inner.manifest.handlers[self.index]
     }
 
-    pub(crate) fn direct_max_steps(&self, heap: Option<&crate::aot_heap::AotHeap>) -> Option<u64> {
-        self.module
-            .inner
-            .direct_meta
-            .get(self.index)
-            .copied()
-            .and_then(|meta| meta.max_steps(heap))
+    #[inline]
+    pub(crate) fn fast_meta(&self) -> HandlerFastMeta {
+        self.meta
     }
 }
 
@@ -492,22 +576,23 @@ mod tests {
             bytes: 8 << 20,
             ..Resources::default()
         };
+        let manifest = Manifest {
+            records: Vec::new(),
+            format: wings_artifact::FORMAT_VERSION,
+            abi: wings_abi::SCALAR_ABI_VERSION,
+            target: wings_abi::host_target().unwrap().into(),
+            process: "Tool".into(),
+            state: wings_abi::ValueType::Int,
+            handlers: vec![Handler {
+                name: "Get".into(),
+                parameters: vec![],
+                reply: Some(wings_abi::ValueType::Int),
+                completion: None,
+            }],
+        };
         let module = ScalarModule {
             inner: Arc::new(ModuleData {
-                manifest: Manifest {
-                    records: Vec::new(),
-                    format: wings_artifact::FORMAT_VERSION,
-                    abi: wings_abi::SCALAR_ABI_VERSION,
-                    target: wings_abi::host_target().unwrap().into(),
-                    process: "Tool".into(),
-                    state: wings_abi::ValueType::Int,
-                    handlers: vec![Handler {
-                        name: "Get".into(),
-                        parameters: vec![],
-                        reply: Some(wings_abi::ValueType::Int),
-                        completion: None,
-                    }],
-                },
+                manifest,
                 initializer: entry,
                 entries: vec![entry as ScalarEntry].into_boxed_slice(),
                 direct_meta: Box::new([]),
@@ -591,22 +676,23 @@ mod tests {
         let bootstrap = vm.used();
         let tenant = vm.tenant(limits).unwrap();
         let account = tenant.process(limits).unwrap();
+        let manifest = Manifest {
+            format: wings_artifact::FORMAT_VERSION,
+            abi: wings_abi::SCALAR_ABI_VERSION,
+            target: wings_abi::host_target().unwrap().into(),
+            process: "Bounded".into(),
+            records: Vec::new(),
+            state: wings_abi::ValueType::Int,
+            handlers: vec![Handler {
+                name: "Get".into(),
+                parameters: vec![],
+                reply: Some(wings_abi::ValueType::Int),
+                completion: None,
+            }],
+        };
         let module = ScalarModule {
             inner: Arc::new(ModuleData {
-                manifest: Manifest {
-                    format: wings_artifact::FORMAT_VERSION,
-                    abi: wings_abi::SCALAR_ABI_VERSION,
-                    target: wings_abi::host_target().unwrap().into(),
-                    process: "Bounded".into(),
-                    records: Vec::new(),
-                    state: wings_abi::ValueType::Int,
-                    handlers: vec![Handler {
-                        name: "Get".into(),
-                        parameters: vec![],
-                        reply: Some(wings_abi::ValueType::Int),
-                        completion: None,
-                    }],
-                },
+                manifest,
                 initializer: entry,
                 entries: vec![entry as ScalarEntry].into_boxed_slice(),
                 direct_meta: Box::new([]),

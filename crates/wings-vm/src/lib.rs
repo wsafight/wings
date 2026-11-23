@@ -375,11 +375,11 @@ impl ScalarProcess {
             self.failed = true;
             return Err(error);
         }
-        let handler = &self.module.inner.manifest.handlers[index];
-        let reply = if (handler.reply == Some(ValueType::ListRef) && list.is_some())
-            || (matches!(handler.reply, Some(ValueType::RecordRef(_))) && record.is_some())
+        let handler_reply = self.module.inner.manifest.handlers[index].reply;
+        let reply = if (handler_reply == Some(ValueType::ListRef) && list.is_some())
+            || (matches!(handler_reply, Some(ValueType::RecordRef(_))) && record.is_some())
             || matches!(
-                (handler.reply, &bytes),
+                (handler_reply, &bytes),
                 (
                     Some(ValueType::BytesRef),
                     Some(reply::BufferReply::Bytes(_))
@@ -389,11 +389,10 @@ impl ScalarProcess {
                 )
             ) {
             0
-        } else if handler
-            .reply
+        } else if handler_reply
             .unwrap_or(ValueType::Unit)
             .accepts(output.reply)
-            || (handler.reply == Some(ValueType::Pid) && output.reply >= 0)
+            || (handler_reply == Some(ValueType::Pid) && output.reply >= 0)
         {
             output.reply
         } else {
@@ -419,10 +418,10 @@ impl ScalarProcess {
             return Ok(ExecutionStatus::CompleteRecord(record));
         }
         match list {
-            Some(list) if handler.reply == Some(ValueType::ListRef) => {
+            Some(list) if handler_reply == Some(ValueType::ListRef) => {
                 Ok(ExecutionStatus::CompleteList(list))
             }
-            _ => Ok(ExecutionStatus::Complete(handler.reply.map(|_| reply))),
+            _ => Ok(ExecutionStatus::Complete(handler_reply.map(|_| reply))),
         }
     }
 }

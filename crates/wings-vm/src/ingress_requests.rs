@@ -28,7 +28,6 @@ pub(crate) struct ReplyPublisher {
 
 pub(crate) struct ReplyTable {
     slots: Box<[ReplySlot]>,
-    ready: Box<[AtomicBool]>,
     free: [AtomicU64; MAX_BITMAP_WORDS],
     waiters: AtomicUsize,
     wait_lock: Mutex<()>,
@@ -37,8 +36,10 @@ pub(crate) struct ReplyTable {
     _charge: Reservation,
 }
 
+#[repr(align(64))]
 struct ReplySlot {
     locked: AtomicBool,
+    ready: AtomicBool,
     state: UnsafeCell<SlotState>,
 }
 
@@ -104,7 +105,7 @@ impl ReplyTable {
         }
         let charge = account.reserve(Resources {
             bytes: (std::mem::size_of::<Self>()
-                + capacity * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
+                + capacity * std::mem::size_of::<ReplySlot>()
                 + 128usize.max(crate::native_sync::shared_bytes(1, 1))) as u64,
             ..Resources::default()
         })?;
@@ -114,23 +115,18 @@ impl ReplyTable {
             .map_err(|_| "ingress result storage allocation failed")?;
         slots.resize_with(capacity, || ReplySlot {
             locked: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             state: UnsafeCell::new(SlotState {
                 generation: 1,
                 pending: None,
             }),
         });
-        let mut ready = Vec::new();
-        ready
-            .try_reserve_exact(capacity)
-            .map_err(|_| "ingress result readiness allocation failed")?;
-        ready.resize_with(capacity, || AtomicBool::new(false));
         let mut mask = [0u64; MAX_BITMAP_WORDS];
         for index in 0..capacity {
             mask[index / 64] |= 1u64 << (index % 64);
         }
         Ok(Arc::new(Self {
             slots: slots.into_boxed_slice(),
-            ready: ready.into_boxed_slice(),
             free: mask.map(AtomicU64::new),
             waiters: AtomicUsize::new(0),
             wait_lock: crate::native_sync::mutex(()),
@@ -199,7 +195,7 @@ impl ReplyTable {
                 continue;
             }
             let generation = slot.generation;
-            self.ready[index].store(false, Ordering::Release);
+            self.slots[index].ready.store(false, Ordering::Release);
             slot.pending = Some(Pending {
                 deadline,
                 outcome: None,
@@ -246,7 +242,7 @@ impl ReplyTable {
             });
         }
         pending.publisher = false;
-        self.ready[index].store(true, Ordering::SeqCst);
+        self.slots[index].ready.store(true, Ordering::SeqCst);
         let (retired, reusable) = retire(&mut slot);
         drop(slot);
         if reusable {
@@ -280,7 +276,9 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        if !self.table.ready[self.slot].load(Ordering::Acquire) && Instant::now() < self.deadline {
+        if !self.table.slots[self.slot].ready.load(Ordering::Acquire)
+            && Instant::now() < self.deadline
+        {
             return Ok(None);
         }
         let mut slot = self.table.slots[self.slot].lock();
@@ -313,7 +311,9 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        if self.table.ready[self.slot].load(Ordering::Acquire) || Instant::now() >= self.deadline {
+        if self.table.slots[self.slot].ready.load(Ordering::Acquire)
+            || Instant::now() >= self.deadline
+        {
             return self.try_take();
         }
         struct WaiterCount<'table>(&'table AtomicUsize);
@@ -330,7 +330,7 @@ impl IngressRequest {
         self.table.waiters.fetch_add(1, Ordering::SeqCst);
         let _waiter = WaiterCount(&self.table.waiters);
         loop {
-            let ready = self.table.ready[self.slot].load(Ordering::SeqCst);
+            let ready = self.table.slots[self.slot].ready.load(Ordering::SeqCst);
             let now = Instant::now();
             if ready || now >= self.deadline {
                 drop(_waiter);
@@ -362,7 +362,9 @@ impl IngressRequest {
                 RequestOutcome::Cancelled
             });
         }
-        self.table.ready[self.slot].store(true, Ordering::SeqCst);
+        self.table.slots[self.slot]
+            .ready
+            .store(true, Ordering::SeqCst);
         drop(slot);
         self.table.notify_waiters();
         Ok(())
@@ -449,7 +451,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         for cancel in [false, true] {
             let (mut request, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
-            assert!(!table.ready[0].load(Ordering::Acquire));
+            assert!(!table.slots[0].ready.load(Ordering::Acquire));
             {
                 let slot = table.slots[0].lock();
                 assert!(slot.pending.as_ref().unwrap().outcome.is_none());
@@ -457,13 +459,13 @@ mod tests {
             }
             if cancel {
                 request.cancel().unwrap();
-                assert!(table.ready[0].load(Ordering::Acquire));
+                assert!(table.slots[0].ready.load(Ordering::Acquire));
                 assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Cancelled));
                 assert_eq!(account.used().requests, 1);
                 drop(publisher);
             } else {
                 publisher.complete(17);
-                assert!(table.ready[0].load(Ordering::Acquire));
+                assert!(table.slots[0].ready.load(Ordering::Acquire));
                 assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Reply(17)));
             }
             assert!(request.try_take().is_err());
@@ -484,7 +486,7 @@ mod tests {
         let (mut request, publisher) = table
             .start(Instant::now(), &account, ValueType::BytesRef)
             .unwrap();
-        assert!(!table.ready[0].load(Ordering::Acquire));
+        assert!(!table.slots[0].ready.load(Ordering::Acquire));
         assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::TimedOut));
         assert_eq!(account.used().requests, 1);
         assert!(
@@ -501,8 +503,8 @@ mod tests {
     #[test]
     fn readiness_storage_is_admitted_before_allocation_at_each_tier() {
         let required = (std::mem::size_of::<ReplyTable>()
-            + 64 * (std::mem::size_of::<ReplySlot>() + std::mem::size_of::<AtomicBool>())
-            + 128) as u64;
+            + 64 * std::mem::size_of::<ReplySlot>()
+            + 128usize.max(crate::native_sync::shared_bytes(1, 1))) as u64;
         for restricted in 0..3 {
             let limits = |level| Resources {
                 bytes: required - u64::from(level == restricted),

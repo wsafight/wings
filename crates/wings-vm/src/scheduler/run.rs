@@ -16,11 +16,10 @@ const MAX_BACKLOG_BATCH: usize = 32;
 pub(super) struct Running {
     pid: SchedulerPid,
     task: ScalarTask,
-    handler: HandlerId,
+    handler: usize,
     max_steps: u64,
     reply: Reply,
-    _charge: Reservation,
-    _message_charge: Option<Reservation>,
+    _charge: crate::resources::EnvelopeCharge,
 }
 
 struct Claim {
@@ -173,14 +172,10 @@ pub(super) fn worker(
             break;
         }
         let attempted = claim.is_some();
-        if claim.as_ref().is_some_and(|claim| {
-            claim.fused_direct.is_some()
-                || WorkerFibers::can_run_fast(
-                    &claim.message.handler,
-                    &claim.message.lists,
-                    &claim.message.bytes,
-                )
-        }) {
+        if claim
+            .as_ref()
+            .is_some_and(|claim| claim.fused_direct.is_some() || claim.message.fast_eligible)
+        {
             let max_batch = if had_local { 1 } else { MAX_BACKLOG_BATCH };
             let progressed = run_fast_claim(
                 &shared,
@@ -374,7 +369,9 @@ fn run_fast_claim(
     let mut process = match claim.image.attach_scheduled(pool, &claim.account) {
         Ok(process) => process,
         Err(_) => {
-            claim.fused_direct.take();
+            if let Some(prepared) = claim.fused_direct.take() {
+                prepared.release(fibers);
+            }
             rollback_failed_start(shared, index, claim);
             return false;
         }
@@ -383,44 +380,50 @@ fn run_fast_claim(
     let mailbox = claim.mailbox;
     let account = claim.account;
     let cancellation = claim.cancellation;
-    let mut fused_direct = claim.fused_direct;
+    let mut already_started = claim.fused_direct.is_some();
+    let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
-    let mut already_started = fused_direct.is_some();
     for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
-        let direct_prepared = if let Some(prepared) = fused_direct.take() {
-            Some(prepared)
+        let run_direct = if batch_step == 0 && cached_direct.is_some() {
+            true
         } else if fibers.can_run_direct(
             &process,
-            &message.handler,
+            message.handler,
             message.max_steps,
             shared.config.slice_steps,
             yield_observed,
         ) {
-            match fibers.prepare_direct(&process, &account) {
-                Ok(prepared) => Some(prepared),
-                Err(_) => {
-                    rollback_failed_start(
-                        shared,
-                        index,
-                        Claim {
-                            pid,
-                            image: process.detach(),
-                            message,
-                            mailbox,
-                            account,
-                            cancellation,
-                            fused_direct: None,
-                        },
-                    );
-                    return batch_step > 0;
+            if cached_direct.is_none() {
+                match fibers.prepare_direct(&process, &account) {
+                    Ok(prepared) => cached_direct = Some(prepared),
+                    Err(_) => {
+                        rollback_failed_start(
+                            shared,
+                            index,
+                            Claim {
+                                pid,
+                                image: process.detach(),
+                                message,
+                                mailbox,
+                                account,
+                                cancellation,
+                                fused_direct: None,
+                            },
+                        );
+                        return batch_step > 0;
+                    }
                 }
             }
+            true
         } else {
-            None
+            if let Some(prepared) = cached_direct.take() {
+                prepared.release(fibers);
+            }
+            false
         };
 
-        let step = if let Some(prepared) = direct_prepared {
+        let step = if run_direct {
             if !already_started {
                 if batch_step == 0 {
                     mark_started(shared, index, pid);
@@ -440,19 +443,18 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = message;
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
-            let (next_process, snapshot, result) = prepared.run(
-                fibers,
-                process,
-                handler.index,
-                arguments.as_slice(),
-                max_steps,
-                shared.config.slice_steps,
-                &cancellation,
-            );
+            let (next_process, snapshot, result) =
+                cached_direct.as_ref().expect("cached direct lease").run(
+                    process,
+                    handler,
+                    arguments.as_slice(),
+                    max_steps,
+                    shared.config.slice_steps,
+                    &cancellation,
+                );
             let returned_at = started_at.map(|_| Instant::now());
             (
                 Ok((next_process, snapshot, result)),
@@ -460,7 +462,6 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 started_at,
                 returned_at,
             )
@@ -501,7 +502,6 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = message;
             let armed = Instant::now()
@@ -519,7 +519,6 @@ fn run_fast_claim(
                     handler,
                     reply,
                     _charge,
-                    _message_charge,
                     Err("scheduler timer failure".into()),
                 );
                 return true;
@@ -528,7 +527,7 @@ fn run_fast_claim(
             let outcome = prepared.run_first_slice(
                 fibers,
                 process,
-                handler.index,
+                handler,
                 arguments.as_slice(),
                 max_steps,
                 shared.config.slice_steps,
@@ -542,22 +541,12 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 started_at,
                 returned_at,
             )
         };
 
-        let (
-            step_result,
-            handler,
-            max_steps,
-            mut reply,
-            _charge,
-            _message_charge,
-            started_at,
-            returned_at,
-        ) = step;
+        let (step_result, handler, max_steps, mut reply, _charge, started_at, returned_at) = step;
 
         match step_result {
             Ok((next_process, snapshot, result)) => {
@@ -593,7 +582,7 @@ fn run_fast_claim(
                             Ok(Some(value)) => value,
                             _ => RequestOutcome::Failed,
                         };
-                        drop((handler, _charge, _message_charge));
+                        drop(_charge);
                         if let Reply::External(publisher) =
                             std::mem::replace(&mut reply, Reply::None)
                         {
@@ -638,7 +627,7 @@ fn run_fast_claim(
                             }
                             let wake = state.maintain(shared.identity);
                             shared.publish_signal(&state);
-                            drop((handler, _charge, _message_charge));
+                            drop(_charge);
                             drop(state);
                             if let Some((publisher, outcome)) = external_reply {
                                 complete_external(publisher, outcome);
@@ -650,6 +639,9 @@ fn run_fast_claim(
                         }
                     }
                 }
+                if let Some(prepared) = cached_direct.take() {
+                    prepared.release(fibers);
+                }
                 drop((mailbox, account, cancellation));
                 finish_process(
                     shared,
@@ -660,7 +652,6 @@ fn run_fast_claim(
                     handler,
                     reply,
                     _charge,
-                    _message_charge,
                     mapped,
                 );
                 return true;
@@ -697,7 +688,6 @@ fn run_fast_claim(
                     max_steps,
                     reply,
                     _charge,
-                    _message_charge,
                 });
                 return true;
             }
@@ -714,19 +704,17 @@ fn start(
     preemption: &PreemptionToken,
     fibers: &mut WorkerFibers,
 ) -> Option<Running> {
-    claim.fused_direct.take();
-    if WorkerFibers::can_run_fast(
-        &claim.message.handler,
-        &claim.message.lists,
-        &claim.message.bytes,
-    ) {
+    if let Some(prepared) = claim.fused_direct.take() {
+        prepared.release(fibers);
+    }
+    if claim.message.fast_eligible {
         let prepared = match claim.image.attach_scheduled(pool, &claim.account) {
             Ok(process) => match fibers.prepare(&process, &claim.account) {
                 Ok(prepared) => {
                     match prepared.into_ready_task(
                         fibers,
                         process,
-                        claim.message.handler.index,
+                        claim.message.handler,
                         claim.message.arguments.as_slice(),
                         claim.message.max_steps,
                         &claim.cancellation,
@@ -753,7 +741,6 @@ fn start(
                     max_steps,
                     reply,
                     _charge,
-                    _message_charge,
                     ..
                 } = claim.message;
                 Some(Running {
@@ -763,7 +750,6 @@ fn start(
                     max_steps,
                     reply,
                     _charge,
-                    _message_charge,
                 })
             }
             Err(()) => {
@@ -778,7 +764,7 @@ fn start(
         let mut task = ScalarTask::new(process);
         task.enable_effects();
         match task.start_scheduled(
-            &claim.message.handler,
+            claim.message.handler,
             claim.message.arguments.as_slice(),
             claim.message.max_steps,
             || (claim.cancellation.clone(), preemption.clone()),
@@ -801,7 +787,6 @@ fn start(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = claim.message;
             Some(Running {
@@ -811,7 +796,6 @@ fn start(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
             })
         }
         Err(_) => {
@@ -883,21 +867,11 @@ fn finish(
         max_steps: _,
         reply,
         _charge,
-        _message_charge,
     } = active;
     let snapshot = task.snapshot();
     let process = task.into_process();
     finish_process(
-        shared,
-        index,
-        pid,
-        process,
-        snapshot,
-        handler,
-        reply,
-        _charge,
-        _message_charge,
-        result,
+        shared, index, pid, process, snapshot, handler, reply, _charge, result,
     );
 }
 
@@ -908,10 +882,9 @@ fn finish_process(
     pid: SchedulerPid,
     process: ScalarProcess,
     snapshot: Option<ExecutionSnapshot>,
-    handler: HandlerId,
+    handler: usize,
     mut reply: Reply,
-    _charge: Reservation,
-    _message_charge: Option<Reservation>,
+    _charge: crate::resources::EnvelopeCharge,
     result: Result<Option<RequestOutcome>, String>,
 ) {
     let committed_state =
@@ -943,7 +916,7 @@ fn finish_process(
         0
     };
     let diagnostic = if result.is_err() && !actor.stopping && !closed {
-        let name = &handler.schema().name;
+        let name = &actor.module.manifest().handlers[handler].name;
         let mut handler_name = [0; 256];
         handler_name[..name.len()].copy_from_slice(name.as_bytes());
         Some(SchedulerExitSnapshot {
@@ -965,7 +938,7 @@ fn finish_process(
     } else {
         None
     };
-    drop((handler, _charge, _message_charge));
+    drop(_charge);
     actor.owner = None;
     actor.image = Some(image);
     actor.execution = snapshot;

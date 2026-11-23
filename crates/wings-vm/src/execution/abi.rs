@@ -386,14 +386,14 @@ pub(crate) fn runtime_checkpoint(context: &mut ScalarContext, consume: bool) -> 
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
     loop {
-        if unsafe { &*context.cancellation }.load(Ordering::SeqCst) != 0 {
+        if unsafe { &*context.cancellation }.load(Ordering::Acquire) != 0 {
             return Err(STATUS_CANCELLED);
         }
         if context.remaining_steps == 0 {
             return Err(wings_abi::STATUS_BUDGET_EXHAUSTED);
         }
         if context.slice_remaining == 0
-            || unsafe { &*context.yield_request }.load(Ordering::SeqCst) != 0
+            || unsafe { &*context.yield_request }.load(Ordering::Acquire) != 0
         {
             let callback = context.slow_path.ok_or(wings_abi::STATUS_INVALID_CONTROL)?;
             let status = unsafe { callback(context) };
@@ -417,8 +417,8 @@ pub(crate) fn runtime_checkpoint_batch(
     if context.cancellation.is_null() || context.yield_request.is_null() {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    if unsafe { &*context.cancellation }.load(Ordering::SeqCst) == 0
-        && unsafe { &*context.yield_request }.load(Ordering::SeqCst) == 0
+    if unsafe { &*context.cancellation }.load(Ordering::Acquire) == 0
+        && unsafe { &*context.yield_request }.load(Ordering::Acquire) == 0
         && context.remaining_steps > 0
         && context.slice_remaining > 0
     {

@@ -370,21 +370,15 @@ impl State {
                     continue;
                 }
                 self.monitor_count -= 1;
-                let fast_eligible = envelope_fast_eligible(
-                    &entry.handler,
-                    &ListPayload::default(),
-                    &BytePayload::default(),
-                );
                 let message = Envelope {
-                    handler: entry.handler,
+                    handler: entry.handler_index,
                     arguments: MessageArguments::from_inline(&[entry.target_capability, reason]),
                     max_steps: entry.max_steps,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::None,
-                    fast_eligible,
+                    fast_eligible: entry.fast_eligible,
                     _charge: entry.envelope_charge,
-                    _message_charge: Some(entry.envelope_msg_charge),
                 };
                 self.actor_mut(identity, owner)
                     .expect("monitor owner")
@@ -536,15 +530,14 @@ impl State {
             }
             let fast_eligible = envelope_fast_eligible(&completion.handler, &lists, &bytes);
             let message = Envelope {
-                handler: completion.handler,
+                handler: completion.handler.index,
                 arguments: message_arguments,
                 max_steps: completion.max_steps,
                 lists,
                 bytes,
                 reply: Reply::None,
                 fast_eligible,
-                _charge: completion.charge,
-                _message_charge: None,
+                _charge: crate::resources::EnvelopeCharge::from_reservation(completion.charge),
             };
             self.actor_mut(identity, owner)
                 .expect("completion owner")
@@ -686,14 +679,9 @@ impl Shared {
                         return Err(crate::VmError::InvalidHandler);
                     }
                     let owner = state.actor_checked(self.identity, pid)?;
-                    let envelope_charge = owner.account.reserve_checked(Resources {
-                        bytes: std::mem::size_of::<Envelope>() as u64,
-                        ..Resources::default()
-                    })?;
-                    let envelope_msg_charge = owner.account.reserve_checked(Resources {
-                        messages: 1,
-                        ..Resources::default()
-                    })?;
+                    let envelope_charge = owner
+                        .account
+                        .reserve_envelope(std::mem::size_of::<Envelope>() as u64)?;
                     let node_charge = owner.account.reserve_checked(Resources {
                         bytes: std::mem::size_of::<MonitorEntry>() as u64,
                         ..Resources::default()
@@ -703,14 +691,15 @@ impl Shared {
                     } else {
                         Some(state.lookup_recent_exit(effect.target).unwrap_or(-1))
                     };
+                    let fast_eligible = handler.fast_meta().fast_scalar();
                     let entry = Box::new(MonitorEntry {
                         owner: pid,
                         target_capability: effect.target,
-                        handler,
+                        handler_index: handler.index,
+                        fast_eligible,
                         max_steps: budget,
                         reason,
                         envelope_charge,
-                        envelope_msg_charge,
                         _node_charge: node_charge,
                         next: None,
                     });

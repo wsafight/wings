@@ -24,6 +24,20 @@ impl Resources {
         self.bytes == 0 && self.processes == 0 && self.messages == 0 && self.requests == 0
     }
 
+    fn single_dimension(self) -> Option<(usize, u64)> {
+        let mask = u8::from(self.bytes != 0)
+            | (u8::from(self.processes != 0) << 1)
+            | (u8::from(self.messages != 0) << 2)
+            | (u8::from(self.requests != 0) << 3);
+        match mask {
+            1 => Some((0, self.bytes)),
+            2 => Some((1, self.processes)),
+            4 => Some((2, self.messages)),
+            8 => Some((3, self.requests)),
+            _ => None,
+        }
+    }
+
     fn is_multi_dimensional(self) -> bool {
         let count = u8::from(self.bytes != 0)
             + u8::from(self.processes != 0)
@@ -80,6 +94,13 @@ struct AccountNode {
 pub struct Reservation {
     account: ResourceAccount,
     amount: Resources,
+}
+
+pub(crate) struct EnvelopeCharge {
+    account: ResourceAccount,
+    bytes: u64,
+    messages: u8,
+    gated: bool,
 }
 
 impl ResourceAccount {
@@ -141,48 +162,98 @@ impl ResourceAccount {
         }
     }
 
+    #[inline]
+    fn try_add_dim(&self, index: usize, delta: u64) -> bool {
+        let counter = &self.node.used[index];
+        let limit = self.node.limit.as_array()[index];
+        let mut current = counter.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
+                return false;
+            };
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn sub_dim(&self, index: usize, delta: u64) {
+        self.node.used[index].fetch_sub(delta, Ordering::AcqRel);
+    }
+
+    fn reserve_dim_status(&self, index: usize, delta: u64) -> Result<(), ResourceLevel> {
+        if delta == 0 {
+            return Ok(());
+        }
+        if !self.try_add_dim(index, delta) {
+            return Err(self.level());
+        }
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            if !parent.try_add_dim(index, delta) {
+                self.sub_dim(index, delta);
+                return Err(parent.level());
+            }
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                if !root.try_add_dim(index, delta) {
+                    parent.sub_dim(index, delta);
+                    self.sub_dim(index, delta);
+                    return Err(root.level());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refund_dim_all(&self, index: usize, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        self.sub_dim(index, delta);
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            parent.sub_dim(index, delta);
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                root.sub_dim(index, delta);
+            }
+        }
+    }
+
     fn try_add_node(&self, amount: Resources) -> bool {
         if amount.is_zero() {
             return true;
         }
+        if let Some((index, delta)) = amount.single_dimension() {
+            return self.try_add_dim(index, delta);
+        }
         let deltas = amount.as_array();
-        let limits = self.node.limit.as_array();
         for index in 0..4 {
             let delta = deltas[index];
             if delta == 0 {
                 continue;
             }
-            let counter = &self.node.used[index];
-            let limit = limits[index];
-            let mut current = counter.load(Ordering::Relaxed);
-            loop {
-                let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
-                    for (rollback, &added) in deltas[..index].iter().enumerate() {
-                        if added != 0 {
-                            self.node.used[rollback].fetch_sub(added, Ordering::AcqRel);
-                        }
+            if !self.try_add_dim(index, delta) {
+                for (rollback, &added) in deltas[..index].iter().enumerate() {
+                    if added != 0 {
+                        self.sub_dim(rollback, added);
                     }
-                    return false;
-                };
-                match counter.compare_exchange_weak(
-                    current,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => current = actual,
                 }
+                return false;
             }
         }
         true
     }
 
     fn sub_node(&self, amount: Resources) {
+        if let Some((index, delta)) = amount.single_dimension() {
+            self.sub_dim(index, delta);
+            return;
+        }
         let deltas = amount.as_array();
         for (index, &delta) in deltas.iter().enumerate() {
             if delta != 0 {
-                self.node.used[index].fetch_sub(delta, Ordering::AcqRel);
+                self.sub_dim(index, delta);
             }
         }
     }
@@ -203,8 +274,30 @@ impl ResourceAccount {
             .map_err(crate::VmError::ResourceExhausted)
     }
 
+    pub(crate) fn reserve_envelope(&self, bytes: u64) -> Result<EnvelopeCharge, crate::VmError> {
+        self.reserve_dim_status(0, bytes)
+            .map_err(crate::VmError::ResourceExhausted)?;
+        if let Err(level) = self.reserve_dim_status(2, 1) {
+            self.refund_dim_all(0, bytes);
+            return Err(crate::VmError::ResourceExhausted(level));
+        }
+        Ok(EnvelopeCharge {
+            account: self.clone(),
+            bytes,
+            messages: 1,
+            gated: false,
+        })
+    }
+
     pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
         if amount.is_zero() {
+            return Ok(Reservation {
+                account: self.clone(),
+                amount,
+            });
+        }
+        if let Some((index, delta)) = amount.single_dimension() {
+            self.reserve_dim_status(index, delta)?;
             return Ok(Reservation {
                 account: self.clone(),
                 amount,
@@ -439,8 +532,48 @@ impl Reservation {
     }
 }
 
+impl EnvelopeCharge {
+    pub(crate) fn from_reservation(mut reservation: Reservation) -> Self {
+        let amount = reservation.amount;
+        debug_assert!(amount.processes == 0 && amount.requests == 0 && amount.messages <= 1);
+        let gated = amount.is_multi_dimensional();
+        reservation.amount = Resources::default();
+        Self {
+            account: reservation.account.clone(),
+            bytes: amount.bytes,
+            messages: amount.messages as u8,
+            gated,
+        }
+    }
+}
+
+impl Drop for EnvelopeCharge {
+    fn drop(&mut self) {
+        if self.bytes == 0 && self.messages == 0 {
+            return;
+        }
+        let _guard = self.gated.then(|| {
+            self.account
+                .node
+                .gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        if self.messages != 0 {
+            self.account.refund_dim_all(2, u64::from(self.messages));
+        }
+        if self.bytes != 0 {
+            self.account.refund_dim_all(0, self.bytes);
+        }
+    }
+}
+
 impl Drop for Reservation {
     fn drop(&mut self) {
+        if let Some((index, delta)) = self.amount.single_dimension() {
+            self.account.refund_dim_all(index, delta);
+            return;
+        }
         if !self.amount.is_zero() {
             let _guard = self.amount.is_multi_dimensional().then(|| {
                 self.account

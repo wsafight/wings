@@ -138,7 +138,7 @@ impl WorkerFibers {
     pub(crate) fn can_run_direct(
         &self,
         process: &ScalarProcess,
-        handler: &HandlerId,
+        handler_index: usize,
         max_steps: u64,
         slice_steps: u64,
         yield_observed: bool,
@@ -146,15 +146,17 @@ impl WorkerFibers {
         !yield_observed
             && self.native_stack_limit != 0
             && self.preemption.flag.load(Ordering::Acquire) == 0
-            && handler
-                .direct_max_steps(process.heap.as_deref())
+            && process
+                .module
+                .direct_max_steps(handler_index, process.heap.as_deref())
                 .is_some_and(|bound| bound <= max_steps && bound <= slice_steps)
     }
 
-    pub(crate) fn can_run_direct_image(
+    pub(crate) fn can_run_direct_image_index(
         &self,
+        module: &ScalarModule,
         image: &crate::DetachedProcess,
-        handler: &HandlerId,
+        handler_index: usize,
         max_steps: u64,
         slice_steps: u64,
         yield_observed: bool,
@@ -163,8 +165,8 @@ impl WorkerFibers {
             && !image.is_failed()
             && self.native_stack_limit != 0
             && self.preemption.flag.load(Ordering::Acquire) == 0
-            && handler
-                .direct_max_steps(image.heap_ref())
+            && module
+                .direct_max_steps(handler_index, image.heap_ref())
                 .is_some_and(|bound| bound <= max_steps && bound <= slice_steps)
     }
 
@@ -223,6 +225,7 @@ impl WorkerFibers {
         self.prepare_direct_account(process.failed, process_account)
     }
 
+    #[inline]
     pub(crate) fn can_run_fast(
         handler: &HandlerId,
         lists: &ListPayload,
@@ -231,15 +234,7 @@ impl WorkerFibers {
         lists.mask == 0
             && lists.is_empty()
             && bytes.is_trivially_empty()
-            && !matches!(
-                handler.schema().reply,
-                Some(
-                    wings_abi::ValueType::ListRef
-                        | wings_abi::ValueType::BytesRef
-                        | wings_abi::ValueType::StringRef
-                        | wings_abi::ValueType::RecordRef(_)
-                )
-            )
+            && handler.fast_meta().fast_scalar()
     }
 
     pub(crate) fn prepare(
@@ -374,10 +369,28 @@ unsafe extern "C" fn direct_unexpected_slow(context: *mut ScalarContext) -> u32 
 }
 
 impl PreparedDirect {
+    pub(crate) fn release(mut self, fibers: &mut WorkerFibers) {
+        if let Some(lease) = self.stack_lease.take() {
+            match lease {
+                DirectFiberLease::Parked(mut parked) => {
+                    let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
+                    let stack_charge = parked
+                        .stack_charge
+                        .take()
+                        .expect("activated parked stack charge");
+                    let pool = parked.pool.clone();
+                    fibers.recycle(coroutine, stack_charge, pool);
+                }
+                DirectFiberLease::Demand { pool, lease } => {
+                    pool.release_direct_stack_charge(lease);
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
-        mut self,
-        fibers: &mut WorkerFibers,
+        &self,
         mut process: ScalarProcess,
         handler: usize,
         arguments: &[i64],
@@ -420,23 +433,6 @@ impl PreparedDirect {
         }
         let remaining_steps = context.remaining_steps;
         let heap_stats = heap.as_deref().map(AotHeap::stats);
-        if let Some(lease) = self.stack_lease.take() {
-            match lease {
-                DirectFiberLease::Parked(mut parked) => {
-                    let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
-                    let stack_charge = parked
-                        .stack_charge
-                        .take()
-                        .expect("activated parked stack charge");
-                    let pool = parked.pool.clone();
-                    fibers.recycle(coroutine, stack_charge, pool);
-                }
-                DirectFiberLease::Demand { pool, lease } => {
-                    pool.release_direct_stack_charge(lease);
-                }
-            }
-        }
-        drop(self);
         process.heap = heap;
         let result = process.finish_invocation(handler, status, output, None, None, None);
         let snapshot = ExecutionSnapshot {
