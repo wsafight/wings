@@ -10,6 +10,7 @@ pub(super) struct FiberStart {
     cancellation: *const std::sync::atomic::AtomicU32,
     heap: Option<Box<AotHeap>>,
     effects_enabled: bool,
+    inline: Option<crate::scheduler::EffectSendTarget>,
 }
 
 pub(super) enum FiberCommand {
@@ -34,6 +35,14 @@ pub(super) enum FiberEvent {
 pub(super) struct ReusableControl<'scope> {
     pub(super) yielder: &'scope Yielder<FiberCommand, FiberEvent>,
     pub(super) preemption: &'scope PreemptionToken,
+    /// Lock-free send context for `EFFECT_SELF_PID` / `EFFECT_SEND_SELF` /
+    /// `EFFECT_SEND`; `None` (e.g. outside the scheduler) keeps the
+    /// suspend-to-scheduler path. The borrow lives in the coroutine frame, so
+    /// it stays valid across suspensions of this invocation.
+    pub(super) inline: Option<&'scope crate::scheduler::EffectSendTarget>,
+    /// `max_steps` of the current invocation; inline sends charge it to the
+    /// delivered envelope exactly like the suspended effect path.
+    pub(super) budget: u64,
 }
 
 pub(super) struct ParkedFiber {
@@ -455,6 +464,7 @@ impl PreparedDirect {
 }
 
 impl PreparedFiber {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_ready_task(
         mut self,
         fibers: &WorkerFibers,
@@ -463,6 +473,7 @@ impl PreparedFiber {
         arguments: &[i64],
         max_steps: u64,
         cancellation: &CancellationToken,
+        inline: Option<crate::scheduler::EffectSendTarget>,
     ) -> Result<ScalarTask, (ScalarProcess, String)> {
         let snapshot = ExecutionSnapshot {
             phase: ExecutionPhase::Ready,
@@ -482,6 +493,7 @@ impl PreparedFiber {
             cancellation: &*cancellation.flag,
             heap: process.heap.take(),
             effects_enabled: true,
+            inline,
         };
         self.active._cancellation = Some(cancellation.clone());
         let primed = self
@@ -520,6 +532,7 @@ impl PreparedFiber {
         max_steps: u64,
         slice_steps: u64,
         cancellation: &CancellationToken,
+        inline: Option<crate::scheduler::EffectSendTarget>,
     ) -> Result<
         (
             ScalarProcess,
@@ -540,6 +553,7 @@ impl PreparedFiber {
             cancellation: &*cancellation.flag,
             heap: process.heap.take(),
             effects_enabled: true,
+            inline,
         };
         let step = self
             .active
@@ -658,6 +672,8 @@ fn new_reusable_coroutine(stack: FiberStack, preemption: PreemptionToken) -> Reu
             let mut control = ReusableControl {
                 yielder,
                 preemption: &preemption,
+                inline: start.inline.as_ref(),
+                budget: start.max_steps,
             };
             let mut context = ScalarContext {
                 cancellation: start.cancellation,

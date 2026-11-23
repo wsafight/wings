@@ -36,8 +36,8 @@ mod fibers;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use abi::{copy_effect_payload, runtime_checkpoint, runtime_checkpoint_batch};
 use abi::{new_coroutine, resume_invocation, send_self_reusable, suspend_reusable};
-pub(crate) use abi::{runtime_checkpoint, runtime_checkpoint_batch};
 use fibers::{ActiveReusableFiber, FiberCommand, FiberEvent, ReusableControl};
 pub(crate) use fibers::{PreparedDirect, WorkerFibers};
 

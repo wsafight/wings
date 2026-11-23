@@ -31,6 +31,7 @@ struct Claim {
     mailbox: SharedMailbox,
     account: ResourceAccount,
     cancellation: CancellationToken,
+    inline: Option<EffectSendTarget>,
     fuse: bool,
     fused_direct: Option<PreparedDirect>,
 }
@@ -147,6 +148,12 @@ pub(super) fn worker(
                     mailbox: (*actor.mailbox).clone(),
                     account: actor.account.clone(),
                     cancellation: actor.cancellation.clone(),
+                    inline: Some(EffectSendTarget::new(
+                        &shared,
+                        &actor.mailbox,
+                        pid,
+                        actor.capability,
+                    )),
                     fuse,
                     fused_direct: None,
                 };
@@ -376,6 +383,7 @@ fn run_fast_claim(
     let mailbox = claim.mailbox;
     let account = claim.account;
     let cancellation = claim.cancellation;
+    let inline = claim.inline.take();
     let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
     for batch_step in 0..max_batch {
@@ -403,6 +411,7 @@ fn run_fast_claim(
                                 mailbox,
                                 account,
                                 cancellation,
+                                inline: None,
                                 fuse: false,
                                 fused_direct: None,
                             },
@@ -463,6 +472,7 @@ fn run_fast_claim(
                             mailbox,
                             account,
                             cancellation,
+                            inline: None,
                             fuse: false,
                             fused_direct: None,
                         },
@@ -504,6 +514,7 @@ fn run_fast_claim(
                 max_steps,
                 shared.config.slice_steps,
                 &cancellation,
+                inline.clone(),
             );
             let returned_at = started_at.map(|_| Instant::now());
             timer.disarm();
@@ -690,6 +701,7 @@ fn start(
                         claim.message.arguments.as_slice(),
                         claim.message.max_steps,
                         &claim.cancellation,
+                        claim.inline.take(),
                     ) {
                         Ok(task) => Ok(task),
                         Err((process, _)) => {

@@ -128,7 +128,7 @@ pub struct SchedulerHandle {
     shared: Arc<Shared>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     state: Mutex<State>,
     closed: AtomicBool,
     fast_slots: Box<[FastSlot]>,
@@ -145,7 +145,7 @@ struct Shared {
     _charge: Reservation,
 }
 
-struct State {
+pub(crate) struct State {
     closed: bool,
     ready_bits: u32,
     published_signals: u32,
@@ -452,7 +452,7 @@ impl Drop for FastSlotWriteGuard<'_> {
 }
 
 #[derive(Clone)]
-struct SharedMailbox {
+pub(crate) struct SharedMailbox {
     inner: Arc<SharedMailboxInner>,
 }
 
@@ -486,7 +486,7 @@ struct Mailbox {
     count: usize,
 }
 
-struct Envelope {
+pub(crate) struct Envelope {
     handler: usize,
     arguments: MessageArguments,
     max_steps: u64,
@@ -1382,6 +1382,181 @@ impl Shared {
     }
 }
 
+/// Lock-free effect context for a claimed actor: `EFFECT_SELF_PID`,
+/// `EFFECT_SEND_SELF`, and `EFFECT_SEND` resolve through the fast slot table
+/// and the target mailbox's atomics instead of suspending to the global
+/// `Mutex<State>` effect path. Every returned status is identical to what
+/// `Shared::effect` would produce; requests for other effects return `None`
+/// and suspend as before.
+#[derive(Clone)]
+pub(crate) struct EffectSendTarget {
+    shared: Arc<Shared>,
+    mailbox: SharedMailbox,
+    pid: SchedulerPid,
+    capability: i64,
+}
+
+impl EffectSendTarget {
+    pub(crate) fn new(
+        shared: &Arc<Shared>,
+        mailbox: &SharedMailbox,
+        pid: SchedulerPid,
+        capability: i64,
+    ) -> Self {
+        Self {
+            shared: shared.clone(),
+            mailbox: mailbox.clone(),
+            pid,
+            capability,
+        }
+    }
+
+    /// Returns `Some(status)` when the effect completed inline, or `None` to
+    /// fall back to the suspended scheduler path.
+    pub(crate) unsafe fn try_effect(
+        &self,
+        context: &mut wings_abi::ScalarContext,
+        request: &wings_abi::EffectRequest,
+        output: *mut i64,
+        budget: u64,
+    ) -> Option<u32> {
+        let reject = || {
+            if self.shared.closed.load(Ordering::Acquire) || self.mailbox.is_retired() {
+                wings_abi::STATUS_CANCELLED
+            } else {
+                wings_abi::STATUS_SEND_REJECTED
+            }
+        };
+        match request.operation {
+            wings_abi::EFFECT_SELF_PID => {
+                if request.count != 0
+                    || request.list_mask != 0
+                    || request.bytes_mask != 0
+                    || request.string_mask != 0
+                {
+                    // Mirrors the slow path: a `self_pid` carrying arguments is
+                    // not a send, so it reports the generic control status.
+                    return Some(wings_abi::STATUS_INVALID_CONTROL);
+                }
+                if self.mailbox.is_retired() || self.shared.closed.load(Ordering::Acquire) {
+                    return Some(wings_abi::STATUS_CANCELLED);
+                }
+                if self.mailbox.is_stopping() {
+                    return Some(wings_abi::STATUS_INVALID_CONTROL);
+                }
+                unsafe { output.write(self.capability) };
+                Some(wings_abi::STATUS_OK)
+            }
+            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND => {
+                if self.mailbox.is_retired()
+                    || self.mailbox.is_stopping()
+                    || self.shared.closed.load(Ordering::Acquire)
+                {
+                    return Some(reject());
+                }
+                let (target_pid, target) = if request.operation == wings_abi::EFFECT_SEND_SELF {
+                    (self.pid, self.mailbox.clone())
+                } else {
+                    let Some((slot, generation)) =
+                        wings_abi::decode_capability(self.shared.identity, request.target)
+                    else {
+                        return Some(reject());
+                    };
+                    let pid = SchedulerPid {
+                        scheduler: self.shared.identity,
+                        slot: slot as u32,
+                        generation,
+                    };
+                    let Some(mailbox) = self.shared.fast_slots.get(slot).and_then(|entry| {
+                        entry.get(generation, self.shared.fast_slot_contention())
+                    }) else {
+                        return Some(reject());
+                    };
+                    (pid, mailbox)
+                };
+                let (arguments, lists, mut bytes) =
+                    match unsafe { crate::execution::copy_effect_payload(context, request) } {
+                        Ok(payload) => payload,
+                        Err(status) => return Some(status),
+                    };
+                let handler = match target
+                    .inner
+                    .module
+                    .handler_by_index(request.handler as usize)
+                {
+                    Ok(handler) => handler,
+                    Err(_) => return Some(reject()),
+                };
+                let schema = handler.schema();
+                if handler.fast_meta().is_completion()
+                    || schema.reply.is_some()
+                    || crate::message_values::validate_message_payload(
+                        &schema.parameters,
+                        arguments.as_slice(),
+                        false,
+                        true,
+                        &lists,
+                        &bytes,
+                    )
+                    .is_err()
+                    || target.is_stopping()
+                    || target.is_retired()
+                    || !Arc::ptr_eq(&target.inner.module.inner, &self.mailbox.inner.module.inner)
+                    || target.occupancy_hint() >= target.capacity()
+                {
+                    return Some(reject());
+                }
+                if bytes.transfer_checked(&target.inner.account).is_err() {
+                    return Some(reject());
+                }
+                let charge = match target.inner.account.reserve_envelope(
+                    std::mem::size_of::<Envelope>() as u64
+                        + MessageArguments::overflow_bytes(arguments.as_slice().len())
+                        + lists.overflow_bytes(),
+                ) {
+                    Ok(charge) => charge,
+                    Err(_) => return Some(reject()),
+                };
+                let fast_eligible = envelope_fast_eligible(&handler, &lists, &bytes);
+                let message = Envelope {
+                    handler: handler.index,
+                    arguments,
+                    max_steps: budget,
+                    lists,
+                    bytes,
+                    reply: Reply::None,
+                    fast_eligible,
+                    _charge: charge,
+                };
+                match target.try_push_fast(&self.shared.closed, message) {
+                    Ok(needs_enqueue) => {
+                        if !needs_enqueue {
+                            let mut state = self.shared.lock();
+                            let wake = state.enqueue_fast_pushed(target_pid, &target);
+                            if !state.closed {
+                                self.shared.publish_signal(&mut state);
+                                drop(state);
+                                wake.fire(&self.shared.changed);
+                            }
+                        }
+                        unsafe { output.write(0) };
+                        Some(wings_abi::STATUS_OK)
+                    }
+                    Err(FastPushError::MailboxFull) => Some(reject()),
+                    Err(FastPushError::ClosedOrStopped) => {
+                        if self.shared.closed.load(Ordering::Acquire) {
+                            Some(wings_abi::STATUS_CANCELLED)
+                        } else {
+                            Some(reject())
+                        }
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 fn next_identity(counter: &AtomicU64) -> Result<u64, String> {
     let mut current = counter.load(Ordering::Relaxed);
     loop {
@@ -1550,6 +1725,10 @@ impl SharedMailbox {
 
     pub(super) fn is_retired(&self) -> bool {
         self.inner.retired.load(Ordering::Acquire)
+    }
+
+    pub(super) fn is_stopping(&self) -> bool {
+        self.inner.stopping.load(Ordering::Acquire)
     }
 
     pub(super) fn in_flight(&self) -> usize {

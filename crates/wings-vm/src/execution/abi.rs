@@ -434,18 +434,17 @@ pub(crate) fn runtime_checkpoint_batch(
     Ok(1)
 }
 
-unsafe fn prepare_effect_checkpoint(
-    context: *mut ScalarContext,
-    request: *const wings_abi::EffectRequest,
-    output: *mut i64,
-) -> Result<Checkpoint, u32> {
-    let Some(request) = (unsafe { request.as_ref() }) else {
-        return Err(wings_abi::STATUS_INVALID_CONTROL);
-    };
+/// Validates an effect request and copies its scalar arguments plus any
+/// exported list/byte payloads out of the managed heap. Shared by the
+/// suspend-to-scheduler path and the inline reusable-fiber fast path; both
+/// perform the same validations so either path returns identical statuses.
+pub(crate) unsafe fn copy_effect_payload(
+    context: &mut ScalarContext,
+    request: &wings_abi::EffectRequest,
+) -> Result<(MessageArguments, ListPayload, BytePayload), u32> {
     let count = request.count;
     let arguments = request.arguments;
-    if output.is_null()
-        || count > 64
+    if count > 64
         || (count != 0 && arguments.is_null())
         || ((request.list_mask | request.bytes_mask | request.string_mask) != 0
             && !matches!(
@@ -462,7 +461,6 @@ unsafe fn prepare_effect_checkpoint(
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    let context = unsafe { &mut *context };
     let mut copied = if count == 0 {
         MessageArguments::default()
     } else {
@@ -487,6 +485,22 @@ unsafe fn prepare_effect_checkpoint(
             request.string_mask,
         )
     }?;
+    Ok((copied, lists, bytes))
+}
+
+unsafe fn prepare_effect_checkpoint(
+    context: *mut ScalarContext,
+    request: *const wings_abi::EffectRequest,
+    output: *mut i64,
+) -> Result<Checkpoint, u32> {
+    let Some(request) = (unsafe { request.as_ref() }) else {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    };
+    if output.is_null() {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    }
+    let context = unsafe { &mut *context };
+    let (copied, lists, bytes) = unsafe { copy_effect_payload(context, request) }?;
     let boxed_effect = {
         let layout = std::alloc::Layout::new::<ProcessEffect>();
         let pointer = unsafe { std::alloc::alloc(layout) }.cast::<ProcessEffect>();
@@ -545,11 +559,25 @@ pub(super) unsafe extern "C" fn send_self_reusable(
     request: *const wings_abi::EffectRequest,
     output: *mut i64,
 ) -> u32 {
+    let context = unsafe { &mut *context };
+    if output.is_null() {
+        return wings_abi::STATUS_INVALID_CONTROL;
+    }
+    if let Some(request) = unsafe { request.as_ref() } {
+        let (inline, budget) = {
+            let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
+            (control.inline, control.budget)
+        };
+        if let Some(inline) = inline {
+            if let Some(status) = unsafe { inline.try_effect(context, request, output, budget) } {
+                return status;
+            }
+        }
+    }
     let checkpoint = match unsafe { prepare_effect_checkpoint(context, request, output) } {
         Ok(checkpoint) => checkpoint,
         Err(status) => return status,
     };
-    let context = unsafe { &mut *context };
     let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
     match control.yielder.suspend(FiberEvent::Suspended(checkpoint)) {
         FiberCommand::Effect(status, value, steps) => {

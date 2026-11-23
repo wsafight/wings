@@ -65,7 +65,7 @@ pub(super) struct WorkerLockObservation {
 }
 
 #[derive(Default)]
-pub(super) struct ContentionCounters {
+pub(crate) struct ContentionCounters {
     acquisitions: AtomicU64,
     failures: AtomicU64,
     yields: AtomicU64,
