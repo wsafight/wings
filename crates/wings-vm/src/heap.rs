@@ -135,6 +135,7 @@ pub struct RecordHeap {
     schemas: Box<[Schema]>,
     worklist: Box<[usize]>,
     buffers: Box<[Option<ByteBuffer>]>,
+    spare_buffer: Option<ByteBuffer>,
     buffer_bytes: u64,
     layout_count: usize,
     collections: u64,
@@ -238,6 +239,7 @@ impl RecordHeap {
             schemas,
             worklist,
             buffers: buffers.into_boxed_slice(),
+            spare_buffer: None,
             buffer_bytes: 0,
             layout_count: 0,
             collections: 0,
@@ -335,10 +337,18 @@ impl RecordHeap {
         };
         let index = *cursor + offset;
         if schema.count > INLINE_RECORD_FIELDS && self.slots[index].overflow_fields.is_none() {
-            let charge = self.account.reserve(Resources {
+            let overflow_req = Resources {
                 bytes: OVERFLOW_FIELD_BYTES,
                 ..Resources::default()
-            })?;
+            };
+            let charge = match self.account.reserve(overflow_req) {
+                Ok(charge) => charge,
+                Err(_) if self.spare_buffer.is_some() => {
+                    self.spare_buffer = None;
+                    self.account.reserve(overflow_req)?
+                }
+                Err(error) => return Err(error),
+            };
             let data = allocate_array(MAX_FIELDS - INLINE_RECORD_FIELDS, 0)?;
             self.slots[index].overflow_fields = Some(OverflowFields {
                 data,
@@ -386,13 +396,20 @@ impl RecordHeap {
     }
 
     pub fn stats(&self) -> HeapStats {
+        let spare_bytes = self
+            .spare_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer._charge.amount().bytes);
         HeapStats {
             capacity: self.slots.len(),
             allocated: self.allocated,
             retired: self.retired,
             layouts: self.layout_count,
             collections: self.collections,
-            charged_bytes: self.charge.amount().bytes + self.overflow_bytes + self.buffer_bytes,
+            charged_bytes: self.charge.amount().bytes
+                + self.overflow_bytes
+                + self.buffer_bytes
+                + spare_bytes,
         }
     }
 
@@ -442,6 +459,19 @@ impl RecordHeap {
     ) -> Option<CollectionStats> {
         match collection.phase {
             CollectionPhase::Clear => {
+                if collection.cursor == 0 {
+                    if let Some(mut spare) = self.spare_buffer.take() {
+                        if recycled.is_none()
+                            && recycle_len != 0
+                            && spare.data.capacity() == recycle_len
+                            && spare._charge.amount().bytes == recycle_len as u64
+                        {
+                            spare.data.clear();
+                            spare.heap = self.identity;
+                            *recycled = Some(spare);
+                        }
+                    }
+                }
                 let end = (collection.cursor + WORK_CHUNK).min(self.slots.len());
                 for slot in &mut self.slots[collection.cursor..end] {
                     slot.marked = false;
@@ -558,6 +588,57 @@ impl RecordHeap {
             self.slots[index].marked = true;
             self.worklist[*pending] = index;
             *pending += 1;
+        }
+    }
+
+    pub(crate) fn drop_spare_buffer(&mut self) {
+        self.spare_buffer = None;
+    }
+
+    pub(crate) fn take_spare_bytes(&mut self, length: usize) -> Option<ByteBuffer> {
+        let mut buf = self.spare_buffer.take()?;
+        if length != 0
+            && buf.data.capacity() == length
+            && buf._charge.amount().bytes == length as u64
+        {
+            buf.data.clear();
+            buf.heap = self.identity;
+            Some(buf)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn try_recycle_sole_leaf(&mut self, old_ref: HeapRef, new_ref: HeapRef) {
+        if self.allocated != 2 || old_ref == new_ref {
+            return;
+        }
+        let old_idx = old_ref.slot as usize;
+        let new_idx = new_ref.slot as usize;
+        let valid = self.slots.get(old_idx).is_some_and(|s| {
+            s.occupied
+                && s.generation == old_ref.generation
+                && matches!(s.layout, BYTES_LAYOUT | STRING_LAYOUT)
+        }) && self
+            .slots
+            .get(new_idx)
+            .is_some_and(|s| s.occupied && s.generation == new_ref.generation);
+        if !valid {
+            return;
+        }
+        if let Some(mut buffer) = self.buffers[old_idx].take() {
+            self.buffer_bytes -= buffer._charge.amount().bytes;
+            buffer.data.clear();
+            buffer.heap = self.identity;
+            self.spare_buffer = Some(buffer);
+        }
+        let slot = &mut self.slots[old_idx];
+        slot.occupied = false;
+        slot.marked = false;
+        slot.generation = slot.generation.checked_add(1).unwrap_or(0);
+        self.allocated -= 1;
+        if slot.generation == 0 {
+            self.retired += 1;
         }
     }
 
@@ -680,6 +761,11 @@ impl RecordHeap {
 }
 
 impl ShadowRoots {
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
     pub(crate) fn replace(&mut self, values: &[Option<HeapRef>]) {
         self.slots[..values.len()].copy_from_slice(values);
         self.slots[values.len()..self.count.max(values.len())].fill(None);

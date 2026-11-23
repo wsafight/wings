@@ -111,7 +111,7 @@ enum DirectFiberLease {
 
 pub(crate) struct PreparedDirect {
     stack_lease: Option<DirectFiberLease>,
-    _control_charge: Reservation,
+    _control_charge: Option<Reservation>,
     native_stack_limit: usize,
 }
 
@@ -181,12 +181,10 @@ impl WorkerFibers {
         if process_account.level() != ResourceLevel::Process {
             return Err("accounted stack pool must be bound to a process".into());
         }
-        let control_charge = process_account.reserve(Resources {
-            bytes: INVOCATION_OVERHEAD,
-            ..Resources::default()
-        })?;
         for slot in &mut self.slots[..self.limit] {
-            if let Some(mut parked) = slot.take() {
+            if slot.is_some() {
+                let control_charge = process_account.reserve_bytes(INVOCATION_OVERHEAD)?;
+                let mut parked = slot.take().expect("checked parked fiber");
                 let charge_ref = parked
                     .stack_charge
                     .as_mut()
@@ -195,7 +193,7 @@ impl WorkerFibers {
                     Ok(()) => {
                         return Ok(PreparedDirect {
                             stack_lease: Some(DirectFiberLease::Parked(parked)),
-                            _control_charge: control_charge,
+                            _control_charge: Some(control_charge),
                             native_stack_limit: self.native_stack_limit,
                         });
                     }
@@ -206,13 +204,15 @@ impl WorkerFibers {
                 }
             }
         }
-        let lease = self.pool.acquire_direct_stack_charge(process_account)?;
+        let lease = self
+            .pool
+            .acquire_direct_with_overhead(process_account, INVOCATION_OVERHEAD)?;
         Ok(PreparedDirect {
             stack_lease: Some(DirectFiberLease::Demand {
                 pool: self.pool.clone(),
                 lease,
             }),
-            _control_charge: control_charge,
+            _control_charge: None,
             native_stack_limit: self.native_stack_limit,
         })
     }

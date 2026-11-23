@@ -82,11 +82,23 @@ pub struct ResourceAccount {
     node: Arc<AccountNode>,
 }
 
+#[repr(align(64))]
+struct AlignedCounter(AtomicU64);
+
+impl std::ops::Deref for AlignedCounter {
+    type Target = AtomicU64;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 struct AccountNode {
     level: ResourceLevel,
     accounted_root: bool,
     limit: Resources,
-    used: [AtomicU64; 4],
+    used: [AlignedCounter; 4],
     gate: Arc<Mutex<()>>,
     parent: Option<Reservation>,
 }
@@ -265,6 +277,19 @@ impl ResourceAccount {
             .is_some_and(|owner| owner.account.same(parent))
     }
 
+    #[inline]
+    pub(crate) fn reserve_bytes(&self, bytes: u64) -> Result<Reservation, String> {
+        self.reserve_dim_status(0, bytes)
+            .map(|()| Reservation {
+                account: self.clone(),
+                amount: Resources {
+                    bytes,
+                    ..Resources::default()
+                },
+            })
+            .map_err(|level| String::from(crate::VmError::ResourceExhausted(level)))
+    }
+
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
         self.reserve_checked(amount).map_err(String::from)
     }
@@ -348,10 +373,10 @@ impl ResourceAccount {
                 limit,
                 parent,
                 used: [
-                    AtomicU64::new(bootstrap),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
+                    AlignedCounter(AtomicU64::new(bootstrap)),
+                    AlignedCounter(AtomicU64::new(0)),
+                    AlignedCounter(AtomicU64::new(0)),
+                    AlignedCounter(AtomicU64::new(0)),
                 ],
                 gate,
             }),

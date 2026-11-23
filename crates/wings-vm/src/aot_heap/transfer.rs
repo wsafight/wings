@@ -10,7 +10,14 @@ pub(crate) unsafe fn export_record_reply(
     let heap = unsafe { pointer.as_ref() }.ok_or(STATUS_INVALID_ROOT)?;
     heap.typed_reference(wings_abi::ValueType::RecordRef(root), encoded)?;
     let account = heap.account.clone();
-    let lease = RecordReply::reserve(&account, root, records, Some(context))?;
+    let lease = match RecordReply::reserve(&account, root, records, Some(context)) {
+        Ok(lease) => lease,
+        Err(STATUS_HEAP_EXHAUSTED) => {
+            unsafe { &mut *pointer }.heap.drop_spare_buffer();
+            RecordReply::reserve(&account, root, records, Some(context))?
+        }
+        Err(err) => return Err(err),
+    };
     let expansion =
         wings_abi::expand_record_schema(records, root).map_err(|_| STATUS_REPLY_REJECTED)?;
     let mut arguments = [0; 64];
@@ -79,8 +86,14 @@ pub(crate) unsafe fn export_record_reply(
     let mut bytes = if bytes_mask == 0 {
         BytePayload::default()
     } else {
-        let mut payload = BytePayload::new(&account, bytes_mask, byte_count)
-            .map_err(|_| STATUS_HEAP_EXHAUSTED)?;
+        let mut payload = match BytePayload::new(&account, bytes_mask, byte_count) {
+            Ok(payload) => payload,
+            Err(_) => {
+                unsafe { &mut *pointer }.heap.drop_spare_buffer();
+                BytePayload::new(&account, bytes_mask, byte_count)
+                    .map_err(|_| STATUS_HEAP_EXHAUSTED)?
+            }
+        };
         payload.string_mask = string_mask;
         payload
     };
@@ -263,8 +276,13 @@ pub(crate) unsafe fn export_buffers(
         }
     }
     let account = unsafe { &*pointer }.account.clone();
-    let mut payload =
-        BytePayload::new(&account, mask, length).map_err(|_| STATUS_HEAP_EXHAUSTED)?;
+    let mut payload = match BytePayload::new(&account, mask, length) {
+        Ok(payload) => payload,
+        Err(_) => {
+            unsafe { &mut *pointer }.heap.drop_spare_buffer();
+            BytePayload::new(&account, mask, length).map_err(|_| STATUS_HEAP_EXHAUSTED)?
+        }
+    };
     payload.string_mask = string_mask;
     for (index, argument) in arguments.iter_mut().enumerate() {
         if mask & (1u64 << index) == 0 {

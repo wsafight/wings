@@ -12,7 +12,10 @@ pub(crate) struct CachedStack {
 }
 
 pub(crate) enum DirectStackLease {
-    Cached(CachedStack),
+    Cached {
+        cached: CachedStack,
+        _control: Reservation,
+    },
     Cold(Reservation),
 }
 
@@ -211,9 +214,10 @@ impl StackPool {
         state.active -= 1;
     }
 
-    pub(crate) fn acquire_direct_stack_charge(
+    pub(crate) fn acquire_direct_with_overhead(
         &self,
         process: &ResourceAccount,
+        overhead: u64,
     ) -> Result<DirectStackLease, String> {
         let mut state = self
             .inner
@@ -222,18 +226,20 @@ impl StackPool {
             .expect("demand pool")
             .borrow_mut();
         if state.active == self.inner.capacity {
+            let _check = process.reserve_bytes(overhead)?;
             return Err("execution stack pool exhausted".into());
         }
         if let Some(cached) = state.cached.last_mut() {
+            let control = process.reserve_bytes(overhead)?;
             cached.charge.transfer(process)?;
             let cached = state.cached.pop().expect("cached stack");
             state.active += 1;
-            Ok(DirectStackLease::Cached(cached))
+            Ok(DirectStackLease::Cached {
+                cached,
+                _control: control,
+            })
         } else {
-            let charge = process.reserve(Resources {
-                bytes: self.inner.slot_bytes as u64,
-                ..Resources::default()
-            })?;
+            let charge = process.reserve_bytes(overhead + self.inner.slot_bytes as u64)?;
             state.active += 1;
             Ok(DirectStackLease::Cold(charge))
         }
@@ -248,7 +254,11 @@ impl StackPool {
             .borrow_mut();
         state.active -= 1;
         match lease {
-            DirectStackLease::Cached(mut cached) => {
+            DirectStackLease::Cached {
+                mut cached,
+                _control,
+            } => {
+                drop(_control);
                 if state.cached.len() + state.parked < self.inner.max_cached {
                     let tenant = &self
                         .inner

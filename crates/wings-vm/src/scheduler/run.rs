@@ -938,7 +938,10 @@ fn finish_process(
     } else {
         None
     };
-    drop(_charge);
+    let mut deferred_charge = Some(_charge);
+    if failed {
+        drop(deferred_charge.take());
+    }
     actor.owner = None;
     actor.image = Some(image);
     actor.execution = snapshot;
@@ -988,6 +991,7 @@ fn finish_process(
         .combine(state.maintain(shared.identity));
     shared.publish_signal(&state);
     drop(state);
+    drop(deferred_charge);
     if let Some((publisher, outcome)) = external_reply {
         complete_external(publisher, outcome);
     }

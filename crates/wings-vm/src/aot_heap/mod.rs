@@ -178,12 +178,22 @@ impl AotHeap {
         } else if ty == wings_abi::ValueType::StringRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.string_bytes(reference)?;
-            self.committed = Some(reference);
+            let previous = self.committed.replace(reference);
+            if let Some(old_ref) = previous {
+                if old_ref != reference && self.incoming_mask == 0 && self.roots.is_empty() {
+                    self.heap.try_recycle_sole_leaf(old_ref, reference);
+                }
+            }
             Ok(())
         } else if ty == wings_abi::ValueType::BytesRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.bytes(reference)?;
-            self.committed = Some(reference);
+            let previous = self.committed.replace(reference);
+            if let Some(old_ref) = previous {
+                if old_ref != reference && self.incoming_mask == 0 && self.roots.is_empty() {
+                    self.heap.try_recycle_sole_leaf(old_ref, reference);
+                }
+            }
             Ok(())
         } else if ty == wings_abi::ValueType::ListRef {
             self.commit_list(encoded)
