@@ -126,7 +126,7 @@ pub(crate) struct PreparedDirect {
 
 pub(crate) struct PreparedFiber {
     active: ActiveReusableFiber,
-    control_charge: Reservation,
+    control_charge: Option<Reservation>,
 }
 
 impl WorkerFibers {
@@ -192,7 +192,9 @@ impl WorkerFibers {
         }
         for slot in &mut self.slots[..self.limit] {
             if slot.is_some() {
-                let control_charge = process_account.reserve_bytes(INVOCATION_OVERHEAD)?;
+                // Parked fiber stack charges already carry INVOCATION_OVERHEAD
+                // folded in by `recycle`, so reactivation moves the invocation
+                // quota inside the single charge transfer.
                 let mut parked = slot.take().expect("checked parked fiber");
                 let charge_ref = parked
                     .stack_charge
@@ -202,7 +204,7 @@ impl WorkerFibers {
                     Ok(()) => {
                         return Ok(PreparedDirect {
                             stack_lease: Some(DirectFiberLease::Parked(parked)),
-                            _control_charge: Some(control_charge),
+                            _control_charge: None,
                             native_stack_limit: self.native_stack_limit,
                         });
                     }
@@ -257,10 +259,6 @@ impl WorkerFibers {
         if process_account.level() != ResourceLevel::Process {
             return Err("accounted stack pool must be bound to a process".into());
         }
-        let control_charge = process_account.reserve(Resources {
-            bytes: INVOCATION_OVERHEAD,
-            ..Resources::default()
-        })?;
         for slot in &mut self.slots[..self.limit] {
             if let Some(mut parked) = slot.take() {
                 let charge_ref = parked
@@ -279,7 +277,7 @@ impl WorkerFibers {
                                 pool: self.pool.clone(),
                                 _cancellation: None,
                             },
-                            control_charge,
+                            control_charge: None,
                         });
                     }
                     Err(error) => {
@@ -289,6 +287,13 @@ impl WorkerFibers {
                 }
             }
         }
+        // A cold fiber has no parked charge to reuse, so the invocation
+        // overhead is a standalone reservation; on completion it merges into
+        // `stack_charge` (see `recycle`) and amortizes away for warm fibers.
+        let control_charge = Some(process_account.reserve(Resources {
+            bytes: INVOCATION_OVERHEAD,
+            ..Resources::default()
+        })?);
         let (stack, stack_charge) = self.pool.allocate_fiber_stack(process_account)?;
         let coroutine = new_reusable_coroutine(stack, self.preemption.clone());
         Ok(PreparedFiber {
@@ -383,10 +388,16 @@ impl PreparedDirect {
             match lease {
                 DirectFiberLease::Parked(mut parked) => {
                     let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
-                    let stack_charge = parked
+                    let mut stack_charge = parked
                         .stack_charge
                         .take()
                         .expect("activated parked stack charge");
+                    if let Some(control) = self._control_charge.take() {
+                        // Fold the invocation overhead into the stack charge so
+                        // the parked fiber carries it and the next direct
+                        // activation skips its own reservation.
+                        stack_charge.merge(control);
+                    }
                     let pool = parked.pool.clone();
                     fibers.recycle(coroutine, stack_charge, pool);
                 }
@@ -512,7 +523,7 @@ impl PreparedFiber {
             effect: None,
             acknowledgement: None,
             preemption: fibers.preemption.clone(),
-            _charge: Some(self.control_charge),
+            _charge: self.control_charge,
         };
         Ok(ScalarTask {
             invocation: Some(invocation),
@@ -569,14 +580,16 @@ impl PreparedFiber {
                 checkpoint,
             }) => {
                 let coroutine = self.active.coroutine.take().expect("completed coroutine");
-                let stack_charge = self
+                let mut stack_charge = self
                     .active
                     .stack_charge
                     .take()
                     .expect("completed stack charge");
+                if let Some(control) = self.control_charge.take() {
+                    stack_charge.merge(control);
+                }
                 let pool = self.active.pool.clone();
                 fibers.recycle(coroutine, stack_charge, pool);
-                drop(self.control_charge);
                 process.heap = heap;
                 let result = process.finish_invocation(handler, status, output, None, None, None);
                 let snapshot = ExecutionSnapshot {
@@ -618,7 +631,7 @@ impl PreparedFiber {
                     effect: checkpoint.effect,
                     acknowledgement: None,
                     preemption: fibers.preemption.clone(),
-                    _charge: Some(self.control_charge),
+                    _charge: self.control_charge,
                 };
                 Err(Box::new(ScalarTask {
                     invocation: Some(invocation),

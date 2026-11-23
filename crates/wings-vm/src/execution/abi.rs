@@ -289,10 +289,15 @@ pub(super) fn resume_invocation(
                     checkpoint,
                 }) => {
                     let coroutine = reusable.coroutine.take().expect("completed coroutine");
-                    let stack_charge = reusable
+                    let mut stack_charge = reusable
                         .stack_charge
                         .take()
                         .expect("completed stack charge");
+                    if let Some(control) = active._charge.take() {
+                        // Fold the invocation overhead into the stack charge so
+                        // a parked fiber carries it to its next activation.
+                        stack_charge.merge(control);
+                    }
                     let pool = reusable.pool.clone();
                     if let Some(fibers) = fibers {
                         fibers.recycle(coroutine, stack_charge, pool);
