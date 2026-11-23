@@ -571,7 +571,7 @@ impl EnvelopeCharge {
         }
     }
 
-    pub(crate) fn into_reservation(self) -> Reservation {
+    pub(crate) fn into_reservation(mut self) -> Reservation {
         let reservation = Reservation {
             account: self.account.clone(),
             amount: Resources {
@@ -580,7 +580,10 @@ impl EnvelopeCharge {
                 ..Resources::default()
             },
         };
-        std::mem::forget(self);
+        // Zero the moved amounts so the Drop below is a no-op refund while
+        // still releasing the account reference itself.
+        self.bytes = 0;
+        self.messages = 0;
         reservation
     }
 }

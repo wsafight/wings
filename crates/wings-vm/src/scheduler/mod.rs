@@ -461,7 +461,6 @@ struct SharedMailboxInner {
     account: ResourceAccount,
     capacity: usize,
     count_atomic: AtomicUsize,
-    occupancy_atomic: AtomicUsize,
     // Packed lock-free hint for the head envelope:
     // bit 63 = fast_eligible, bits 31..62 = min(max_steps, u32::MAX),
     // bits 0..30 = handler index (only meaningful while bit 63 is set).
@@ -1630,10 +1629,6 @@ impl Drop for MailboxGuard<'_> {
         if self.0.count_atomic.load(Ordering::Relaxed) != state.count {
             self.0.count_atomic.store(state.count, Ordering::Release);
         }
-        let occupancy = state.count + self.0.in_flight.load(Ordering::Relaxed);
-        if self.0.occupancy_atomic.load(Ordering::Relaxed) != occupancy {
-            self.0.occupancy_atomic.store(occupancy, Ordering::Relaxed);
-        }
         self.0.locked.store(false, Ordering::Release);
     }
 }
@@ -1654,7 +1649,6 @@ impl SharedMailbox {
                 account,
                 capacity,
                 count_atomic: AtomicUsize::new(0),
-                occupancy_atomic: AtomicUsize::new(0),
                 front_hint: AtomicU64::new(0),
                 in_flight: AtomicUsize::new(0),
                 stopping: AtomicBool::new(false),
@@ -1730,7 +1724,7 @@ impl SharedMailbox {
     }
 
     pub(super) fn occupancy_hint(&self) -> usize {
-        self.inner.occupancy_atomic.load(Ordering::Acquire)
+        self.count() + self.inner.in_flight.load(Ordering::Acquire)
     }
 
     pub(super) fn is_retired(&self) -> bool {
@@ -1749,9 +1743,9 @@ impl SharedMailbox {
     /// that already released at prepare time can call this unconditionally.
     pub(super) fn release_in_flight(&self) {
         let mut current = self.inner.in_flight.load(Ordering::Relaxed);
-        let previous = loop {
+        loop {
             if current == 0 {
-                break 0;
+                break;
             }
             match self.inner.in_flight.compare_exchange_weak(
                 current,
@@ -1759,18 +1753,9 @@ impl SharedMailbox {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => break current,
+                Ok(_) => break,
                 Err(actual) => current = actual,
             }
-        };
-        // Keep the sender-side occupancy hint fresh without taking the lock;
-        // a racing push publishes its own value on the next guard drop.
-        let occupancy =
-            self.inner.count_atomic.load(Ordering::Relaxed) + previous.saturating_sub(1);
-        if self.inner.occupancy_atomic.load(Ordering::Relaxed) != occupancy {
-            self.inner
-                .occupancy_atomic
-                .store(occupancy, Ordering::Relaxed);
         }
     }
 

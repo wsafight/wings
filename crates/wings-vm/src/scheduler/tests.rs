@@ -1648,3 +1648,71 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     drop((source, handle, scheduler, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
+
+#[test]
+fn batched_fast_messages_refund_merged_envelope_charges() {
+    for workers in [1, 2] {
+        for round in 0..32 {
+            let limits = Resources {
+                bytes: 32 << 20,
+                processes: 4,
+                messages: 1024,
+                requests: 8,
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant_accounted(limits).unwrap();
+            let scheduler = Scheduler::new(
+                &tenant,
+                SchedulerConfig {
+                    workers,
+                    capacity: 2,
+                    requests: 2,
+                    ..SchedulerConfig::default()
+                },
+            )
+            .unwrap();
+            let handle = scheduler.handle();
+            let module = crate::tests::module();
+            let pid = handle.spawn(&module, limits, 256).unwrap();
+            let account = handle
+                .shared
+                .lock()
+                .actor(handle.shared.identity, pid)
+                .unwrap()
+                .account
+                .clone();
+            let baseline = account.used();
+            let add = module.handler("Add").unwrap();
+            let bump = module.handler("Bump").unwrap();
+            for value in 0..256i64 {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while handle.send(pid, &add, &[value], 4096).is_err() {
+                    assert!(Instant::now() < deadline, "send never drained");
+                    std::thread::yield_now();
+                }
+            }
+            let mut request = {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match handle.request(pid, &bump, &[0], 32, Duration::from_secs(5)) {
+                        Ok(request) => break request,
+                        Err(_) => {
+                            assert!(Instant::now() < deadline, "request never admitted");
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+            };
+            assert_eq!(
+                request.wait(Duration::from_secs(5)).unwrap(),
+                Some(RequestOutcome::Reply(32640))
+            );
+            assert_eq!(account.used(), baseline);
+            drop(request);
+            drop((handle, scheduler));
+            assert_eq!(vm.used().messages, 0);
+            drop((account, module, tenant));
+            assert_eq!(vm.used(), Resources::default(), "round {round}");
+        }
+    }
+}

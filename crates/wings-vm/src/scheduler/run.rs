@@ -386,6 +386,10 @@ fn run_fast_claim(
     let inline = claim.inline.take();
     let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
+    // Envelope charges of messages that complete inside this batch are merged
+    // into one reservation instead of refunding per message; the merged charge
+    // releases once the batch ends (or is handed to a suspended task).
+    let mut batch_charge: Option<Reservation> = None;
     for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
         let run_direct = if batch_step == 0 && cached_direct.is_some() {
@@ -565,7 +569,10 @@ fn run_fast_claim(
                             Ok(Some(value)) => value,
                             _ => RequestOutcome::Failed,
                         };
-                        drop(_charge);
+                        match &mut batch_charge {
+                            Some(merged) => merged.merge(_charge.into_reservation()),
+                            slot => *slot = Some(_charge.into_reservation()),
+                        }
                         if let Reply::External(publisher) =
                             std::mem::replace(&mut reply, Reply::None)
                         {
@@ -608,7 +615,10 @@ fn run_fast_claim(
                             }
                             let wake = state.maintain(shared.identity);
                             shared.publish_signal(&mut state);
-                            drop(_charge);
+                            match &mut batch_charge {
+                                Some(merged) => merged.merge(_charge.into_reservation()),
+                                slot => *slot = Some(_charge.into_reservation()),
+                            }
                             drop(state);
                             if let Some((publisher, outcome)) = external_reply {
                                 complete_external(publisher, outcome);
