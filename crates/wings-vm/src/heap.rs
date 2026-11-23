@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::{Reservation, ResourceAccount, ResourceLevel, Resources};
 
 const MAX_FIELDS: usize = 8;
+const INLINE_RECORD_FIELDS: usize = 2;
 const MAX_RECORDS: usize = 1024;
 const MAX_LAYOUTS: usize = 128;
 const MAX_ROOTS: usize = 64;
@@ -54,13 +55,55 @@ struct Schema {
     count: usize,
 }
 
-#[derive(Clone, Copy)]
+struct OverflowFields {
+    data: Box<[u64]>,
+    _charge: Reservation,
+}
+
+const OVERFLOW_FIELD_BYTES: u64 =
+    ((MAX_FIELDS - INLINE_RECORD_FIELDS) * std::mem::size_of::<u64>()) as u64;
+
 struct Slot {
-    fields: [u64; MAX_FIELDS],
+    inline_fields: [u64; INLINE_RECORD_FIELDS],
+    overflow_fields: Option<OverflowFields>,
     generation: u32,
     layout: u16,
     occupied: bool,
     marked: bool,
+}
+
+impl Slot {
+    fn empty() -> Self {
+        Self {
+            inline_fields: [0; INLINE_RECORD_FIELDS],
+            overflow_fields: None,
+            generation: 1,
+            layout: 0,
+            occupied: false,
+            marked: false,
+        }
+    }
+
+    fn field(&self, index: usize) -> u64 {
+        if index < INLINE_RECORD_FIELDS {
+            self.inline_fields[index]
+        } else {
+            self.overflow_fields
+                .as_ref()
+                .expect("wide record fields")
+                .data[index - INLINE_RECORD_FIELDS]
+        }
+    }
+
+    fn set_fields(&mut self, fields: &[u64; MAX_FIELDS]) {
+        self.inline_fields
+            .copy_from_slice(&fields[..INLINE_RECORD_FIELDS]);
+        if let Some(overflow) = self.overflow_fields.as_mut() {
+            overflow
+                .data
+                .copy_from_slice(&fields[INLINE_RECORD_FIELDS..]);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +142,7 @@ pub struct RecordHeap {
     retired: usize,
     account: ResourceAccount,
     charge: Reservation,
+    overflow_bytes: u64,
 }
 
 pub(crate) struct ByteBuffer {
@@ -164,16 +208,14 @@ impl RecordHeap {
             ..Resources::default()
         })?;
         let identity = next_identity()?;
-        let slots = allocate_array(
-            capacity,
-            Slot {
-                fields: [0; MAX_FIELDS],
-                generation: 1,
-                layout: 0,
-                occupied: false,
-                marked: false,
-            },
-        )?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(capacity)
+            .map_err(|error| error.to_string())?;
+        if slots.capacity() != capacity {
+            return Err("allocator changed record slot capacity".into());
+        }
+        slots.resize_with(capacity, Slot::empty);
         let schemas = allocate_array(
             layout_capacity,
             Schema {
@@ -192,7 +234,7 @@ impl RecordHeap {
         buffers.resize_with(capacity, || None);
         Ok(Self {
             identity,
-            slots,
+            slots: slots.into_boxed_slice(),
             schemas,
             worklist,
             buffers: buffers.into_boxed_slice(),
@@ -203,6 +245,7 @@ impl RecordHeap {
             retired: 0,
             account: account.clone(),
             charge,
+            overflow_bytes: 0,
         })
     }
 
@@ -261,7 +304,7 @@ impl RecordHeap {
         values: &[RecordValue],
         cursor: &mut usize,
     ) -> Result<Option<HeapRef>, String> {
-        let schema = self.schema(layout)?;
+        let schema = *self.schema(layout)?;
         if values.len() != schema.count {
             return Err("record field count mismatch".into());
         }
@@ -291,8 +334,20 @@ impl RecordHeap {
             };
         };
         let index = *cursor + offset;
+        if schema.count > INLINE_RECORD_FIELDS && self.slots[index].overflow_fields.is_none() {
+            let charge = self.account.reserve(Resources {
+                bytes: OVERFLOW_FIELD_BYTES,
+                ..Resources::default()
+            })?;
+            let data = allocate_array(MAX_FIELDS - INLINE_RECORD_FIELDS, 0)?;
+            self.slots[index].overflow_fields = Some(OverflowFields {
+                data,
+                _charge: charge,
+            });
+            self.overflow_bytes += OVERFLOW_FIELD_BYTES;
+        }
         let slot = &mut self.slots[index];
-        slot.fields = fields;
+        slot.set_fields(&fields);
         slot.layout = layout.index;
         slot.occupied = true;
         self.allocated += 1;
@@ -312,7 +367,7 @@ impl RecordHeap {
         if field >= schema.count {
             return Err("record field index out of bounds".into());
         }
-        let value = slot.fields[field];
+        let value = slot.field(field);
         Ok(match schema.fields[field] {
             FieldType::Int => RecordValue::Int(value as i64),
             FieldType::Bool => RecordValue::Bool(value != 0),
@@ -337,7 +392,7 @@ impl RecordHeap {
             retired: self.retired,
             layouts: self.layout_count,
             collections: self.collections,
-            charged_bytes: self.charge.amount().bytes + self.buffer_bytes,
+            charged_bytes: self.charge.amount().bytes + self.overflow_bytes + self.buffer_bytes,
         }
     }
 
@@ -414,12 +469,16 @@ impl RecordHeap {
                         break;
                     }
                     collection.pending -= 1;
-                    let slot = self.slots[self.worklist[collection.pending]];
+                    let slot = &self.slots[self.worklist[collection.pending]];
                     if matches!(slot.layout, BYTES_LAYOUT | STRING_LAYOUT) {
                         continue;
                     }
                     let schema = self.schemas[usize::from(slot.layout)];
-                    for (ty, value) in schema.fields[..schema.count].iter().zip(slot.fields) {
+                    let mut fields = [0; MAX_FIELDS];
+                    for (index, field) in fields.iter_mut().enumerate().take(schema.count) {
+                        *field = slot.field(index);
+                    }
+                    for (ty, value) in schema.fields[..schema.count].iter().zip(fields) {
                         if *ty == FieldType::Ref {
                             let reference = self.decode_reference(value);
                             self.mark(reference.slot as usize, &mut collection.pending);
@@ -460,6 +519,15 @@ impl RecordHeap {
                                     Some(combined) => combined.merge(charge),
                                     None => reclaimed_charge = Some(charge),
                                 }
+                            }
+                        }
+                        if let Some(overflow) = slot.overflow_fields.take() {
+                            self.overflow_bytes -= OVERFLOW_FIELD_BYTES;
+                            let OverflowFields { data, _charge } = overflow;
+                            drop(data);
+                            match &mut reclaimed_charge {
+                                Some(combined) => combined.merge(_charge),
+                                None => reclaimed_charge = Some(_charge),
                             }
                         }
                         slot.occupied = false;

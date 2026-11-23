@@ -5,7 +5,7 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
 
 use crate::aot_heap::AotHeap;
-use crate::message_values::{BytePayload, ListPayload};
+use crate::message_values::{BytePayload, ListPayload, MessageArguments};
 use crate::reply::BufferReply;
 use crate::stack_pool::{FiberStack, PooledStack};
 use crate::{
@@ -62,8 +62,7 @@ pub(crate) struct ProcessEffect {
     pub operation: u32,
     pub target: i64,
     pub handler: usize,
-    pub arguments: [i64; 64],
-    pub count: usize,
+    pub arguments: MessageArguments,
     pub callback: usize,
     pub timeout_ms: i64,
     pub lists: ListPayload,
@@ -631,7 +630,7 @@ impl Invocation {
             stack,
             &mut process.heap,
             effects_enabled,
-            *lists,
+            lists.clone(),
             bytes,
             Some(process.module.clone()),
             [

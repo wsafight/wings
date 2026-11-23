@@ -173,7 +173,7 @@ impl RecordReply {
             let payload = &reply.inner.payload;
             result.arguments[offset..result.count]
                 .copy_from_slice(&payload.arguments[..payload.count]);
-            result.lists = payload.lists;
+            result.lists = payload.lists.clone();
             result.lists.mask <<= offset;
             result.bytes = BytePayload::record_completion(
                 reply.clone(),

@@ -7,7 +7,7 @@ use wings_abi::{
     ShadowFrame,
 };
 
-use crate::message_values::{BytePayload, ListPayload, MAX_LIST_ELEMENTS, MAX_MESSAGE_BYTES};
+use crate::message_values::{BytePayload, ListPayload, MAX_MESSAGE_BYTES};
 use crate::{
     FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordReply, RecordValue, Reservation,
     ResourceAccount, Resources, ShadowRoots,

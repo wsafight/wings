@@ -437,7 +437,6 @@ fn run_fast_claim(
             let Envelope {
                 handler,
                 arguments,
-                count,
                 max_steps,
                 reply,
                 _charge,
@@ -449,7 +448,7 @@ fn run_fast_claim(
                 fibers,
                 process,
                 handler.index,
-                &arguments[..count],
+                arguments.as_slice(),
                 max_steps,
                 shared.config.slice_steps,
                 &cancellation,
@@ -499,7 +498,6 @@ fn run_fast_claim(
             let Envelope {
                 handler,
                 arguments,
-                count,
                 max_steps,
                 reply,
                 _charge,
@@ -531,7 +529,7 @@ fn run_fast_claim(
                 fibers,
                 process,
                 handler.index,
-                &arguments[..count],
+                arguments.as_slice(),
                 max_steps,
                 shared.config.slice_steps,
                 &cancellation,
@@ -729,7 +727,7 @@ fn start(
                         fibers,
                         process,
                         claim.message.handler.index,
-                        &claim.message.arguments[..claim.message.count],
+                        claim.message.arguments.as_slice(),
                         claim.message.max_steps,
                         &claim.cancellation,
                     ) {
@@ -781,7 +779,7 @@ fn start(
         task.enable_effects();
         match task.start_scheduled(
             &claim.message.handler,
-            &claim.message.arguments[..claim.message.count],
+            claim.message.arguments.as_slice(),
             claim.message.max_steps,
             || (claim.cancellation.clone(), preemption.clone()),
             &bound,

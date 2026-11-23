@@ -89,7 +89,7 @@ pub(super) fn new_coroutine(
                         .as_ref()
                         .ok_or(wings_abi::STATUS_INVALID_ROOT)
                         .and_then(|heap| {
-                            IntListReply::copy(&heap.account, &payload.values[..payload.count])
+                            IntListReply::copy(&heap.account, payload.values.as_slice())
                                 .map_err(|_| wings_abi::STATUS_HEAP_EXHAUSTED)
                         });
                     match copied {
@@ -463,10 +463,12 @@ unsafe fn prepare_effect_checkpoint(
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
     let context = unsafe { &mut *context };
-    let mut copied = [0; 64];
-    if count != 0 {
-        copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
-    }
+    let mut copied = if count == 0 {
+        MessageArguments::default()
+    } else {
+        MessageArguments::try_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) })
+            .map_err(|_| wings_abi::STATUS_HEAP_EXHAUSTED)?
+    };
     let buffer_mask = request.bytes_mask | request.string_mask;
     if request.bytes_mask & request.string_mask != 0
         || request.list_mask & buffer_mask != 0
@@ -474,12 +476,13 @@ unsafe fn prepare_effect_checkpoint(
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    let lists =
-        unsafe { crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask) }?;
+    let lists = unsafe {
+        crate::aot_heap::export_lists(context, copied.as_mut_slice(), request.list_mask)
+    }?;
     let bytes = unsafe {
         crate::aot_heap::export_buffers(
             context,
-            &mut copied[..count],
+            copied.as_mut_slice(),
             request.bytes_mask,
             request.string_mask,
         )
@@ -496,7 +499,6 @@ unsafe fn prepare_effect_checkpoint(
                 target: request.target,
                 handler: request.handler as usize,
                 arguments: copied,
-                count,
                 callback: request.callback as usize,
                 timeout_ms: request.timeout_ms,
                 lists,

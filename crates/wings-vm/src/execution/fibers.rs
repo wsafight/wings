@@ -229,7 +229,7 @@ impl WorkerFibers {
         bytes: &BytePayload,
     ) -> bool {
         lists.mask == 0
-            && lists.count == 0
+            && lists.is_empty()
             && bytes.is_trivially_empty()
             && !matches!(
                 handler.schema().reply,

@@ -471,8 +471,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         operation: wings_abi::EFFECT_REQUEST,
                         target: target_capability,
                         handler: 3,
-                        arguments: [0; 64],
-                        count: 0,
+                        arguments: MessageArguments::default(),
                         callback: 0,
                         timeout_ms: 60000,
                         lists: ListPayload::default(),
@@ -913,8 +912,7 @@ fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
                     operation: wings_abi::EFFECT_REQUEST,
                     target: target_capability,
                     handler: 3,
-                    arguments: [0; 64],
-                    count: 0,
+                    arguments: MessageArguments::default(),
                     callback: 0,
                     timeout_ms: if cancel { 60000 } else { 0 },
                     lists: ListPayload::default(),
@@ -1201,7 +1199,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
     assert!(state.cancel(pid, 17).is_err());
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let completion = actor.mailbox.pop();
-    assert_eq!(&completion.arguments[..completion.count], &[17, 2, 0]);
+    assert_eq!(completion.arguments.as_slice(), &[17, 2, 0]);
     drop(completion);
     assert_eq!(actor.account.used().messages, 0);
     state.finish(key, RequestOutcome::Reply(99));
@@ -1461,7 +1459,10 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
         .is_ok()
     );
     for mask in [0, 1, 3, u64::MAX] {
-        let invalid = ListPayload { mask, ..lists };
+        let invalid = ListPayload {
+            mask,
+            ..lists.clone()
+        };
         assert!(
             validate(
                 actor,
@@ -1554,18 +1555,21 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         ListPayload::encode(4, 4),
     ];
     assert!(handle.send(pid, &store, &arguments, 4096).is_err());
-    let lists = ListPayload {
+    let mut lists = ListPayload {
         mask: 8,
-        count: 2,
         ..ListPayload::default()
     };
+    lists.values.len = 2;
     let mut state = handle.shared.lock();
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
     bytes.data.extend_from_slice(b"abcdefgh");
     assert!(validate(actor, &store, &arguments, false, &lists, &bytes).is_ok());
     for mask in [0, 1, 9, 17] {
-        let invalid = ListPayload { mask, ..lists };
+        let invalid = ListPayload {
+            mask,
+            ..lists.clone()
+        };
         assert!(validate(actor, &store, &arguments, false, &invalid, &bytes).is_err());
     }
     let filler = actor
@@ -1582,7 +1586,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
             &store,
             &arguments,
             4096,
-            lists,
+            lists.clone(),
             bytes,
             false,
             Reply::None
@@ -1601,7 +1605,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         &store,
         &arguments,
         4096,
-        lists,
+        lists.clone(),
         bytes,
         false,
         Reply::None,
@@ -1611,7 +1615,10 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     assert_eq!(source.used(), Resources::default());
     assert_eq!(
         actor.account.used().bytes,
-        actor_baseline.bytes + 8 + std::mem::size_of::<Envelope>() as u64
+        actor_baseline.bytes
+            + 8
+            + std::mem::size_of::<Envelope>() as u64
+            + MessageArguments::overflow_bytes(arguments.len())
     );
     let baseline = vm.used();
     let mut bytes = BytePayload::new(&source, 17, 8).unwrap();

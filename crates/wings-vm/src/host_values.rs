@@ -122,9 +122,8 @@ impl HostMessage {
                 MessageValue::Unit => 0,
                 MessageValue::Pid(value) => *value,
                 MessageValue::IntList(values) => {
-                    let start = message.lists.count;
-                    message.lists.values[start..start + values.len()].copy_from_slice(values);
-                    message.lists.count += values.len();
+                    let start = message.lists.len();
+                    message.lists.values.try_extend(values)?;
                     message.lists.mask |= 1u64 << index;
                     ListPayload::encode(start, values.len())
                 }
@@ -353,7 +352,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(payload.bytes.data.len(), 65536);
-            assert_eq!(payload.lists.count, 64);
+            assert_eq!(payload.lists.len(), 64);
             drop(payload);
         }
         for (byte_count, list_count) in [(65537, 64), (65536, 65)] {

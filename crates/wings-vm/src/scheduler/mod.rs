@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::host_values::HostMessage;
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
-use crate::message_values::{BytePayload, ListPayload};
+use crate::message_values::{BytePayload, ListPayload, MessageArguments};
 use crate::{
     CancellationToken, DetachedProcess, ExecutionFault, ExecutionSnapshot, HandlerId,
     IngressRequest, MessageValue, Reservation, ResourceAccount, ResourceLevel, Resources,
@@ -156,6 +156,7 @@ struct State {
     timers: Option<Box<ScheduledTimer>>,
     timer_count: usize,
     monitors: Option<Box<MonitorEntry>>,
+    pending_monitors: Option<Box<MonitorEntry>>,
     monitor_count: usize,
     recent_exits: [(i64, i64); 32],
     recent_exit_cursor: usize,
@@ -343,6 +344,9 @@ struct SharedMailboxInner {
     capacity: usize,
     count_atomic: AtomicUsize,
     occupancy_atomic: AtomicUsize,
+    front_handler: AtomicUsize,
+    front_max_steps: AtomicU64,
+    front_fast: AtomicBool,
     retired: AtomicBool,
     locked: AtomicBool,
     contention_observation: Option<Arc<locks::LockContentionObservation>>,
@@ -363,14 +367,18 @@ struct Mailbox {
 
 struct Envelope {
     handler: HandlerId,
-    arguments: [i64; 64],
-    count: usize,
+    arguments: MessageArguments,
     max_steps: u64,
     lists: ListPayload,
     bytes: BytePayload,
     reply: Reply,
+    fast_eligible: bool,
     _charge: Reservation,
     _message_charge: Option<Reservation>,
+}
+
+fn envelope_fast_eligible(handler: &HandlerId, lists: &ListPayload, bytes: &BytePayload) -> bool {
+    crate::execution::WorkerFibers::can_run_fast(handler, lists, bytes)
 }
 
 enum Reply {
@@ -524,6 +532,7 @@ impl Scheduler {
                 timers: None,
                 timer_count: 0,
                 monitors: None,
+                pending_monitors: None,
                 monitor_count: 0,
                 recent_exits: [(0, 0); 32],
                 recent_exit_cursor: 0,
@@ -619,11 +628,13 @@ impl Drop for Scheduler {
         let mut timers = state.timers.take();
         state.timer_count = 0;
         let mut monitors = state.monitors.take();
+        let mut pending_monitors = state.pending_monitors.take();
         state.monitor_count = 0;
         state.requests.clear_all();
         drop(state);
         clear_timers(&mut timers);
         clear_monitors(&mut monitors);
+        clear_monitors(&mut pending_monitors);
         let mut state = self
             .handle
             .shared
@@ -889,24 +900,30 @@ impl SchedulerHandle {
                 return Err("send requires a one-way handler".into());
             }
             if mailbox.occupancy_hint() < mailbox.capacity() {
-                let mut owned = [0; 64];
-                owned[..arguments.len()].copy_from_slice(arguments);
                 let charge = mailbox.inner.account.reserve(Resources {
-                    bytes: std::mem::size_of::<Envelope>() as u64,
+                    bytes: std::mem::size_of::<Envelope>() as u64
+                        + MessageArguments::overflow_bytes(arguments.len()),
                     ..Resources::default()
                 })?;
                 let message_charge = mailbox.inner.account.reserve(Resources {
                     messages: 1,
                     ..Resources::default()
                 })?;
+                let message_arguments =
+                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
+                let fast_eligible = envelope_fast_eligible(
+                    handler,
+                    &ListPayload::default(),
+                    &BytePayload::default(),
+                );
                 let message = Envelope {
                     handler: handler.clone(),
-                    arguments: owned,
-                    count: arguments.len(),
+                    arguments: message_arguments,
                     max_steps,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::None,
+                    fast_eligible,
                     _charge: charge,
                     _message_charge: Some(message_charge),
                 };
@@ -927,10 +944,6 @@ impl SchedulerHandle {
                 }
             }
         }
-        let mut owned = [0; 64];
-        if arguments.len() <= 64 {
-            owned[..arguments.len()].copy_from_slice(arguments);
-        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
@@ -938,14 +951,7 @@ impl SchedulerHandle {
         if handler.schema().reply.is_some() {
             return Err("send requires a one-way handler".into());
         }
-        let message = envelope_precopied(
-            actor,
-            handler,
-            owned,
-            arguments.len(),
-            max_steps,
-            Reply::None,
-        )?;
+        let message = envelope_precopied(actor, handler, arguments, max_steps, Reply::None)?;
         actor.mailbox.push(message)?;
         let wake = state.enqueue(pid);
         self.shared.publish_signal(&state);
@@ -983,28 +989,34 @@ impl SchedulerHandle {
                 );
             };
             if mailbox.occupancy_hint() < mailbox.capacity() {
-                let mut owned = [0; 64];
-                owned[..arguments.len()].copy_from_slice(arguments);
                 let charge = mailbox.inner.account.reserve(Resources {
-                    bytes: std::mem::size_of::<Envelope>() as u64,
+                    bytes: std::mem::size_of::<Envelope>() as u64
+                        + MessageArguments::overflow_bytes(arguments.len()),
                     ..Resources::default()
                 })?;
                 let message_charge = mailbox.inner.account.reserve(Resources {
                     messages: 1,
                     ..Resources::default()
                 })?;
+                let message_arguments =
+                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
                 let (request, publisher) =
                     self.shared
                         .replies
                         .start(deadline, &mailbox.inner.account, reply)?;
+                let fast_eligible = envelope_fast_eligible(
+                    handler,
+                    &ListPayload::default(),
+                    &BytePayload::default(),
+                );
                 let message = Envelope {
                     handler: handler.clone(),
-                    arguments: owned,
-                    count: arguments.len(),
+                    arguments: message_arguments,
                     max_steps,
                     lists: ListPayload::default(),
                     bytes: BytePayload::default(),
                     reply: Reply::External(publisher),
+                    fast_eligible,
                     _charge: charge,
                     _message_charge: Some(message_charge),
                 };
@@ -1025,10 +1037,6 @@ impl SchedulerHandle {
                 }
             }
         }
-        let mut owned = [0; 64];
-        if arguments.len() <= 64 {
-            owned[..arguments.len()].copy_from_slice(arguments);
-        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
@@ -1038,14 +1046,7 @@ impl SchedulerHandle {
                 "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
             );
         };
-        let mut message = envelope_precopied(
-            actor,
-            handler,
-            owned,
-            arguments.len(),
-            max_steps,
-            Reply::None,
-        )?;
+        let mut message = envelope_precopied(actor, handler, arguments, max_steps, Reply::None)?;
         let (request, publisher) = self.shared.replies.start(deadline, &actor.account, reply)?;
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
@@ -1343,6 +1344,9 @@ impl SharedMailbox {
                 capacity,
                 count_atomic: AtomicUsize::new(0),
                 occupancy_atomic: AtomicUsize::new(0),
+                front_handler: AtomicUsize::new(0),
+                front_max_steps: AtomicU64::new(0),
+                front_fast: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 locked: AtomicBool::new(false),
                 contention_observation,
@@ -1366,6 +1370,28 @@ impl SharedMailbox {
             .map(|observation| &observation.mailbox);
         locks::spin_lock(&self.inner.locked, observation);
         MailboxGuard(&self.inner)
+    }
+
+    fn publish_front_hint(&self, mailbox: &Mailbox) {
+        let message = if mailbox.count == 0 {
+            None
+        } else {
+            mailbox.slots[mailbox.head].as_ref()
+        };
+        let Some(message) = message else {
+            self.inner.front_fast.store(false, Ordering::Release);
+            return;
+        };
+        let fast = message.fast_eligible;
+        if fast {
+            self.inner
+                .front_handler
+                .store(message.handler.index, Ordering::Relaxed);
+            self.inner
+                .front_max_steps
+                .store(message.max_steps, Ordering::Relaxed);
+        }
+        self.inner.front_fast.store(fast, Ordering::Release);
     }
 
     pub(super) fn capacity(&self) -> usize {
@@ -1416,6 +1442,7 @@ impl SharedMailbox {
                     }
                 }
             }
+            self.publish_front_hint(&guard);
         }
         drop(drained);
     }
@@ -1453,9 +1480,13 @@ impl SharedMailbox {
         if guard.count + usize::from(guard.starting) == guard.slots.len() {
             return Err(FastPushError::MailboxFull);
         }
+        let was_empty = guard.count == 0;
         let tail = (guard.head + guard.count) % guard.slots.len();
         guard.slots[tail] = Some(message);
         guard.count += 1;
+        if was_empty {
+            self.publish_front_hint(&guard);
+        }
         Ok(guard.active_or_queued)
     }
 
@@ -1468,9 +1499,13 @@ impl SharedMailbox {
         if guard.count == guard.slots.len() {
             return Err(crate::VmError::MailboxFull);
         }
+        let was_empty = guard.count == 0;
         let tail = (guard.head + guard.count) % guard.slots.len();
         guard.slots[tail] = Some(message);
         guard.count += 1;
+        if was_empty {
+            self.publish_front_hint(&guard);
+        }
         Ok(())
     }
 
@@ -1481,6 +1516,7 @@ impl SharedMailbox {
         guard.head = (head + 1) % guard.slots.len();
         guard.count -= 1;
         guard.starting = starting;
+        self.publish_front_hint(&guard);
         message
     }
 
@@ -1491,6 +1527,7 @@ impl SharedMailbox {
         let message = guard.slots[head].take().expect("ready mailbox");
         guard.head = (head + 1) % guard.slots.len();
         guard.count -= 1;
+        self.publish_front_hint(&guard);
         message
     }
 
@@ -1513,21 +1550,23 @@ impl SharedMailbox {
         slice_steps: u64,
         yield_observed: bool,
     ) -> bool {
-        let guard = self.lock();
-        guard.count > 0
-            && guard.slots[guard.head].as_ref().is_some_and(|message| {
-                crate::execution::WorkerFibers::can_run_fast(
-                    &message.handler,
-                    &message.lists,
-                    &message.bytes,
-                ) && fibers.can_run_direct_image(
-                    image,
-                    &message.handler,
-                    message.max_steps,
-                    slice_steps,
-                    yield_observed,
-                )
-            })
+        if !self.inner.front_fast.load(Ordering::Acquire) {
+            return false;
+        }
+        let Ok(handler) = self
+            .inner
+            .module
+            .handler_by_index(self.inner.front_handler.load(Ordering::Relaxed))
+        else {
+            return false;
+        };
+        fibers.can_run_direct_image(
+            image,
+            &handler,
+            self.inner.front_max_steps.load(Ordering::Relaxed),
+            slice_steps,
+            yield_observed,
+        )
     }
 
     pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
@@ -1549,6 +1588,7 @@ impl SharedMailbox {
         let message = guard.slots[head].take().expect("batch mailbox");
         guard.head = (head + 1) % guard.slots.len();
         guard.count -= 1;
+        self.publish_front_hint(&guard);
         Some(message)
     }
 
@@ -1558,6 +1598,7 @@ impl SharedMailbox {
         guard.head = head;
         guard.slots[head] = Some(message);
         guard.count += 1;
+        self.publish_front_hint(&guard);
     }
 
     #[cfg(test)]
@@ -1630,8 +1671,7 @@ fn validate_checked(
 fn envelope_precopied(
     actor: &Actor,
     handler: &HandlerId,
-    arguments: [i64; 64],
-    count: usize,
+    arguments: &[i64],
     max_steps: u64,
     reply: Reply,
 ) -> Result<Envelope, String> {
@@ -1641,21 +1681,25 @@ fn envelope_precopied(
         return Err(crate::VmError::MailboxFull.into());
     }
     let charge = actor.account.reserve_checked(Resources {
-        bytes: std::mem::size_of::<Envelope>() as u64,
+        bytes: std::mem::size_of::<Envelope>() as u64
+            + MessageArguments::overflow_bytes(arguments.len()),
         ..Resources::default()
     })?;
     let message_charge = actor.account.reserve_checked(Resources {
         messages: 1,
         ..Resources::default()
     })?;
+    let arguments = MessageArguments::try_from_slice(arguments).map_err(String::from)?;
+    let fast_eligible =
+        envelope_fast_eligible(handler, &ListPayload::default(), &BytePayload::default());
     Ok(Envelope {
         handler: handler.clone(),
         arguments,
-        count,
         max_steps,
         lists: ListPayload::default(),
         bytes: BytePayload::default(),
         reply,
+        fast_eligible,
         _charge: charge,
         _message_charge: Some(message_charge),
     })
@@ -1708,23 +1752,25 @@ fn delayed_envelope_checked(
 ) -> Result<Envelope, crate::VmError> {
     bytes.transfer_checked(&actor.account)?;
     let charge = actor.account.reserve_checked(Resources {
-        bytes: std::mem::size_of::<Envelope>() as u64,
+        bytes: std::mem::size_of::<Envelope>() as u64
+            + MessageArguments::overflow_bytes(arguments.len())
+            + lists.overflow_bytes(),
         ..Resources::default()
     })?;
     let message_charge = actor.account.reserve_checked(Resources {
         messages: 1,
         ..Resources::default()
     })?;
-    let mut owned = [0; 64];
-    owned[..arguments.len()].copy_from_slice(arguments);
+    let arguments = MessageArguments::try_from_slice(arguments).map_err(crate::VmError::Other)?;
+    let fast_eligible = envelope_fast_eligible(handler, &lists, &bytes);
     Ok(Envelope {
         handler: handler.clone(),
-        arguments: owned,
-        count: arguments.len(),
+        arguments,
         max_steps,
         lists,
         bytes,
         reply,
+        fast_eligible,
         _charge: charge,
         _message_charge: Some(message_charge),
     })

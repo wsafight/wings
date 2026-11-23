@@ -5,6 +5,82 @@ use crate::{Reservation, ResourceAccount, Resources};
 pub(crate) const MAX_ARGUMENTS: usize = 64;
 pub(crate) const MAX_LIST_ELEMENTS: usize = 64;
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65536;
+pub(crate) const INLINE_MESSAGE_ARGUMENTS: usize = 4;
+
+pub(crate) struct MessageArguments {
+    inline: [i64; INLINE_MESSAGE_ARGUMENTS],
+    overflow: Option<Box<[i64]>>,
+    len: usize,
+}
+
+impl MessageArguments {
+    pub(crate) fn from_inline(arguments: &[i64]) -> Self {
+        assert!(arguments.len() <= INLINE_MESSAGE_ARGUMENTS);
+        let mut inline = [0; INLINE_MESSAGE_ARGUMENTS];
+        inline[..arguments.len()].copy_from_slice(arguments);
+        Self {
+            inline,
+            overflow: None,
+            len: arguments.len(),
+        }
+    }
+
+    pub(crate) fn try_from_slice(arguments: &[i64]) -> Result<Self, &'static str> {
+        if arguments.len() > MAX_ARGUMENTS {
+            return Err("message argument limit exceeded");
+        }
+        if arguments.len() <= INLINE_MESSAGE_ARGUMENTS {
+            return Ok(Self::from_inline(arguments));
+        }
+        let mut overflow = Vec::new();
+        overflow
+            .try_reserve_exact(arguments.len())
+            .map_err(|_| "message argument allocation failed")?;
+        if overflow.capacity() != arguments.len() {
+            return Err("allocator changed message argument capacity");
+        }
+        overflow.extend_from_slice(arguments);
+        Ok(Self {
+            inline: [0; INLINE_MESSAGE_ARGUMENTS],
+            overflow: Some(overflow.into_boxed_slice()),
+            len: arguments.len(),
+        })
+    }
+
+    pub(crate) fn overflow_bytes(argument_count: usize) -> u64 {
+        if argument_count <= INLINE_MESSAGE_ARGUMENTS {
+            0
+        } else {
+            argument_count.saturating_mul(std::mem::size_of::<i64>()) as u64
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[i64] {
+        self.overflow.as_deref().unwrap_or(&self.inline[..self.len])
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [i64] {
+        if let Some(overflow) = self.overflow.as_deref_mut() {
+            overflow
+        } else {
+            &mut self.inline[..self.len]
+        }
+    }
+}
+
+impl Default for MessageArguments {
+    fn default() -> Self {
+        Self::from_inline(&[])
+    }
+}
+
+impl std::ops::Deref for MessageArguments {
+    type Target = [i64];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
 
 pub(crate) fn validate_scalar_types(
     types: &[ValueType],
@@ -232,20 +308,117 @@ impl BytePayload {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ListPayload {
-    pub mask: u64,
-    pub count: usize,
-    pub values: [i64; MAX_LIST_ELEMENTS],
+pub(crate) const INLINE_LIST_ELEMENTS: usize = 8;
+
+#[derive(Clone)]
+pub(crate) struct ListValues {
+    inline: [i64; INLINE_LIST_ELEMENTS],
+    overflow: Option<Vec<i64>>,
+    pub(crate) len: usize,
 }
 
-impl Default for ListPayload {
+impl ListValues {
+    fn try_reserve(&mut self, additional: usize) -> Result<(), &'static str> {
+        if self.len + additional > MAX_LIST_ELEMENTS {
+            return Err("list element limit exceeded");
+        }
+        if let Some(overflow) = self.overflow.as_mut() {
+            overflow
+                .try_reserve(additional)
+                .map_err(|_| "list element allocation failed")
+        } else if self.len + additional <= INLINE_LIST_ELEMENTS {
+            Ok(())
+        } else {
+            let mut overflow = Vec::new();
+            overflow
+                .try_reserve_exact(self.len + additional)
+                .map_err(|_| "list element allocation failed")?;
+            if overflow.capacity() != self.len + additional {
+                return Err("allocator changed list element capacity");
+            }
+            overflow.extend_from_slice(&self.inline[..self.len]);
+            self.overflow = Some(overflow);
+            Ok(())
+        }
+    }
+
+    pub(crate) fn try_push(&mut self, value: i64) -> Result<(), &'static str> {
+        self.try_reserve(1)?;
+        if let Some(overflow) = self.overflow.as_mut() {
+            overflow.push(value);
+        } else {
+            self.inline[self.len] = value;
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    pub(crate) fn try_extend(&mut self, values: &[i64]) -> Result<(), &'static str> {
+        self.try_reserve(values.len())?;
+        if let Some(overflow) = self.overflow.as_mut() {
+            overflow.extend_from_slice(values);
+        } else {
+            self.inline[self.len..self.len + values.len()].copy_from_slice(values);
+        }
+        self.len += values.len();
+        Ok(())
+    }
+
+    pub(crate) fn as_slice(&self) -> &[i64] {
+        match &self.overflow {
+            Some(overflow) => overflow.as_slice(),
+            None => &self.inline[..self.len],
+        }
+    }
+
+    fn overflow_bytes(&self) -> u64 {
+        if self.len > INLINE_LIST_ELEMENTS {
+            self.len as u64 * std::mem::size_of::<i64>() as u64
+        } else {
+            0
+        }
+    }
+}
+
+impl Default for ListValues {
     fn default() -> Self {
         Self {
-            mask: 0,
-            count: 0,
-            values: [0; MAX_LIST_ELEMENTS],
+            inline: [0; INLINE_LIST_ELEMENTS],
+            overflow: None,
+            len: 0,
         }
+    }
+}
+
+impl std::ops::Deref for ListValues {
+    type Target = [i64];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ListPayload {
+    pub mask: u64,
+    pub values: ListValues,
+}
+
+impl ListPayload {
+    pub(crate) fn len(&self) -> usize {
+        self.values.len
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.values.len == 0
+    }
+
+    pub(crate) fn overflow_bytes(&self) -> u64 {
+        self.values.overflow_bytes()
+    }
+
+    pub(crate) fn max_overflow_bytes() -> u64 {
+        MAX_LIST_ELEMENTS as u64 * std::mem::size_of::<i64>() as u64
     }
 }
 
@@ -253,7 +426,7 @@ impl ListPayload {
     pub(crate) fn valid(&self, arguments: &[i64], expected_mask: u64) -> bool {
         if arguments.len() > 64
             || self.mask != expected_mask
-            || self.count > MAX_LIST_ELEMENTS
+            || self.len() > MAX_LIST_ELEMENTS
             || (arguments.len() < 64 && self.mask >> arguments.len() != 0)
         {
             return false;
@@ -262,13 +435,13 @@ impl ListPayload {
         for (index, argument) in arguments.iter().enumerate() {
             if self.mask & (1u64 << index) != 0 {
                 let (start, length) = Self::segment(*argument);
-                if start != cursor || length > self.count - cursor {
+                if start != cursor || length > self.len() - cursor {
                     return false;
                 }
                 cursor += length;
             }
         }
-        cursor == self.count
+        cursor == self.len()
     }
 
     pub(crate) fn segment(encoded: i64) -> (usize, usize) {
@@ -396,9 +569,9 @@ mod tests {
     fn list_segments_are_canonical_bounded_and_match_the_schema() {
         let mut payload = ListPayload {
             mask: 5,
-            count: 64,
             ..ListPayload::default()
         };
+        payload.values.len = 64;
         let arguments = [ListPayload::encode(0, 40), 9, ListPayload::encode(40, 24)];
         assert!(payload.valid(&arguments, 5));
         for mask in [0, 1, 4, 7, 8, u64::MAX] {
@@ -413,15 +586,15 @@ mod tests {
         ] {
             assert!(!payload.valid(&malformed, 5));
         }
-        payload.count = 65;
+        payload.values.len = 65;
         assert!(!payload.valid(&arguments, 5));
         payload.mask = 1 << 63;
-        payload.count = 0;
+        payload.values.len = 0;
         assert!(payload.valid(&[0; 64], 1 << 63));
         assert!(!payload.valid(&[0; 63], 1 << 63));
         payload.mask = 0;
         assert!(payload.valid(&[], 0));
-        payload.count = 1;
+        payload.values.len = 1;
         assert!(!payload.valid(&[], 0));
     }
 }

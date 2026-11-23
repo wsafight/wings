@@ -642,11 +642,11 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
     module.manifest().validate().unwrap();
     let process = module.instantiate().unwrap();
     let handler = module.handler("Add").unwrap();
-    let payload = ListPayload {
+    let mut payload = ListPayload {
         mask: 1,
-        count: 2,
         ..ListPayload::default()
     };
+    payload.values.len = 2;
     let arguments = [ListPayload::encode(0, 2), 9, 1];
     assert!(
         process
@@ -661,7 +661,10 @@ fn list_message_schema_and_canonical_segments_are_checked_before_execution() {
             .is_ok()
     );
     for mask in [0, 2, 3, 4, u64::MAX] {
-        let invalid = ListPayload { mask, ..payload };
+        let invalid = ListPayload {
+            mask,
+            ..payload.clone()
+        };
         assert!(
             process
                 .validate_handler_payload_internal(

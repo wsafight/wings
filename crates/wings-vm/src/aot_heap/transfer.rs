@@ -35,7 +35,7 @@ pub(crate) unsafe fn export_record_reply(
             continue;
         }
         lists.mask |= 1u64 << index;
-        let start = lists.count;
+        let start = lists.len();
         let mut current = references[index] as i64;
         loop {
             crate::execution::runtime_checkpoint(context, true)?;
@@ -43,14 +43,13 @@ pub(crate) unsafe fn export_record_reply(
             let Some((value, tail)) = heap.list_node(current)? else {
                 break;
             };
-            if lists.count == MAX_LIST_ELEMENTS {
-                return Err(STATUS_REPLY_REJECTED);
-            }
-            lists.values[lists.count] = value;
-            lists.count += 1;
+            lists
+                .values
+                .try_push(value)
+                .map_err(|_| STATUS_REPLY_REJECTED)?;
             current = tail;
         }
-        arguments[index] = ListPayload::encode(start, lists.count - start);
+        arguments[index] = ListPayload::encode(start, lists.len() - start);
     }
 
     let mut bytes_mask = 0;
@@ -201,7 +200,7 @@ pub(crate) unsafe fn export_lists(
         if mask & (1u64 << index) == 0 {
             continue;
         }
-        let start = payload.count;
+        let start = payload.len();
         let mut current = *argument;
         loop {
             crate::execution::runtime_checkpoint(context, true)?;
@@ -210,14 +209,13 @@ pub(crate) unsafe fn export_lists(
             let Some((value, tail)) = heap.list_node(current)? else {
                 break;
             };
-            if payload.count == MAX_LIST_ELEMENTS {
-                return Err(wings_abi::STATUS_SEND_REJECTED);
-            }
-            payload.values[payload.count] = value;
-            payload.count += 1;
+            payload
+                .values
+                .try_push(value)
+                .map_err(|_| wings_abi::STATUS_SEND_REJECTED)?;
             current = tail;
         }
-        *argument = ListPayload::encode(start, payload.count - start);
+        *argument = ListPayload::encode(start, payload.len() - start);
     }
     Ok(payload)
 }
@@ -361,7 +359,7 @@ pub(crate) unsafe fn import_arguments(
     lists: &ListPayload,
     bytes: &BytePayload,
 ) -> Result<(), u32> {
-    if (lists.mask | bytes.mask) == 0 && lists.count == 0 && bytes.is_trivially_empty() {
+    if (lists.mask | bytes.mask) == 0 && lists.is_empty() && bytes.is_trivially_empty() {
         return if arguments.len() <= 64 {
             Ok(())
         } else {
