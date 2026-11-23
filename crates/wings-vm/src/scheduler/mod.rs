@@ -1834,6 +1834,12 @@ impl SharedMailbox {
         if was_empty {
             self.publish_front_hint(&guard);
         }
+        // Under sustained load the flag stays set; a plain load avoids an
+        // RMW on this contended line for every hot push. The swap below still
+        // publishes for the (rare) clear-and-set transition.
+        if self.inner.active_or_queued.load(Ordering::Acquire) {
+            return Ok(true);
+        }
         Ok(self.inner.active_or_queued.swap(true, Ordering::AcqRel))
     }
 
