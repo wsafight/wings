@@ -78,8 +78,16 @@ fn each_dimension_at_each_level_rejects_without_partial_charge() {
 fn checked_add_overflow_in_every_dimension_is_atomic() {
     for dimension in 0..4 {
         let accounts = hierarchy([resources([u64::MAX; 4]); 3]);
+        // Bytes and messages share a packed counter word; their widest
+        // representable reservation is the saturated account limit.
+        let widest = [
+            accounts[0].limit().bytes,
+            u64::MAX,
+            accounts[0].limit().messages,
+            u64::MAX,
+        ];
         let mut full = [0; 4];
-        full[dimension] = u64::MAX;
+        full[dimension] = widest[dimension];
         let held = accounts[2].reserve(resources(full)).unwrap();
         let before = usage(&accounts);
         let mut extra = [0; 4];
