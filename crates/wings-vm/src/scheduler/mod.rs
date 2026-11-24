@@ -1475,8 +1475,7 @@ impl Shared {
             }
         }
         self.run_queues
-            .has_timers
-            .store(state.timers.is_some(), Ordering::Release);
+            .publish_next_timer(state.timers.as_ref().map(|head| head.deadline));
     }
 
     fn close(&self) {

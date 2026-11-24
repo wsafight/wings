@@ -146,9 +146,9 @@ pub(super) fn worker(
             (Some(fused), WakeSignal::NONE, false)
         } else {
             let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
-            let has_timers = shared.run_queues.has_timers.load(Ordering::Acquire);
+            let timer_due = shared.run_queues.timer_due();
             let can_steal = (mask & !watch) != 0 && shared.run_queues.has_stealable(index);
-            if !had_local && hot && (mask & watch) == 0 && !can_steal && !has_timers {
+            if !had_local && hot && (mask & watch) == 0 && !can_steal && !timer_due {
                 // Nothing is queued for this worker and no global maintenance bit
                 // is set. Skip the empty `Claim` lock and go straight into the
                 // bounded hot spin; if the spin expires without work, `hot` clears
@@ -157,7 +157,7 @@ pub(super) fn worker(
             } else {
                 let closed = shared.run_queues.closed.load(Ordering::Acquire);
                 let (acquired, wake, should_exit) =
-                    if !closed && (mask & WAKE_GLOBAL_BIT) == 0 && !has_timers {
+                    if !closed && (mask & WAKE_GLOBAL_BIT) == 0 && !timer_due {
                         // BEAM-style per-worker run-queue claim with work stealing:
                         // pop from this worker's queue or steal from a congested peer
                         // without touching the global mutex.
@@ -293,6 +293,7 @@ pub(super) fn worker(
                 continue;
             }
         }
+        let bit = 1u32 << index;
         if !attempted && hot {
             let Some(spin_deadline) = Instant::now().checked_add(spin_window) else {
                 hot = false;
@@ -300,7 +301,9 @@ pub(super) fn worker(
             };
             let has_work = || {
                 let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
-                (m & watch) != 0 || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                (m & bit) != 0
+                    || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                    || shared.run_queues.timer_due()
             };
             while !has_work() {
                 for _ in 0..32 {
@@ -321,17 +324,17 @@ pub(super) fn worker(
                 continue;
             }
         }
-        let bit = 1u32 << index;
         shared.run_queues.changed.mark_parked(bit);
         let (should_break, sleep_duration) = if !attempted
-            && (shared.run_queues.ready_mask.load(Ordering::SeqCst) & watch != 0
+            && (shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
                 || shared.run_queues.has_stealable(index))
         {
             (false, None)
-        } else if !shared.run_queues.closed.load(Ordering::SeqCst)
-            && !shared.run_queues.has_timers.load(Ordering::SeqCst)
-        {
-            (false, Some(Duration::from_millis(1)))
+        } else if !shared.run_queues.closed.load(Ordering::SeqCst) {
+            match shared.run_queues.next_timer_wait(Duration::from_millis(1)) {
+                Some(wait) => (false, Some(wait)),
+                None => (false, None),
+            }
         } else {
             let mut state = shared.lock();
             if state.closed && local.is_empty() {

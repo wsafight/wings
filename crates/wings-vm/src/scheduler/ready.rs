@@ -122,7 +122,8 @@ impl WorkerRunQueue {
 pub(super) struct RunQueues {
     queues: Box<[WorkerRunQueue]>,
     pub(super) ready_mask: AtomicU32,
-    pub(super) has_timers: AtomicBool,
+    epoch: Instant,
+    pub(super) next_timer_ns: AtomicU64,
     pub(super) closed: AtomicBool,
     pub(super) changed: WorkerWakeHub,
 }
@@ -139,10 +140,48 @@ impl RunQueues {
         Ok(Arc::new(Self {
             queues: queues.into_boxed_slice(),
             ready_mask: AtomicU32::new(0),
-            has_timers: AtomicBool::new(false),
+            epoch: Instant::now(),
+            next_timer_ns: AtomicU64::new(u64::MAX),
             closed: AtomicBool::new(false),
             changed: WorkerWakeHub::new(),
         }))
+    }
+
+    #[inline]
+    pub(super) fn publish_next_timer(&self, deadline: Option<Instant>) {
+        let next = match deadline {
+            Some(deadline) => deadline
+                .saturating_duration_since(self.epoch)
+                .as_nanos()
+                .min((u64::MAX - 1) as u128) as u64,
+            None => u64::MAX,
+        };
+        self.next_timer_ns.store(next, Ordering::Release);
+    }
+
+    #[inline]
+    pub(super) fn timer_due(&self) -> bool {
+        let next = self.next_timer_ns.load(Ordering::Acquire);
+        next != u64::MAX && self.elapsed_ns() >= next
+    }
+
+    #[inline]
+    pub(super) fn next_timer_wait(&self, default: Duration) -> Option<Duration> {
+        let next = self.next_timer_ns.load(Ordering::SeqCst);
+        if next == u64::MAX {
+            return Some(default);
+        }
+        let now = self.elapsed_ns();
+        if now >= next {
+            None
+        } else {
+            Some(Duration::from_nanos(next - now).min(default))
+        }
+    }
+
+    #[inline]
+    fn elapsed_ns(&self) -> u64 {
+        self.epoch.elapsed().as_nanos().min((u64::MAX - 1) as u128) as u64
     }
 
     #[inline]
