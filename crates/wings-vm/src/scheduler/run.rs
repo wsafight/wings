@@ -453,6 +453,7 @@ fn run_fast_claim(
     let mut inline: Option<EffectSendTarget> = None;
     let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
+    let mut prechecked_direct = false;
     // Envelope charges of messages that complete inside this batch are merged
     // into one reservation instead of refunding per message; the merged charge
     // releases once the batch ends (or is handed to a suspended task).
@@ -465,9 +466,11 @@ fn run_fast_claim(
         let message = current_message.take().expect("active fast batch message");
         // The direct gate is re-checked for every message — including the
         // first, which may carry a `fused_direct` lease from the claim —
-        // because fused continuations never validated `can_run_direct` when
-        // they reserved it.
-        let run_direct = if fibers.can_run_direct(
+        // unless `try_pop_batch_fast_with` already verified `can_run_direct`
+        // with an active `cached_direct` lease and skipped the `claimed` RMW.
+        let run_direct = if prechecked_direct {
+            true
+        } else if fibers.can_run_direct(
             &process,
             message.handler,
             message.max_steps,
@@ -503,8 +506,12 @@ fn run_fast_claim(
         let step = if run_direct {
             // Claim → handler start: the message stops counting against
             // admission capacity only now, matching the old `in_flight`
-            // reservation released by `mark_started`.
-            mailbox.mark_started();
+            // reservation released by `mark_started`. Pre-checked batch
+            // messages bypassed the `claimed` increment entirely.
+            if !prechecked_direct {
+                mailbox.mark_started();
+            }
+            prechecked_direct = false;
             let Envelope {
                 handler,
                 arguments,
@@ -634,8 +641,20 @@ fn run_fast_claim(
                     } else {
                         1
                     };
-                    if let Some(next_msg) = can_batch_fast
-                        .then(|| mailbox.try_pop_batch_fast(fast_threshold))
+                    if let Some((next_msg, direct)) = can_batch_fast
+                        .then(|| {
+                            let has_direct_lease = cached_direct.is_some();
+                            mailbox.try_pop_batch_fast_with(fast_threshold, |front| {
+                                has_direct_lease
+                                    && fibers.can_run_direct(
+                                        &process,
+                                        front.handler,
+                                        front.max_steps,
+                                        shared.config.slice_steps,
+                                        yield_observed,
+                                    )
+                            })
+                        })
                         .flatten()
                     {
                         let outcome = match mapped {
@@ -651,6 +670,7 @@ fn run_fast_claim(
                         {
                             complete_external(publisher, outcome);
                         }
+                        prechecked_direct = direct;
                         current_message = Some(next_msg);
                         continue;
                     }

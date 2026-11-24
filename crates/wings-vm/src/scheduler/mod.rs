@@ -485,6 +485,25 @@ pub(crate) struct SharedMailbox {
     inner: Arc<SharedMailboxInner>,
 }
 
+#[repr(align(64))]
+struct CachePadded<T>(T);
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for CachePadded<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 struct SharedMailboxInner {
     pid: SchedulerPid,
     capability: i64,
@@ -497,8 +516,10 @@ struct SharedMailboxInner {
     // consumer, so `head` lives in a plain cell mirrored by `head_atomic` for
     // capacity/emptiness readers. A slot holding position `p` reads `seq ==
     // p` when free and `seq == p + 1` once its envelope is visible.
+    // `tail` sits on its own cache line so producer CAS traffic does not false-
+    // share with the consumer's `head`/`stash`/`claimed` fields.
     slots: Box<[SeqSlot]>,
-    tail: AtomicUsize,
+    tail: CachePadded<AtomicUsize>,
     head: UnsafeCell<usize>,
     head_atomic: AtomicUsize,
     // Owner-side stash for `restore` and prefetch: rolled-back messages are
@@ -1734,7 +1755,7 @@ impl SharedMailbox {
                 cancellation,
                 capacity,
                 slots,
-                tail: AtomicUsize::new(0),
+                tail: CachePadded(AtomicUsize::new(0)),
                 head: UnsafeCell::new(0),
                 head_atomic: AtomicUsize::new(0),
                 stash: UnsafeCell::new(stash),
@@ -2101,15 +2122,70 @@ impl SharedMailbox {
     }
 
     /// Owner-only batch pop: same rules as `pop_for_claim` plus the fast-path
-    /// eligibility check and the `stopping` guard.
-    pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
-        if self.count() < threshold
-            || self.inner.stopping.load(Ordering::Relaxed)
-            || !self.front_is_fast()
-        {
+    /// eligibility check and the `stopping` guard. When `stash_count >= threshold`,
+    /// stays purely on the owner's local stash without touching producer-contended
+    /// `tail`/`head_atomic`. When `is_direct(front)` is true, the caller guarantees
+    /// immediate direct execution without any fallible setup, skipping the
+    /// paired `claimed` fetch_add/fetch_sub RMWs.
+    pub(super) fn try_pop_batch_fast_with(
+        &self,
+        threshold: usize,
+        is_direct: impl FnOnce(&Envelope) -> bool,
+    ) -> Option<(Envelope, bool)> {
+        if self.inner.stopping.load(Ordering::Relaxed) {
             return None;
         }
-        Some(self.pop_for_claim())
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
+        if stash_len >= threshold {
+            let stash = unsafe { &mut *self.inner.stash.get() };
+            let front = stash.front()?;
+            if !front.fast_eligible {
+                return None;
+            }
+            let direct = is_direct(front);
+            if !direct {
+                self.inner.claimed.fetch_add(1, Ordering::Acquire);
+            }
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            return stash.pop_front().map(|message| (message, direct));
+        }
+        if self.count() < threshold {
+            return None;
+        }
+        let front = self.front_message()?;
+        if !front.fast_eligible {
+            return None;
+        }
+        let direct = is_direct(front);
+        if !direct {
+            return Some((self.pop_for_claim(), false));
+        }
+        if stash_len > 0 {
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            if let Some(stashed) = unsafe { (*self.inner.stash.get()).pop_front() } {
+                return Some((stashed, true));
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        let mut spins = 0u32;
+        while slot.seq.load(Ordering::Acquire) != pos + 1 {
+            std::hint::spin_loop();
+            spins += 1;
+            if spins > 256 {
+                std::thread::yield_now();
+                spins = 0;
+            }
+        }
+        let message = unsafe { (*slot.data.get()).assume_init_read() };
+        slot.seq.store(pos + n, Ordering::Relaxed);
+        self.prefetch(pos + 1);
+        Some((message, true))
     }
 
     /// Owner-only: reinserts a popped message at the head via the stash. The
