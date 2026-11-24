@@ -134,6 +134,12 @@ pub(super) fn fail_scalar_if(
     }
 }
 
+/// Emits one safepoint covering `steps` sequential instruction polls. The
+/// caller folds the cost of straight-line operations that carry no safepoint
+/// of their own into this single charge; the budget accounting below is
+/// exactly equivalent to `steps` consecutive one-step polls: on the fast path
+/// both budgets drop by `steps`, and a starved poll grants whatever budget is
+/// left before looping the outstanding remainder through the slow path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn poll_control(
     builder: &mut FunctionBuilder<'_>,
@@ -144,11 +150,21 @@ pub(super) fn poll_control(
     roots: Option<(Value, Value, Value)>,
     live: &[usize],
     registers: &[Value],
+    steps: i64,
 ) {
+    debug_assert!(steps > 0);
     let readonly = MemFlags::new().with_readonly();
     let poll = builder.create_block();
-    builder.ins().jump(poll, &[]);
+    builder.append_block_param(poll, types::I64);
+    let continuation = builder.create_block();
+    builder.append_block_param(continuation, types::I64);
+    let slow_check = builder.create_block();
+    builder.append_block_param(slow_check, types::I64);
+    let initial_owed = builder.ins().iconst(types::I64, steps);
+    builder.ins().jump(poll, &[initial_owed]);
+
     builder.switch_to_block(poll);
+    let owed = builder.block_params(poll)[0];
     let cancellation = builder.ins().load(
         pointer_type,
         readonly,
@@ -182,18 +198,38 @@ pub(super) fn poll_control(
     let any_flag = builder.ins().bor(cancel_flag, yield_flag);
     let clean_flags = builder.ins().icmp_imm(IntCC::Equal, any_flag, 0);
     let min_budget = builder.ins().umin(remaining, slice);
-    let has_budget = builder.ins().icmp_imm(IntCC::NotEqual, min_budget, 0);
+    let has_budget = builder
+        .ins()
+        .icmp(IntCC::UnsignedGreaterThanOrEqual, min_budget, owed);
     let can_continue = builder.ins().band(clean_flags, has_budget);
-    let continuation = builder.create_block();
-    let slow_check = builder.create_block();
     builder
         .ins()
-        .brif(can_continue, continuation, &[], slow_check, &[]);
+        .brif(can_continue, continuation, &[owed], slow_check, &[owed]);
 
     builder.switch_to_block(slow_check);
+    let owed = builder.block_params(slow_check)[0];
     let cancelled = builder.ins().icmp_imm(IntCC::NotEqual, cancel_flag, 0);
     fail_if_to(builder, cancelled, STATUS_CANCELLED, exit);
-    let exhausted = builder.ins().icmp_imm(IntCC::Equal, remaining, 0);
+    // Sequential polls would grant every step the remaining budget can pay
+    // for before reporting exhaustion or invoking the slow path, so grant
+    // `min(owed, budget)` here and carry the unpaid rest into the repoll.
+    let grant = builder.ins().umin(min_budget, owed);
+    let granted_remaining = builder.ins().isub(remaining, grant);
+    builder.ins().store(
+        MemFlags::new(),
+        granted_remaining,
+        context,
+        std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
+    );
+    let granted_slice = builder.ins().isub(slice, grant);
+    builder.ins().store(
+        MemFlags::new(),
+        granted_slice,
+        context,
+        std::mem::offset_of!(ScalarContext, slice_remaining) as i32,
+    );
+    let next_owed = builder.ins().isub(owed, grant);
+    let exhausted = builder.ins().icmp_imm(IntCC::Equal, granted_remaining, 0);
     fail_if_to(builder, exhausted, STATUS_BUDGET_EXHAUSTED, exit);
     publish_roots(builder, pointer_type, roots, live, registers);
     let callback = builder.ins().load(
@@ -209,17 +245,20 @@ pub(super) fn poll_control(
         .call_indirect(slow_signature, callback, &[context]);
     let status = builder.inst_results(call)[0];
     let success = builder.ins().icmp_imm(IntCC::Equal, status, 0);
-    builder.ins().brif(success, poll, &[], exit, &[status]);
+    builder
+        .ins()
+        .brif(success, poll, &[next_owed], exit, &[status]);
 
     builder.switch_to_block(continuation);
-    let remaining = builder.ins().iadd_imm(remaining, -1);
+    let owed = builder.block_params(continuation)[0];
+    let remaining = builder.ins().isub(remaining, owed);
     builder.ins().store(
         MemFlags::new(),
         remaining,
         context,
         std::mem::offset_of!(ScalarContext, remaining_steps) as i32,
     );
-    let slice = builder.ins().iadd_imm(slice, -1);
+    let slice = builder.ins().isub(slice, owed);
     builder.ins().store(
         MemFlags::new(),
         slice,
