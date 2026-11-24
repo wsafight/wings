@@ -247,7 +247,9 @@ impl StackPool {
 
     pub fn trim(&self) -> Result<(), String> {
         if let Some(state) = &self.inner.demand {
-            state.borrow_mut().cached.clear();
+            let mut state = state.borrow_mut();
+            state.cached.clear();
+            state.direct_parked = None;
             return Ok(());
         }
         let mut state = self.inner.state.borrow_mut();

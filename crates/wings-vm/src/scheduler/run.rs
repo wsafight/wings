@@ -1062,7 +1062,7 @@ fn finish_process(
             exec.committed_state = committed_state;
             if allow_continue
                 && shared.run_queues.is_empty(index)
-                && mailbox.count() > 0
+                && !mailbox.owner_is_empty()
                 && mailbox.front_is_fast()
             {
                 let next_msg = mailbox.pop_for_claim();
@@ -1084,7 +1084,7 @@ fn finish_process(
             }
             exec.owner = None;
             exec.image = image.take();
-            let reenqueued_worker = if !exec.queued && mailbox.keep_active_if_nonempty() {
+            let reenqueued_worker = if !exec.queued && mailbox.release_active_if_empty_owner() {
                 exec.queued = true;
                 let last_worker = exec.last_worker;
                 let slot_index = pid.slot as usize;

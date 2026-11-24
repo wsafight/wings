@@ -191,24 +191,17 @@ impl RunQueues {
 
     #[inline]
     pub(super) fn inc_active(&self, worker: usize) {
-        self.queues[worker].active.fetch_add(1, Ordering::Relaxed);
+        let atomic = &self.queues[worker].active;
+        atomic.store(atomic.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
 
     #[inline]
     pub(super) fn dec_active(&self, worker: usize) {
         let atomic = &self.queues[worker].active;
-        let mut current = atomic.load(Ordering::Relaxed);
-        while current > 0 {
-            match atomic.compare_exchange_weak(
-                current,
-                current - 1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(next) => current = next,
-            }
-        }
+        atomic.store(
+            atomic.load(Ordering::Relaxed).saturating_sub(1),
+            Ordering::Relaxed,
+        );
     }
 
     #[cfg(test)]
@@ -221,9 +214,26 @@ impl RunQueues {
         if workers <= 1 {
             return 0;
         }
+        let parked = self.changed.parked_mask();
         let preferred = last_worker
             .filter(|&w| w < workers)
             .unwrap_or(slot_index % workers);
+        if self.queues[preferred].active.load(Ordering::Relaxed) == 0
+            && (last_worker.is_some() || (parked & (1u32 << preferred)) == 0)
+        {
+            return preferred;
+        }
+        // BEAM-style awake-worker compaction: prefer an already-awake idle
+        // worker over waking a parked worker when spilling or placing a new actor.
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            if (parked & (1u32 << candidate)) == 0
+                && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+            {
+                return candidate;
+            }
+        }
         if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
             return preferred;
         }
@@ -492,6 +502,11 @@ impl WorkerWakeHub {
         if let Some(slot) = self.threads.get(worker) {
             let _ = slot.set(std::thread::current());
         }
+    }
+
+    #[inline]
+    pub(super) fn parked_mask(&self) -> u32 {
+        self.parked_mask.load(Ordering::Relaxed)
     }
 
     pub(super) fn mark_parked(&self, bit: u32) {

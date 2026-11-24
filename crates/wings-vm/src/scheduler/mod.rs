@@ -1896,6 +1896,41 @@ impl SharedMailbox {
         }
     }
 
+    /// Owner-only: fast emptiness check using owner-private `head` and `stash`
+    /// plus a single `tail` load, avoiding the 4-atomic `count()` path.
+    #[inline]
+    pub(super) fn owner_is_empty(&self) -> bool {
+        let stash_empty = unsafe { (*self.inner.stash.get()).is_empty() };
+        if !stash_empty {
+            return false;
+        }
+        let head = unsafe { *self.inner.head.get() };
+        self.inner.tail.load(Ordering::Acquire) == head
+    }
+
+    /// Owner-only Dekker handoff when releasing actor ownership: clears
+    /// `active_or_queued` before re-checking `tail` with `SeqCst` so a racing
+    /// `try_push_fast` cannot observe `active_or_queued == true` while this
+    /// worker observes an empty mailbox and strands the new message.
+    #[inline]
+    pub(super) fn release_active_if_empty_owner(&self) -> bool {
+        if self.inner.stopping.load(Ordering::Acquire) {
+            self.inner.active_or_queued.store(false, Ordering::Release);
+            return false;
+        }
+        if !self.owner_is_empty() {
+            self.inner.active_or_queued.store(true, Ordering::Release);
+            return true;
+        }
+        self.inner.active_or_queued.store(false, Ordering::SeqCst);
+        let head = unsafe { *self.inner.head.get() };
+        if self.inner.tail.load(Ordering::SeqCst) != head {
+            self.inner.active_or_queued.store(true, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
     pub(super) fn keep_active_if_nonempty(&self) -> bool {
         // `count()` includes producer reservations, so a mailbox that only
         // looks non-empty while a push is mid-publish stays active and the
@@ -1972,10 +2007,14 @@ impl SharedMailbox {
         unsafe {
             self.publish_position(pos, message);
         }
+        // Pair with `release_active_if_empty_owner`'s `SeqCst` store/load so a
+        // push cannot observe `active_or_queued == true` while the finishing
+        // owner observes the old `tail` and strands this envelope.
+        std::sync::atomic::fence(Ordering::SeqCst);
         // Under sustained load the flag stays set; a plain load avoids an
         // RMW on this contended line for every hot push. The swap below still
         // publishes for the (rare) clear-and-set transition.
-        if self.inner.active_or_queued.load(Ordering::Acquire) {
+        if self.inner.active_or_queued.load(Ordering::Relaxed) {
             return Ok(true);
         }
         Ok(self.inner.active_or_queued.swap(true, Ordering::AcqRel))

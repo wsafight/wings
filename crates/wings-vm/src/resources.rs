@@ -112,7 +112,8 @@ struct AccountNode {
     level: ResourceLevel,
     accounted_root: bool,
     limit: Resources,
-    used: [AlignedCounter; 4],
+    // `[0]` packs bytes + messages, `[1]` holds processes, `[2]` holds requests.
+    used: [AlignedCounter; 3],
     gate: Arc<Mutex<()>>,
     parent: Option<Reservation>,
 }
@@ -206,7 +207,7 @@ impl ResourceAccount {
             bytes: packed_bytes(packed_word),
             processes: self.node.used[1].load(Ordering::Acquire),
             messages: packed_messages(packed_word),
-            requests: self.node.used[3].load(Ordering::Acquire),
+            requests: self.node.used[2].load(Ordering::Acquire),
         }
     }
 
@@ -220,7 +221,8 @@ impl ResourceAccount {
         if index == 2 {
             return self.try_add_packed(0, delta);
         }
-        let counter = &self.node.used[index];
+        let slot = if index == 3 { 2 } else { index };
+        let counter = &self.node.used[slot];
         let limit = self.node.limit.as_array()[index];
         let mut current = counter.load(Ordering::Relaxed);
         loop {
@@ -276,7 +278,8 @@ impl ResourceAccount {
         } else if index == 2 {
             self.node.used[0].fetch_sub(delta << BYTES_BITS, Ordering::Relaxed);
         } else {
-            self.node.used[index].fetch_sub(delta, Ordering::Relaxed);
+            let slot = if index == 3 { 2 } else { index };
+            self.node.used[slot].fetch_sub(delta, Ordering::Relaxed);
         }
     }
 
@@ -505,7 +508,6 @@ impl ResourceAccount {
                 parent,
                 used: [
                     AlignedCounter(AtomicU64::new(bootstrap)),
-                    AlignedCounter(AtomicU64::new(0)),
                     AlignedCounter(AtomicU64::new(0)),
                     AlignedCounter(AtomicU64::new(0)),
                 ],
