@@ -2049,7 +2049,57 @@ impl SharedMailbox {
     /// claims touch no shared line at all (BEAM's msgin → private-queue move).
     pub(super) fn pop_for_claim(&self) -> Envelope {
         self.inner.claimed.fetch_add(1, Ordering::Acquire);
-        let stash_len = self.inner.stash_count.load(Ordering::Acquire);
+        self.pop_owner_unchecked()
+    }
+
+    /// Owner-only: pops the next envelope and optionally prepares direct
+    /// execution before popping. When `try_direct` returns `Some(direct)`,
+    /// the caller guarantees immediate direct execution with no rollback path,
+    /// bypassing the paired `claimed` fetch_add/fetch_sub RMWs.
+    pub(super) fn pop_for_claim_direct<T>(
+        &self,
+        try_direct: impl FnOnce(&Envelope) -> Option<T>,
+    ) -> (Envelope, Option<T>) {
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
+        if stash_len > 0 {
+            let stash = unsafe { &mut *self.inner.stash.get() };
+            if let Some(front) = stash.front() {
+                let direct = try_direct(front);
+                if direct.is_none() {
+                    self.inner.claimed.fetch_add(1, Ordering::Acquire);
+                }
+                self.inner
+                    .stash_count
+                    .store(stash_len - 1, Ordering::Relaxed);
+                let message = stash.pop_front().expect("checked stashed message");
+                return (message, direct);
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        let mut spins = 0u32;
+        while slot.seq.load(Ordering::Acquire) != pos + 1 {
+            std::hint::spin_loop();
+            spins += 1;
+            if spins > 256 {
+                std::thread::yield_now();
+                spins = 0;
+            }
+        }
+        let front = unsafe { (*slot.data.get()).assume_init_ref() };
+        let direct = try_direct(front);
+        if direct.is_none() {
+            self.inner.claimed.fetch_add(1, Ordering::Acquire);
+        }
+        let message = unsafe { (*slot.data.get()).assume_init_read() };
+        slot.seq.store(pos + n, Ordering::Relaxed);
+        self.prefetch(pos + 1);
+        (message, direct)
+    }
+
+    fn pop_owner_unchecked(&self) -> Envelope {
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
         if stash_len > 0 {
             self.inner
                 .stash_count

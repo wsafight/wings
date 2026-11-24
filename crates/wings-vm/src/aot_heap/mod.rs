@@ -23,7 +23,6 @@ pub(crate) struct AotHeap {
     incoming_mask: u64,
     incoming: Option<Box<[Option<HeapRef>; 64]>>,
     named: Box<[NamedLayout]>,
-    _named_charge: Reservation,
     _metadata: Reservation,
 }
 
@@ -78,13 +77,11 @@ impl AotHeap {
         }
         let mut heap = RecordHeap::new(account, capacity, 2 + records.len())?;
         let metadata = account.reserve(Resources {
-            bytes: (std::mem::size_of::<Self>() + std::mem::size_of::<[Option<HeapRef>; 64]>()
+            bytes: (std::mem::size_of::<Self>()
+                + std::mem::size_of::<[Option<HeapRef>; 64]>()
+                + records.len() * std::mem::size_of::<NamedLayout>()
                 - std::mem::size_of::<RecordHeap>()
                 - std::mem::size_of::<ShadowRoots>()) as u64,
-            ..Resources::default()
-        })?;
-        let named_charge = account.reserve(Resources {
-            bytes: (records.len() * std::mem::size_of::<NamedLayout>()) as u64,
             ..Resources::default()
         })?;
         let empty_list = heap.register_layout(&[FieldType::Unit])?;
@@ -142,7 +139,6 @@ impl AotHeap {
                 incoming_mask: 0,
                 incoming: None,
                 named: named.into_boxed_slice(),
-                _named_charge: named_charge,
                 _metadata: metadata,
             })
         };

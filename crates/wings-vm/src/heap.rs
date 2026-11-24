@@ -56,16 +56,15 @@ struct Schema {
 }
 
 struct OverflowFields {
-    data: Box<[u64]>,
+    data: [u64; MAX_FIELDS - INLINE_RECORD_FIELDS],
     _charge: Reservation,
 }
 
-const OVERFLOW_FIELD_BYTES: u64 =
-    ((MAX_FIELDS - INLINE_RECORD_FIELDS) * std::mem::size_of::<u64>()) as u64;
+const OVERFLOW_FIELD_BYTES: u64 = std::mem::size_of::<OverflowFields>() as u64;
 
 struct Slot {
     inline_fields: [u64; INLINE_RECORD_FIELDS],
-    overflow_fields: Option<OverflowFields>,
+    overflow_fields: Option<Box<OverflowFields>>,
     generation: u32,
     layout: u16,
     occupied: bool,
@@ -359,11 +358,10 @@ impl RecordHeap {
                 }
                 Err(error) => return Err(error),
             };
-            let data = allocate_array(MAX_FIELDS - INLINE_RECORD_FIELDS, 0)?;
-            self.slots[index].overflow_fields = Some(OverflowFields {
-                data,
+            self.slots[index].overflow_fields = Some(Box::new(OverflowFields {
+                data: [0; MAX_FIELDS - INLINE_RECORD_FIELDS],
                 _charge: charge,
-            });
+            }));
             self.overflow_bytes += OVERFLOW_FIELD_BYTES;
         }
         let slot = &mut self.slots[index];
@@ -566,8 +564,7 @@ impl RecordHeap {
                         }
                         if let Some(overflow) = slot.overflow_fields.take() {
                             self.overflow_bytes -= OVERFLOW_FIELD_BYTES;
-                            let OverflowFields { data, _charge } = overflow;
-                            drop(data);
+                            let OverflowFields { data: _, _charge } = *overflow;
                             match &mut reclaimed_charge {
                                 Some(combined) => combined.merge(_charge),
                                 None => reclaimed_charge = Some(_charge),

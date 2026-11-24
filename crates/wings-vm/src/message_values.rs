@@ -7,21 +7,22 @@ pub(crate) const MAX_LIST_ELEMENTS: usize = 64;
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65536;
 pub(crate) const INLINE_MESSAGE_ARGUMENTS: usize = 4;
 
-pub(crate) struct MessageArguments {
-    inline: [i64; INLINE_MESSAGE_ARGUMENTS],
-    overflow: Option<Box<[i64]>>,
-    len: usize,
+pub(crate) enum MessageArguments {
+    Inline {
+        values: [i64; INLINE_MESSAGE_ARGUMENTS],
+        len: u8,
+    },
+    Overflow(Box<[i64]>),
 }
 
 impl MessageArguments {
     pub(crate) fn from_inline(arguments: &[i64]) -> Self {
         assert!(arguments.len() <= INLINE_MESSAGE_ARGUMENTS);
-        let mut inline = [0; INLINE_MESSAGE_ARGUMENTS];
-        inline[..arguments.len()].copy_from_slice(arguments);
-        Self {
-            inline,
-            overflow: None,
-            len: arguments.len(),
+        let mut values = [0; INLINE_MESSAGE_ARGUMENTS];
+        values[..arguments.len()].copy_from_slice(arguments);
+        Self::Inline {
+            values,
+            len: arguments.len() as u8,
         }
     }
 
@@ -40,11 +41,7 @@ impl MessageArguments {
             return Err("allocator changed message argument capacity");
         }
         overflow.extend_from_slice(arguments);
-        Ok(Self {
-            inline: [0; INLINE_MESSAGE_ARGUMENTS],
-            overflow: Some(overflow.into_boxed_slice()),
-            len: arguments.len(),
-        })
+        Ok(Self::Overflow(overflow.into_boxed_slice()))
     }
 
     pub(crate) fn overflow_bytes(argument_count: usize) -> u64 {
@@ -55,15 +52,19 @@ impl MessageArguments {
         }
     }
 
+    #[inline]
     pub(crate) fn as_slice(&self) -> &[i64] {
-        self.overflow.as_deref().unwrap_or(&self.inline[..self.len])
+        match self {
+            Self::Inline { values, len } => &values[..usize::from(*len)],
+            Self::Overflow(overflow) => overflow,
+        }
     }
 
+    #[inline]
     pub(crate) fn as_mut_slice(&mut self) -> &mut [i64] {
-        if let Some(overflow) = self.overflow.as_deref_mut() {
-            overflow
-        } else {
-            &mut self.inline[..self.len]
+        match self {
+            Self::Inline { values, len } => &mut values[..usize::from(*len)],
+            Self::Overflow(overflow) => overflow,
         }
     }
 }

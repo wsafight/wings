@@ -30,6 +30,7 @@ struct Claim {
     message: Envelope,
     mailbox: SharedMailbox,
     fused_direct: Option<PreparedDirect>,
+    prechecked_direct: bool,
 }
 
 pub(super) struct AcquiredActor {
@@ -187,29 +188,32 @@ pub(super) fn worker(
                 // `exec.owner = Some(index)` is published, this worker is the
                 // exclusive consumer of `mailbox`.
                 let claim = acquired.map(|acquired| {
-                    let message = acquired.mailbox.pop_for_claim();
-                    let fused_direct = if fibers.can_run_direct_image_index(
-                        &acquired.mailbox.inner.module,
-                        &acquired.image,
-                        message.handler,
-                        message.max_steps,
-                        shared.config.slice_steps,
-                        yield_observed,
-                    ) {
-                        fibers
-                            .prepare_direct_account(
-                                acquired.image.is_failed(),
-                                &acquired.mailbox.inner.account,
-                            )
-                            .ok()
-                    } else {
-                        None
-                    };
+                    let (message, fused_direct) = acquired.mailbox.pop_for_claim_direct(|front| {
+                        if fibers.can_run_direct_image_index(
+                            &acquired.mailbox.inner.module,
+                            &acquired.image,
+                            front.handler,
+                            front.max_steps,
+                            shared.config.slice_steps,
+                            yield_observed,
+                        ) {
+                            fibers
+                                .prepare_direct_account(
+                                    acquired.image.is_failed(),
+                                    &acquired.mailbox.inner.account,
+                                )
+                                .ok()
+                        } else {
+                            None
+                        }
+                    });
+                    let prechecked_direct = fused_direct.is_some();
                     Claim {
                         image: acquired.image,
                         message,
                         mailbox: acquired.mailbox,
                         fused_direct,
+                        prechecked_direct,
                     }
                 });
                 (claim, wake, should_exit)
@@ -453,7 +457,7 @@ fn run_fast_claim(
     let mut inline: Option<EffectSendTarget> = None;
     let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
-    let mut prechecked_direct = false;
+    let mut prechecked_direct = claim.prechecked_direct;
     // Envelope charges of messages that complete inside this batch are merged
     // into one reservation instead of refunding per message; the merged charge
     // releases once the batch ends (or is handed to a suspended task).
@@ -489,6 +493,7 @@ fn run_fast_claim(
                                 message,
                                 mailbox,
                                 fused_direct: None,
+                                prechecked_direct: false,
                             },
                         );
                         return (batch_step > 0, None);
@@ -552,6 +557,7 @@ fn run_fast_claim(
                             message,
                             mailbox,
                             fused_direct: None,
+                            prechecked_direct: false,
                         },
                     );
                     return (batch_step > 0, None);
@@ -1080,6 +1086,7 @@ fn finish_process(
                     message: next_msg,
                     mailbox,
                     fused_direct: None,
+                    prechecked_direct: false,
                 });
             }
             exec.owner = None;
@@ -1254,6 +1261,7 @@ fn finish_process(
         message,
         mailbox: mailbox.clone(),
         fused_direct: None,
+        prechecked_direct: false,
     });
     drop(mailbox);
     if let Some((publisher, outcome)) = external_reply {

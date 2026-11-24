@@ -185,7 +185,8 @@ impl ReplyTable {
     }
 
     fn notify_waiters(&self) {
-        if self.waiters.load(Ordering::SeqCst) != 0 {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        if self.waiters.load(Ordering::Relaxed) != 0 {
             let _guard = self
                 .wait_lock
                 .lock()
@@ -266,7 +267,7 @@ impl ReplyTable {
             });
         }
         pending.publisher = false;
-        self.slots[index].ready.store(true, Ordering::SeqCst);
+        self.slots[index].ready.store(true, Ordering::Release);
         let (retired, reusable) = retire(&mut slot);
         drop(slot);
         if reusable {
