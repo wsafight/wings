@@ -1,4 +1,5 @@
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,7 +66,106 @@ static ACTIVE_PEAK_USABLE: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_LIMIT: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_REJECTED: AtomicU64 = AtomicU64::new(0);
 
+// Global-side deltas are accumulated per thread and flushed in batches so a
+// `alloc`/`dealloc` on the hot path does not pay a global RMW every time.
+// Instance-level counters stay exact; the global ledger lags by at most
+// `FLUSH_AT` bytes per live thread. The global hard-limit check flushes
+// first, so enforcement never overshoots beyond a single flush window.
+const FLUSH_AT: i64 = 1 << 16;
+
+#[derive(Clone, Copy)]
+struct ActivePending {
+    requested: i64,
+    usable: i64,
+}
+
+struct ActiveLedger {
+    pending: Cell<ActivePending>,
+}
+
+impl Drop for ActiveLedger {
+    fn drop(&mut self) {
+        flush_active(self.pending.get());
+    }
+}
+
+thread_local! {
+    static ACTIVE_LEDGER: ActiveLedger = const {
+        ActiveLedger {
+            pending: Cell::new(ActivePending {
+                requested: 0,
+                usable: 0,
+            }),
+        }
+    };
+}
+
+fn flush_active(pending: ActivePending) {
+    if pending.requested == 0 && pending.usable == 0 {
+        return;
+    }
+    if pending.requested > 0 {
+        ACTIVE_REQUESTED.fetch_add(pending.requested as u64, Ordering::Relaxed);
+    } else if pending.requested < 0 {
+        ACTIVE_REQUESTED.fetch_sub(pending.requested.unsigned_abs(), Ordering::Relaxed);
+    }
+    if pending.usable > 0 {
+        // `wrapping_add` inside a TLS destructor: a panic while a
+        // `#[thread_local]` value is dropped aborts the process, so the peak
+        // update saturates instead of checking overflow.
+        let next = ACTIVE_USABLE
+            .fetch_add(pending.usable as u64, Ordering::Relaxed)
+            .saturating_add(pending.usable as u64);
+        ACTIVE_PEAK_USABLE.fetch_max(next, Ordering::Relaxed);
+    } else if pending.usable < 0 {
+        ACTIVE_USABLE.fetch_sub(pending.usable.unsigned_abs(), Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn active_add(req_delta: i64, usable_delta: i64) {
+    // `try_with`, not `with`: allocations can outlive thread-local teardown
+    // (TLS destructors, `pthread` internals freeing after `main` TLS dies),
+    // and panicking inside those paths aborts the process. When the ledger is
+    // gone the delta flushes straight to the atomics instead.
+    let applied = ACTIVE_LEDGER.try_with(|ledger| {
+        let mut pending = ledger.pending.get();
+        pending.requested = pending.requested.saturating_add(req_delta);
+        pending.usable = pending.usable.saturating_add(usable_delta);
+        if pending.usable.unsigned_abs() >= FLUSH_AT as u64
+            || pending.requested.unsigned_abs() >= FLUSH_AT as u64
+        {
+            flush_active(pending);
+            pending = ActivePending {
+                requested: 0,
+                usable: 0,
+            };
+        }
+        ledger.pending.set(pending);
+    });
+    if applied.is_err() {
+        flush_active(ActivePending {
+            requested: req_delta,
+            usable: usable_delta,
+        });
+    }
+}
+
+/// Flush this thread's pending global deltas so the ledger below reports a
+/// value this thread's own allocations already reflect.
+fn active_sync() {
+    let _ = ACTIVE_LEDGER.try_with(|ledger| {
+        let pending = ledger.pending.get();
+        flush_active(pending);
+        ledger.pending.set(ActivePending {
+            requested: 0,
+            usable: 0,
+        });
+    });
+}
+
 pub fn global_allocator_stats() -> NativeAllocatorStats {
+    active_sync();
     let requested = ACTIVE_REQUESTED.load(Ordering::Acquire);
     let usable = ACTIVE_USABLE.load(Ordering::Acquire);
     NativeAllocatorStats {
@@ -135,9 +235,7 @@ impl WingsAllocator {
         let next_usable = self.usable.fetch_add(usable_delta, Ordering::Relaxed) + usable_delta;
         self.peak_usable.fetch_max(next_usable, Ordering::Relaxed);
 
-        ACTIVE_REQUESTED.fetch_add(req_delta, Ordering::Relaxed);
-        let global_next = ACTIVE_USABLE.fetch_add(usable_delta, Ordering::Relaxed) + usable_delta;
-        ACTIVE_PEAK_USABLE.fetch_max(global_next, Ordering::Relaxed);
+        active_add(req_delta as i64, usable_delta as i64);
         true
     }
 
@@ -145,8 +243,7 @@ impl WingsAllocator {
     fn release(&self, req_delta: u64, usable_delta: u64) {
         self.requested.fetch_sub(req_delta, Ordering::Relaxed);
         self.usable.fetch_sub(usable_delta, Ordering::Relaxed);
-        ACTIVE_REQUESTED.fetch_sub(req_delta, Ordering::Relaxed);
-        ACTIVE_USABLE.fetch_sub(usable_delta, Ordering::Relaxed);
+        active_add(-(req_delta as i64), -(usable_delta as i64));
     }
 }
 
@@ -200,7 +297,7 @@ unsafe impl GlobalAlloc for WingsAllocator {
             } else if new_req < old_req {
                 let sub_req = old_req - new_req;
                 self.requested.fetch_sub(sub_req, Ordering::Relaxed);
-                ACTIVE_REQUESTED.fetch_sub(sub_req, Ordering::Relaxed);
+                active_add(-(sub_req as i64), 0);
             }
             resized
         } else {
@@ -209,15 +306,15 @@ unsafe impl GlobalAlloc for WingsAllocator {
                 if new_req >= old_req {
                     let add_req = new_req - old_req;
                     self.requested.fetch_add(add_req, Ordering::Relaxed);
-                    ACTIVE_REQUESTED.fetch_add(add_req, Ordering::Relaxed);
+                    active_add(add_req as i64, 0);
                 } else {
                     let sub_req = old_req - new_req;
                     self.requested.fetch_sub(sub_req, Ordering::Relaxed);
-                    ACTIVE_REQUESTED.fetch_sub(sub_req, Ordering::Relaxed);
+                    active_add(-(sub_req as i64), 0);
                 }
                 let sub_usable = old_usable - new_usable;
                 self.usable.fetch_sub(sub_usable, Ordering::Relaxed);
-                ACTIVE_USABLE.fetch_sub(sub_usable, Ordering::Relaxed);
+                active_add(0, -(sub_usable as i64));
             }
             resized
         }
