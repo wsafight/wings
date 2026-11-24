@@ -227,6 +227,7 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                         })
                         .unwrap(),
                 });
+                state.completions_pending += 1;
                 let baseline = vm.used();
                 state.maintain(handle.shared.identity);
                 assert_eq!(vm.used(), baseline);
@@ -819,20 +820,8 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             actor.mailbox.push(message).unwrap();
         }
         let first = actor.mailbox.pop_for_claim();
-        // A popped message frees capacity immediately now that restore uses
-        // the owner stash instead of an in-flight slot reservation.
-        let extra = envelope(
-            actor,
-            &handler,
-            &[],
-            999,
-            ListPayload::default(),
-            BytePayload::default(),
-            false,
-            Reply::None,
-        )
-        .unwrap();
-        actor.mailbox.push(extra).unwrap();
+        // The claim holds admission capacity until its handler starts, so the
+        // mailbox still reports full while the popped message is in flight.
         let baseline_full = actor.account.used();
         assert!(
             envelope(
@@ -852,9 +841,22 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
         for sequence in 1..=capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
-        // The restored stash plus the extra message leave room for one fewer
-        // refill than the ring capacity would suggest; the last envelope is
-        // admitted by `envelope`'s capacity gate but rejected at push time.
+        let extra = envelope(
+            actor,
+            &handler,
+            &[],
+            999,
+            ListPayload::default(),
+            BytePayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        actor.mailbox.push(extra).unwrap();
+        // One spare ring slot beyond `capacity` means the refill leaves room
+        // for one fewer message than a naive count suggests; the last
+        // envelope is admitted by `envelope`'s capacity gate but rejected at
+        // push time.
         for sequence in capacity + 1..capacity + capacity / 2 {
             let message = envelope(
                 actor,
@@ -1074,6 +1076,7 @@ fn requester_exit_and_completion_delivery_retain_target_ticket_until_publication
                     }),
                     _charge: request_charge,
                 });
+                state.completions_pending += 1;
                 if deliver {
                     state.maintain(handle.shared.identity);
                     assert_eq!(account.used().requests, 1);
@@ -1197,6 +1200,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         }),
         _charge: charge,
     });
+    state.completions_pending += 1;
     state.requests[0].pending.as_mut().unwrap().outcome = Some(RequestOutcome::Cancelled);
     state.maintain(handle.shared.identity);
     assert_eq!(
@@ -1204,7 +1208,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         Some(RequestOutcome::Cancelled)
     );
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
-    drop(actor.mailbox.pop_for_claim());
+    drop(actor.mailbox.pop());
     state.maintain(handle.shared.identity);
     assert!(state.requests[0].pending.is_some());
     state.maintain(handle.shared.identity);
@@ -1424,13 +1428,23 @@ fn cold_stack_process_denial_preserves_fifo_until_quota_is_released() {
         assert_eq!(snapshot.migrations, 0);
         assert_eq!(first.try_take().unwrap(), None);
         assert_eq!(second.try_take().unwrap(), None);
-        assert_eq!(
-            handle
-                .request(blocked, &bump, &[1], 32, Duration::from_secs(5))
-                .err()
-                .unwrap(),
-            "mailbox_full"
-        );
+        // The blocked actor may pop one queued message into a claim before the
+        // quota guard denies its stack lease, so a producer can briefly see
+        // space below `capacity`; poll until the mailbox is full again.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match handle.request(blocked, &bump, &[1], 32, Duration::from_secs(5)) {
+                Err(error) => {
+                    assert_eq!(error, "mailbox_full");
+                    break;
+                }
+                Ok(request) => {
+                    drop(request);
+                    assert!(Instant::now() < deadline, "mailbox stayed below capacity");
+                    std::thread::yield_now();
+                }
+            }
+        }
     }
     drop(guard);
     assert_eq!(

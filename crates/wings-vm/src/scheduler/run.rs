@@ -1,5 +1,5 @@
 use super::locks::LockPhase;
-use super::ready::WAKE_GLOBAL_BIT;
+use super::ready::{WAKE_GLOBAL_BIT, WakeSignal};
 use super::*;
 use crate::execution::{PreparedDirect, WorkerFibers};
 use crate::timer::DeadlineTimer;
@@ -113,12 +113,35 @@ pub(super) fn worker(
             return;
         }
     };
-    let mut hot_until: Option<Instant> = None;
+    // `hot` marks that work ran since the last park attempt; the spin deadline
+    // is computed lazily when the loop actually goes idle so the per-message
+    // path does not pay a clock read.
+    let mut hot = false;
+    // A `finish_process` fused continuation carries the already-claimed next
+    // message for the same actor; it is dispatched before touching the state
+    // lock on the next iteration.
+    let mut pending_claim: Option<Claim> = None;
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
         let had_local = !local.is_empty();
-        let (claim, wake, should_exit) = {
+        let (claim, wake, should_exit) = if let Some(mut fused) = pending_claim.take() {
+            // A fused continuation skips the lock entirely; the only state
+            // maintenance needed is deferred until the next real acquisition.
+            // `fuse` could not be checked inside `finish_process` (the fibers
+            // live here), so validate the popped message for a direct lease
+            // now — `run_fast_claim` still re-checks `can_run_direct` on the
+            // attached process before running direct.
+            fused.fuse = fibers.can_run_direct_image_index(
+                &fused.mailbox.inner.module,
+                &fused.image,
+                fused.message.handler,
+                fused.message.max_steps,
+                shared.config.slice_steps,
+                yield_observed,
+            );
+            (Some(fused), WakeSignal::NONE, false)
+        } else {
             let mut state = shared.worker_lock(index, LockPhase::Claim);
             let wake = state.maintain(shared.identity);
             let out = if state.closed {
@@ -186,7 +209,7 @@ pub(super) fn worker(
             .is_some_and(|claim| claim.fused_direct.is_some() || claim.message.fast_eligible)
         {
             let max_batch = if had_local { 1 } else { MAX_BACKLOG_BATCH };
-            let progressed = run_fast_claim(
+            let (progressed, continued) = run_fast_claim(
                 &shared,
                 index,
                 claim.expect("checked fast claim"),
@@ -194,13 +217,14 @@ pub(super) fn worker(
                 &timer,
                 &mut fibers,
                 &mut local,
-                watch,
                 yield_observed,
                 max_batch,
             );
+            pending_claim = continued;
             if had_local {
                 if let Some(active) = local.pop_front() {
-                    run_active_slice(
+                    let allow_continue = pending_claim.is_none() && local.is_empty();
+                    if let Some(fused) = run_active_slice(
                         &shared,
                         index,
                         active,
@@ -208,13 +232,16 @@ pub(super) fn worker(
                         &timer,
                         &mut fibers,
                         &mut local,
-                    );
-                    hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                        allow_continue,
+                    ) {
+                        pending_claim = Some(fused);
+                    }
+                    hot = true;
                     continue;
                 }
             }
             if progressed {
-                hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                hot = true;
                 continue;
             }
         } else {
@@ -233,7 +260,8 @@ pub(super) fn worker(
                 None => local.pop_front(),
             };
             if let Some(active) = next_active {
-                run_active_slice(
+                let allow_continue = pending_claim.is_none() && local.is_empty();
+                if let Some(fused) = run_active_slice(
                     &shared,
                     index,
                     active,
@@ -241,12 +269,19 @@ pub(super) fn worker(
                     &timer,
                     &mut fibers,
                     &mut local,
-                );
-                hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                    allow_continue,
+                ) {
+                    pending_claim = Some(fused);
+                }
+                hot = true;
                 continue;
             }
         }
-        if let (false, Some(spin_deadline)) = (attempted, hot_until) {
+        if !attempted && hot {
+            let Some(spin_deadline) = Instant::now().checked_add(HOT_SPIN_WINDOW) else {
+                hot = false;
+                continue;
+            };
             while shared.ready_mask.load(Ordering::Acquire) & watch == 0 {
                 for _ in 0..32 {
                     if shared.ready_mask.load(Ordering::Acquire) & watch != 0 {
@@ -258,7 +293,7 @@ pub(super) fn worker(
                     break;
                 }
                 if Instant::now() >= spin_deadline {
-                    hot_until = None;
+                    hot = false;
                     break;
                 }
             }
@@ -304,7 +339,8 @@ fn run_active_slice(
     timer: &DeadlineTimer,
     fibers: &mut WorkerFibers,
     local: &mut VecDeque<Running>,
-) {
+    allow_continue: bool,
+) -> Option<Claim> {
     match timer.arm_after(shared.config.quantum) {
         Ok(()) => {
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
@@ -340,13 +376,18 @@ fn run_active_slice(
                     active.snapshot_published = true;
                 }
                 local.push_back(active);
+                None
             } else {
-                finish(shared, index, active, map_outcome(result));
+                finish(shared, index, active, map_outcome(result), allow_continue)
             }
         }
-        Err(_) => {
-            finish(shared, index, active, Err("scheduler timer failure".into()));
-        }
+        Err(_) => finish(
+            shared,
+            index,
+            active,
+            Err("scheduler timer failure".into()),
+            allow_continue,
+        ),
     }
 }
 
@@ -359,10 +400,9 @@ fn run_fast_claim(
     timer: &DeadlineTimer,
     fibers: &mut WorkerFibers,
     local: &mut VecDeque<Running>,
-    watch: u32,
     yield_observed: bool,
     max_batch: usize,
-) -> bool {
+) -> (bool, Option<Claim>) {
     let mut process = match claim.image.attach_trusted_scheduled() {
         Ok(process) => process,
         Err(_) => {
@@ -370,7 +410,7 @@ fn run_fast_claim(
                 prepared.release(fibers);
             }
             rollback_failed_start(shared, index, claim);
-            return false;
+            return (false, None);
         }
     };
     let pid = claim.pid;
@@ -390,9 +430,11 @@ fn run_fast_claim(
     let scheduler_open = !shared.closed.load(Ordering::Acquire);
     for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
-        let run_direct = if batch_step == 0 && cached_direct.is_some() {
-            true
-        } else if fibers.can_run_direct(
+        // The direct gate is re-checked for every message — including the
+        // first, which may carry a `fused_direct` lease from the claim —
+        // because fused continuations never validated `can_run_direct` when
+        // they reserved it.
+        let run_direct = if fibers.can_run_direct(
             &process,
             message.handler,
             message.max_steps,
@@ -418,7 +460,7 @@ fn run_fast_claim(
                                 fused_direct: None,
                             },
                         );
-                        return batch_step > 0;
+                        return (batch_step > 0, None);
                     }
                 }
             }
@@ -431,6 +473,10 @@ fn run_fast_claim(
         };
 
         let step = if run_direct {
+            // Claim → handler start: the message stops counting against
+            // admission capacity only now, matching the old `in_flight`
+            // reservation released by `mark_started`.
+            mailbox.mark_started();
             let Envelope {
                 handler,
                 arguments,
@@ -478,7 +524,7 @@ fn run_fast_claim(
                             fused_direct: None,
                         },
                     );
-                    return batch_step > 0;
+                    return (batch_step > 0, None);
                 }
             };
             let Envelope {
@@ -489,6 +535,7 @@ fn run_fast_claim(
                 _charge,
                 ..
             } = message;
+            mailbox.mark_started();
             if timer.arm_after(shared.config.quantum).is_err() {
                 drop(prepared);
                 drop((mailbox, account, cancellation));
@@ -502,8 +549,9 @@ fn run_fast_claim(
                     reply,
                     _charge,
                     Err("scheduler timer failure".into()),
+                    false,
                 );
-                return true;
+                return (true, None);
             }
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
             let outcome = prepared.run_first_slice(
@@ -548,7 +596,11 @@ fn run_fast_claim(
                 }
                 let mapped = map_outcome(result);
                 if batch_step + 1 < max_batch && mapped.is_ok() {
-                    let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
+                    // Sibling pressure only counts actors queued for *this*
+                    // worker; the global bit merely signals pending request
+                    // completions and must not suppress batching.
+                    let sibling_ready =
+                        (shared.ready_mask.load(Ordering::Acquire) & (1u32 << index)) != 0;
                     let can_batch_fast = !matches!(reply, Reply::Language(_))
                         && scheduler_open
                         && (!sibling_ready || batch_step < SIBLING_BATCH_THRESHOLD);
@@ -578,7 +630,19 @@ fn run_fast_claim(
                         continue;
                     }
 
-                    if matches!(reply, Reply::Language(_)) {
+                    // Fused finish + claim for a non-empty mailbox: instead of
+                    // releasing ownership and paying `finish_process` plus a
+                    // re-claim critical section, do the finish bookkeeping in
+                    // one lock acquisition and pop the next message in place.
+                    // Language replies need the lock for `state.finish` even
+                    // when a sibling is queued; other replies only fuse when
+                    // this worker's ready queue is empty.
+                    let can_fuse = scheduler_open
+                        && (!sibling_ready || matches!(reply, Reply::Language(_)))
+                        && !mailbox.is_stopping()
+                        && mailbox.count() > 0
+                        && mailbox.front_is_fast();
+                    if can_fuse {
                         let committed_state = (!process.module().manifest().state.is_reference())
                             .then_some(process.state);
                         let mut state = shared.worker_lock(index, LockPhase::Finish);
@@ -586,9 +650,7 @@ fn run_fast_claim(
                             let actor = state
                                 .actor(shared.identity, pid)
                                 .expect("finishing batched actor");
-                            !actor.stopping
-                                && actor.mailbox.count() >= SIBLING_BATCH_THRESHOLD
-                                && actor.mailbox.front_is_fast()
+                            !actor.stopping && actor.mailbox.count() > 0
                         };
                         if can_continue {
                             let outcome = match mapped {
@@ -623,13 +685,16 @@ fn run_fast_claim(
                             current_message = Some(next_msg);
                             continue;
                         }
+                        drop(state);
                     }
                 }
                 if let Some(prepared) = cached_direct.take() {
                     prepared.release(fibers);
                 }
                 drop((mailbox, account, cancellation));
-                finish_process(
+                // Suspended work in `local` must interleave with the hot
+                // actor, so only fuse when no older task is queued behind it.
+                let continued = finish_process(
                     shared,
                     index,
                     pid,
@@ -639,8 +704,9 @@ fn run_fast_claim(
                     reply,
                     _charge,
                     mapped,
+                    local.is_empty(),
                 );
-                return true;
+                return (true, continued);
             }
             Err(boxed_task) => {
                 let mut task = *boxed_task;
@@ -678,7 +744,7 @@ fn run_fast_claim(
                     snapshot_published: true,
                     _charge,
                 });
-                return true;
+                return (true, None);
             }
         }
     }
@@ -725,6 +791,7 @@ fn start(
         };
         return match prepared {
             Ok(task) => {
+                claim.mailbox.mark_started();
                 let Envelope {
                     handler,
                     max_steps,
@@ -780,6 +847,7 @@ fn start(
     })();
     match result {
         Ok(task) => {
+            claim.mailbox.mark_started();
             let Envelope {
                 handler,
                 max_steps,
@@ -853,11 +921,12 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
 }
 
 fn finish(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     index: usize,
     active: Running,
     result: Result<Option<RequestOutcome>, String>,
-) {
+    allow_continue: bool,
+) -> Option<Claim> {
     let Running {
         pid,
         task,
@@ -873,13 +942,27 @@ fn finish(
     let snapshot = task.snapshot();
     let process = task.into_process();
     finish_process(
-        shared, index, pid, process, snapshot, handler, reply, _charge, result,
-    );
+        shared,
+        index,
+        pid,
+        process,
+        snapshot,
+        handler,
+        reply,
+        _charge,
+        result,
+        allow_continue,
+    )
 }
 
+/// Commits one completed message and releases ownership. When `allow_continue`
+/// holds, the actor is healthy, this worker's ready queue is empty, and the
+/// mailbox still has a fast message, the ownership is kept and the next
+/// message is returned inside a `Claim` so the caller can dispatch it without
+/// a re-enqueue + re-claim round trip through the lock.
 #[allow(clippy::too_many_arguments)]
 fn finish_process(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     index: usize,
     pid: SchedulerPid,
     process: ScalarProcess,
@@ -888,81 +971,119 @@ fn finish_process(
     mut reply: Reply,
     _charge: crate::resources::EnvelopeCharge,
     result: Result<Option<RequestOutcome>, String>,
-) {
+    allow_continue: bool,
+) -> Option<Claim> {
     let committed_state =
         (!process.module().manifest().state.is_reference()).then_some(process.state);
-    let image = process.detach();
+    let mut image = Some(process.detach());
     let byte_state = result
         .is_err()
-        .then(|| image.byte_state_snapshot())
+        .then(|| image.as_ref().and_then(|image| image.byte_state_snapshot()))
         .flatten();
     let mut state = shared.worker_lock(index, LockPhase::Finish);
-    state.worker_active[index] = state.worker_active[index].saturating_sub(1);
     let closed = state.closed;
-    let actor = state
-        .actor_mut(shared.identity, pid)
-        .expect("finishing actor");
-    assert_eq!(actor.owner, Some(index));
-    let failed = result.is_err() || actor.stopping || closed;
-    let exit_reason = if closed {
-        i64::from(wings_abi::STATUS_CANCELLED)
-    } else if actor.stopping {
-        0
-    } else if result.is_err() {
-        snapshot
-            .and_then(|execution| execution.fault)
-            .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
-                fault.exit_code()
-            })
-    } else {
-        0
+    let failed = result.is_err() || closed || {
+        state
+            .actor(shared.identity, pid)
+            .expect("finishing actor")
+            .stopping
     };
-    let diagnostic = if result.is_err() && !actor.stopping && !closed {
-        let name = &actor.module.manifest().handlers[handler].name;
-        let mut handler_name = [0; 256];
-        handler_name[..name.len()].copy_from_slice(name.as_bytes());
-        Some(SchedulerExitSnapshot {
-            pid,
-            worker: index,
-            reason: snapshot
-                .and_then(|execution| execution.fault)
-                .map(SchedulerExitReason::Managed)
-                .unwrap_or(SchedulerExitReason::ExecutionControl),
-            execution: snapshot,
-            state_type: actor.module.manifest().state,
-            committed_state,
-            byte_state,
-            queued: actor.mailbox.count(),
-            resources_before_cleanup: actor.account.used(),
-            handler: handler_name,
-            handler_len: name.len(),
-        })
+    // Fused continuation: keep `actor.owner` and pop the next fast message in
+    // the same critical section instead of re-linking the ready queue.
+    let continuation = if !failed && allow_continue && state.ready[index].head.is_none() {
+        let actor = state
+            .actor_mut(shared.identity, pid)
+            .expect("finishing actor");
+        debug_assert_eq!(actor.owner, Some(index));
+        if !actor.stopping && actor.mailbox.count() > 0 && actor.mailbox.front_is_fast() {
+            Some((
+                actor.mailbox.pop_for_claim(),
+                actor.capability,
+                (*actor.mailbox).clone(),
+                actor.account.clone(),
+                actor.cancellation.clone(),
+            ))
+        } else {
+            None
+        }
     } else {
         None
     };
+    let exit_reason;
+    let mut termination = None;
+    let diagnostic;
+    let release;
+    {
+        let actor = state
+            .actor_mut(shared.identity, pid)
+            .expect("finishing actor");
+        assert_eq!(actor.owner, Some(index));
+        exit_reason = if closed {
+            i64::from(wings_abi::STATUS_CANCELLED)
+        } else if actor.stopping {
+            0
+        } else if result.is_err() {
+            snapshot
+                .and_then(|execution| execution.fault)
+                .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
+                    fault.exit_code()
+                })
+        } else {
+            0
+        };
+        diagnostic = if result.is_err() && !actor.stopping && !closed {
+            let name = &actor.module.manifest().handlers[handler].name;
+            let mut handler_name = [0; 256];
+            handler_name[..name.len()].copy_from_slice(name.as_bytes());
+            Some(SchedulerExitSnapshot {
+                pid,
+                worker: index,
+                reason: snapshot
+                    .and_then(|execution| execution.fault)
+                    .map(SchedulerExitReason::Managed)
+                    .unwrap_or(SchedulerExitReason::ExecutionControl),
+                execution: snapshot,
+                state_type: actor.module.manifest().state,
+                committed_state,
+                byte_state,
+                queued: actor.mailbox.count(),
+                resources_before_cleanup: actor.account.used(),
+                handler: handler_name,
+                handler_len: name.len(),
+            })
+        } else {
+            None
+        };
+        release = continuation.is_none();
+        actor.execution = snapshot;
+        actor.committed_state = committed_state;
+        if failed {
+            shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
+            termination = actor.termination.take().map(|publisher| {
+                (
+                    publisher,
+                    if closed {
+                        SchedulerTermination::Closed
+                    } else if let Some(diagnostic) = diagnostic {
+                        SchedulerTermination::Failed(diagnostic)
+                    } else {
+                        SchedulerTermination::Stopped
+                    },
+                )
+            });
+        }
+    }
+    if release {
+        state.worker_active[index] = state.worker_active[index].saturating_sub(1);
+        let actor = state
+            .actor_mut(shared.identity, pid)
+            .expect("finishing actor");
+        actor.owner = None;
+        actor.image = image.take();
+    }
     let mut deferred_charge = Some(_charge);
     if failed {
         drop(deferred_charge.take());
-    }
-    actor.owner = None;
-    actor.image = Some(image);
-    actor.execution = snapshot;
-    actor.committed_state = committed_state;
-    let mut termination = None;
-    if failed {
-        shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
-        termination = actor.termination.take().map(|publisher| {
-            (
-                publisher,
-                if closed {
-                    SchedulerTermination::Closed
-                } else if let Some(diagnostic) = diagnostic {
-                    SchedulerTermination::Failed(diagnostic)
-                } else {
-                    SchedulerTermination::Stopped
-                },
-            )
-        });
     }
     if let Some(diagnostic) = diagnostic {
         state.last_exit = Some(diagnostic);
@@ -988,9 +1109,13 @@ fn finish_process(
         clear_monitors(&mut retired.monitors);
         drop(retired.actor);
     }
-    let wake = state
-        .finish_enqueue(pid, failed)
-        .combine(state.maintain(shared.identity));
+    let wake = if continuation.is_some() {
+        state.maintain(shared.identity)
+    } else {
+        state
+            .finish_enqueue(pid, failed)
+            .combine(state.maintain(shared.identity))
+    };
     shared.publish_signal(&mut state);
     drop(state);
     drop(deferred_charge);
@@ -1001,4 +1126,20 @@ fn finish_process(
         publisher.set(reason);
     }
     wake.fire(&shared.changed);
+    continuation.map(|(message, capability, mailbox, account, cancellation)| {
+        let inline = Some(EffectSendTarget::new(shared, &mailbox, pid, capability));
+        Claim {
+            pid,
+            image: image.take().expect("continued claim image"),
+            message,
+            mailbox,
+            account,
+            cancellation,
+            inline,
+            // The worker recomputes `fuse` against the live fibers before
+            // dispatching this claim.
+            fuse: false,
+            fused_direct: None,
+        }
+    })
 }

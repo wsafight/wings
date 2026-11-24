@@ -172,8 +172,8 @@ impl State {
                         continue;
                     }
                     if let Some(pending) = &mut self.requests.slots[index].pending {
-                        if pending.owner == pid {
-                            pending.completion.take();
+                        if pending.owner == pid && pending.completion.take().is_some() {
+                            self.completions_pending -= 1;
                         }
                         if pending.target == pid {
                             pending.publisher = false;
@@ -402,7 +402,9 @@ impl State {
             }
             self.pending_monitors = kept_head;
         }
-        if self.requests.is_empty_fast() {
+        if self.completions_pending == 0 {
+            // No completion route is armed, so the scan would only rewrite
+            // outcomes no delivery path reads; skip it.
             return wake;
         }
         let mut ready_completions = [0usize; MAX_REQUESTS];
@@ -436,12 +438,16 @@ impl State {
                 continue;
             };
             let Ok(actor) = self.actor(identity, pending.owner) else {
-                self.requests.slots[index]
+                if self.requests.slots[index]
                     .pending
                     .as_mut()
                     .expect("pending completion")
                     .completion
-                    .take();
+                    .take()
+                    .is_some()
+                {
+                    self.completions_pending -= 1;
+                }
                 self.requests.retire_index(index);
                 continue;
             };
@@ -556,6 +562,7 @@ impl State {
                 .push_admitted(message)
             {
                 None => {
+                    self.completions_pending -= 1;
                     self.requests.retire_index(index);
                     wake = wake.combine(self.enqueue(owner));
                 }
@@ -960,6 +967,7 @@ impl Shared {
                         .actor_mut_checked(self.identity, target)?
                         .mailbox
                         .push_checked(message)?;
+                    state.completions_pending += 1;
                     state.requests[index].pending = Some(pending);
                     wake = state.enqueue(target);
                     Ok(capability)

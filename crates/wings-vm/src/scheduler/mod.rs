@@ -154,6 +154,10 @@ pub(crate) struct State {
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
     requests: state::RequestTable,
+    /// Number of `requests` entries whose `completion` route is set; gates the
+    /// completion-delivery scan in `maintain` so plain in-flight requests do
+    /// not cost a bitmap sweep per lock acquisition.
+    completions_pending: u32,
     timers: Option<Box<ScheduledTimer>>,
     timer_count: usize,
     monitors: Option<Box<MonitorEntry>>,
@@ -474,6 +478,10 @@ struct SharedMailboxInner {
     // publishes it for emptiness readers.
     stash: UnsafeCell<Option<Envelope>>,
     stash_occupied: AtomicBool,
+    // Messages popped into a claim whose handler has not started yet. Counted
+    // toward occupancy so a claim → rollback cycle cannot widen admission
+    // beyond `capacity` (the legacy `in_flight` reservation's role).
+    claimed: AtomicUsize,
     stopping: AtomicBool,
     active_or_queued: AtomicBool,
     retired: AtomicBool,
@@ -692,6 +700,7 @@ impl Scheduler {
                     generation: 1,
                     pending: None,
                 })?),
+                completions_pending: 0,
                 timers: None,
                 timer_count: 0,
                 monitors: None,
@@ -794,6 +803,7 @@ impl Drop for Scheduler {
         let mut pending_monitors = state.pending_monitors.take();
         state.monitor_count = 0;
         state.requests.clear_all();
+        state.completions_pending = 0;
         drop(state);
         clear_timers(&mut timers);
         clear_monitors(&mut monitors);
@@ -1669,6 +1679,7 @@ impl SharedMailbox {
                 head_atomic: AtomicUsize::new(0),
                 stash: UnsafeCell::new(None),
                 stash_occupied: AtomicBool::new(false),
+                claimed: AtomicUsize::new(0),
                 stopping: AtomicBool::new(false),
                 active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
@@ -1702,15 +1713,17 @@ impl SharedMailbox {
         self.inner.capacity
     }
 
-    /// Logical occupancy: published queue length plus the owner stash. `tail`
-    /// counts producer reservations, so this is conservative (never
-    /// under-counts) while a producer is between its CAS and slot publish.
+    /// Logical occupancy: published queue length, the owner stash, and
+    /// popped-but-not-started claim messages. `tail` counts producer
+    /// reservations, so this is conservative (never under-counts) while a
+    /// producer is between its CAS and slot publish.
     pub(super) fn count(&self) -> usize {
         self.inner
             .tail
             .load(Ordering::Acquire)
             .saturating_sub(self.inner.head_atomic.load(Ordering::Acquire))
             + usize::from(self.inner.stash_occupied.load(Ordering::Acquire))
+            + self.inner.claimed.load(Ordering::Acquire)
     }
 
     pub(super) fn occupancy_hint(&self) -> usize {
@@ -1890,6 +1903,7 @@ impl SharedMailbox {
     /// once a completed push made the actor ready, so the wait is bounded by
     /// the publishing store itself.
     pub(super) fn pop_for_claim(&self) -> Envelope {
+        self.inner.claimed.fetch_add(1, Ordering::Acquire);
         if self.inner.stash_occupied.load(Ordering::Acquire) {
             self.inner.stash_occupied.store(false, Ordering::Relaxed);
             if let Some(stashed) = unsafe { (*self.inner.stash.get()).take() } {
@@ -1918,8 +1932,20 @@ impl SharedMailbox {
     }
 
     #[cfg(test)]
+    /// Test-only pop that also drops the admission claim, mirroring the
+    /// accounting the claim path performs when its handler starts.
     pub(super) fn pop(&self) -> Envelope {
-        self.pop_for_claim()
+        let message = self.pop_for_claim();
+        self.mark_started();
+        message
+    }
+
+    /// Owner-only: the claimed message reached handler start (or is otherwise
+    /// done being counted as in-flight), so it stops occupying admission
+    /// capacity. Balanced by `restore`, which releases the claim back to the
+    /// stash instead.
+    pub(super) fn mark_started(&self) {
+        self.inner.claimed.fetch_sub(1, Ordering::AcqRel);
     }
 
     /// Owner-only: metadata for the front envelope (stash first), or `None`
@@ -1985,7 +2011,10 @@ impl SharedMailbox {
             debug_assert!((*self.inner.stash.get()).is_none());
             *self.inner.stash.get() = Some(message);
         }
+        // The stash publishes before the claim releases so `count()` never
+        // briefly under-counts the restored message.
         self.inner.stash_occupied.store(true, Ordering::Release);
+        self.inner.claimed.fetch_sub(1, Ordering::AcqRel);
     }
 
     #[cfg(test)]
