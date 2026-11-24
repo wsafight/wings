@@ -155,9 +155,18 @@ impl State {
     ) -> Option<RetiredActor> {
         let dead_capability = self.actor(identity, pid).ok()?.capability;
         self.record_exit(dead_capability, exit_reason);
-        self.remove_ready(pid.slot as usize);
         let slot = &mut self.slots[pid.slot as usize];
         let actor = slot.actor.take()?;
+        let was_queued = {
+            let mut exec = actor.mailbox.exec_lock();
+            exec.retired = true;
+            let queued = exec.queued;
+            exec.queued = false;
+            queued
+        };
+        if was_queued {
+            self.run_queues.remove_ready_slot(pid.slot as usize);
+        }
         slot.generation = slot.generation.checked_add(1).unwrap_or(0);
         self.release_slot(pid.slot as usize);
         if !self.requests.is_empty_fast() {
@@ -977,7 +986,7 @@ impl Shared {
         })();
         self.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.changed);
+        wake.fire(&self.run_queues.changed);
         match result {
             Ok(value) => (wings_abi::STATUS_OK, value),
             Err(_) => (

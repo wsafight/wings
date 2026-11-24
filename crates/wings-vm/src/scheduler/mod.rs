@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
@@ -39,6 +40,10 @@ mod tests;
 const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
 const MAX_MAILBOX: usize = 256;
+// Envelopes each claim prefetch drains from the shared ring into the owner
+// stash, amortizing `head_atomic` stores across that many messages (the same
+// trick BEAM uses when it moves a run of msgin items into the private queue).
+const CLAIM_PREFETCH: usize = 8;
 const MAX_TIMERS: usize = 1024;
 const MAX_MONITORS: usize = 1024;
 const THREAD_STACK: usize = 2 << 20;
@@ -130,10 +135,8 @@ pub struct SchedulerHandle {
 
 pub(crate) struct Shared {
     state: Mutex<State>,
-    closed: AtomicBool,
+    run_queues: Arc<ready::RunQueues>,
     fast_slots: Box<[FastSlot]>,
-    changed: ready::WorkerWakeHub,
-    ready_mask: AtomicU32,
     tenant: ResourceAccount,
     replies: Arc<ReplyTable>,
     config: SchedulerConfig,
@@ -147,9 +150,7 @@ pub(crate) struct Shared {
 
 pub(crate) struct State {
     closed: bool,
-    ready_bits: u32,
     published_signals: u32,
-    worker_active: [u32; 16],
     last_exit: Option<SchedulerExitSnapshot>,
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
@@ -165,7 +166,7 @@ pub(crate) struct State {
     monitor_count: usize,
     recent_exits: [(i64, i64); 32],
     recent_exit_cursor: usize,
-    ready: Box<[ready::ReadyQueue]>,
+    run_queues: Arc<ready::RunQueues>,
     free: Option<usize>,
 }
 
@@ -221,22 +222,12 @@ struct Slot {
     creating: bool,
     actor: Option<Actor>,
     free_next: Option<usize>,
-    ready_previous: Option<usize>,
-    ready_next: Option<usize>,
-    ready_worker: Option<usize>,
 }
 
 struct Actor {
     module: ScalarModule,
     account: ResourceAccount,
-    image: Option<DetachedProcess>,
-    owner: Option<usize>,
-    last_worker: Option<usize>,
-    migrations: u64,
-    execution: Option<ExecutionSnapshot>,
-    committed_state: Option<i64>,
     stopping: bool,
-    cancellation: CancellationToken,
     capability: i64,
     heap_records: Option<usize>,
     mailbox: ActorMailbox,
@@ -455,14 +446,51 @@ impl Drop for FastSlotWriteGuard<'_> {
     }
 }
 
+pub(super) struct ActorExecState {
+    pub(super) image: Option<DetachedProcess>,
+    pub(super) owner: Option<usize>,
+    pub(super) last_worker: Option<usize>,
+    pub(super) migrations: u64,
+    pub(super) execution: Option<ExecutionSnapshot>,
+    pub(super) committed_state: Option<i64>,
+    pub(super) queued: bool,
+    pub(super) retired: bool,
+}
+
+pub(super) struct ActorExecGuard<'mailbox> {
+    inner: &'mailbox SharedMailboxInner,
+}
+
+impl std::ops::Deref for ActorExecGuard<'_> {
+    type Target = ActorExecState;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.inner.exec.get() }
+    }
+}
+
+impl std::ops::DerefMut for ActorExecGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.inner.exec.get() }
+    }
+}
+
+impl Drop for ActorExecGuard<'_> {
+    fn drop(&mut self) {
+        self.inner.exec_locked.store(false, Ordering::Release);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct SharedMailbox {
     inner: Arc<SharedMailboxInner>,
 }
 
 struct SharedMailboxInner {
+    pid: SchedulerPid,
+    capability: i64,
     module: ScalarModule,
     account: ResourceAccount,
+    cancellation: CancellationToken,
     capacity: usize,
     // MPSC bounded ring: producers reserve a position with a `tail` CAS and
     // publish through the per-slot sequence; the owning worker is the only
@@ -473,11 +501,14 @@ struct SharedMailboxInner {
     tail: AtomicUsize,
     head: UnsafeCell<usize>,
     head_atomic: AtomicUsize,
-    // Owner-side stash for `restore`: a rolled-back message is the next head
-    // without occupying a ring slot; only the owner writes, `stash_occupied`
-    // publishes it for emptiness readers.
-    stash: UnsafeCell<Option<Envelope>>,
-    stash_occupied: AtomicBool,
+    // Owner-side stash for `restore` and prefetch: rolled-back messages are
+    // the next head without occupying ring slots, and `pop_for_claim` drains
+    // a small run of published envelopes into the same deque so later claims
+    // pop local memory instead of touching the shared `head_atomic` line per
+    // message. Only the owner writes; `stash_count` publishes the length for
+    // capacity/emptiness readers.
+    stash: UnsafeCell<VecDeque<Envelope>>,
+    stash_count: AtomicUsize,
     // Messages popped into a claim whose handler has not started yet. Counted
     // toward occupancy so a claim → rollback cycle cannot widen admission
     // beyond `capacity` (the legacy `in_flight` reservation's role).
@@ -487,6 +518,8 @@ struct SharedMailboxInner {
     retired: AtomicBool,
     live_execution_locked: AtomicBool,
     live_execution: UnsafeCell<Option<ExecutionSnapshot>>,
+    exec_locked: AtomicBool,
+    exec: UnsafeCell<ActorExecState>,
     contention_observation: Option<Arc<locks::LockContentionObservation>>,
 }
 
@@ -508,11 +541,12 @@ impl Drop for SharedMailboxInner {
     /// would leak its reservation. Dropping the inner value means no
     /// concurrent access remains, so drain what is left here.
     fn drop(&mut self) {
-        let stash = self.stash.get_mut().take();
+        let mut stash = std::mem::take(self.stash.get_mut());
+        stash.clear();
         let n = self.slots.len();
         let head = *self.head.get_mut();
         let tail = *self.tail.get_mut();
-        let mut pending = stash;
+        let mut pending = None;
         for pos in head..tail {
             let slot = &self.slots[pos % n];
             if slot.seq.load(Ordering::Relaxed) == pos + 1 {
@@ -608,9 +642,12 @@ impl Scheduler {
             return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield/slice samples per worker".into());
         }
         let bytes = std::mem::size_of::<Shared>()
+            + std::mem::size_of::<ready::RunQueues>()
             + config.capacity * (std::mem::size_of::<Slot>() + std::mem::size_of::<FastSlot>())
             + config.requests * std::mem::size_of::<RequestSlot>()
-            + config.workers * std::mem::size_of::<ready::ReadyQueue>()
+            + config.workers
+                * (std::mem::size_of::<ready::WorkerRunQueue>()
+                    + config.capacity * std::mem::size_of::<SharedMailbox>())
             + if config.yield_samples == 0 {
                 0
             } else {
@@ -676,12 +713,11 @@ impl Scheduler {
                 )?);
             }
         }
+        let run_queues = ready::RunQueues::new(config.workers, config.capacity)?;
         let shared = Arc::new(Shared {
             state: crate::native_sync::mutex(State {
                 closed: false,
-                ready_bits: 0,
                 published_signals: 0,
-                worker_active: [0; 16],
                 last_exit: None,
                 modules: None,
                 slots: storage(config.capacity, || {
@@ -691,9 +727,6 @@ impl Scheduler {
                         creating: false,
                         actor: None,
                         free_next: (next_slot < config.capacity).then_some(next_slot),
-                        ready_previous: None,
-                        ready_next: None,
-                        ready_worker: None,
                     }
                 })?,
                 requests: state::RequestTable::new(storage(config.requests, || RequestSlot {
@@ -708,13 +741,11 @@ impl Scheduler {
                 monitor_count: 0,
                 recent_exits: [(0, 0); 32],
                 recent_exit_cursor: 0,
-                ready: storage(config.workers, ready::ReadyQueue::default)?,
+                run_queues: run_queues.clone(),
                 free: Some(0),
             }),
-            closed: AtomicBool::new(false),
+            run_queues,
             fast_slots: storage(config.capacity, FastSlot::default)?,
-            changed: ready::WorkerWakeHub::new(),
-            ready_mask: AtomicU32::new(0),
             tenant: tenant.clone(),
             replies: ReplyTable::new(tenant, config.requests)?,
             config,
@@ -966,13 +997,18 @@ impl SchedulerHandle {
         };
         let result = (|| {
             let account = self.shared.tenant.process_accounted(limits)?;
+            let stash_cap = if mailbox > 1 {
+                mailbox.min(CLAIM_PREFETCH)
+            } else {
+                1
+            };
             let charge = account.reserve(Resources {
                 processes: 1,
                 bytes: (std::mem::size_of::<Actor>()
                     + std::mem::size_of::<SharedMailboxInner>()
                     + 2 * std::mem::size_of::<usize>()
                     + (mailbox + 1) * std::mem::size_of::<SeqSlot>()
-                    + std::mem::size_of::<Option<Envelope>>()) as u64,
+                    + stash_cap * std::mem::size_of::<Envelope>()) as u64,
                 ..Resources::default()
             })?;
             // One spare ring slot over the advertised capacity preserves the
@@ -986,6 +1022,10 @@ impl SchedulerHandle {
             for (index, slot) in slots.iter_mut().enumerate() {
                 slot.seq = AtomicUsize::new(index);
             }
+            let mut stash = VecDeque::new();
+            stash
+                .try_reserve_exact(stash_cap)
+                .map_err(|_| "scheduler mailbox stash allocation failed")?;
             let temporary;
             let pool = if let Some(pool) = pool {
                 pool
@@ -1003,29 +1043,26 @@ impl SchedulerHandle {
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
             let cancellation = CancellationToken::new_accounted(&account)?;
+            let capability =
+                wings_abi::encode_capability(self.shared.identity, pid.slot, pid.generation)
+                    .ok_or("scheduler actor capabilities exhausted")?;
             let shared_mailbox = SharedMailbox::new(
+                pid,
+                capability,
                 module.clone(),
                 account.clone(),
+                cancellation,
+                image,
+                committed_state,
                 slots,
+                stash,
                 self.shared.contention_observation.clone(),
             );
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
-                image: Some(image),
-                owner: None,
-                last_worker: None,
-                migrations: 0,
-                execution: None,
-                committed_state,
                 stopping: false,
-                cancellation,
-                capability: wings_abi::encode_capability(
-                    self.shared.identity,
-                    pid.slot,
-                    pid.generation,
-                )
-                .ok_or("scheduler actor capabilities exhausted")?,
+                capability,
                 heap_records,
                 mailbox: ActorMailbox(shared_mailbox),
                 _charge: charge,
@@ -1066,7 +1103,7 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
-        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
             self.shared
@@ -1103,16 +1140,10 @@ impl SchedulerHandle {
                     fast_eligible: meta.fast_scalar(),
                     _charge: charge,
                 };
-                match mailbox.try_push_fast(&self.shared.closed, message) {
+                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
                     Ok(true) => return Ok(()),
                     Ok(false) => {
-                        let mut state = self.shared.lock();
-                        let wake = state.enqueue_fast_pushed(pid, &mailbox);
-                        if !state.closed {
-                            self.shared.publish_signal(&mut state);
-                            drop(state);
-                            wake.fire(&self.shared.changed);
-                        }
+                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
                         return Ok(());
                     }
                     Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
@@ -1132,7 +1163,7 @@ impl SchedulerHandle {
         let wake = state.enqueue(pid);
         self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(())
     }
 
@@ -1147,7 +1178,7 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
-        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
             self.shared
@@ -1190,16 +1221,10 @@ impl SchedulerHandle {
                     fast_eligible: meta.fast_scalar(),
                     _charge: charge,
                 };
-                match mailbox.try_push_fast(&self.shared.closed, message) {
+                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
                     Ok(true) => return Ok(request),
                     Ok(false) => {
-                        let mut state = self.shared.lock();
-                        let wake = state.enqueue_fast_pushed(pid, &mailbox);
-                        if !state.closed {
-                            self.shared.publish_signal(&mut state);
-                            drop(state);
-                            wake.fire(&self.shared.changed);
-                        }
+                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
                         return Ok(request);
                     }
                     Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
@@ -1224,7 +1249,7 @@ impl SchedulerHandle {
         let wake = state.enqueue(pid);
         self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(request)
     }
 
@@ -1234,9 +1259,18 @@ impl SchedulerHandle {
         let actor = state.actor_mut(self.shared.identity, pid)?;
         actor.stopping = true;
         actor.mailbox.mark_stopping();
-        actor.cancellation.cancel();
+        actor.mailbox.inner.cancellation.cancel();
         self.shared.fast_slots[pid.slot as usize].clear(self.shared.fast_slot_contention());
-        let retired = if actor.owner.is_none() {
+        let unowned = {
+            let mut exec = actor.mailbox.exec_lock();
+            if exec.owner.is_none() {
+                exec.retired = true;
+                true
+            } else {
+                false
+            }
+        };
+        let retired = if unowned {
             state.retire_with_reason(self.shared.identity, pid, 0)
         } else {
             None
@@ -1252,7 +1286,7 @@ impl SchedulerHandle {
             .combine(state.wake_all_parked());
         self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(())
     }
 
@@ -1359,7 +1393,7 @@ impl SchedulerHandle {
         let wake = state.enqueue(pid);
         self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(request)
     }
 
@@ -1367,19 +1401,26 @@ impl SchedulerHandle {
         let state = self.shared.lock();
         state.open()?;
         let actor = state.actor(self.shared.identity, pid)?;
-        let execution = if actor.owner.is_some() {
-            actor.mailbox.live_execution().or(actor.execution)
+        let exec = actor.mailbox.exec_lock();
+        let owner = exec.owner;
+        let last_worker = exec.last_worker;
+        let migrations = exec.migrations;
+        let committed_state = exec.committed_state;
+        let exec_snapshot = exec.execution;
+        drop(exec);
+        let execution = if owner.is_some() {
+            actor.mailbox.live_execution().or(exec_snapshot)
         } else {
-            actor.execution
+            exec_snapshot
         };
         Ok(SchedulerSnapshot {
-            owner: actor.owner,
-            last_worker: actor.last_worker,
-            migrations: actor.migrations,
+            owner,
+            last_worker,
+            migrations,
             queued: actor.mailbox.count(),
             stopping: actor.stopping,
             execution,
-            committed_state: actor.committed_state,
+            committed_state,
             resources: actor.account.used(),
         })
     }
@@ -1395,10 +1436,11 @@ impl SchedulerHandle {
         let state = self.shared.lock();
         state.open()?;
         let actor = state.actor(self.shared.identity, pid)?;
-        if actor.owner.is_some() {
+        let exec = actor.mailbox.exec_lock();
+        if exec.owner.is_some() {
             return Err("byte state snapshot requires an idle actor".into());
         }
-        Ok(actor
+        Ok(exec
             .image
             .as_ref()
             .and_then(DetachedProcess::byte_state_snapshot))
@@ -1417,28 +1459,41 @@ impl Shared {
     }
 
     pub(super) fn publish_signal(&self, state: &mut State) {
-        let bits = state.signal_bits();
-        if bits != state.published_signals {
-            state.published_signals = bits;
-            self.ready_mask.store(bits, Ordering::Release);
+        let global = state.global_signal_needed();
+        let prev = (state.published_signals & ready::WAKE_GLOBAL_BIT) != 0;
+        if global != prev {
+            if global {
+                state.published_signals |= ready::WAKE_GLOBAL_BIT;
+                self.run_queues
+                    .ready_mask
+                    .fetch_or(ready::WAKE_GLOBAL_BIT, Ordering::SeqCst);
+            } else {
+                state.published_signals &= !ready::WAKE_GLOBAL_BIT;
+                self.run_queues
+                    .ready_mask
+                    .fetch_and(!ready::WAKE_GLOBAL_BIT, Ordering::Release);
+            }
         }
+        self.run_queues
+            .has_timers
+            .store(state.timers.is_some(), Ordering::Release);
     }
 
     fn close(&self) {
         let mut state = self.lock();
         state.closed = true;
-        self.closed.store(true, Ordering::Release);
+        self.run_queues.closed.store(true, Ordering::Release);
         for index in 0..self.fast_slots.len() {
             self.fast_slots[index].clear(self.fast_slot_contention());
         }
         for actor in state.slots.iter().filter_map(|slot| slot.actor.as_ref()) {
             actor.mailbox.mark_stopping();
-            actor.cancellation.cancel();
+            actor.mailbox.inner.cancellation.cancel();
         }
         let wake = state.wake_all_parked();
         self.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.changed);
+        wake.fire(&self.run_queues.changed);
     }
 }
 
@@ -1481,7 +1536,7 @@ impl EffectSendTarget {
         budget: u64,
     ) -> Option<u32> {
         let reject = || {
-            if self.shared.closed.load(Ordering::Acquire) || self.mailbox.is_retired() {
+            if self.shared.run_queues.closed.load(Ordering::Acquire) || self.mailbox.is_retired() {
                 wings_abi::STATUS_CANCELLED
             } else {
                 wings_abi::STATUS_SEND_REJECTED
@@ -1498,7 +1553,9 @@ impl EffectSendTarget {
                     // not a send, so it reports the generic control status.
                     return Some(wings_abi::STATUS_INVALID_CONTROL);
                 }
-                if self.mailbox.is_retired() || self.shared.closed.load(Ordering::Acquire) {
+                if self.mailbox.is_retired()
+                    || self.shared.run_queues.closed.load(Ordering::Acquire)
+                {
                     return Some(wings_abi::STATUS_CANCELLED);
                 }
                 if self.mailbox.is_stopping() {
@@ -1510,11 +1567,11 @@ impl EffectSendTarget {
             wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND => {
                 if self.mailbox.is_retired()
                     || self.mailbox.is_stopping()
-                    || self.shared.closed.load(Ordering::Acquire)
+                    || self.shared.run_queues.closed.load(Ordering::Acquire)
                 {
                     return Some(reject());
                 }
-                let (target_pid, target) = if request.operation == wings_abi::EFFECT_SEND_SELF {
+                let (_target_pid, target) = if request.operation == wings_abi::EFFECT_SEND_SELF {
                     (self.pid, self.mailbox.clone())
                 } else {
                     let Some((slot, generation)) =
@@ -1588,23 +1645,17 @@ impl EffectSendTarget {
                     fast_eligible,
                     _charge: charge,
                 };
-                match target.try_push_fast(&self.shared.closed, message) {
+                match target.try_push_fast(&self.shared.run_queues.closed, message) {
                     Ok(needs_enqueue) => {
                         if !needs_enqueue {
-                            let mut state = self.shared.lock();
-                            let wake = state.enqueue_fast_pushed(target_pid, &target);
-                            if !state.closed {
-                                self.shared.publish_signal(&mut state);
-                                drop(state);
-                                wake.fire(&self.shared.changed);
-                            }
+                            self.shared.run_queues.enqueue_fast_pushed(target);
                         }
                         unsafe { output.write(0) };
                         Some(wings_abi::STATUS_OK)
                     }
                     Err(FastPushError::MailboxFull) => Some(reject()),
                     Err(FastPushError::ClosedOrStopped) => {
-                        if self.shared.closed.load(Ordering::Acquire) {
+                        if self.shared.run_queues.closed.load(Ordering::Acquire) {
                             Some(wings_abi::STATUS_CANCELLED)
                         } else {
                             Some(reject())
@@ -1656,38 +1707,65 @@ enum FastPushError {
 }
 
 impl SharedMailbox {
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        pid: SchedulerPid,
+        capability: i64,
         module: ScalarModule,
         account: ResourceAccount,
+        cancellation: CancellationToken,
+        image: DetachedProcess,
+        committed_state: Option<i64>,
         slots: Box<[SeqSlot]>,
+        stash: VecDeque<Envelope>,
         contention_observation: Option<Arc<locks::LockContentionObservation>>,
     ) -> Self {
-        // `count()` derives as `tail - head + stash`. The ring physically
-        // holds `slots.len()` envelopes and the stash one more, so the worst
-        // case is one envelope over the advertised capacity — the same
-        // headroom the legacy `count + in_flight` bound reserved for a
-        // message between pop and handler start.
+        // `count()` derives as `tail - head + stash_len`. The ring physically
+        // holds `slots.len()` envelopes and the stash a small prefetch/restore
+        // run, so the worst case exceeds the advertised capacity only by the
+        // stash bound — the same headroom the legacy `count + in_flight`
+        // reservation reserved for a message between pop and handler start.
         let capacity = slots.len() - 1;
         Self {
             inner: Arc::new(SharedMailboxInner {
+                pid,
+                capability,
                 module,
                 account,
+                cancellation,
                 capacity,
                 slots,
                 tail: AtomicUsize::new(0),
                 head: UnsafeCell::new(0),
                 head_atomic: AtomicUsize::new(0),
-                stash: UnsafeCell::new(None),
-                stash_occupied: AtomicBool::new(false),
+                stash: UnsafeCell::new(stash),
+                stash_count: AtomicUsize::new(0),
                 claimed: AtomicUsize::new(0),
                 stopping: AtomicBool::new(false),
                 active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 live_execution_locked: AtomicBool::new(false),
                 live_execution: UnsafeCell::new(None),
+                exec_locked: AtomicBool::new(false),
+                exec: UnsafeCell::new(ActorExecState {
+                    image: Some(image),
+                    owner: None,
+                    last_worker: None,
+                    migrations: 0,
+                    execution: None,
+                    committed_state,
+                    queued: false,
+                    retired: false,
+                }),
                 contention_observation,
             }),
         }
+    }
+
+    #[inline]
+    pub(super) fn exec_lock(&self) -> ActorExecGuard<'_> {
+        locks::spin_lock(&self.inner.exec_locked, None);
+        ActorExecGuard { inner: &self.inner }
     }
 
     pub(super) fn set_live_execution(&self, snapshot: Option<ExecutionSnapshot>) {
@@ -1722,7 +1800,7 @@ impl SharedMailbox {
             .tail
             .load(Ordering::Acquire)
             .saturating_sub(self.inner.head_atomic.load(Ordering::Acquire))
-            + usize::from(self.inner.stash_occupied.load(Ordering::Acquire))
+            + self.inner.stash_count.load(Ordering::Acquire)
             + self.inner.claimed.load(Ordering::Acquire)
     }
 
@@ -1751,10 +1829,16 @@ impl SharedMailbox {
         self.inner.retired.store(true, Ordering::Release);
         self.inner.stopping.store(true, Ordering::Relaxed);
         self.inner.active_or_queued.store(false, Ordering::Relaxed);
-        if self.inner.stash_occupied.swap(false, Ordering::Acquire) {
-            unsafe {
-                (*self.inner.stash.get()).take();
-            }
+        let dropped_image = {
+            let mut exec = self.exec_lock();
+            exec.retired = true;
+            exec.queued = false;
+            exec.image.take()
+        };
+        drop(dropped_image);
+        self.inner.stash_count.store(0, Ordering::Relaxed);
+        unsafe {
+            (*self.inner.stash.get()).clear();
         }
         let n = self.inner.slots.len();
         let head = unsafe { *self.inner.head.get() };
@@ -1897,16 +1981,22 @@ impl SharedMailbox {
         None
     }
 
-    /// Owner-only: returns the next envelope. A restored (stashed) message is
-    /// returned before anything in the ring; a producer that reserved but has
-    /// not published yet is waited on briefly — the claim path only runs here
-    /// once a completed push made the actor ready, so the wait is bounded by
-    /// the publishing store itself.
+    /// Owner-only: returns the next envelope. Restored and prefetched
+    /// (stashed) messages come out first in original queue order; a producer
+    /// that reserved but has not published yet is waited on briefly — the
+    /// claim path only runs here once a completed push made the actor ready,
+    /// so the wait is bounded by the publishing store itself. Ring pops
+    /// opportunistically drain a short run into the stash so subsequent
+    /// claims touch no shared line at all (BEAM's msgin → private-queue move).
     pub(super) fn pop_for_claim(&self) -> Envelope {
         self.inner.claimed.fetch_add(1, Ordering::Acquire);
-        if self.inner.stash_occupied.load(Ordering::Acquire) {
-            self.inner.stash_occupied.store(false, Ordering::Relaxed);
-            if let Some(stashed) = unsafe { (*self.inner.stash.get()).take() } {
+        let stash_len = self.inner.stash_count.load(Ordering::Acquire);
+        if stash_len > 0 {
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            let stashed = unsafe { (*self.inner.stash.get()).pop_front() };
+            if let Some(stashed) = stashed {
                 return stashed;
             }
         }
@@ -1924,11 +2014,52 @@ impl SharedMailbox {
         }
         let message = unsafe { (*slot.data.get()).assume_init_read() };
         slot.seq.store(pos + n, Ordering::Relaxed);
-        unsafe {
-            *self.inner.head.get() = pos + 1;
-        }
-        self.inner.head_atomic.store(pos + 1, Ordering::Release);
+        self.prefetch(pos + 1);
         message
+    }
+
+    /// Owner-only: moves up to `CLAIM_PREFETCH` published envelopes starting
+    /// at ring position `head` into the stash and advances `head_atomic` once.
+    /// `stash_count` is stored before `head_atomic` so `count()` readers can
+    /// only ever over-count during the move, never drop envelopes that still
+    /// occupy admission capacity.
+    fn prefetch(&self, head: usize) {
+        if self.inner.capacity <= 1 {
+            unsafe {
+                *self.inner.head.get() = head;
+            }
+            self.inner.head_atomic.store(head, Ordering::Release);
+            return;
+        }
+        let n = self.inner.slots.len();
+        let tail = self.inner.tail.load(Ordering::Acquire);
+        let mut moved = 0usize;
+        let stash = unsafe { &mut *self.inner.stash.get() };
+        let limit = self.inner.capacity.min(CLAIM_PREFETCH);
+        for pos in head..head.saturating_add(limit).min(tail) {
+            let slot = &self.inner.slots[pos % n];
+            if slot.seq.load(Ordering::Acquire) != pos + 1 {
+                break;
+            }
+            let message = unsafe { (*slot.data.get()).assume_init_read() };
+            slot.seq.store(pos + n, Ordering::Relaxed);
+            stash.push_back(message);
+            moved += 1;
+        }
+        if moved == 0 {
+            unsafe {
+                *self.inner.head.get() = head;
+            }
+            self.inner.head_atomic.store(head, Ordering::Release);
+            return;
+        }
+        unsafe {
+            *self.inner.head.get() = head + moved;
+        }
+        self.inner.stash_count.fetch_add(moved, Ordering::Relaxed);
+        self.inner
+            .head_atomic
+            .store(head + moved, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -1951,8 +2082,8 @@ impl SharedMailbox {
     /// Owner-only: metadata for the front envelope (stash first), or `None`
     /// when nothing is published at the head.
     fn front_message(&self) -> Option<&Envelope> {
-        if self.inner.stash_occupied.load(Ordering::Acquire) {
-            if let Some(stashed) = unsafe { (*self.inner.stash.get()).as_ref() } {
+        if self.inner.stash_count.load(Ordering::Acquire) > 0 {
+            if let Some(stashed) = unsafe { (*self.inner.stash.get()).front() } {
                 return Some(stashed);
             }
         }
@@ -1970,26 +2101,6 @@ impl SharedMailbox {
             .is_some_and(|message| message.fast_eligible)
     }
 
-    pub(super) fn front_can_run_direct(
-        &self,
-        image: &DetachedProcess,
-        fibers: &crate::execution::WorkerFibers,
-        slice_steps: u64,
-        yield_observed: bool,
-    ) -> bool {
-        let Some(message) = self.front_message() else {
-            return false;
-        };
-        fibers.can_run_direct_image_index(
-            &self.inner.module,
-            image,
-            message.handler,
-            message.max_steps,
-            slice_steps,
-            yield_observed,
-        )
-    }
-
     /// Owner-only batch pop: same rules as `pop_for_claim` plus the fast-path
     /// eligibility check and the `stopping` guard.
     pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
@@ -2003,17 +2114,15 @@ impl SharedMailbox {
     }
 
     /// Owner-only: reinserts a popped message at the head via the stash. The
-    /// stash holds at most one message because restores always target the
-    /// message popped most recently.
+    /// restored message lands ahead of any prefetched ones because it was
+    /// popped before them in queue order.
     pub(super) fn restore(&self, message: Envelope) {
-        debug_assert!(!self.inner.stash_occupied.load(Ordering::Relaxed));
         unsafe {
-            debug_assert!((*self.inner.stash.get()).is_none());
-            *self.inner.stash.get() = Some(message);
+            (*self.inner.stash.get()).push_front(message);
         }
         // The stash publishes before the claim releases so `count()` never
         // briefly under-counts the restored message.
-        self.inner.stash_occupied.store(true, Ordering::Release);
+        self.inner.stash_count.fetch_add(1, Ordering::Release);
         self.inner.claimed.fetch_sub(1, Ordering::AcqRel);
     }
 

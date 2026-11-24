@@ -108,7 +108,10 @@ fn actor_cancellation_charge_survives_stop_until_last_control_owner_exits() {
         let (account, token) = {
             let state = handle.shared.lock();
             let actor = state.actor(handle.shared.identity, pid).unwrap();
-            (actor.account.clone(), actor.cancellation.clone())
+            (
+                actor.account.clone(),
+                actor.mailbox.inner.cancellation.clone(),
+            )
         };
         handle.stop(pid).unwrap();
         assert_eq!(
@@ -494,16 +497,18 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         loop {
                             let state = handle.shared.lock();
                             let actor = state.actor(handle.shared.identity, owner).unwrap();
+                            let exec = actor.mailbox.exec_lock();
                             if state.requests.iter().all(|slot| slot.pending.is_none())
-                                && actor.owner.is_none()
+                                && exec.owner.is_none()
                                 && actor.mailbox.count() == 0
                             {
                                 assert_eq!(
-                                    actor.committed_state,
+                                    exec.committed_state,
                                     Some(if corrupt { 300 } else { 0 })
                                 );
                                 break;
                             }
+                            drop(exec);
                             assert!(Instant::now() < end, "scalar completion deadline");
                             drop(state);
                             std::thread::yield_now();
@@ -762,7 +767,7 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     .unwrap();
     actor.mailbox.push(message).unwrap();
     state.enqueue(pid);
-    handle.shared.changed.notify_all();
+    handle.shared.run_queues.changed.notify_all();
     assert!(!state.should_park(0, false, false));
     assert!(state.should_park(1, false, false));
     assert!(state.should_park(0, false, true));
@@ -959,7 +964,7 @@ fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
                 assert_eq!(status, wings_abi::STATUS_OK);
                 if cancel {
                     handle.shared.lock().cancel(owner, capability).unwrap();
-                    handle.shared.changed.notify_all();
+                    handle.shared.run_queues.changed.notify_all();
                 }
                 let deadline = Instant::now() + Duration::from_secs(3);
                 loop {
@@ -1322,6 +1327,7 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
     assert_eq!(state.reserve_slot().unwrap(), 2);
     let replacement = state.pid(handle.shared.identity, 2);
     assert_ne!(replacement, pids[2]);
+    retired.mailbox.exec_lock().retired = false;
     state.slots[2].actor = Some(retired);
     state.slots[2].creating = false;
     state.enqueue(pids[2]);
@@ -1329,27 +1335,35 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), Some(2));
     assert_eq!(state.pop_ready(0), None);
-    let actor = state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap();
-    actor.owner = Some(0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        actor.mailbox.exec_lock().owner = Some(0);
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), None);
-    let actor = state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap();
-    actor.owner = None;
-    actor.last_worker = Some(0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        let mut exec = actor.mailbox.exec_lock();
+        exec.owner = None;
+        exec.last_worker = Some(0);
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), Some(2));
-    state.worker_active[0] = 1;
+    handle.shared.run_queues.set_active(0, 1);
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(1), Some(2));
-    state.worker_active[0] = 0;
-    state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap()
-        .stopping = true;
+    handle.shared.run_queues.set_active(0, 0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        actor.stopping = true;
+        actor.mailbox.mark_stopping();
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(1), None);
     drop(state);
@@ -1758,4 +1772,111 @@ fn batched_fast_messages_refund_merged_envelope_charges() {
             assert_eq!(vm.used(), Resources::default(), "round {round}");
         }
     }
+}
+
+#[test]
+fn work_stealing_claims_congested_peer_without_stealing_uncontested_single_actor() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 4,
+        messages: 8,
+        requests: 2,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 4,
+            requests: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = module();
+    let pid0 = handle.spawn(&module, limits, 1).unwrap();
+    let pid1 = handle.spawn(&module, limits, 1).unwrap();
+    let pid2 = handle.spawn(&module, limits, 1).unwrap();
+    let mut state = handle.shared.lock();
+    for pid in [pid0, pid1, pid2] {
+        let message = envelope(
+            state.actor(handle.shared.identity, pid).unwrap(),
+            &module.handler("Drop").unwrap(),
+            &[],
+            32,
+            ListPayload::default(),
+            BytePayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        state
+            .actor_mut(handle.shared.identity, pid)
+            .unwrap()
+            .mailbox
+            .push(message)
+            .unwrap();
+    }
+    let mb0 = state
+        .actor(handle.shared.identity, pid0)
+        .unwrap()
+        .mailbox
+        .clone();
+    let mb2 = state
+        .actor(handle.shared.identity, pid2)
+        .unwrap()
+        .mailbox
+        .clone();
+    let queues = ready::RunQueues::new(2, 4).unwrap();
+
+    // Enqueue one actor on worker 0 while worker 0 is idle (active == 0):
+    // worker 1 must not steal an uncontested single ready actor.
+    assert!(mb0.mark_enqueued_if_nonempty());
+    mb0.exec_lock().queued = true;
+    queues.push_deferred(0, mb0.clone());
+    assert!(!queues.has_stealable(1));
+    assert!(queues.claim_or_steal(1).is_none());
+
+    // Once a second actor is queued on worker 0 (len > 1), worker 1 steals
+    // the oldest waiting actor (pid0) and records its migration.
+    assert!(mb2.mark_enqueued_if_nonempty());
+    mb2.exec_lock().queued = true;
+    queues.push_deferred(0, mb2.clone());
+    assert!(queues.has_stealable(1));
+    {
+        let stolen = queues
+            .claim_or_steal(1)
+            .expect("worker 1 should steal from congested worker 0");
+        assert_eq!(stolen.mailbox.inner.pid, pid0);
+        let mut exec = stolen.mailbox.exec_lock();
+        assert_eq!(exec.owner, Some(1));
+        assert_eq!(exec.last_worker, Some(1));
+        exec.owner = None;
+        exec.image = Some(stolen.image);
+        stolen.mailbox.set_active_or_queued(false);
+    }
+    queues.dec_active(1);
+
+    // With one remaining actor on worker 0 and worker 0 marked active,
+    // worker 1 can also steal pid2 so it does not wait behind worker 0's running actor.
+    queues.set_active(0, 1);
+    assert!(queues.has_stealable(1));
+    {
+        let stolen = queues
+            .claim_or_steal(1)
+            .expect("worker 1 should steal while worker 0 is active");
+        assert_eq!(stolen.mailbox.inner.pid, pid2);
+        let mut exec = stolen.mailbox.exec_lock();
+        exec.owner = None;
+        exec.image = Some(stolen.image);
+        stolen.mailbox.set_active_or_queued(false);
+    }
+    queues.dec_active(1);
+    queues.set_active(0, 0);
+    drop(queues);
+    drop(state);
+    drop((mb0, mb2, handle, scheduler, module, tenant));
+    assert_eq!(vm.used(), Resources::default());
 }
