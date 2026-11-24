@@ -819,13 +819,27 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             actor.mailbox.push(message).unwrap();
         }
         let first = actor.mailbox.pop_for_claim();
+        // A popped message frees capacity immediately now that restore uses
+        // the owner stash instead of an in-flight slot reservation.
+        let extra = envelope(
+            actor,
+            &handler,
+            &[],
+            999,
+            ListPayload::default(),
+            BytePayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        actor.mailbox.push(extra).unwrap();
         let baseline_full = actor.account.used();
         assert!(
             envelope(
                 actor,
                 &handler,
                 &[],
-                999,
+                1000,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -838,7 +852,10 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
         for sequence in 1..=capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
-        for sequence in capacity + 1..=capacity + capacity / 2 {
+        // The restored stash plus the extra message leave room for one fewer
+        // refill than the ring capacity would suggest; the last envelope is
+        // admitted by `envelope`'s capacity gate but rejected at push time.
+        for sequence in capacity + 1..capacity + capacity / 2 {
             let message = envelope(
                 actor,
                 &handler,
@@ -852,7 +869,24 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             .unwrap();
             actor.mailbox.push(message).unwrap();
         }
-        for sequence in capacity / 2 + 1..=capacity + capacity / 2 {
+        assert!(
+            envelope(
+                actor,
+                &handler,
+                &[],
+                capacity as u64 + capacity as u64 / 2,
+                ListPayload::default(),
+                BytePayload::default(),
+                false,
+                Reply::None
+            )
+            .is_err()
+        );
+        for sequence in capacity / 2 + 1..=capacity {
+            assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
+        }
+        assert_eq!(actor.mailbox.pop().max_steps, 999);
+        for sequence in capacity + 1..capacity + capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
         assert_eq!(actor.mailbox.count(), 0);
@@ -1173,11 +1207,6 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
     drop(actor.mailbox.pop_for_claim());
     state.maintain(handle.shared.identity);
     assert!(state.requests[0].pending.is_some());
-    state
-        .actor_mut(handle.shared.identity, pid)
-        .unwrap()
-        .mailbox
-        .mark_started();
     state.maintain(handle.shared.identity);
     assert!(
         state.requests[0]

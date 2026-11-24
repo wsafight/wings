@@ -313,9 +313,7 @@ impl State {
                 let target = node.target;
                 let can_deliver = match self.actor(identity, target) {
                     Ok(actor) => {
-                        !actor.stopping
-                            && actor.mailbox.count() + actor.mailbox.in_flight()
-                                < actor.mailbox.capacity()
+                        !actor.stopping && actor.mailbox.count() < actor.mailbox.capacity()
                     }
                     Err(_) => {
                         self.timer_count -= 1;
@@ -362,9 +360,7 @@ impl State {
                 let owner = entry.owner;
                 let can_deliver = match self.actor(identity, owner) {
                     Ok(actor) => {
-                        !actor.stopping
-                            && actor.mailbox.count() + actor.mailbox.in_flight()
-                                < actor.mailbox.capacity()
+                        !actor.stopping && actor.mailbox.count() < actor.mailbox.capacity()
                     }
                     Err(_) => {
                         self.monitor_count -= 1;
@@ -451,7 +447,7 @@ impl State {
             };
             if pending.outcome.is_none()
                 || actor.stopping
-                || actor.mailbox.count() + actor.mailbox.in_flight() >= actor.mailbox.capacity()
+                || actor.mailbox.count() >= actor.mailbox.capacity()
             {
                 continue;
             }

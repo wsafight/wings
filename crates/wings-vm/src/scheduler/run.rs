@@ -173,12 +173,6 @@ pub(super) fn worker(
                 claim.fused_direct = fibers
                     .prepare_direct_account(claim.image.is_failed(), &claim.account)
                     .ok();
-                if claim.fused_direct.is_some() {
-                    // A fused claim consumes the message directly; matching the
-                    // old `starting = false` fast path frees the reserved slot
-                    // for senders right away instead of at handler start.
-                    claim.mailbox.release_in_flight();
-                }
             }
             claim
         });
@@ -437,7 +431,6 @@ fn run_fast_claim(
         };
 
         let step = if run_direct {
-            mailbox.mark_started();
             let Envelope {
                 handler,
                 arguments,
@@ -488,7 +481,6 @@ fn run_fast_claim(
                     return batch_step > 0;
                 }
             };
-            mailbox.mark_started();
             let Envelope {
                 handler,
                 arguments,
@@ -733,7 +725,6 @@ fn start(
         };
         return match prepared {
             Ok(task) => {
-                claim.mailbox.mark_started();
                 let Envelope {
                     handler,
                     max_steps,
@@ -789,7 +780,6 @@ fn start(
     })();
     match result {
         Ok(task) => {
-            claim.mailbox.mark_started();
             let Envelope {
                 handler,
                 max_steps,
