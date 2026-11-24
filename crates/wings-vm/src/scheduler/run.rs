@@ -6,10 +6,11 @@ use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarProcess, ScalarTask};
 use std::collections::VecDeque;
 
-#[cfg(target_os = "macos")]
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(55);
-#[cfg(not(target_os = "macos"))]
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(120);
+const MIN_SPIN_WINDOW: Duration = Duration::from_micros(25);
+const INITIAL_SPIN_WINDOW: Duration = Duration::from_micros(60);
+const MAX_SPIN_WINDOW: Duration = Duration::from_micros(160);
+const SPIN_GROW_STEP: Duration = Duration::from_micros(30);
+const SPIN_DECAY_IDLE: Duration = Duration::from_micros(500);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
@@ -115,8 +116,10 @@ pub(super) fn worker(
     };
     // `hot` marks that work ran since the last park attempt; the spin deadline
     // is computed lazily when the loop actually goes idle so the per-message
-    // path does not pay a clock read.
+    // path does not pay a clock read. `spin_window` adapts BEAM-style between
+    // `MIN_SPIN_WINDOW` (idle) and `MAX_SPIN_WINDOW` (steady medium traffic).
     let mut hot = false;
+    let mut spin_window = INITIAL_SPIN_WINDOW;
     // A `finish_process` fused continuation carries the already-claimed next
     // message for the same actor; it is dispatched before touching the state
     // lock on the next iteration.
@@ -291,7 +294,7 @@ pub(super) fn worker(
             }
         }
         if !attempted && hot {
-            let Some(spin_deadline) = Instant::now().checked_add(HOT_SPIN_WINDOW) else {
+            let Some(spin_deadline) = Instant::now().checked_add(spin_window) else {
                 hot = false;
                 continue;
             };
@@ -325,6 +328,10 @@ pub(super) fn worker(
                 || shared.run_queues.has_stealable(index))
         {
             (false, None)
+        } else if !shared.run_queues.closed.load(Ordering::SeqCst)
+            && !shared.run_queues.has_timers.load(Ordering::SeqCst)
+        {
+            (false, Some(Duration::from_millis(1)))
         } else {
             let mut state = shared.lock();
             if state.closed && local.is_empty() {
@@ -343,7 +350,16 @@ pub(super) fn worker(
             break;
         }
         if let Some(duration) = sleep_duration.filter(|d| !d.is_zero()) {
+            let park_start = Instant::now();
             std::thread::park_timeout(duration);
+            let parked = park_start.elapsed();
+            if parked < MAX_SPIN_WINDOW {
+                spin_window = spin_window
+                    .saturating_add(SPIN_GROW_STEP)
+                    .min(MAX_SPIN_WINDOW);
+            } else if parked >= SPIN_DECAY_IDLE {
+                spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+            }
         }
         shared.run_queues.changed.clear_parked(bit);
     }
