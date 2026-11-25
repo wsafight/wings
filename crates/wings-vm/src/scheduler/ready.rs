@@ -190,6 +190,11 @@ impl RunQueues {
     }
 
     #[inline]
+    pub(super) fn local_len(&self, worker: usize) -> usize {
+        self.queues[worker].len.load(Ordering::Acquire)
+    }
+
+    #[inline]
     pub(super) fn inc_active(&self, worker: usize) {
         let atomic = &self.queues[worker].active;
         atomic.store(atomic.load(Ordering::Relaxed) + 1, Ordering::Relaxed);

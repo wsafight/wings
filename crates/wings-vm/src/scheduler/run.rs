@@ -127,10 +127,63 @@ pub(super) fn worker(
     // message for the same actor; it is dispatched before touching the state
     // lock on the next iteration.
     let mut pending_claim: Option<Claim> = None;
+    // BEAM-style FIFO round-robin between `run_queues[index]` and suspended
+    // tasks in `local`: after each round of `local` slices, snapshot the
+    // waiting run-queue depth into `drain_fast` so every already-queued actor
+    // gets a turn before `local` resumes, while bounding the drain so an
+    // unbounded fast-message stream can never starve suspended tasks.
+    let mut drain_fast: usize = 0;
+    let mut local_round_remaining: usize = 0;
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
         let had_local = !local.is_empty();
+        if !had_local {
+            drain_fast = 0;
+            local_round_remaining = 0;
+        } else if drain_fast == 0 && pending_claim.is_none() {
+            let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
+            let timer_due = shared.run_queues.timer_due();
+            let closed = shared.run_queues.closed.load(Ordering::Acquire);
+            if closed || (mask & WAKE_GLOBAL_BIT) != 0 || timer_due {
+                let (wake, should_exit) = {
+                    let mut state = shared.worker_lock(index, LockPhase::Claim);
+                    let wake = state.maintain(shared.identity);
+                    let should_exit = state.closed && local.is_empty();
+                    shared.publish_signal(&mut state);
+                    (wake, should_exit)
+                };
+                wake.fire(&shared.run_queues.changed);
+                if should_exit {
+                    break;
+                }
+            }
+            if let Some(active) = local.pop_front() {
+                let allow_continue = local.is_empty() && shared.run_queues.local_len(index) == 0;
+                if let Some(fused) = run_active_slice(
+                    &shared,
+                    index,
+                    active,
+                    &pool,
+                    &timer,
+                    &mut fibers,
+                    &mut local,
+                    allow_continue,
+                ) {
+                    pending_claim = Some(fused);
+                }
+                local_round_remaining = local_round_remaining.saturating_sub(1);
+                if local_round_remaining == 0 {
+                    drain_fast = shared.run_queues.local_len(index);
+                    if drain_fast == 0 && shared.run_queues.has_stealable(index) {
+                        drain_fast = 1;
+                    }
+                    local_round_remaining = local.len();
+                }
+                hot = true;
+                continue;
+            }
+        }
         let (claim, wake, should_exit) = if let Some(mut fused) = pending_claim.take() {
             // A fused continuation skips the lock entirely; the only state
             // maintenance needed is deferred until the next real acquisition.
@@ -244,23 +297,18 @@ pub(super) fn worker(
             );
             pending_claim = continued;
             if had_local {
-                if let Some(active) = local.pop_front() {
-                    let allow_continue = pending_claim.is_none() && local.is_empty();
-                    if let Some(fused) = run_active_slice(
-                        &shared,
-                        index,
-                        active,
-                        &pool,
-                        &timer,
-                        &mut fibers,
-                        &mut local,
-                        allow_continue,
-                    ) {
-                        pending_claim = Some(fused);
-                    }
-                    hot = true;
-                    continue;
+                drain_fast = drain_fast.saturating_sub(1);
+                hot = true;
+                continue;
+            }
+            if !local.is_empty() {
+                drain_fast = shared.run_queues.local_len(index);
+                if drain_fast == 0 && shared.run_queues.has_stealable(index) {
+                    drain_fast = 1;
                 }
+                local_round_remaining = local.len();
+                hot = true;
+                continue;
             }
             if progressed {
                 hot = true;
@@ -269,20 +317,27 @@ pub(super) fn worker(
         } else {
             let next_active = match claim {
                 Some(claim) => {
-                    match start(&shared, index, claim, &pool, &preemption, &mut fibers) {
-                        Some(started) if local.is_empty() => Some(started),
-                        Some(started) => {
+                    let started = start(&shared, index, claim, &pool, &preemption, &mut fibers);
+                    if had_local {
+                        if let Some(started) = started {
                             assert!(local.len() < shared.config.capacity);
                             local.push_back(started);
-                            local.pop_front()
                         }
-                        None => local.pop_front(),
+                        drain_fast = drain_fast.saturating_sub(1);
+                        hot = true;
+                        continue;
                     }
+                    started
                 }
-                None => local.pop_front(),
+                None => {
+                    drain_fast = 0;
+                    local.pop_front()
+                }
             };
             if let Some(active) = next_active {
-                let allow_continue = pending_claim.is_none() && local.is_empty();
+                let allow_continue = pending_claim.is_none()
+                    && local.is_empty()
+                    && shared.run_queues.local_len(index) == 0;
                 if let Some(fused) = run_active_slice(
                     &shared,
                     index,
@@ -294,6 +349,13 @@ pub(super) fn worker(
                     allow_continue,
                 ) {
                     pending_claim = Some(fused);
+                }
+                if !local.is_empty() {
+                    drain_fast = shared.run_queues.local_len(index);
+                    if drain_fast == 0 && shared.run_queues.has_stealable(index) {
+                        drain_fast = 1;
+                    }
+                    local_round_remaining = local.len();
                 }
                 hot = true;
                 continue;
