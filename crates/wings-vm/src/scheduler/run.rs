@@ -12,6 +12,7 @@ const PEER_SPIN_WINDOW: Duration = Duration::from_micros(40);
 const MAX_SOLO_SPIN_WINDOW: Duration = Duration::from_micros(1500);
 const SOLO_SPIN_GROW_STEP: Duration = Duration::from_micros(250);
 const SOLO_SPIN_DECAY_IDLE: Duration = Duration::from_micros(3000);
+const IDLE_PARK_TIMEOUT: Duration = Duration::from_millis(50);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
@@ -350,7 +351,7 @@ pub(super) fn worker(
         {
             (false, None)
         } else if !shared.run_queues.closed.load(Ordering::SeqCst) {
-            match shared.run_queues.next_timer_wait(Duration::from_millis(1)) {
+            match shared.run_queues.next_timer_wait(IDLE_PARK_TIMEOUT) {
                 Some(wait) => (false, Some(wait)),
                 None => (false, None),
             }
@@ -362,7 +363,7 @@ pub(super) fn worker(
             } else {
                 let sleep = state
                     .should_park(index, false, attempted)
-                    .then(|| state.next_park_timeout(Duration::from_millis(1)));
+                    .then(|| state.next_park_timeout(IDLE_PARK_TIMEOUT));
                 shared.publish_signal(&mut state);
                 (false, sleep)
             }
@@ -371,16 +372,34 @@ pub(super) fn worker(
             shared.run_queues.changed.clear_parked(bit);
             break;
         }
-        if let Some(duration) = sleep_duration.filter(|d| !d.is_zero()) {
+        if let Some(mut duration) = sleep_duration.filter(|d| !d.is_zero()) {
             let park_start = Instant::now();
-            std::thread::park_timeout(duration);
-            let parked = park_start.elapsed();
-            if parked < MAX_SOLO_SPIN_WINDOW {
-                spin_window = spin_window
-                    .saturating_add(SOLO_SPIN_GROW_STEP)
-                    .min(MAX_SOLO_SPIN_WINDOW);
-            } else if parked >= SOLO_SPIN_DECAY_IDLE {
+            loop {
+                std::thread::park_timeout(duration);
+                let woke_for_work = (shared.run_queues.ready_mask.load(Ordering::Acquire) & watch)
+                    != 0
+                    || shared.run_queues.has_stealable(index)
+                    || shared.run_queues.timer_due()
+                    || shared.run_queues.closed.load(Ordering::Acquire);
+                if woke_for_work || attempted {
+                    let parked = park_start.elapsed();
+                    if woke_for_work && parked < MAX_SOLO_SPIN_WINDOW {
+                        spin_window = spin_window
+                            .saturating_add(SOLO_SPIN_GROW_STEP)
+                            .min(MAX_SOLO_SPIN_WINDOW);
+                    } else if parked >= SOLO_SPIN_DECAY_IDLE {
+                        spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+                    }
+                    break;
+                }
+                // Fallback timeout with no work: decay spin window and stay
+                // parked without clearing `parked_mask` so we never disturb a
+                // solo-awake sibling worker.
                 spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+                match shared.run_queues.next_timer_wait(IDLE_PARK_TIMEOUT) {
+                    Some(next) if !next.is_zero() => duration = next,
+                    _ => break,
+                }
             }
         }
         shared.run_queues.changed.clear_parked(bit);

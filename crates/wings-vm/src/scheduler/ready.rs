@@ -233,13 +233,23 @@ impl RunQueues {
         let preferred = last_worker
             .filter(|&w| w < workers)
             .unwrap_or(slot_index % workers);
-        if self.queues[preferred].active.load(Ordering::Relaxed) == 0
-            && (parked & (1u32 << preferred)) == 0
-        {
+        if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+            if last_worker.is_some() || (parked & (1u32 << preferred)) == 0 {
+                return preferred;
+            }
+            // BEAM-style awake-worker compaction on initial placement: prefer
+            // an already-awake idle worker over waking a parked sibling.
+            for offset in 1..workers {
+                let candidate = (preferred + offset) % workers;
+                if (parked & (1u32 << candidate)) == 0
+                    && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
+            }
             return preferred;
         }
-        // BEAM-style awake-worker compaction: prefer an already-awake idle
-        // worker over waking a parked worker when spilling or placing a new actor.
         for offset in 1..workers {
             let candidate = (preferred + offset) % workers;
             if (parked & (1u32 << candidate)) == 0
@@ -248,9 +258,6 @@ impl RunQueues {
             {
                 return candidate;
             }
-        }
-        if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
-            return preferred;
         }
         for offset in 1..workers {
             let candidate = (preferred + offset) % workers;
