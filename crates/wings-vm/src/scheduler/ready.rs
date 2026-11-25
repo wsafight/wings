@@ -209,6 +209,21 @@ impl RunQueues {
         self.queues[worker].active.store(value, Ordering::Relaxed);
     }
 
+    #[inline]
+    pub(super) fn is_solo_awake(&self, worker: usize) -> bool {
+        let workers = self.queues.len();
+        if workers <= 1 {
+            return true;
+        }
+        let all = if workers >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << workers) - 1
+        };
+        let others = all & !(1u32 << worker);
+        (self.changed.parked_mask() & others) == others
+    }
+
     pub(super) fn select_worker(&self, slot_index: usize, last_worker: Option<usize>) -> usize {
         let workers = self.queues.len();
         if workers <= 1 {
@@ -219,7 +234,7 @@ impl RunQueues {
             .filter(|&w| w < workers)
             .unwrap_or(slot_index % workers);
         if self.queues[preferred].active.load(Ordering::Relaxed) == 0
-            && (last_worker.is_some() || (parked & (1u32 << preferred)) == 0)
+            && (parked & (1u32 << preferred)) == 0
         {
             return preferred;
         }

@@ -8,9 +8,10 @@ use std::collections::VecDeque;
 
 const MIN_SPIN_WINDOW: Duration = Duration::from_micros(25);
 const INITIAL_SPIN_WINDOW: Duration = Duration::from_micros(60);
-const MAX_SPIN_WINDOW: Duration = Duration::from_micros(160);
-const SPIN_GROW_STEP: Duration = Duration::from_micros(30);
-const SPIN_DECAY_IDLE: Duration = Duration::from_micros(500);
+const PEER_SPIN_WINDOW: Duration = Duration::from_micros(40);
+const MAX_SOLO_SPIN_WINDOW: Duration = Duration::from_micros(1500);
+const SOLO_SPIN_GROW_STEP: Duration = Duration::from_micros(250);
+const SOLO_SPIN_DECAY_IDLE: Duration = Duration::from_micros(3000);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
@@ -299,7 +300,14 @@ pub(super) fn worker(
         }
         let bit = 1u32 << index;
         if !attempted && hot {
-            let Some(spin_deadline) = Instant::now().checked_add(spin_window) else {
+            let mut solo = shared.run_queues.is_solo_awake(index);
+            let spin_start = Instant::now();
+            let window = if solo {
+                spin_window
+            } else {
+                PEER_SPIN_WINDOW.min(spin_window)
+            };
+            let Some(mut spin_deadline) = spin_start.checked_add(window) else {
                 hot = false;
                 continue;
             };
@@ -319,7 +327,14 @@ pub(super) fn worker(
                 if has_work() {
                     break;
                 }
-                if Instant::now() >= spin_deadline {
+                let now = Instant::now();
+                if solo && !shared.run_queues.is_solo_awake(index) {
+                    solo = false;
+                    if let Some(peer_deadline) = spin_start.checked_add(PEER_SPIN_WINDOW) {
+                        spin_deadline = spin_deadline.min(peer_deadline);
+                    }
+                }
+                if now >= spin_deadline {
                     hot = false;
                     break;
                 }
@@ -360,11 +375,11 @@ pub(super) fn worker(
             let park_start = Instant::now();
             std::thread::park_timeout(duration);
             let parked = park_start.elapsed();
-            if parked < MAX_SPIN_WINDOW {
+            if parked < MAX_SOLO_SPIN_WINDOW {
                 spin_window = spin_window
-                    .saturating_add(SPIN_GROW_STEP)
-                    .min(MAX_SPIN_WINDOW);
-            } else if parked >= SPIN_DECAY_IDLE {
+                    .saturating_add(SOLO_SPIN_GROW_STEP)
+                    .min(MAX_SOLO_SPIN_WINDOW);
+            } else if parked >= SOLO_SPIN_DECAY_IDLE {
                 spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
             }
         }
