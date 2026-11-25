@@ -493,7 +493,26 @@ fn execute(
                 } else if next < count {
                     let gap = planned(next).saturating_sub(now_ns);
                     if gap > 90_000 {
-                        std::thread::sleep(Duration::from_nanos(gap - 55_000));
+                        let wait_for = Duration::from_nanos(gap - 55_000);
+                        if let Some(request) = hot_request.as_mut() {
+                            if let Some(outcome) = request.wait(wait_for)? {
+                                let observed = elapsed(start);
+                                if outcome != RequestOutcome::Reply(1_000_000) {
+                                    return Err(format!("fairness incomplete CPU {outcome:?}"));
+                                }
+                                hot_count += 1;
+                                if let Some(trace) = &mut trace {
+                                    event(trace, hot_count, hot_sent, observed, 1_000_000, 6)?;
+                                } else {
+                                    hot_samples
+                                        .push(json!([hot_count, hot_sent, observed, 1_000_000]));
+                                }
+                                committed[0] += 1;
+                                hot_request = None;
+                            }
+                        } else {
+                            std::thread::sleep(wait_for);
+                        }
                     } else {
                         for _ in 0..16 {
                             std::hint::spin_loop();
