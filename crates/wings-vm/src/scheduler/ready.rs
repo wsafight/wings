@@ -11,13 +11,17 @@ pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
 #[repr(align(64))]
 pub(super) struct WorkerRunQueue {
     lock: AtomicBool,
+    // Single-slot inline fast head: 0 <-> 1 transitions (hot-queue and
+    // sparse-256) stay inside this cache line without touching the heap-backed
+    // `VecDeque` buffer.
+    fast_head: UnsafeCell<Option<SharedMailbox>>,
     queue: UnsafeCell<VecDeque<SharedMailbox>>,
     len: AtomicUsize,
     pub(super) active: AtomicU32,
 }
 
-// Safety: `queue` is only accessed while `lock` is held with Acquire/Release
-// ordering, and `SharedMailbox` is `Send`.
+// Safety: `fast_head` and `queue` are only accessed while `lock` is held with
+// Acquire/Release ordering, and `SharedMailbox` is `Send`.
 unsafe impl Send for WorkerRunQueue {}
 unsafe impl Sync for WorkerRunQueue {}
 
@@ -29,6 +33,7 @@ impl WorkerRunQueue {
             .map_err(|_| "scheduler worker run queue allocation failed")?;
         Ok(Self {
             lock: AtomicBool::new(false),
+            fast_head: UnsafeCell::new(None),
             queue: UnsafeCell::new(queue),
             len: AtomicUsize::new(0),
             active: AtomicU32::new(0),
@@ -37,10 +42,15 @@ impl WorkerRunQueue {
 
     fn push(&self, mailbox: SharedMailbox, ready_mask: &AtomicU32, bit: u32) -> (bool, bool) {
         locks::spin_lock(&self.lock, None);
+        let fast_head = unsafe { &mut *self.fast_head.get() };
         let queue = unsafe { &mut *self.queue.get() };
-        let was_empty = queue.is_empty();
-        queue.push_back(mailbox);
-        let new_len = queue.len();
+        let was_empty = fast_head.is_none() && queue.is_empty();
+        if was_empty {
+            *fast_head = Some(mailbox);
+        } else {
+            queue.push_back(mailbox);
+        }
+        let new_len = usize::from(fast_head.is_some()) + queue.len();
         self.len.store(new_len, Ordering::Release);
         if was_empty {
             ready_mask.fetch_or(bit, Ordering::SeqCst);
@@ -55,9 +65,10 @@ impl WorkerRunQueue {
             return None;
         }
         locks::spin_lock(&self.lock, None);
+        let fast_head = unsafe { &mut *self.fast_head.get() };
         let queue = unsafe { &mut *self.queue.get() };
-        let item = queue.pop_front();
-        let new_len = queue.len();
+        let item = fast_head.take().or_else(|| queue.pop_front());
+        let new_len = usize::from(fast_head.is_some()) + queue.len();
         self.len.store(new_len, Ordering::Release);
         if new_len == 0 {
             ready_mask.fetch_and(!bit, Ordering::Release);
@@ -78,14 +89,15 @@ impl WorkerRunQueue {
         {
             return None;
         }
+        let fast_head = unsafe { &mut *self.fast_head.get() };
         let queue = unsafe { &mut *self.queue.get() };
-        let item =
-            if queue.len() > 1 || (!queue.is_empty() && self.active.load(Ordering::Relaxed) > 0) {
-                queue.pop_front()
-            } else {
-                None
-            };
-        let new_len = queue.len();
+        let total = usize::from(fast_head.is_some()) + queue.len();
+        let item = if total > 1 || (total > 0 && self.active.load(Ordering::Relaxed) > 0) {
+            fast_head.take().or_else(|| queue.pop_front())
+        } else {
+            None
+        };
+        let new_len = usize::from(fast_head.is_some()) + queue.len();
         self.len.store(new_len, Ordering::Release);
         if new_len == 0 {
             ready_mask.fetch_and(!bit, Ordering::Release);
@@ -104,12 +116,20 @@ impl WorkerRunQueue {
 
     fn remove_slot(&self, slot: usize, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
         locks::spin_lock(&self.lock, None);
+        let fast_head = unsafe { &mut *self.fast_head.get() };
         let queue = unsafe { &mut *self.queue.get() };
-        let removed = queue
-            .iter()
-            .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
-            .and_then(|pos| queue.remove(pos));
-        let new_len = queue.len();
+        let removed = if fast_head
+            .as_ref()
+            .is_some_and(|mailbox| mailbox.inner.pid.slot as usize == slot)
+        {
+            fast_head.take()
+        } else {
+            queue
+                .iter()
+                .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
+                .and_then(|pos| queue.remove(pos))
+        };
+        let new_len = usize::from(fast_head.is_some()) + queue.len();
         self.len.store(new_len, Ordering::Relaxed);
         if new_len == 0 {
             ready_mask.fetch_and(!bit, Ordering::Release);
@@ -121,7 +141,7 @@ impl WorkerRunQueue {
 
 pub(super) struct RunQueues {
     queues: Box<[WorkerRunQueue]>,
-    pub(super) ready_mask: AtomicU32,
+    pub(super) ready_mask: CachePadded<AtomicU32>,
     epoch: Instant,
     pub(super) next_timer_ns: AtomicU64,
     pub(super) closed: AtomicBool,
@@ -139,7 +159,7 @@ impl RunQueues {
         }
         Ok(Arc::new(Self {
             queues: queues.into_boxed_slice(),
-            ready_mask: AtomicU32::new(0),
+            ready_mask: CachePadded(AtomicU32::new(0)),
             epoch: Instant::now(),
             next_timer_ns: AtomicU64::new(u64::MAX),
             closed: AtomicBool::new(false),
@@ -557,14 +577,14 @@ impl RunQueues {
 }
 
 pub(super) struct WorkerWakeHub {
-    parked_mask: AtomicU32,
+    parked_mask: CachePadded<AtomicU32>,
     threads: [OnceLock<Thread>; 16],
 }
 
 impl WorkerWakeHub {
     pub(super) fn new() -> Self {
         Self {
-            parked_mask: AtomicU32::new(0),
+            parked_mask: CachePadded(AtomicU32::new(0)),
             threads: std::array::from_fn(|_| OnceLock::new()),
         }
     }

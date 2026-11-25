@@ -488,7 +488,7 @@ pub(crate) struct SharedMailbox {
 }
 
 #[repr(align(64))]
-struct CachePadded<T>(T);
+pub(super) struct CachePadded<T>(pub(super) T);
 
 impl<T> std::ops::Deref for CachePadded<T> {
     type Target = T;
@@ -536,8 +536,11 @@ struct SharedMailboxInner {
     // toward occupancy so a claim → rollback cycle cannot widen admission
     // beyond `capacity` (the legacy `in_flight` reservation's role).
     claimed: AtomicUsize,
+    // Separate the producer/scheduler control flags from the consumer's
+    // `head`/`stash`/`claimed` cache line so ring pops do not invalidate
+    // producers polling `active_or_queued` or `last_worker_hint`.
+    active_or_queued: CachePadded<AtomicBool>,
     stopping: AtomicBool,
-    active_or_queued: AtomicBool,
     retired: AtomicBool,
     last_worker_hint: AtomicUsize,
     live_execution_locked: AtomicBool,
@@ -1808,8 +1811,8 @@ impl SharedMailbox {
                 stash: UnsafeCell::new(stash),
                 stash_count: AtomicUsize::new(0),
                 claimed: AtomicUsize::new(0),
+                active_or_queued: CachePadded(AtomicBool::new(false)),
                 stopping: AtomicBool::new(false),
-                active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 last_worker_hint: AtomicUsize::new(usize::MAX),
                 live_execution_locked: AtomicBool::new(false),
