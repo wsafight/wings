@@ -5,7 +5,7 @@ use corosensei::{Coroutine, CoroutineResult, Yielder};
 use wings_abi::{STATUS_CANCELLED, STATUS_OK, ScalarContext, ScalarEntry, ScalarOutput};
 
 use crate::aot_heap::AotHeap;
-use crate::message_values::{BytePayload, ListPayload};
+use crate::message_values::{BytePayload, ListPayload, MessageArguments};
 use crate::reply::BufferReply;
 use crate::stack_pool::{FiberStack, PooledStack};
 use crate::{
@@ -36,8 +36,8 @@ mod fibers;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use abi::{copy_effect_payload, runtime_checkpoint, runtime_checkpoint_batch};
 use abi::{new_coroutine, resume_invocation, send_self_reusable, suspend_reusable};
-pub(crate) use abi::{runtime_checkpoint, runtime_checkpoint_batch};
 use fibers::{ActiveReusableFiber, FiberCommand, FiberEvent, ReusableControl};
 pub(crate) use fibers::{PreparedDirect, WorkerFibers};
 
@@ -62,8 +62,7 @@ pub(crate) struct ProcessEffect {
     pub operation: u32,
     pub target: i64,
     pub handler: usize,
-    pub arguments: [i64; 64],
-    pub count: usize,
+    pub arguments: MessageArguments,
     pub callback: usize,
     pub timeout_ms: i64,
     pub lists: ListPayload,
@@ -478,7 +477,7 @@ impl ScalarTask {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_scheduled(
         &mut self,
-        handler: &HandlerId,
+        handler_index: usize,
         arguments: &[i64],
         max_steps: u64,
         controls: impl FnOnce() -> (CancellationToken, PreemptionToken),
@@ -492,12 +491,12 @@ impl ScalarTask {
         if self.process.failed {
             return Err("scalar process has failed and must be restarted".into());
         }
-        if !std::sync::Arc::ptr_eq(&self.process.module.inner, &handler.module.inner) {
+        if handler_index >= self.process.module.inner.entries.len() {
             return Err("handler belongs to a different module".into());
         }
         self.invocation = Some(Invocation::new(
             &mut self.process,
-            handler.index,
+            handler_index,
             arguments,
             true,
             max_steps,
@@ -631,7 +630,7 @@ impl Invocation {
             stack,
             &mut process.heap,
             effects_enabled,
-            *lists,
+            lists.clone(),
             bytes,
             Some(process.module.clone()),
             [

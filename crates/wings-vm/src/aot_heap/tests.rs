@@ -1229,10 +1229,11 @@ fn byte_imports_root_mixed_arguments_at_every_copy_and_collection_checkpoint() {
     bytes
         .data
         .extend((0..MAX_MESSAGE_BYTES).map(|index| (index % 251) as u8));
+    let mut list_values = crate::message_values::ListValues::default();
+    list_values.try_extend(&[i64::MIN, i64::MAX]).unwrap();
     let lists = ListPayload {
         mask: 4,
-        count: 2,
-        values: std::array::from_fn(|index| if index == 0 { i64::MIN } else { i64::MAX }),
+        values: list_values,
     };
     let mut arguments = [
         ListPayload::encode(0, 32768),
@@ -1580,10 +1581,10 @@ fn list_exports_poll_each_node_keep_source_roots_and_reject_stale_layouts() {
     let payload = unsafe { export_lists(&mut context, &mut arguments, 1) }.unwrap();
     assert!(payload.valid(&arguments, 1));
     assert_eq!(context.remaining_steps, 0);
-    assert_eq!(payload.count, 64);
+    assert_eq!(payload.len(), 64);
     assert_eq!(
-        payload.values,
-        std::array::from_fn(|index| 63 - index as i64)
+        payload.values.as_slice(),
+        (0..64i64).rev().collect::<Vec<_>>().as_slice()
     );
     let mut arguments = [shorter];
     context.remaining_steps = 2;
@@ -1632,8 +1633,11 @@ fn list_imports_root_each_tail_and_prior_mixed_arguments_at_every_checkpoint() {
     context.slice_remaining = 0;
     let payload = ListPayload {
         mask: 0b10101,
-        count: 4,
-        values: std::array::from_fn(|index| [i64::MIN, i64::MAX, -7, 9][index % 4]),
+        values: {
+            let mut values = crate::message_values::ListValues::default();
+            values.try_extend(&[i64::MIN, i64::MAX, -7, 9]).unwrap();
+            values
+        },
     };
     let mut arguments = [
         ListPayload::encode(0, 2),

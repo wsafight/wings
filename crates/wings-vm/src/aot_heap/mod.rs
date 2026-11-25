@@ -7,7 +7,7 @@ use wings_abi::{
     ShadowFrame,
 };
 
-use crate::message_values::{BytePayload, ListPayload, MAX_LIST_ELEMENTS, MAX_MESSAGE_BYTES};
+use crate::message_values::{BytePayload, ListPayload, MAX_MESSAGE_BYTES};
 use crate::{
     FieldType, HeapRef, HeapStats, RecordHeap, RecordLayout, RecordReply, RecordValue, Reservation,
     ResourceAccount, Resources, ShadowRoots,
@@ -23,7 +23,6 @@ pub(crate) struct AotHeap {
     incoming_mask: u64,
     incoming: Option<Box<[Option<HeapRef>; 64]>>,
     named: Box<[NamedLayout]>,
-    _named_charge: Reservation,
     _metadata: Reservation,
 }
 
@@ -78,13 +77,11 @@ impl AotHeap {
         }
         let mut heap = RecordHeap::new(account, capacity, 2 + records.len())?;
         let metadata = account.reserve(Resources {
-            bytes: (std::mem::size_of::<Self>() + std::mem::size_of::<[Option<HeapRef>; 64]>()
+            bytes: (std::mem::size_of::<Self>()
+                + std::mem::size_of::<[Option<HeapRef>; 64]>()
+                + records.len() * std::mem::size_of::<NamedLayout>()
                 - std::mem::size_of::<RecordHeap>()
                 - std::mem::size_of::<ShadowRoots>()) as u64,
-            ..Resources::default()
-        })?;
-        let named_charge = account.reserve(Resources {
-            bytes: (records.len() * std::mem::size_of::<NamedLayout>()) as u64,
             ..Resources::default()
         })?;
         let empty_list = heap.register_layout(&[FieldType::Unit])?;
@@ -142,7 +139,6 @@ impl AotHeap {
                 incoming_mask: 0,
                 incoming: None,
                 named: named.into_boxed_slice(),
-                _named_charge: named_charge,
                 _metadata: metadata,
             })
         };
@@ -178,12 +174,22 @@ impl AotHeap {
         } else if ty == wings_abi::ValueType::StringRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.string_bytes(reference)?;
-            self.committed = Some(reference);
+            let previous = self.committed.replace(reference);
+            if let Some(old_ref) = previous {
+                if old_ref != reference && self.incoming_mask == 0 && self.roots.is_empty() {
+                    self.heap.try_recycle_sole_leaf(old_ref, reference);
+                }
+            }
             Ok(())
         } else if ty == wings_abi::ValueType::BytesRef {
             let reference = self.heap.import_reference(encoded as u64)?;
             self.heap.bytes(reference)?;
-            self.committed = Some(reference);
+            let previous = self.committed.replace(reference);
+            if let Some(old_ref) = previous {
+                if old_ref != reference && self.incoming_mask == 0 && self.roots.is_empty() {
+                    self.heap.try_recycle_sole_leaf(old_ref, reference);
+                }
+            }
             Ok(())
         } else if ty == wings_abi::ValueType::ListRef {
             self.commit_list(encoded)
@@ -236,7 +242,8 @@ impl AotHeap {
         &mut self,
         mut frame: *const ShadowFrame,
     ) -> Result<(), ShadowRootError> {
-        let mut references = [None; MAX_SHADOW_ROOTS + 65];
+        let mut references: [std::mem::MaybeUninit<Option<HeapRef>>; MAX_SHADOW_ROOTS + 65] =
+            [const { std::mem::MaybeUninit::uninit() }; MAX_SHADOW_ROOTS + 65];
         let mut count = 0;
         let mut depth = 0;
         let mut slow = frame;
@@ -254,11 +261,11 @@ impl AotHeap {
             }
             for index in 0..current.count {
                 let encoded = unsafe { *current.slots.add(index) };
-                references[count] = Some(
+                references[count].write(Some(
                     self.heap
                         .import_reference(encoded)
                         .map_err(|_| ShadowRootError::Invalid)?,
-                );
+                ));
                 count += 1;
             }
             depth += 1;
@@ -275,7 +282,7 @@ impl AotHeap {
             self.heap
                 .import_reference(committed.encoded())
                 .map_err(|_| ShadowRootError::Invalid)?;
-            references[count] = Some(committed);
+            references[count].write(Some(committed));
             count += 1;
         }
         let mut incoming_bits = self.incoming_mask;
@@ -288,13 +295,16 @@ impl AotHeap {
                     self.heap
                         .import_reference(reference.encoded())
                         .map_err(|_| ShadowRootError::Invalid)?;
-                    references[count] = Some(reference);
+                    references[count].write(Some(reference));
                     count += 1;
                 }
             }
         }
+        let initialized = unsafe {
+            std::slice::from_raw_parts(references.as_ptr().cast::<Option<HeapRef>>(), count)
+        };
         self.roots
-            .try_replace(&references[..count])
+            .try_replace(initialized)
             .map_err(|_| ShadowRootError::Exhausted)?;
         Ok(())
     }
@@ -317,6 +327,7 @@ impl AotHeap {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn clear_incoming(&mut self) {
         let mut bits = self.incoming_mask;
         if bits != 0 {

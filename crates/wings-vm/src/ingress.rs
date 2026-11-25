@@ -430,7 +430,7 @@ mod tests {
         let envelope = receiver.take().unwrap();
         assert_eq!(envelope.arguments[0], 7);
         assert_eq!(envelope.lists.mask, 2);
-        assert_eq!(envelope.lists.values, [i64::MIN; 64]);
+        assert_eq!(envelope.lists.values.as_slice(), [i64::MIN; 64]);
         assert_eq!(envelope.bytes.mask, 12);
         assert_eq!(envelope.bytes.string_mask, 4);
         assert_eq!(&envelope.bytes.data[..8], "中😀\0".as_bytes());

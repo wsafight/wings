@@ -10,6 +10,7 @@ pub(super) struct FiberStart {
     cancellation: *const std::sync::atomic::AtomicU32,
     heap: Option<Box<AotHeap>>,
     effects_enabled: bool,
+    inline: Option<crate::scheduler::EffectSendTarget>,
 }
 
 pub(super) enum FiberCommand {
@@ -34,6 +35,14 @@ pub(super) enum FiberEvent {
 pub(super) struct ReusableControl<'scope> {
     pub(super) yielder: &'scope Yielder<FiberCommand, FiberEvent>,
     pub(super) preemption: &'scope PreemptionToken,
+    /// Lock-free send context for `EFFECT_SELF_PID` / `EFFECT_SEND_SELF` /
+    /// `EFFECT_SEND`; `None` (e.g. outside the scheduler) keeps the
+    /// suspend-to-scheduler path. The borrow lives in the coroutine frame, so
+    /// it stays valid across suspensions of this invocation.
+    pub(super) inline: Option<&'scope crate::scheduler::EffectSendTarget>,
+    /// `max_steps` of the current invocation; inline sends charge it to the
+    /// delivered envelope exactly like the suspended effect path.
+    pub(super) budget: u64,
 }
 
 pub(super) struct ParkedFiber {
@@ -111,13 +120,13 @@ enum DirectFiberLease {
 
 pub(crate) struct PreparedDirect {
     stack_lease: Option<DirectFiberLease>,
-    _control_charge: Reservation,
+    _control_charge: Option<Reservation>,
     native_stack_limit: usize,
 }
 
 pub(crate) struct PreparedFiber {
     active: ActiveReusableFiber,
-    control_charge: Reservation,
+    control_charge: Option<Reservation>,
 }
 
 impl WorkerFibers {
@@ -138,7 +147,7 @@ impl WorkerFibers {
     pub(crate) fn can_run_direct(
         &self,
         process: &ScalarProcess,
-        handler: &HandlerId,
+        handler_index: usize,
         max_steps: u64,
         slice_steps: u64,
         yield_observed: bool,
@@ -146,15 +155,17 @@ impl WorkerFibers {
         !yield_observed
             && self.native_stack_limit != 0
             && self.preemption.flag.load(Ordering::Acquire) == 0
-            && handler
-                .direct_max_steps(process.heap.as_deref())
+            && process
+                .module
+                .direct_max_steps(handler_index, process.heap.as_deref())
                 .is_some_and(|bound| bound <= max_steps && bound <= slice_steps)
     }
 
-    pub(crate) fn can_run_direct_image(
+    pub(crate) fn can_run_direct_image_index(
         &self,
+        module: &ScalarModule,
         image: &crate::DetachedProcess,
-        handler: &HandlerId,
+        handler_index: usize,
         max_steps: u64,
         slice_steps: u64,
         yield_observed: bool,
@@ -163,8 +174,8 @@ impl WorkerFibers {
             && !image.is_failed()
             && self.native_stack_limit != 0
             && self.preemption.flag.load(Ordering::Acquire) == 0
-            && handler
-                .direct_max_steps(image.heap_ref())
+            && module
+                .direct_max_steps(handler_index, image.heap_ref())
                 .is_some_and(|bound| bound <= max_steps && bound <= slice_steps)
     }
 
@@ -179,12 +190,12 @@ impl WorkerFibers {
         if process_account.level() != ResourceLevel::Process {
             return Err("accounted stack pool must be bound to a process".into());
         }
-        let control_charge = process_account.reserve(Resources {
-            bytes: INVOCATION_OVERHEAD,
-            ..Resources::default()
-        })?;
         for slot in &mut self.slots[..self.limit] {
-            if let Some(mut parked) = slot.take() {
+            if slot.is_some() {
+                // Parked fiber stack charges already carry INVOCATION_OVERHEAD
+                // folded in by `recycle`, so reactivation moves the invocation
+                // quota inside the single charge transfer.
+                let mut parked = slot.take().expect("checked parked fiber");
                 let charge_ref = parked
                     .stack_charge
                     .as_mut()
@@ -193,7 +204,7 @@ impl WorkerFibers {
                     Ok(()) => {
                         return Ok(PreparedDirect {
                             stack_lease: Some(DirectFiberLease::Parked(parked)),
-                            _control_charge: control_charge,
+                            _control_charge: None,
                             native_stack_limit: self.native_stack_limit,
                         });
                     }
@@ -204,13 +215,15 @@ impl WorkerFibers {
                 }
             }
         }
-        let lease = self.pool.acquire_direct_stack_charge(process_account)?;
+        let lease = self
+            .pool
+            .acquire_direct_with_overhead(process_account, INVOCATION_OVERHEAD)?;
         Ok(PreparedDirect {
             stack_lease: Some(DirectFiberLease::Demand {
                 pool: self.pool.clone(),
                 lease,
             }),
-            _control_charge: control_charge,
+            _control_charge: None,
             native_stack_limit: self.native_stack_limit,
         })
     }
@@ -223,23 +236,16 @@ impl WorkerFibers {
         self.prepare_direct_account(process.failed, process_account)
     }
 
+    #[inline]
     pub(crate) fn can_run_fast(
         handler: &HandlerId,
         lists: &ListPayload,
         bytes: &BytePayload,
     ) -> bool {
         lists.mask == 0
-            && lists.count == 0
+            && lists.is_empty()
             && bytes.is_trivially_empty()
-            && !matches!(
-                handler.schema().reply,
-                Some(
-                    wings_abi::ValueType::ListRef
-                        | wings_abi::ValueType::BytesRef
-                        | wings_abi::ValueType::StringRef
-                        | wings_abi::ValueType::RecordRef(_)
-                )
-            )
+            && handler.fast_meta().fast_scalar()
     }
 
     pub(crate) fn prepare(
@@ -253,10 +259,6 @@ impl WorkerFibers {
         if process_account.level() != ResourceLevel::Process {
             return Err("accounted stack pool must be bound to a process".into());
         }
-        let control_charge = process_account.reserve(Resources {
-            bytes: INVOCATION_OVERHEAD,
-            ..Resources::default()
-        })?;
         for slot in &mut self.slots[..self.limit] {
             if let Some(mut parked) = slot.take() {
                 let charge_ref = parked
@@ -275,7 +277,7 @@ impl WorkerFibers {
                                 pool: self.pool.clone(),
                                 _cancellation: None,
                             },
-                            control_charge,
+                            control_charge: None,
                         });
                     }
                     Err(error) => {
@@ -285,6 +287,13 @@ impl WorkerFibers {
                 }
             }
         }
+        // A cold fiber has no parked charge to reuse, so the invocation
+        // overhead is a standalone reservation; on completion it merges into
+        // `stack_charge` (see `recycle`) and amortizes away for warm fibers.
+        let control_charge = Some(process_account.reserve(Resources {
+            bytes: INVOCATION_OVERHEAD,
+            ..Resources::default()
+        })?);
         let (stack, stack_charge) = self.pool.allocate_fiber_stack(process_account)?;
         let coroutine = new_reusable_coroutine(stack, self.preemption.clone());
         Ok(PreparedFiber {
@@ -374,10 +383,34 @@ unsafe extern "C" fn direct_unexpected_slow(context: *mut ScalarContext) -> u32 
 }
 
 impl PreparedDirect {
+    pub(crate) fn release(mut self, fibers: &mut WorkerFibers) {
+        if let Some(lease) = self.stack_lease.take() {
+            match lease {
+                DirectFiberLease::Parked(mut parked) => {
+                    let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
+                    let mut stack_charge = parked
+                        .stack_charge
+                        .take()
+                        .expect("activated parked stack charge");
+                    if let Some(control) = self._control_charge.take() {
+                        // Fold the invocation overhead into the stack charge so
+                        // the parked fiber carries it and the next direct
+                        // activation skips its own reservation.
+                        stack_charge.merge(control);
+                    }
+                    let pool = parked.pool.clone();
+                    fibers.recycle(coroutine, stack_charge, pool);
+                }
+                DirectFiberLease::Demand { pool, lease } => {
+                    pool.release_direct_stack_charge(lease);
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
-        mut self,
-        fibers: &mut WorkerFibers,
+        &self,
         mut process: ScalarProcess,
         handler: usize,
         arguments: &[i64],
@@ -420,23 +453,6 @@ impl PreparedDirect {
         }
         let remaining_steps = context.remaining_steps;
         let heap_stats = heap.as_deref().map(AotHeap::stats);
-        if let Some(lease) = self.stack_lease.take() {
-            match lease {
-                DirectFiberLease::Parked(mut parked) => {
-                    let coroutine = parked.coroutine.take().expect("parked fiber coroutine");
-                    let stack_charge = parked
-                        .stack_charge
-                        .take()
-                        .expect("activated parked stack charge");
-                    let pool = parked.pool.clone();
-                    fibers.recycle(coroutine, stack_charge, pool);
-                }
-                DirectFiberLease::Demand { pool, lease } => {
-                    pool.release_direct_stack_charge(lease);
-                }
-            }
-        }
-        drop(self);
         process.heap = heap;
         let result = process.finish_invocation(handler, status, output, None, None, None);
         let snapshot = ExecutionSnapshot {
@@ -459,6 +475,7 @@ impl PreparedDirect {
 }
 
 impl PreparedFiber {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_ready_task(
         mut self,
         fibers: &WorkerFibers,
@@ -467,6 +484,7 @@ impl PreparedFiber {
         arguments: &[i64],
         max_steps: u64,
         cancellation: &CancellationToken,
+        inline: Option<crate::scheduler::EffectSendTarget>,
     ) -> Result<ScalarTask, (ScalarProcess, String)> {
         let snapshot = ExecutionSnapshot {
             phase: ExecutionPhase::Ready,
@@ -486,6 +504,7 @@ impl PreparedFiber {
             cancellation: &*cancellation.flag,
             heap: process.heap.take(),
             effects_enabled: true,
+            inline,
         };
         self.active._cancellation = Some(cancellation.clone());
         let primed = self
@@ -504,7 +523,7 @@ impl PreparedFiber {
             effect: None,
             acknowledgement: None,
             preemption: fibers.preemption.clone(),
-            _charge: Some(self.control_charge),
+            _charge: self.control_charge,
         };
         Ok(ScalarTask {
             invocation: Some(invocation),
@@ -524,6 +543,7 @@ impl PreparedFiber {
         max_steps: u64,
         slice_steps: u64,
         cancellation: &CancellationToken,
+        inline: Option<crate::scheduler::EffectSendTarget>,
     ) -> Result<
         (
             ScalarProcess,
@@ -544,6 +564,7 @@ impl PreparedFiber {
             cancellation: &*cancellation.flag,
             heap: process.heap.take(),
             effects_enabled: true,
+            inline,
         };
         let step = self
             .active
@@ -559,14 +580,16 @@ impl PreparedFiber {
                 checkpoint,
             }) => {
                 let coroutine = self.active.coroutine.take().expect("completed coroutine");
-                let stack_charge = self
+                let mut stack_charge = self
                     .active
                     .stack_charge
                     .take()
                     .expect("completed stack charge");
+                if let Some(control) = self.control_charge.take() {
+                    stack_charge.merge(control);
+                }
                 let pool = self.active.pool.clone();
                 fibers.recycle(coroutine, stack_charge, pool);
-                drop(self.control_charge);
                 process.heap = heap;
                 let result = process.finish_invocation(handler, status, output, None, None, None);
                 let snapshot = ExecutionSnapshot {
@@ -608,7 +631,7 @@ impl PreparedFiber {
                     effect: checkpoint.effect,
                     acknowledgement: None,
                     preemption: fibers.preemption.clone(),
-                    _charge: Some(self.control_charge),
+                    _charge: self.control_charge,
                 };
                 Err(Box::new(ScalarTask {
                     invocation: Some(invocation),
@@ -662,6 +685,8 @@ fn new_reusable_coroutine(stack: FiberStack, preemption: PreemptionToken) -> Reu
             let mut control = ReusableControl {
                 yielder,
                 preemption: &preemption,
+                inline: start.inline.as_ref(),
+                budget: start.max_steps,
             };
             let mut context = ScalarContext {
                 cancellation: start.cancellation,

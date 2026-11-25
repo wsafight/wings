@@ -65,7 +65,7 @@ pub(super) struct WorkerLockObservation {
 }
 
 #[derive(Default)]
-pub(super) struct ContentionCounters {
+pub(crate) struct ContentionCounters {
     acquisitions: AtomicU64,
     failures: AtomicU64,
     yields: AtomicU64,
@@ -100,6 +100,10 @@ impl ContentionCounters {
                 Err(actual) => current = actual,
             }
         }
+    }
+
+    pub(super) fn record_contended(&self, failures: u64, yields: u64, wait: Duration) {
+        self.record(failures, yields, wait);
     }
 
     fn record(&self, failures: u64, yields: u64, wait: Duration) {
@@ -303,7 +307,7 @@ impl DerefMut for WorkerStateGuard<'_> {
 
 impl Drop for WorkerStateGuard<'_> {
     fn drop(&mut self) {
-        if let Some(state) = self.state.as_deref() {
+        if let Some(state) = self.state.as_deref_mut() {
             self.shared.publish_signal(state);
         }
         let measured = self.measurement.as_ref().map(|measurement| {

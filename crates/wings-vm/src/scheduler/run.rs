@@ -1,36 +1,41 @@
 use super::locks::LockPhase;
-use super::ready::WAKE_GLOBAL_BIT;
+use super::ready::{WAKE_GLOBAL_BIT, WakeSignal};
 use super::*;
 use crate::execution::{PreparedDirect, WorkerFibers};
 use crate::timer::DeadlineTimer;
 use crate::{ExecutionStatus, PreemptionToken, RequestOutcome, ScalarProcess, ScalarTask};
 use std::collections::VecDeque;
 
-#[cfg(target_os = "macos")]
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(55);
-#[cfg(not(target_os = "macos"))]
-const HOT_SPIN_WINDOW: Duration = Duration::from_micros(120);
+const MIN_SPIN_WINDOW: Duration = Duration::from_micros(25);
+const INITIAL_SPIN_WINDOW: Duration = Duration::from_micros(60);
+const MAX_SPIN_WINDOW: Duration = Duration::from_micros(160);
+const SPIN_GROW_STEP: Duration = Duration::from_micros(30);
+const SPIN_DECAY_IDLE: Duration = Duration::from_micros(500);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
 pub(super) struct Running {
     pid: SchedulerPid,
     task: ScalarTask,
-    handler: HandlerId,
+    mailbox: SharedMailbox,
+    handler: usize,
     max_steps: u64,
     reply: Reply,
-    _charge: Reservation,
-    _message_charge: Option<Reservation>,
+    snapshot_published: bool,
+    _charge: crate::resources::EnvelopeCharge,
 }
 
 struct Claim {
-    pid: SchedulerPid,
     image: DetachedProcess,
     message: Envelope,
     mailbox: SharedMailbox,
-    account: ResourceAccount,
-    cancellation: CancellationToken,
     fused_direct: Option<PreparedDirect>,
+    prechecked_direct: bool,
+}
+
+pub(super) struct AcquiredActor {
+    pub(super) image: DetachedProcess,
+    pub(super) mailbox: SharedMailbox,
 }
 
 struct WorkerExit(Arc<Shared>);
@@ -83,7 +88,7 @@ pub(super) fn worker(
     let setup = (|| {
         stack_check(THREAD_STACK + 65536)?;
         let native_stack_limit = crate::native_stack::current_managed_limit()?;
-        shared.changed.register(index);
+        shared.run_queues.changed.register(index);
         let pool = StackPool::new_on_demand(
             &shared.tenant,
             shared.config.capacity,
@@ -110,79 +115,121 @@ pub(super) fn worker(
             return;
         }
     };
-    let mut hot_until: Option<Instant> = None;
+    // `hot` marks that work ran since the last park attempt; the spin deadline
+    // is computed lazily when the loop actually goes idle so the per-message
+    // path does not pay a clock read. `spin_window` adapts BEAM-style between
+    // `MIN_SPIN_WINDOW` (idle) and `MAX_SPIN_WINDOW` (steady medium traffic).
+    let mut hot = false;
+    let mut spin_window = INITIAL_SPIN_WINDOW;
+    // A `finish_process` fused continuation carries the already-claimed next
+    // message for the same actor; it is dispatched before touching the state
+    // lock on the next iteration.
+    let mut pending_claim: Option<Claim> = None;
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
         let had_local = !local.is_empty();
-        let (claim, wake, should_exit) = {
-            let mut state = shared.worker_lock(index, LockPhase::Claim);
-            let wake = state.maintain(shared.identity);
-            let out = if state.closed {
-                (None, wake, local.is_empty())
-            } else if let Some(slot) = state.pop_ready_for_claim(index) {
-                let pid = state.pid(shared.identity, slot);
-                let actor = state.slots[slot].actor.as_mut().expect("ready actor");
-                assert!(!actor.stopping && actor.owner.is_none() && actor.mailbox.count() > 0);
-                let can_fuse = actor.image.as_ref().is_some_and(|image| {
-                    actor.mailbox.front_can_run_direct(
-                        image,
-                        &fibers,
-                        shared.config.slice_steps,
-                        yield_observed,
-                    )
-                });
-                let fused_direct = if can_fuse {
-                    let failed = actor.image.as_ref().expect("actor image").is_failed();
-                    fibers.prepare_direct_account(failed, &actor.account).ok()
-                } else {
-                    None
-                };
-                actor.owner = Some(index);
-                let is_starting = if fused_direct.is_some() {
-                    actor.starting = false;
-                    if actor.last_worker.is_some_and(|previous| previous != index) {
-                        actor.migrations += 1;
-                    }
-                    actor.last_worker = Some(index);
-                    false
-                } else {
-                    actor.starting = true;
-                    true
-                };
-                let popped = actor.mailbox.pop_for_claim(is_starting);
-                let claim = Claim {
-                    pid,
-                    image: actor.image.take().expect("unowned actor image"),
-                    message: popped,
-                    mailbox: (*actor.mailbox).clone(),
-                    account: actor.account.clone(),
-                    cancellation: actor.cancellation.clone(),
-                    fused_direct,
-                };
-                state.worker_active[index] += 1;
-                (Some(claim), wake, false)
+        let (claim, wake, should_exit) = if let Some(mut fused) = pending_claim.take() {
+            // A fused continuation skips the lock entirely; the only state
+            // maintenance needed is deferred until the next real acquisition.
+            if fibers.can_run_direct_image_index(
+                &fused.mailbox.inner.module,
+                &fused.image,
+                fused.message.handler,
+                fused.message.max_steps,
+                shared.config.slice_steps,
+                yield_observed,
+            ) {
+                fused.fused_direct = fibers
+                    .prepare_direct_account(fused.image.is_failed(), &fused.mailbox.inner.account)
+                    .ok();
+            }
+            (Some(fused), WakeSignal::NONE, false)
+        } else {
+            let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
+            let timer_due = shared.run_queues.timer_due();
+            let can_steal = (mask & !watch) != 0 && shared.run_queues.has_stealable(index);
+            if !had_local && hot && (mask & watch) == 0 && !can_steal && !timer_due {
+                // Nothing is queued for this worker and no global maintenance bit
+                // is set. Skip the empty `Claim` lock and go straight into the
+                // bounded hot spin; if the spin expires without work, `hot` clears
+                // and the park path checks timers and shutdown under the lock.
+                (None, WakeSignal::NONE, false)
             } else {
-                (None, wake, false)
-            };
-            shared.publish_signal(&state);
-            out
+                let closed = shared.run_queues.closed.load(Ordering::Acquire);
+                let (acquired, wake, should_exit) =
+                    if !closed && (mask & WAKE_GLOBAL_BIT) == 0 && !timer_due {
+                        // BEAM-style per-worker run-queue claim with work stealing:
+                        // pop from this worker's queue or steal from a congested peer
+                        // without touching the global mutex.
+                        (
+                            shared.run_queues.claim_or_steal(index),
+                            WakeSignal::NONE,
+                            false,
+                        )
+                    } else {
+                        let (wake, closed_now, should_exit) = {
+                            let mut state = shared.worker_lock(index, LockPhase::Claim);
+                            let wake = state.maintain(shared.identity);
+                            let closed_now = state.closed;
+                            let should_exit = closed_now && local.is_empty();
+                            shared.publish_signal(&mut state);
+                            (wake, closed_now, should_exit)
+                        };
+                        let acquired = if closed_now {
+                            None
+                        } else {
+                            shared.run_queues.claim_or_steal(index)
+                        };
+                        (acquired, wake, should_exit)
+                    };
+                // Pop from the lock-free mailbox, check direct eligibility, and
+                // reserve the direct lease *after* claiming ownership: once
+                // `exec.owner = Some(index)` is published, this worker is the
+                // exclusive consumer of `mailbox`.
+                let claim = acquired.map(|acquired| {
+                    let (message, fused_direct) = acquired.mailbox.pop_for_claim_direct(|front| {
+                        if fibers.can_run_direct_image_index(
+                            &acquired.mailbox.inner.module,
+                            &acquired.image,
+                            front.handler,
+                            front.max_steps,
+                            shared.config.slice_steps,
+                            yield_observed,
+                        ) {
+                            fibers
+                                .prepare_direct_account(
+                                    acquired.image.is_failed(),
+                                    &acquired.mailbox.inner.account,
+                                )
+                                .ok()
+                        } else {
+                            None
+                        }
+                    });
+                    let prechecked_direct = fused_direct.is_some();
+                    Claim {
+                        image: acquired.image,
+                        message,
+                        mailbox: acquired.mailbox,
+                        fused_direct,
+                        prechecked_direct,
+                    }
+                });
+                (claim, wake, should_exit)
+            }
         };
-        wake.fire(&shared.changed);
+        wake.fire(&shared.run_queues.changed);
         if should_exit {
             break;
         }
         let attempted = claim.is_some();
-        if claim.as_ref().is_some_and(|claim| {
-            claim.fused_direct.is_some()
-                || WorkerFibers::can_run_fast(
-                    &claim.message.handler,
-                    &claim.message.lists,
-                    &claim.message.bytes,
-                )
-        }) {
+        if claim
+            .as_ref()
+            .is_some_and(|claim| claim.fused_direct.is_some() || claim.message.fast_eligible)
+        {
             let max_batch = if had_local { 1 } else { MAX_BACKLOG_BATCH };
-            let progressed = run_fast_claim(
+            let (progressed, continued) = run_fast_claim(
                 &shared,
                 index,
                 claim.expect("checked fast claim"),
@@ -190,13 +237,14 @@ pub(super) fn worker(
                 &timer,
                 &mut fibers,
                 &mut local,
-                watch,
                 yield_observed,
                 max_batch,
             );
+            pending_claim = continued;
             if had_local {
                 if let Some(active) = local.pop_front() {
-                    run_active_slice(
+                    let allow_continue = pending_claim.is_none() && local.is_empty();
+                    if let Some(fused) = run_active_slice(
                         &shared,
                         index,
                         active,
@@ -204,13 +252,16 @@ pub(super) fn worker(
                         &timer,
                         &mut fibers,
                         &mut local,
-                    );
-                    hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                        allow_continue,
+                    ) {
+                        pending_claim = Some(fused);
+                    }
+                    hot = true;
                     continue;
                 }
             }
             if progressed {
-                hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
+                hot = true;
                 continue;
             }
         } else {
@@ -229,7 +280,8 @@ pub(super) fn worker(
                 None => local.pop_front(),
             };
             if let Some(active) = next_active {
-                run_active_slice(
+                let allow_continue = pending_claim.is_none() && local.is_empty();
+                if let Some(fused) = run_active_slice(
                     &shared,
                     index,
                     active,
@@ -237,72 +289,87 @@ pub(super) fn worker(
                     &timer,
                     &mut fibers,
                     &mut local,
-                );
-                hot_until = Instant::now().checked_add(HOT_SPIN_WINDOW);
-                continue;
-            }
-        }
-        if let (false, Some(spin_deadline)) = (attempted, hot_until) {
-            while shared.ready_mask.load(Ordering::Acquire) & watch == 0 {
-                for _ in 0..32 {
-                    if shared.ready_mask.load(Ordering::Acquire) & watch != 0 {
-                        break;
-                    }
-                    std::hint::spin_loop();
+                    allow_continue,
+                ) {
+                    pending_claim = Some(fused);
                 }
-                if shared.ready_mask.load(Ordering::Acquire) & watch != 0 {
-                    break;
-                }
-                if Instant::now() >= spin_deadline {
-                    hot_until = None;
-                    break;
-                }
-            }
-            if shared.ready_mask.load(Ordering::Acquire) & watch != 0 {
+                hot = true;
                 continue;
             }
         }
         let bit = 1u32 << index;
-        shared.changed.mark_parked(bit);
-        let (should_break, sleep_duration) =
-            if !attempted && (shared.ready_mask.load(Ordering::SeqCst) & watch != 0) {
-                (false, None)
-            } else {
-                let state = shared.lock();
-                if state.closed && local.is_empty() {
-                    shared.publish_signal(&state);
-                    (true, None)
-                } else {
-                    let sleep = state
-                        .should_park(index, false, attempted)
-                        .then(|| state.next_park_timeout(Duration::from_millis(1)));
-                    shared.publish_signal(&state);
-                    (false, sleep)
-                }
+        if !attempted && hot {
+            let Some(spin_deadline) = Instant::now().checked_add(spin_window) else {
+                hot = false;
+                continue;
             };
+            let has_work = || {
+                let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
+                (m & bit) != 0
+                    || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                    || shared.run_queues.timer_due()
+            };
+            while !has_work() {
+                for _ in 0..32 {
+                    if has_work() {
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
+                if has_work() {
+                    break;
+                }
+                if Instant::now() >= spin_deadline {
+                    hot = false;
+                    break;
+                }
+            }
+            if has_work() {
+                continue;
+            }
+        }
+        shared.run_queues.changed.mark_parked(bit);
+        let (should_break, sleep_duration) = if !attempted
+            && (shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
+                || shared.run_queues.has_stealable(index))
+        {
+            (false, None)
+        } else if !shared.run_queues.closed.load(Ordering::SeqCst) {
+            match shared.run_queues.next_timer_wait(Duration::from_millis(1)) {
+                Some(wait) => (false, Some(wait)),
+                None => (false, None),
+            }
+        } else {
+            let mut state = shared.lock();
+            if state.closed && local.is_empty() {
+                shared.publish_signal(&mut state);
+                (true, None)
+            } else {
+                let sleep = state
+                    .should_park(index, false, attempted)
+                    .then(|| state.next_park_timeout(Duration::from_millis(1)));
+                shared.publish_signal(&mut state);
+                (false, sleep)
+            }
+        };
         if should_break {
-            shared.changed.clear_parked(bit);
+            shared.run_queues.changed.clear_parked(bit);
             break;
         }
         if let Some(duration) = sleep_duration.filter(|d| !d.is_zero()) {
+            let park_start = Instant::now();
             std::thread::park_timeout(duration);
+            let parked = park_start.elapsed();
+            if parked < MAX_SPIN_WINDOW {
+                spin_window = spin_window
+                    .saturating_add(SPIN_GROW_STEP)
+                    .min(MAX_SPIN_WINDOW);
+            } else if parked >= SPIN_DECAY_IDLE {
+                spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+            }
         }
-        shared.changed.clear_parked(bit);
+        shared.run_queues.changed.clear_parked(bit);
     }
-}
-
-fn mark_started(shared: &Shared, index: usize, pid: SchedulerPid) {
-    let mut state = shared.worker_lock(index, LockPhase::Start);
-    let actor = state
-        .actor_mut(shared.identity, pid)
-        .expect("claimed actor");
-    assert_eq!(actor.owner, Some(index));
-    actor.starting = false;
-    actor.mailbox.set_starting(false);
-    if actor.last_worker.is_some_and(|previous| previous != index) {
-        actor.migrations += 1;
-    }
-    actor.last_worker = Some(index);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,12 +381,10 @@ fn run_active_slice(
     timer: &DeadlineTimer,
     fibers: &mut WorkerFibers,
     local: &mut VecDeque<Running>,
-) {
-    match Instant::now()
-        .checked_add(shared.config.quantum)
-        .and_then(|deadline| timer.arm(deadline).ok())
-    {
-        Some(()) => {
+    allow_continue: bool,
+) -> Option<Claim> {
+    match timer.arm_after(shared.config.quantum) {
+        Ok(()) => {
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
             let result = active
                 .task
@@ -342,19 +407,25 @@ fn run_active_slice(
                     let (status, value) = shared.effect(active.pid, effect, active.max_steps, pool);
                     active.task.acknowledge_effect(status, value);
                 }
-                let mut state = shared.worker_lock(index, LockPhase::Snapshot);
-                if let Ok(actor) = state.actor_mut(shared.identity, active.pid) {
-                    actor.execution = active.task.snapshot();
+                let snapshot = active.task.snapshot();
+                active.mailbox.set_live_execution(snapshot);
+                if !active.snapshot_published {
+                    active.mailbox.exec_lock().execution = snapshot;
+                    active.snapshot_published = true;
                 }
-                drop(state);
                 local.push_back(active);
+                None
             } else {
-                finish(shared, index, active, map_outcome(result));
+                finish(shared, index, active, map_outcome(result), allow_continue)
             }
         }
-        None => {
-            finish(shared, index, active, Err("scheduler timer failure".into()));
-        }
+        Err(_) => finish(
+            shared,
+            index,
+            active,
+            Err("scheduler timer failure".into()),
+            allow_continue,
+        ),
     }
 }
 
@@ -367,93 +438,103 @@ fn run_fast_claim(
     timer: &DeadlineTimer,
     fibers: &mut WorkerFibers,
     local: &mut VecDeque<Running>,
-    watch: u32,
     yield_observed: bool,
     max_batch: usize,
-) -> bool {
-    let mut process = match claim.image.attach_scheduled(pool, &claim.account) {
+) -> (bool, Option<Claim>) {
+    let mut process = match claim.image.attach_trusted_scheduled() {
         Ok(process) => process,
         Err(_) => {
-            claim.fused_direct.take();
+            if let Some(prepared) = claim.fused_direct.take() {
+                prepared.release(fibers);
+            }
             rollback_failed_start(shared, index, claim);
-            return false;
+            return (false, None);
         }
     };
-    let pid = claim.pid;
     let mailbox = claim.mailbox;
-    let account = claim.account;
-    let cancellation = claim.cancellation;
-    let mut fused_direct = claim.fused_direct;
+    let pid = mailbox.inner.pid;
+    let capability = mailbox.inner.capability;
+    let mut inline: Option<EffectSendTarget> = None;
+    let mut cached_direct = claim.fused_direct;
     let mut current_message = Some(claim.message);
-    let mut already_started = fused_direct.is_some();
+    let mut prechecked_direct = claim.prechecked_direct;
+    // Envelope charges of messages that complete inside this batch are merged
+    // into one reservation instead of refunding per message; the merged charge
+    // releases once the batch ends (or is handed to a suspended task).
+    let mut batch_charge: Option<Reservation> = None;
+    // `closed` only transitions once; hoisting the load out of the batch loop
+    // lets a closed scheduler finish the current batch (bounded by
+    // `max_batch`) before the worker unwinds through `finish_process`.
+    let scheduler_open = !shared.run_queues.closed.load(Ordering::Acquire);
     for batch_step in 0..max_batch {
         let message = current_message.take().expect("active fast batch message");
-        let direct_prepared = if let Some(prepared) = fused_direct.take() {
-            Some(prepared)
+        // The direct gate is re-checked for every message — including the
+        // first, which may carry a `fused_direct` lease from the claim —
+        // unless `try_pop_batch_fast_with` already verified `can_run_direct`
+        // with an active `cached_direct` lease and skipped the `claimed` RMW.
+        let run_direct = if prechecked_direct {
+            true
         } else if fibers.can_run_direct(
             &process,
-            &message.handler,
+            message.handler,
             message.max_steps,
             shared.config.slice_steps,
             yield_observed,
         ) {
-            match fibers.prepare_direct(&process, &account) {
-                Ok(prepared) => Some(prepared),
-                Err(_) => {
-                    rollback_failed_start(
-                        shared,
-                        index,
-                        Claim {
-                            pid,
-                            image: process.detach(),
-                            message,
-                            mailbox,
-                            account,
-                            cancellation,
-                            fused_direct: None,
-                        },
-                    );
-                    return batch_step > 0;
+            if cached_direct.is_none() {
+                match fibers.prepare_direct(&process, &mailbox.inner.account) {
+                    Ok(prepared) => cached_direct = Some(prepared),
+                    Err(_) => {
+                        rollback_failed_start(
+                            shared,
+                            index,
+                            Claim {
+                                image: process.detach(),
+                                message,
+                                mailbox,
+                                fused_direct: None,
+                                prechecked_direct: false,
+                            },
+                        );
+                        return (batch_step > 0, None);
+                    }
                 }
             }
+            true
         } else {
-            None
+            if let Some(prepared) = cached_direct.take() {
+                prepared.release(fibers);
+            }
+            false
         };
 
-        let step = if let Some(prepared) = direct_prepared {
-            if !already_started {
-                if batch_step == 0 {
-                    mark_started(shared, index, pid);
-                } else {
-                    let mut state = shared.worker_lock(index, LockPhase::Start);
-                    let actor = state
-                        .actor_mut(shared.identity, pid)
-                        .expect("batched actor");
-                    assert_eq!(actor.owner, Some(index));
-                    actor.starting = false;
-                    actor.mailbox.set_starting(false);
-                }
+        let step = if run_direct {
+            // Claim → handler start: the message stops counting against
+            // admission capacity only now, matching the old `in_flight`
+            // reservation released by `mark_started`. Pre-checked batch
+            // messages bypassed the `claimed` increment entirely.
+            if !prechecked_direct {
+                mailbox.mark_started();
             }
+            prechecked_direct = false;
             let Envelope {
                 handler,
                 arguments,
-                count,
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = message;
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
-            let (next_process, snapshot, result) = prepared.run(
-                fibers,
-                process,
-                handler.index,
-                &arguments[..count],
-                max_steps,
-                shared.config.slice_steps,
-                &cancellation,
-            );
+            let (next_process, snapshot, result) =
+                cached_direct.as_ref().expect("cached direct lease").run(
+                    process,
+                    handler,
+                    arguments.as_slice(),
+                    max_steps,
+                    shared.config.slice_steps,
+                    &mailbox.inner.cancellation,
+                );
             let returned_at = started_at.map(|_| Instant::now());
             (
                 Ok((next_process, snapshot, result)),
@@ -461,80 +542,64 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 started_at,
                 returned_at,
             )
         } else {
-            let prepared = match fibers.prepare(&process, &account) {
+            let prepared = match fibers.prepare(&process, &mailbox.inner.account) {
                 Ok(prepared) => prepared,
                 Err(_) => {
                     rollback_failed_start(
                         shared,
                         index,
                         Claim {
-                            pid,
                             image: process.detach(),
                             message,
                             mailbox,
-                            account,
-                            cancellation,
                             fused_direct: None,
+                            prechecked_direct: false,
                         },
                     );
-                    return batch_step > 0;
+                    return (batch_step > 0, None);
                 }
             };
-            if batch_step == 0 {
-                mark_started(shared, index, pid);
-            } else if !already_started {
-                let mut state = shared.worker_lock(index, LockPhase::Start);
-                let actor = state
-                    .actor_mut(shared.identity, pid)
-                    .expect("batched actor");
-                assert_eq!(actor.owner, Some(index));
-                actor.starting = false;
-                actor.mailbox.set_starting(false);
-            }
+            let inline_target = inline
+                .get_or_insert_with(|| EffectSendTarget::new(shared, &mailbox, pid, capability));
             let Envelope {
                 handler,
                 arguments,
-                count,
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = message;
-            let armed = Instant::now()
-                .checked_add(shared.config.quantum)
-                .and_then(|deadline| timer.arm(deadline).ok());
-            let Some(()) = armed else {
+            mailbox.mark_started();
+            if timer.arm_after(shared.config.quantum).is_err() {
                 drop(prepared);
-                drop((mailbox, account, cancellation));
                 finish_process(
                     shared,
                     index,
-                    pid,
+                    mailbox,
                     process,
                     None,
                     handler,
                     reply,
                     _charge,
-                    _message_charge,
                     Err("scheduler timer failure".into()),
+                    false,
                 );
-                return true;
-            };
+                return (true, None);
+            }
             let started_at = shared.slice_observations.get(index).map(|_| Instant::now());
             let outcome = prepared.run_first_slice(
                 fibers,
                 process,
-                handler.index,
-                &arguments[..count],
+                handler,
+                arguments.as_slice(),
                 max_steps,
                 shared.config.slice_steps,
-                &cancellation,
+                &mailbox.inner.cancellation,
+                Some(inline_target.clone()),
             );
             let returned_at = started_at.map(|_| Instant::now());
             timer.disarm();
@@ -544,22 +609,12 @@ fn run_fast_claim(
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 started_at,
                 returned_at,
             )
         };
 
-        let (
-            step_result,
-            handler,
-            max_steps,
-            mut reply,
-            _charge,
-            _message_charge,
-            started_at,
-            returned_at,
-        ) = step;
+        let (step_result, handler, max_steps, mut reply, _charge, started_at, returned_at) = step;
 
         match step_result {
             Ok((next_process, snapshot, result)) => {
@@ -578,94 +633,152 @@ fn run_fast_claim(
                 }
                 let mapped = map_outcome(result);
                 if batch_step + 1 < max_batch && mapped.is_ok() {
-                    let sibling_ready = (shared.ready_mask.load(Ordering::Acquire) & watch) != 0;
+                    // Sibling pressure only counts actors queued for *this*
+                    // worker; the global bit merely signals pending request
+                    // completions and must not suppress batching.
+                    let sibling_ready = (shared.run_queues.ready_mask.load(Ordering::Acquire)
+                        & (1u32 << index))
+                        != 0;
                     let can_batch_fast = !matches!(reply, Reply::Language(_))
-                        && !shared.closed.load(Ordering::Acquire)
+                        && scheduler_open
                         && (!sibling_ready || batch_step < SIBLING_BATCH_THRESHOLD);
                     let fast_threshold = if sibling_ready {
                         SIBLING_BATCH_THRESHOLD
                     } else {
                         1
                     };
-                    if let Some(next_msg) = can_batch_fast
-                        .then(|| mailbox.try_pop_batch_fast(fast_threshold))
+                    if let Some((next_msg, direct)) = can_batch_fast
+                        .then(|| {
+                            let has_direct_lease = cached_direct.is_some();
+                            mailbox.try_pop_batch_fast_with(fast_threshold, |front| {
+                                has_direct_lease
+                                    && fibers.can_run_direct(
+                                        &process,
+                                        front.handler,
+                                        front.max_steps,
+                                        shared.config.slice_steps,
+                                        yield_observed,
+                                    )
+                            })
+                        })
                         .flatten()
                     {
                         let outcome = match mapped {
                             Ok(Some(value)) => value,
                             _ => RequestOutcome::Failed,
                         };
-                        drop((handler, _charge, _message_charge));
+                        match &mut batch_charge {
+                            Some(merged) => merged.merge(_charge.into_reservation()),
+                            slot => *slot = Some(_charge.into_reservation()),
+                        }
                         if let Reply::External(publisher) =
                             std::mem::replace(&mut reply, Reply::None)
                         {
                             complete_external(publisher, outcome);
                         }
-                        already_started = true;
+                        prechecked_direct = direct;
                         current_message = Some(next_msg);
                         continue;
                     }
 
-                    if matches!(reply, Reply::Language(_)) {
+                    // Fused finish + claim for a non-empty mailbox: when
+                    // replying to an in-VM `ask` (Language reply) or when no
+                    // sibling is ready, keep ownership and pop the next message
+                    // in place.
+                    let can_fuse = scheduler_open
+                        && (!sibling_ready || matches!(reply, Reply::Language(_)))
+                        && !mailbox.is_stopping()
+                        && mailbox.count() > 0
+                        && mailbox.front_is_fast();
+                    if can_fuse {
                         let committed_state = (!process.module().manifest().state.is_reference())
                             .then_some(process.state);
-                        let mut state = shared.worker_lock(index, LockPhase::Finish);
-                        let can_continue = !state.closed && state.ready[index].head.is_none() && {
-                            let actor = state
-                                .actor(shared.identity, pid)
-                                .expect("finishing batched actor");
-                            !actor.stopping
-                                && actor.mailbox.count() >= SIBLING_BATCH_THRESHOLD
-                                && actor.mailbox.front_is_fast()
-                        };
-                        if can_continue {
+                        if matches!(reply, Reply::Language(_)) {
+                            let mut state = shared.worker_lock(index, LockPhase::Finish);
+                            let can_continue = !state.closed
+                                && shared.run_queues.is_empty(index)
+                                && !mailbox.is_stopping()
+                                && mailbox.count() > 0;
+                            if can_continue {
+                                let outcome = match mapped {
+                                    Ok(Some(value)) => value,
+                                    _ => RequestOutcome::Failed,
+                                };
+                                let next_msg = mailbox.pop_for_claim();
+                                {
+                                    let mut exec = mailbox.exec_lock();
+                                    exec.execution = Some(snapshot);
+                                    exec.committed_state = committed_state;
+                                }
+                                if let Reply::Language(key) =
+                                    std::mem::replace(&mut reply, Reply::None)
+                                {
+                                    state.finish(key, outcome);
+                                }
+                                let wake = state.maintain(shared.identity);
+                                shared.publish_signal(&mut state);
+                                match &mut batch_charge {
+                                    Some(merged) => merged.merge(_charge.into_reservation()),
+                                    slot => *slot = Some(_charge.into_reservation()),
+                                }
+                                drop(state);
+                                wake.fire(&shared.run_queues.changed);
+                                current_message = Some(next_msg);
+                                continue;
+                            }
+                            drop(state);
+                        } else if !shared.run_queues.closed.load(Ordering::Acquire)
+                            && shared.run_queues.is_empty(index)
+                            && !mailbox.is_stopping()
+                            && mailbox.count() > 0
+                        {
                             let outcome = match mapped {
                                 Ok(Some(value)) => value,
                                 _ => RequestOutcome::Failed,
                             };
-                            let actor = state
-                                .actor_mut(shared.identity, pid)
-                                .expect("continuing batched actor");
-                            let next_msg = actor.mailbox.pop_for_claim(true);
-                            actor.starting = true;
-                            actor.execution = Some(snapshot);
-                            actor.committed_state = committed_state;
-                            let mut external_reply = None;
-                            match std::mem::replace(&mut reply, Reply::None) {
-                                Reply::External(publisher) => {
-                                    external_reply = Some((publisher, outcome))
-                                }
-                                Reply::Language(key) => state.finish(key, outcome),
-                                Reply::None => {}
+                            let next_msg = mailbox.pop_for_claim();
+                            {
+                                let mut exec = mailbox.exec_lock();
+                                exec.execution = Some(snapshot);
+                                exec.committed_state = committed_state;
                             }
-                            let wake = state.maintain(shared.identity);
-                            shared.publish_signal(&state);
-                            drop((handler, _charge, _message_charge));
-                            drop(state);
-                            if let Some((publisher, outcome)) = external_reply {
+                            match &mut batch_charge {
+                                Some(merged) => merged.merge(_charge.into_reservation()),
+                                slot => *slot = Some(_charge.into_reservation()),
+                            }
+                            if let Reply::External(publisher) =
+                                std::mem::replace(&mut reply, Reply::None)
+                            {
                                 complete_external(publisher, outcome);
                             }
-                            wake.fire(&shared.changed);
-                            already_started = false;
                             current_message = Some(next_msg);
                             continue;
                         }
                     }
                 }
-                drop((mailbox, account, cancellation));
-                finish_process(
+                if let Some(prepared) = cached_direct.take() {
+                    prepared.release(fibers);
+                }
+                drop(inline);
+                // Refund merged envelope charges from earlier messages in this
+                // batch before `finish_process` publishes the final reply so a
+                // woken caller observes zero residual message charge.
+                drop(batch_charge);
+                // Suspended work in `local` must interleave with the hot
+                // actor, so only fuse when no older task is queued behind it.
+                let continued = finish_process(
                     shared,
                     index,
-                    pid,
+                    mailbox,
                     process,
                     Some(snapshot),
                     handler,
                     reply,
                     _charge,
-                    _message_charge,
                     mapped,
+                    local.is_empty(),
                 );
-                return true;
+                return (true, continued);
             }
             Err(boxed_task) => {
                 let mut task = *boxed_task;
@@ -687,21 +800,19 @@ fn run_fast_claim(
                     task.acknowledge_effect(status, value);
                 }
                 let snapshot = task.snapshot();
-                let mut state = shared.worker_lock(index, LockPhase::Snapshot);
-                if let Ok(actor) = state.actor_mut(shared.identity, pid) {
-                    actor.execution = snapshot;
-                }
-                drop(state);
+                mailbox.set_live_execution(snapshot);
+                mailbox.exec_lock().execution = snapshot;
                 local.push_back(Running {
                     pid,
                     task,
+                    mailbox,
                     handler,
                     max_steps,
                     reply,
+                    snapshot_published: true,
                     _charge,
-                    _message_charge,
                 });
-                return true;
+                return (true, None);
             }
         }
     }
@@ -709,29 +820,35 @@ fn run_fast_claim(
 }
 
 fn start(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     index: usize,
     mut claim: Claim,
     pool: &StackPool,
     preemption: &PreemptionToken,
     fibers: &mut WorkerFibers,
 ) -> Option<Running> {
-    claim.fused_direct.take();
-    if WorkerFibers::can_run_fast(
-        &claim.message.handler,
-        &claim.message.lists,
-        &claim.message.bytes,
-    ) {
-        let prepared = match claim.image.attach_scheduled(pool, &claim.account) {
-            Ok(process) => match fibers.prepare(&process, &claim.account) {
+    if let Some(prepared) = claim.fused_direct.take() {
+        prepared.release(fibers);
+    }
+    let pid = claim.mailbox.inner.pid;
+    let capability = claim.mailbox.inner.capability;
+    if claim.message.fast_eligible {
+        let prepared = match claim.image.attach_trusted_scheduled() {
+            Ok(process) => match fibers.prepare(&process, &claim.mailbox.inner.account) {
                 Ok(prepared) => {
                     match prepared.into_ready_task(
                         fibers,
                         process,
-                        claim.message.handler.index,
-                        &claim.message.arguments[..claim.message.count],
+                        claim.message.handler,
+                        claim.message.arguments.as_slice(),
                         claim.message.max_steps,
-                        &claim.cancellation,
+                        &claim.mailbox.inner.cancellation,
+                        Some(EffectSendTarget::new(
+                            shared,
+                            &claim.mailbox,
+                            pid,
+                            capability,
+                        )),
                     ) {
                         Ok(task) => Ok(task),
                         Err((process, _)) => {
@@ -749,23 +866,23 @@ fn start(
         };
         return match prepared {
             Ok(task) => {
-                mark_started(shared, index, claim.pid);
+                claim.mailbox.mark_started();
                 let Envelope {
                     handler,
                     max_steps,
                     reply,
                     _charge,
-                    _message_charge,
                     ..
                 } = claim.message;
                 Some(Running {
-                    pid: claim.pid,
+                    pid,
                     task,
+                    mailbox: claim.mailbox,
                     handler,
                     max_steps,
                     reply,
+                    snapshot_published: false,
                     _charge,
-                    _message_charge,
                 })
             }
             Err(()) => {
@@ -775,18 +892,26 @@ fn start(
         };
     }
     let result = (|| {
-        let bound = pool.for_process(&claim.account)?;
+        let bound = pool.for_process(&claim.mailbox.inner.account)?;
         let process = claim.image.attach(&bound)?;
         let mut task = ScalarTask::new(process);
         task.enable_effects();
         match task.start_scheduled(
-            &claim.message.handler,
-            &claim.message.arguments[..claim.message.count],
+            claim.message.handler,
+            claim.message.arguments.as_slice(),
             claim.message.max_steps,
-            || (claim.cancellation.clone(), preemption.clone()),
+            || (claim.mailbox.inner.cancellation.clone(), preemption.clone()),
             &bound,
-            &claim.message.lists,
-            &mut claim.message.bytes,
+            claim
+                .message
+                .lists
+                .as_deref()
+                .unwrap_or(ListPayload::empty_ref()),
+            claim
+                .message
+                .bytes
+                .get_or_insert_with(Box::default)
+                .as_mut(),
         ) {
             Ok(()) => Ok(task),
             Err(error) => {
@@ -797,23 +922,23 @@ fn start(
     })();
     match result {
         Ok(task) => {
-            mark_started(shared, index, claim.pid);
+            claim.mailbox.mark_started();
             let Envelope {
                 handler,
                 max_steps,
                 reply,
                 _charge,
-                _message_charge,
                 ..
             } = claim.message;
             Some(Running {
-                pid: claim.pid,
+                pid,
                 task,
+                mailbox: claim.mailbox,
                 handler,
                 max_steps,
                 reply,
+                snapshot_published: false,
                 _charge,
-                _message_charge,
             })
         }
         Err(_) => {
@@ -824,16 +949,18 @@ fn start(
 }
 
 fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
+    let pid = claim.mailbox.inner.pid;
     let mut state = shared.worker_lock(index, LockPhase::Start);
-    state.worker_active[index] = state.worker_active[index].saturating_sub(1);
+    shared.run_queues.dec_active(index);
     let closed = state.closed;
     let actor = state
-        .actor_mut(shared.identity, claim.pid)
+        .actor_mut(shared.identity, pid)
         .expect("failed claim actor");
-    actor.owner = None;
-    actor.starting = false;
-    actor.mailbox.set_starting(false);
-    actor.image = Some(claim.image);
+    {
+        let mut exec = actor.mailbox.exec_lock();
+        exec.owner = None;
+        exec.image = Some(claim.image);
+    }
     actor.mailbox.restore(claim.message);
     let mut closed_termination = if closed {
         actor.termination.take()
@@ -842,7 +969,7 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
     };
     let failed = actor.stopping || closed;
     if failed {
-        shared.fast_slots[claim.pid.slot as usize].clear(shared.fast_slot_contention());
+        shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
     }
     let exit_reason = if closed {
         i64::from(wings_abi::STATUS_CANCELLED)
@@ -850,7 +977,7 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
         0
     };
     let retired = if failed {
-        state.retire_with_reason(shared.identity, claim.pid, exit_reason)
+        state.retire_with_reason(shared.identity, pid, exit_reason)
     } else {
         None
     };
@@ -860,133 +987,244 @@ fn rollback_failed_start(shared: &Shared, index: usize, claim: Claim) {
         clear_monitors(&mut retired.monitors);
         drop(retired.actor);
     }
-    drop((claim.mailbox, claim.account, claim.cancellation));
+    drop(claim.mailbox);
     let wake = state
-        .finish_enqueue(claim.pid, failed)
+        .finish_enqueue(pid, failed)
         .combine(state.maintain(shared.identity));
-    shared.publish_signal(&state);
+    shared.publish_signal(&mut state);
     drop(state);
     if let Some(mut publisher) = closed_termination.take() {
         publisher.set(SchedulerTermination::Closed);
     }
-    wake.fire(&shared.changed);
+    wake.fire(&shared.run_queues.changed);
 }
 
 fn finish(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     index: usize,
     active: Running,
     result: Result<Option<RequestOutcome>, String>,
-) {
+    allow_continue: bool,
+) -> Option<Claim> {
     let Running {
-        pid,
+        pid: _,
         task,
+        mailbox,
         handler,
         max_steps: _,
         reply,
+        snapshot_published: _,
         _charge,
-        _message_charge,
     } = active;
+    mailbox.set_live_execution(None);
     let snapshot = task.snapshot();
     let process = task.into_process();
     finish_process(
         shared,
         index,
-        pid,
+        mailbox,
         process,
         snapshot,
         handler,
         reply,
         _charge,
-        _message_charge,
         result,
-    );
+        allow_continue,
+    )
 }
 
+/// Commits one completed message and releases ownership. On the healthy
+/// non-Language-reply path, ownership release and re-enqueue stay on the
+/// per-actor `exec_lock` and per-worker `RunQueues` without touching the
+/// global `Mutex<State>`.
 #[allow(clippy::too_many_arguments)]
 fn finish_process(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     index: usize,
-    pid: SchedulerPid,
+    mailbox: SharedMailbox,
     process: ScalarProcess,
     snapshot: Option<ExecutionSnapshot>,
-    handler: HandlerId,
+    handler: usize,
     mut reply: Reply,
-    _charge: Reservation,
-    _message_charge: Option<Reservation>,
+    _charge: crate::resources::EnvelopeCharge,
     result: Result<Option<RequestOutcome>, String>,
-) {
+    allow_continue: bool,
+) -> Option<Claim> {
+    let pid = mailbox.inner.pid;
     let committed_state =
         (!process.module().manifest().state.is_reference()).then_some(process.state);
-    let image = process.detach();
+    let mut image = Some(process.detach());
+
+    // Fast path: healthy completion without a Language reply and without
+    // actor stop / scheduler close. Never touches global `Mutex<State>`.
+    if result.is_ok()
+        && !matches!(reply, Reply::Language(_))
+        && !shared.run_queues.closed.load(Ordering::Acquire)
+        && !mailbox.is_stopping()
+    {
+        let mut exec = mailbox.exec_lock();
+        if !exec.retired
+            && !mailbox.is_stopping()
+            && !shared.run_queues.closed.load(Ordering::Acquire)
+        {
+            assert_eq!(exec.owner, Some(index));
+            exec.execution = snapshot;
+            exec.committed_state = committed_state;
+            if allow_continue
+                && shared.run_queues.is_empty(index)
+                && !mailbox.owner_is_empty()
+                && mailbox.front_is_fast()
+            {
+                let next_msg = mailbox.pop_for_claim();
+                drop(exec);
+                drop(_charge);
+                if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                    let outcome = match result {
+                        Ok(Some(value)) => value,
+                        _ => RequestOutcome::Failed,
+                    };
+                    complete_external(publisher, outcome);
+                }
+                return Some(Claim {
+                    image: image.take().expect("continued claim image"),
+                    message: next_msg,
+                    mailbox,
+                    fused_direct: None,
+                    prechecked_direct: false,
+                });
+            }
+            exec.owner = None;
+            exec.image = image.take();
+            let reenqueued_worker = if !exec.queued && mailbox.release_active_if_empty_owner() {
+                exec.queued = true;
+                let last_worker = exec.last_worker;
+                let slot_index = pid.slot as usize;
+                Some(shared.run_queues.select_worker(slot_index, last_worker))
+            } else {
+                None
+            };
+            drop(exec);
+            shared.run_queues.dec_active(index);
+            if let Some(worker) = reenqueued_worker {
+                shared.run_queues.push_and_wake(worker, mailbox);
+            } else {
+                drop(mailbox);
+            }
+            drop(_charge);
+            if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                let outcome = match result {
+                    Ok(Some(value)) => value,
+                    _ => RequestOutcome::Failed,
+                };
+                complete_external(publisher, outcome);
+            }
+            return None;
+        }
+    }
+
     let byte_state = result
         .is_err()
-        .then(|| image.byte_state_snapshot())
+        .then(|| image.as_ref().and_then(|image| image.byte_state_snapshot()))
         .flatten();
     let mut state = shared.worker_lock(index, LockPhase::Finish);
-    state.worker_active[index] = state.worker_active[index].saturating_sub(1);
     let closed = state.closed;
-    let actor = state
-        .actor_mut(shared.identity, pid)
-        .expect("finishing actor");
-    assert_eq!(actor.owner, Some(index));
-    let failed = result.is_err() || actor.stopping || closed;
-    let exit_reason = if closed {
-        i64::from(wings_abi::STATUS_CANCELLED)
-    } else if actor.stopping {
-        0
-    } else if result.is_err() {
-        snapshot
-            .and_then(|execution| execution.fault)
-            .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
-                fault.exit_code()
-            })
-    } else {
-        0
+    let failed = result.is_err() || closed || {
+        state
+            .actor(shared.identity, pid)
+            .expect("finishing actor")
+            .stopping
     };
-    let diagnostic = if result.is_err() && !actor.stopping && !closed {
-        let name = &handler.schema().name;
-        let mut handler_name = [0; 256];
-        handler_name[..name.len()].copy_from_slice(name.as_bytes());
-        Some(SchedulerExitSnapshot {
-            pid,
-            worker: index,
-            reason: snapshot
-                .and_then(|execution| execution.fault)
-                .map(SchedulerExitReason::Managed)
-                .unwrap_or(SchedulerExitReason::ExecutionControl),
-            execution: snapshot,
-            state_type: actor.module.manifest().state,
-            committed_state,
-            byte_state,
-            queued: actor.mailbox.count(),
-            resources_before_cleanup: actor.account.used(),
-            handler: handler_name,
-            handler_len: name.len(),
-        })
+    // Fused continuation: keep `exec.owner` and pop the next fast message in
+    // the same critical section instead of re-linking the ready queue.
+    let continuation = if !failed && allow_continue && shared.run_queues.is_empty(index) {
+        let exec = mailbox.exec_lock();
+        debug_assert_eq!(exec.owner, Some(index));
+        if !mailbox.is_stopping() && mailbox.count() > 0 && mailbox.front_is_fast() {
+            let next_msg = mailbox.pop_for_claim();
+            drop(exec);
+            Some(next_msg)
+        } else {
+            None
+        }
     } else {
         None
     };
-    drop((handler, _charge, _message_charge));
-    actor.owner = None;
-    actor.image = Some(image);
-    actor.execution = snapshot;
-    actor.committed_state = committed_state;
+    let exit_reason;
     let mut termination = None;
+    let diagnostic;
+    let release;
+    {
+        let actor = state
+            .actor_mut(shared.identity, pid)
+            .expect("finishing actor");
+        let mut exec = actor.mailbox.exec_lock();
+        assert_eq!(exec.owner, Some(index));
+        exit_reason = if closed {
+            i64::from(wings_abi::STATUS_CANCELLED)
+        } else if actor.stopping {
+            0
+        } else if result.is_err() {
+            snapshot
+                .and_then(|execution| execution.fault)
+                .map_or(i64::from(wings_abi::STATUS_INVALID_CONTROL), |fault| {
+                    fault.exit_code()
+                })
+        } else {
+            0
+        };
+        diagnostic = if result.is_err() && !actor.stopping && !closed {
+            let name = &actor.module.manifest().handlers[handler].name;
+            let mut handler_name = [0; 256];
+            handler_name[..name.len()].copy_from_slice(name.as_bytes());
+            Some(SchedulerExitSnapshot {
+                pid,
+                worker: index,
+                reason: snapshot
+                    .and_then(|execution| execution.fault)
+                    .map(SchedulerExitReason::Managed)
+                    .unwrap_or(SchedulerExitReason::ExecutionControl),
+                execution: snapshot,
+                state_type: actor.module.manifest().state,
+                committed_state,
+                byte_state,
+                queued: actor.mailbox.count(),
+                resources_before_cleanup: actor.account.used(),
+                handler: handler_name,
+                handler_len: name.len(),
+            })
+        } else {
+            None
+        };
+        release = continuation.is_none();
+        exec.execution = snapshot;
+        exec.committed_state = committed_state;
+        if release {
+            exec.owner = None;
+            exec.image = image.take();
+        }
+        drop(exec);
+        if failed {
+            shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
+            termination = actor.termination.take().map(|publisher| {
+                (
+                    publisher,
+                    if closed {
+                        SchedulerTermination::Closed
+                    } else if let Some(diagnostic) = diagnostic {
+                        SchedulerTermination::Failed(diagnostic)
+                    } else {
+                        SchedulerTermination::Stopped
+                    },
+                )
+            });
+        }
+    }
+    if release {
+        shared.run_queues.dec_active(index);
+    }
+    let mut deferred_charge = Some(_charge);
     if failed {
-        shared.fast_slots[pid.slot as usize].clear(shared.fast_slot_contention());
-        termination = actor.termination.take().map(|publisher| {
-            (
-                publisher,
-                if closed {
-                    SchedulerTermination::Closed
-                } else if let Some(diagnostic) = diagnostic {
-                    SchedulerTermination::Failed(diagnostic)
-                } else {
-                    SchedulerTermination::Stopped
-                },
-            )
-        });
+        drop(deferred_charge.take());
     }
     if let Some(diagnostic) = diagnostic {
         state.last_exit = Some(diagnostic);
@@ -1012,16 +1250,30 @@ fn finish_process(
         clear_monitors(&mut retired.monitors);
         drop(retired.actor);
     }
-    let wake = state
-        .finish_enqueue(pid, failed)
-        .combine(state.maintain(shared.identity));
-    shared.publish_signal(&state);
+    let wake = if continuation.is_some() {
+        state.maintain(shared.identity)
+    } else {
+        state
+            .finish_enqueue(pid, failed)
+            .combine(state.maintain(shared.identity))
+    };
+    shared.publish_signal(&mut state);
     drop(state);
+    drop(deferred_charge);
+    let continued = continuation.map(|message| Claim {
+        image: image.take().expect("continued claim image"),
+        message,
+        mailbox: mailbox.clone(),
+        fused_direct: None,
+        prechecked_direct: false,
+    });
+    drop(mailbox);
     if let Some((publisher, outcome)) = external_reply {
         complete_external(publisher, outcome);
     }
     if let Some((mut publisher, reason)) = termination {
         publisher.set(reason);
     }
-    wake.fire(&shared.changed);
+    wake.fire(&shared.run_queues.changed);
+    continued
 }

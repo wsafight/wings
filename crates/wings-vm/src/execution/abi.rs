@@ -89,7 +89,7 @@ pub(super) fn new_coroutine(
                         .as_ref()
                         .ok_or(wings_abi::STATUS_INVALID_ROOT)
                         .and_then(|heap| {
-                            IntListReply::copy(&heap.account, &payload.values[..payload.count])
+                            IntListReply::copy(&heap.account, payload.values.as_slice())
                                 .map_err(|_| wings_abi::STATUS_HEAP_EXHAUSTED)
                         });
                     match copied {
@@ -289,10 +289,15 @@ pub(super) fn resume_invocation(
                     checkpoint,
                 }) => {
                     let coroutine = reusable.coroutine.take().expect("completed coroutine");
-                    let stack_charge = reusable
+                    let mut stack_charge = reusable
                         .stack_charge
                         .take()
                         .expect("completed stack charge");
+                    if let Some(control) = active._charge.take() {
+                        // Fold the invocation overhead into the stack charge so
+                        // a parked fiber carries it to its next activation.
+                        stack_charge.merge(control);
+                    }
                     let pool = reusable.pool.clone();
                     if let Some(fibers) = fibers {
                         fibers.recycle(coroutine, stack_charge, pool);
@@ -386,14 +391,14 @@ pub(crate) fn runtime_checkpoint(context: &mut ScalarContext, consume: bool) -> 
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
     loop {
-        if unsafe { &*context.cancellation }.load(Ordering::SeqCst) != 0 {
+        if unsafe { &*context.cancellation }.load(Ordering::Acquire) != 0 {
             return Err(STATUS_CANCELLED);
         }
         if context.remaining_steps == 0 {
             return Err(wings_abi::STATUS_BUDGET_EXHAUSTED);
         }
         if context.slice_remaining == 0
-            || unsafe { &*context.yield_request }.load(Ordering::SeqCst) != 0
+            || unsafe { &*context.yield_request }.load(Ordering::Acquire) != 0
         {
             let callback = context.slow_path.ok_or(wings_abi::STATUS_INVALID_CONTROL)?;
             let status = unsafe { callback(context) };
@@ -417,8 +422,8 @@ pub(crate) fn runtime_checkpoint_batch(
     if context.cancellation.is_null() || context.yield_request.is_null() {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    if unsafe { &*context.cancellation }.load(Ordering::SeqCst) == 0
-        && unsafe { &*context.yield_request }.load(Ordering::SeqCst) == 0
+    if unsafe { &*context.cancellation }.load(Ordering::Acquire) == 0
+        && unsafe { &*context.yield_request }.load(Ordering::Acquire) == 0
         && context.remaining_steps > 0
         && context.slice_remaining > 0
     {
@@ -434,18 +439,17 @@ pub(crate) fn runtime_checkpoint_batch(
     Ok(1)
 }
 
-unsafe fn prepare_effect_checkpoint(
-    context: *mut ScalarContext,
-    request: *const wings_abi::EffectRequest,
-    output: *mut i64,
-) -> Result<Checkpoint, u32> {
-    let Some(request) = (unsafe { request.as_ref() }) else {
-        return Err(wings_abi::STATUS_INVALID_CONTROL);
-    };
+/// Validates an effect request and copies its scalar arguments plus any
+/// exported list/byte payloads out of the managed heap. Shared by the
+/// suspend-to-scheduler path and the inline reusable-fiber fast path; both
+/// perform the same validations so either path returns identical statuses.
+pub(crate) unsafe fn copy_effect_payload(
+    context: &mut ScalarContext,
+    request: &wings_abi::EffectRequest,
+) -> Result<(MessageArguments, ListPayload, BytePayload), u32> {
     let count = request.count;
     let arguments = request.arguments;
-    if output.is_null()
-        || count > 64
+    if count > 64
         || (count != 0 && arguments.is_null())
         || ((request.list_mask | request.bytes_mask | request.string_mask) != 0
             && !matches!(
@@ -462,11 +466,12 @@ unsafe fn prepare_effect_checkpoint(
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    let context = unsafe { &mut *context };
-    let mut copied = [0; 64];
-    if count != 0 {
-        copied[..count].copy_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) });
-    }
+    let mut copied = if count == 0 {
+        MessageArguments::default()
+    } else {
+        MessageArguments::try_from_slice(unsafe { std::slice::from_raw_parts(arguments, count) })
+            .map_err(|_| wings_abi::STATUS_HEAP_EXHAUSTED)?
+    };
     let buffer_mask = request.bytes_mask | request.string_mask;
     if request.bytes_mask & request.string_mask != 0
         || request.list_mask & buffer_mask != 0
@@ -474,16 +479,33 @@ unsafe fn prepare_effect_checkpoint(
     {
         return Err(wings_abi::STATUS_INVALID_CONTROL);
     }
-    let lists =
-        unsafe { crate::aot_heap::export_lists(context, &mut copied[..count], request.list_mask) }?;
+    let lists = unsafe {
+        crate::aot_heap::export_lists(context, copied.as_mut_slice(), request.list_mask)
+    }?;
     let bytes = unsafe {
         crate::aot_heap::export_buffers(
             context,
-            &mut copied[..count],
+            copied.as_mut_slice(),
             request.bytes_mask,
             request.string_mask,
         )
     }?;
+    Ok((copied, lists, bytes))
+}
+
+unsafe fn prepare_effect_checkpoint(
+    context: *mut ScalarContext,
+    request: *const wings_abi::EffectRequest,
+    output: *mut i64,
+) -> Result<Checkpoint, u32> {
+    let Some(request) = (unsafe { request.as_ref() }) else {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    };
+    if output.is_null() {
+        return Err(wings_abi::STATUS_INVALID_CONTROL);
+    }
+    let context = unsafe { &mut *context };
+    let (copied, lists, bytes) = unsafe { copy_effect_payload(context, request) }?;
     let boxed_effect = {
         let layout = std::alloc::Layout::new::<ProcessEffect>();
         let pointer = unsafe { std::alloc::alloc(layout) }.cast::<ProcessEffect>();
@@ -496,7 +518,6 @@ unsafe fn prepare_effect_checkpoint(
                 target: request.target,
                 handler: request.handler as usize,
                 arguments: copied,
-                count,
                 callback: request.callback as usize,
                 timeout_ms: request.timeout_ms,
                 lists,
@@ -543,11 +564,25 @@ pub(super) unsafe extern "C" fn send_self_reusable(
     request: *const wings_abi::EffectRequest,
     output: *mut i64,
 ) -> u32 {
+    let context = unsafe { &mut *context };
+    if output.is_null() {
+        return wings_abi::STATUS_INVALID_CONTROL;
+    }
+    if let Some(request) = unsafe { request.as_ref() } {
+        let (inline, budget) = {
+            let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
+            (control.inline, control.budget)
+        };
+        if let Some(inline) = inline {
+            if let Some(status) = unsafe { inline.try_effect(context, request, output, budget) } {
+                return status;
+            }
+        }
+    }
     let checkpoint = match unsafe { prepare_effect_checkpoint(context, request, output) } {
         Ok(checkpoint) => checkpoint,
         Err(status) => return status,
     };
-    let context = unsafe { &mut *context };
     let control = unsafe { &*context.data.cast::<ReusableControl<'_>>() };
     match control.yielder.suspend(FiberEvent::Suspended(checkpoint)) {
         FiberCommand::Effect(status, value, steps) => {

@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct DemandState {
     pub(super) cached: Vec<CachedStack>,
+    pub(super) direct_parked: Option<Reservation>,
     active: usize,
     parked: usize,
 }
@@ -12,7 +13,10 @@ pub(crate) struct CachedStack {
 }
 
 pub(crate) enum DirectStackLease {
-    Cached(CachedStack),
+    Cached {
+        cached: CachedStack,
+        _control: Reservation,
+    },
     Cold(Reservation),
 }
 
@@ -96,6 +100,7 @@ impl StackPool {
                 }),
                 demand: Some(RefCell::new(DemandState {
                     cached,
+                    direct_parked: None,
                     active: 0,
                     parked: 0,
                 })),
@@ -211,9 +216,10 @@ impl StackPool {
         state.active -= 1;
     }
 
-    pub(crate) fn acquire_direct_stack_charge(
+    pub(crate) fn acquire_direct_with_overhead(
         &self,
         process: &ResourceAccount,
+        overhead: u64,
     ) -> Result<DirectStackLease, String> {
         let mut state = self
             .inner
@@ -222,18 +228,31 @@ impl StackPool {
             .expect("demand pool")
             .borrow_mut();
         if state.active == self.inner.capacity {
+            let _check = process.reserve_bytes(overhead)?;
             return Err("execution stack pool exhausted".into());
         }
+        let required = overhead + self.inner.slot_bytes as u64;
+        if let Some(parked) = state
+            .direct_parked
+            .as_mut()
+            .filter(|charge| charge.amount().bytes == required)
+        {
+            parked.transfer(process)?;
+            let charge = state.direct_parked.take().expect("parked direct charge");
+            state.active += 1;
+            return Ok(DirectStackLease::Cold(charge));
+        }
         if let Some(cached) = state.cached.last_mut() {
+            let control = process.reserve_bytes(overhead)?;
             cached.charge.transfer(process)?;
             let cached = state.cached.pop().expect("cached stack");
             state.active += 1;
-            Ok(DirectStackLease::Cached(cached))
+            Ok(DirectStackLease::Cached {
+                cached,
+                _control: control,
+            })
         } else {
-            let charge = process.reserve(Resources {
-                bytes: self.inner.slot_bytes as u64,
-                ..Resources::default()
-            })?;
+            let charge = process.reserve_bytes(required)?;
             state.active += 1;
             Ok(DirectStackLease::Cold(charge))
         }
@@ -248,7 +267,11 @@ impl StackPool {
             .borrow_mut();
         state.active -= 1;
         match lease {
-            DirectStackLease::Cached(mut cached) => {
+            DirectStackLease::Cached {
+                mut cached,
+                _control,
+            } => {
+                drop(_control);
                 if state.cached.len() + state.parked < self.inner.max_cached {
                     let tenant = &self
                         .inner
@@ -263,13 +286,34 @@ impl StackPool {
                     state.cached.push(cached);
                 }
             }
-            DirectStackLease::Cold(charge) => drop(charge),
+            DirectStackLease::Cold(mut charge) => {
+                if state.direct_parked.is_none()
+                    && state.cached.len() + state.parked < self.inner.max_cached
+                {
+                    let tenant = &self
+                        .inner
+                        .accounting
+                        .as_ref()
+                        .expect("demand accounting")
+                        .tenant;
+                    charge
+                        .transfer(tenant)
+                        .expect("return parked direct stack charge");
+                    state.direct_parked = Some(charge);
+                } else {
+                    drop(charge);
+                }
+            }
         }
     }
 
     pub(super) fn demand_stats(&self, state: &DemandState) -> StackPoolStats {
         let mapped_bytes =
             (state.active + state.cached.len() + state.parked) * self.inner.slot_bytes;
+        let direct_parked_bytes = state
+            .direct_parked
+            .as_ref()
+            .map_or(0, |charge| charge.amount().bytes);
         StackPoolStats {
             capacity: self.inner.capacity,
             active: state.active,
@@ -285,7 +329,8 @@ impl StackPool {
                 .as_ref()
                 .expect("demand accounting")
                 .charged_bytes
-                + mapped_bytes as u64,
+                + mapped_bytes as u64
+                + direct_parked_bytes,
         }
     }
 

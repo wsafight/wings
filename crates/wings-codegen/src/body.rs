@@ -231,10 +231,31 @@ pub(super) fn compile_body(
         });
     let mut branches = Vec::new();
     let mut loops = Vec::new();
+    // Straight-line operations that own no internal branch or suspension do
+    // not need a safepoint of their own: their step charge folds forward into
+    // the next poll-carrying instruction, which charges `deferred + 1` once.
+    // The window is capped so a long run of sends or allocations cannot defer
+    // flag observation without bound.
+    const DEFER_POLL_MAX: usize = 16;
+    let mut deferred_steps = 0usize;
     let mut index = 0;
     let mut tail_polled = false;
     while index < function.instructions.len() {
         if is_pure_scalar(&function.instructions[index].operation) {
+            if deferred_steps > 0 {
+                poll_control(
+                    &mut builder,
+                    pointer_type,
+                    parameters[3],
+                    slow_signature,
+                    exit,
+                    roots,
+                    &plan.at[index],
+                    &registers,
+                    deferred_steps as i64,
+                );
+                deferred_steps = 0;
+            }
             let max_end = (index + 32).min(function.instructions.len());
             let mut end = index + 1;
             while end < max_end && is_pure_scalar(&function.instructions[end].operation) {
@@ -243,9 +264,10 @@ pub(super) fn compile_body(
             let is_tail = end == function.instructions.len() && (end - index) < 32;
             let total_steps = (end - index) + usize::from(is_tail);
             if total_steps >= 2 {
+                let readonly = MemFlags::new().with_readonly();
                 let cancellation = builder.ins().load(
                     pointer_type,
-                    MemFlags::new(),
+                    readonly,
                     parameters[3],
                     std::mem::offset_of!(ScalarContext, cancellation) as i32,
                 );
@@ -253,17 +275,17 @@ pub(super) fn compile_body(
                     builder
                         .ins()
                         .atomic_load(types::I32, MemFlags::new(), cancellation);
-                let not_cancelled = builder.ins().icmp_imm(IntCC::Equal, cancelled, 0);
                 let yield_request = builder.ins().load(
                     pointer_type,
-                    MemFlags::new(),
+                    readonly,
                     parameters[3],
                     std::mem::offset_of!(ScalarContext, yield_request) as i32,
                 );
                 let yielded = builder
                     .ins()
                     .atomic_load(types::I32, MemFlags::new(), yield_request);
-                let not_yielded = builder.ins().icmp_imm(IntCC::Equal, yielded, 0);
+                let any_flag = builder.ins().bor(cancelled, yielded);
+                let clean_flags = builder.ins().icmp_imm(IntCC::Equal, any_flag, 0);
                 let remaining = builder.ins().load(
                     types::I64,
                     MemFlags::new(),
@@ -286,7 +308,6 @@ pub(super) fn compile_body(
                     slice,
                     total_steps as i64,
                 );
-                let clean_flags = builder.ins().band(not_cancelled, not_yielded);
                 let enough_budget = builder.ins().band(enough_remaining, enough_slice);
                 let can_fast = builder.ins().band(clean_flags, enough_budget);
                 let fast_block = builder.create_block();
@@ -340,6 +361,7 @@ pub(super) fn compile_body(
                         roots,
                         &plan.at[current],
                         &registers,
+                        1,
                     );
                     let value = emit_pure_scalar(
                         &mut builder,
@@ -361,6 +383,7 @@ pub(super) fn compile_body(
                         roots,
                         &plan.at[function.instructions.len()],
                         &registers,
+                        1,
                     );
                 }
                 builder.ins().jump(join_block, &registers[index..end]);
@@ -402,16 +425,26 @@ pub(super) fn compile_body(
             }
             _ => 0usize,
         };
-        poll_control(
-            &mut builder,
-            pointer_type,
-            parameters[3],
-            slow_signature,
-            exit,
-            roots,
-            &plan.at[index],
-            &registers,
-        );
+        // Safepoint-less straight-line operations (every `needs_inline_roots`
+        // op: sends, calls, allocations, effect requests) fold their step
+        // charge into the next polling instruction instead of paying a full
+        // safepoint sequence each.
+        if needs_inline_roots(&instruction.operation) && deferred_steps < DEFER_POLL_MAX {
+            deferred_steps += 1;
+        } else {
+            poll_control(
+                &mut builder,
+                pointer_type,
+                parameters[3],
+                slow_signature,
+                exit,
+                roots,
+                &plan.at[index],
+                &registers,
+                (deferred_steps + 1) as i64,
+            );
+            deferred_steps = 0;
+        }
         if needs_inline_roots(&instruction.operation) {
             publish_roots(
                 &mut builder,
@@ -587,7 +620,7 @@ pub(super) fn compile_body(
                 }
                 let callback = builder.ins().load(
                     pointer_type,
-                    MemFlags::new(),
+                    MemFlags::new().with_readonly(),
                     parameters[3],
                     std::mem::offset_of!(ScalarContext, effect_call) as i32,
                 );
@@ -842,6 +875,7 @@ pub(super) fn compile_body(
             roots,
             &plan.at[function.instructions.len()],
             &registers,
+            (deferred_steps + 1) as i64,
         );
     }
     builder

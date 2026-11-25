@@ -28,6 +28,23 @@ def main():
             raise ValueError(f"counter smoke replies differ: {result.stdout}")
         bundle = parent / "session"
         aot.command([compiler, "build-app", aot.ROOT / "examples/session-service.wings", "-o", bundle])
+        # macOS intermittently parks a freshly linked binary inside its
+        # first-exec verification (the process never reaches `main`; observed
+        # 20-75s stalls on relinked example binaries), which a 30s timeout
+        # cannot distinguish from a real deadlock. A generous bounded warm-up
+        # exec absorbs the stall before the measured invocation; a real
+        # scheduler deadlock still fails on the measured call.
+        try:
+            subprocess.run(
+                [str(runner)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=150,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
         print(aot.command([runner, "--trusted", bundle, vm]).stdout.strip())
     print("AOT smoke passed; full AOT and performance acceptance were not run")
 

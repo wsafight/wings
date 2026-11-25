@@ -24,7 +24,35 @@ impl Resources {
         self.bytes == 0 && self.processes == 0 && self.messages == 0 && self.requests == 0
     }
 
+    // Bytes and messages share one packed counter word (see `packed` below):
+    // an envelope reservation adds and refunds both dimensions with a single
+    // CAS/fetch per account level instead of two independent counter chains.
+    fn envelope_dimensions(self) -> Option<(u64, u64)> {
+        if self.processes == 0 && self.requests == 0 && (self.bytes != 0 || self.messages != 0) {
+            Some((self.bytes, self.messages))
+        } else {
+            None
+        }
+    }
+
+    fn single_dimension(self) -> Option<(usize, u64)> {
+        let mask = u8::from(self.bytes != 0)
+            | (u8::from(self.processes != 0) << 1)
+            | (u8::from(self.messages != 0) << 2)
+            | (u8::from(self.requests != 0) << 3);
+        match mask {
+            1 => Some((0, self.bytes)),
+            2 => Some((1, self.processes)),
+            4 => Some((2, self.messages)),
+            8 => Some((3, self.requests)),
+            _ => None,
+        }
+    }
+
     fn is_multi_dimensional(self) -> bool {
+        if self.envelope_dimensions().is_some() {
+            return false;
+        }
         let count = u8::from(self.bytes != 0)
             + u8::from(self.processes != 0)
             + u8::from(self.messages != 0)
@@ -68,18 +96,64 @@ pub struct ResourceAccount {
     node: Arc<AccountNode>,
 }
 
+#[repr(align(64))]
+struct AlignedCounter(AtomicU64);
+
+impl std::ops::Deref for AlignedCounter {
+    type Target = AtomicU64;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 struct AccountNode {
     level: ResourceLevel,
     accounted_root: bool,
     limit: Resources,
-    used: [AtomicU64; 4],
+    // `[0]` packs bytes + messages, `[1]` holds processes, `[2]` holds requests.
+    used: [AlignedCounter; 3],
     gate: Arc<Mutex<()>>,
     parent: Option<Reservation>,
+}
+
+// The bytes dimension shares counter word `used[0]` with messages: bytes take
+// the low `BYTES_BITS` and messages the high `MESSAGES_BITS`, so an envelope
+// reservation touches one atomic per account level. The split still leaves a
+// 1 TiB byte ceiling and a 16.7M in-flight message ceiling, both far above
+// the scheduler's `MAX_ACTORS * mailbox capacity` bounds.
+const BYTES_BITS: u32 = 40;
+const MESSAGES_BITS: u32 = 24;
+const BYTES_FIELD_MAX: u64 = (1 << BYTES_BITS) - 1;
+const MESSAGES_FIELD_MAX: u64 = (1 << MESSAGES_BITS) - 1;
+
+fn packed(bytes: u64, messages: u64) -> u64 {
+    (messages << BYTES_BITS) | bytes
+}
+
+fn packed_bytes(word: u64) -> u64 {
+    word & BYTES_FIELD_MAX
+}
+
+fn packed_messages(word: u64) -> u64 {
+    word >> BYTES_BITS
+}
+
+fn packed_delta_fits(bytes: u64, messages: u64) -> bool {
+    bytes <= BYTES_FIELD_MAX && messages <= MESSAGES_FIELD_MAX
 }
 
 pub struct Reservation {
     account: ResourceAccount,
     amount: Resources,
+}
+
+pub(crate) struct EnvelopeCharge {
+    account: ResourceAccount,
+    bytes: u64,
+    messages: u8,
+    gated: bool,
 }
 
 impl ResourceAccount {
@@ -128,16 +202,157 @@ impl ResourceAccount {
             .gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let [bytes, processes, messages, requests] = self
-            .node
-            .used
-            .each_ref()
-            .map(|value| value.load(Ordering::Acquire));
+        let packed_word = self.node.used[0].load(Ordering::Acquire);
         Resources {
-            bytes,
-            processes,
-            messages,
-            requests,
+            bytes: packed_bytes(packed_word),
+            processes: self.node.used[1].load(Ordering::Acquire),
+            messages: packed_messages(packed_word),
+            requests: self.node.used[2].load(Ordering::Acquire),
+        }
+    }
+
+    #[inline]
+    fn try_add_dim(&self, index: usize, delta: u64) -> bool {
+        // Bytes and messages share the packed word; deltas that exceed the
+        // field width are simply rejected as exhaustion.
+        if index == 0 {
+            return self.try_add_packed(delta, 0);
+        }
+        if index == 2 {
+            return self.try_add_packed(0, delta);
+        }
+        let slot = if index == 3 { 2 } else { index };
+        let counter = &self.node.used[slot];
+        let limit = self.node.limit.as_array()[index];
+        let mut current = counter.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
+                return false;
+            };
+            match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// One CAS attempt on the shared bytes+messages word: both fields must
+    /// satisfy their dimension limits for the whole add to land. Field sums
+    /// are computed *before* packing so a bytes overflow cannot carry into
+    /// the messages field.
+    #[inline]
+    fn try_add_packed(&self, bytes: u64, messages: u64) -> bool {
+        if !packed_delta_fits(bytes, messages) {
+            return false;
+        }
+        let counter = &self.node.used[0];
+        let limit = self.node.limit;
+        let mut current = counter.load(Ordering::Relaxed);
+        loop {
+            let Some(next_bytes) = packed_bytes(current)
+                .checked_add(bytes)
+                .filter(|&next| next <= limit.bytes)
+            else {
+                return false;
+            };
+            let Some(next_messages) = packed_messages(current)
+                .checked_add(messages)
+                .filter(|&next| next <= limit.messages)
+            else {
+                return false;
+            };
+            let next = packed(next_bytes, next_messages);
+            match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    #[inline]
+    fn sub_dim(&self, index: usize, delta: u64) {
+        if index == 0 {
+            self.node.used[0].fetch_sub(delta, Ordering::Relaxed);
+        } else if index == 2 {
+            self.node.used[0].fetch_sub(delta << BYTES_BITS, Ordering::Relaxed);
+        } else {
+            let slot = if index == 3 { 2 } else { index };
+            self.node.used[slot].fetch_sub(delta, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn sub_packed(&self, bytes: u64, messages: u64) {
+        self.node.used[0].fetch_sub(packed(bytes, messages), Ordering::Relaxed);
+    }
+
+    fn reserve_dim_status(&self, index: usize, delta: u64) -> Result<(), ResourceLevel> {
+        if delta == 0 {
+            return Ok(());
+        }
+        if !self.try_add_dim(index, delta) {
+            return Err(self.level());
+        }
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            if !parent.try_add_dim(index, delta) {
+                self.sub_dim(index, delta);
+                return Err(parent.level());
+            }
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                if !root.try_add_dim(index, delta) {
+                    parent.sub_dim(index, delta);
+                    self.sub_dim(index, delta);
+                    return Err(root.level());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refund_dim_all(&self, index: usize, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        self.sub_dim(index, delta);
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            parent.sub_dim(index, delta);
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                root.sub_dim(index, delta);
+            }
+        }
+    }
+
+    /// Envelope admission for the whole `Process -> Tenant -> VM` chain in one
+    /// packed CAS per level: bytes and messages move together.
+    fn reserve_packed_status(&self, bytes: u64, messages: u64) -> Result<(), ResourceLevel> {
+        if !self.try_add_packed(bytes, messages) {
+            return Err(self.level());
+        }
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            if !parent.try_add_packed(bytes, messages) {
+                self.sub_packed(bytes, messages);
+                return Err(parent.level());
+            }
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                if !root.try_add_packed(bytes, messages) {
+                    parent.sub_packed(bytes, messages);
+                    self.sub_packed(bytes, messages);
+                    return Err(root.level());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refund_packed_all(&self, bytes: u64, messages: u64) {
+        self.sub_packed(bytes, messages);
+        if let Some(parent) = self.node.parent.as_ref().map(|parent| &parent.account) {
+            parent.sub_packed(bytes, messages);
+            if let Some(root) = parent.node.parent.as_ref().map(|parent| &parent.account) {
+                root.sub_packed(bytes, messages);
+            }
         }
     }
 
@@ -145,44 +360,43 @@ impl ResourceAccount {
         if amount.is_zero() {
             return true;
         }
+        if let Some((index, delta)) = amount.single_dimension() {
+            return self.try_add_dim(index, delta);
+        }
+        if let Some((bytes, messages)) = amount.envelope_dimensions() {
+            return self.try_add_packed(bytes, messages);
+        }
         let deltas = amount.as_array();
-        let limits = self.node.limit.as_array();
         for index in 0..4 {
             let delta = deltas[index];
             if delta == 0 {
                 continue;
             }
-            let counter = &self.node.used[index];
-            let limit = limits[index];
-            let mut current = counter.load(Ordering::Relaxed);
-            loop {
-                let Some(next) = current.checked_add(delta).filter(|&next| next <= limit) else {
-                    for (rollback, &added) in deltas[..index].iter().enumerate() {
-                        if added != 0 {
-                            self.node.used[rollback].fetch_sub(added, Ordering::AcqRel);
-                        }
+            if !self.try_add_dim(index, delta) {
+                for (rollback, &added) in deltas[..index].iter().enumerate() {
+                    if added != 0 {
+                        self.sub_dim(rollback, added);
                     }
-                    return false;
-                };
-                match counter.compare_exchange_weak(
-                    current,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => current = actual,
                 }
+                return false;
             }
         }
         true
     }
 
     fn sub_node(&self, amount: Resources) {
+        if let Some((index, delta)) = amount.single_dimension() {
+            self.sub_dim(index, delta);
+            return;
+        }
+        if let Some((bytes, messages)) = amount.envelope_dimensions() {
+            self.sub_packed(bytes, messages);
+            return;
+        }
         let deltas = amount.as_array();
         for (index, &delta) in deltas.iter().enumerate() {
             if delta != 0 {
-                self.node.used[index].fetch_sub(delta, Ordering::AcqRel);
+                self.sub_dim(index, delta);
             }
         }
     }
@@ -194,6 +408,19 @@ impl ResourceAccount {
             .is_some_and(|owner| owner.account.same(parent))
     }
 
+    #[inline]
+    pub(crate) fn reserve_bytes(&self, bytes: u64) -> Result<Reservation, String> {
+        self.reserve_dim_status(0, bytes)
+            .map(|()| Reservation {
+                account: self.clone(),
+                amount: Resources {
+                    bytes,
+                    ..Resources::default()
+                },
+            })
+            .map_err(|level| String::from(crate::VmError::ResourceExhausted(level)))
+    }
+
     pub fn reserve(&self, amount: Resources) -> Result<Reservation, String> {
         self.reserve_checked(amount).map_err(String::from)
     }
@@ -203,8 +430,26 @@ impl ResourceAccount {
             .map_err(crate::VmError::ResourceExhausted)
     }
 
+    pub(crate) fn reserve_envelope(&self, bytes: u64) -> Result<EnvelopeCharge, crate::VmError> {
+        self.reserve_packed_status(bytes, 1)
+            .map_err(crate::VmError::ResourceExhausted)?;
+        Ok(EnvelopeCharge {
+            account: self.clone(),
+            bytes,
+            messages: 1,
+            gated: false,
+        })
+    }
+
     pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
         if amount.is_zero() {
+            return Ok(Reservation {
+                account: self.clone(),
+                amount,
+            });
+        }
+        if let Some((index, delta)) = amount.single_dimension() {
+            self.reserve_dim_status(index, delta)?;
             return Ok(Reservation {
                 account: self.clone(),
                 amount,
@@ -252,13 +497,19 @@ impl ResourceAccount {
             node: Arc::new(AccountNode {
                 level,
                 accounted_root: bootstrap != 0,
-                limit,
+                // Packed-counter ceilings: limits above the field widths are
+                // saturated since `used` could never report past them anyway.
+                limit: Resources {
+                    bytes: limit.bytes.min(BYTES_FIELD_MAX),
+                    processes: limit.processes,
+                    messages: limit.messages.min(MESSAGES_FIELD_MAX),
+                    requests: limit.requests,
+                },
                 parent,
                 used: [
-                    AtomicU64::new(bootstrap),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
-                    AtomicU64::new(0),
+                    AlignedCounter(AtomicU64::new(bootstrap)),
+                    AlignedCounter(AtomicU64::new(0)),
+                    AlignedCounter(AtomicU64::new(0)),
                 ],
                 gate,
             }),
@@ -439,8 +690,62 @@ impl Reservation {
     }
 }
 
+impl EnvelopeCharge {
+    pub(crate) fn from_reservation(mut reservation: Reservation) -> Self {
+        let amount = reservation.amount;
+        debug_assert!(amount.processes == 0 && amount.requests == 0 && amount.messages <= 1);
+        let gated = amount.is_multi_dimensional();
+        reservation.amount = Resources::default();
+        Self {
+            account: reservation.account.clone(),
+            bytes: amount.bytes,
+            messages: amount.messages as u8,
+            gated,
+        }
+    }
+
+    pub(crate) fn into_reservation(mut self) -> Reservation {
+        let reservation = Reservation {
+            account: self.account.clone(),
+            amount: Resources {
+                bytes: self.bytes,
+                messages: u64::from(self.messages),
+                ..Resources::default()
+            },
+        };
+        // Zero the moved amounts so the Drop below is a no-op refund while
+        // still releasing the account reference itself.
+        self.bytes = 0;
+        self.messages = 0;
+        reservation
+    }
+}
+
+impl Drop for EnvelopeCharge {
+    fn drop(&mut self) {
+        if self.bytes == 0 && self.messages == 0 {
+            return;
+        }
+        let _guard = self.gated.then(|| {
+            self.account
+                .node
+                .gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        if self.messages != 0 || self.bytes != 0 {
+            self.account
+                .refund_packed_all(self.bytes, u64::from(self.messages));
+        }
+    }
+}
+
 impl Drop for Reservation {
     fn drop(&mut self) {
+        if let Some((index, delta)) = self.amount.single_dimension() {
+            self.account.refund_dim_all(index, delta);
+            return;
+        }
         if !self.amount.is_zero() {
             let _guard = self.amount.is_multi_dimensional().then(|| {
                 self.account
@@ -528,13 +833,16 @@ mod tests {
                 assert_eq!(levels.map(ResourceAccount::used), baseline);
             }
         }
+        // The packed word caps the bytes field at `BYTES_FIELD_MAX`; a
+        // reservation that fills the field exactly must still succeed, and
+        // anything beyond it is rejected as exhaustion.
         let vm = ResourceAccount::vm(Resources {
             bytes: u64::MAX,
             ..Resources::default()
         });
         let ticket = vm
             .reserve_status(Resources {
-                bytes: u64::MAX,
+                bytes: BYTES_FIELD_MAX,
                 ..Resources::default()
             })
             .unwrap();
@@ -777,6 +1085,8 @@ mod tests {
 
     #[test]
     fn accounted_node_hierarchy_rejection_and_overflow_do_not_change_usage() {
+        // Limits saturate at the packed byte field width, so the "unbounded"
+        // scenario exercises the widest representable accounting instead.
         let vm = ResourceAccount::vm(bytes(u64::MAX));
         let tenant = vm.tenant_accounted(bytes(u64::MAX)).unwrap();
         let process = tenant.process_accounted(bytes(u64::MAX)).unwrap();
@@ -786,10 +1096,10 @@ mod tests {
         assert!(process.tenant_accounted(bytes(0)).is_err());
         assert!(process.process_accounted(bytes(0)).is_err());
         assert_eq!(vm.used(), baseline);
-        let held = vm.reserve(bytes(u64::MAX - baseline.bytes)).unwrap();
+        let held = vm.reserve(bytes(BYTES_FIELD_MAX - baseline.bytes)).unwrap();
         assert!(vm.tenant_accounted(bytes(0)).is_err());
         assert!(tenant.process_accounted(bytes(0)).is_err());
-        assert_eq!(vm.used(), bytes(u64::MAX));
+        assert_eq!(vm.used(), bytes(BYTES_FIELD_MAX));
         drop((held, process, tenant));
         assert_eq!(vm.used(), Resources::default());
     }

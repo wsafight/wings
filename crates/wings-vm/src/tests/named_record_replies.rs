@@ -151,7 +151,7 @@ fn named_reply_completion_matches_names_and_rebuilds_all_failed_leaf_defaults() 
         assert_eq!(&failure.arguments[..2], &[17, status]);
         assert!(failure.arguments[2..].iter().all(|value| *value == 0));
         assert_eq!(failure.lists.mask, 1 << 6);
-        assert_eq!(failure.lists.count, 0);
+        assert_eq!(failure.lists.len(), 0);
         assert!(
             failure
                 .bytes

@@ -471,39 +471,46 @@ fn execute(
         }
         let now_ns = elapsed(start);
         if next == count || now_ns < planned(next) {
-            #[cfg(target_os = "macos")]
-            {
-                if next == count && pending.is_empty() {
-                    for _ in 0..64 {
-                        std::hint::spin_loop();
+            if !pending.is_empty() {
+                for _ in 0..16 {
+                    std::hint::spin_loop();
+                }
+            } else if next < count {
+                let gap = planned(next).saturating_sub(now_ns);
+                let wake_margin = if cfg!(target_os = "macos") {
+                    150_000
+                } else {
+                    55_000
+                };
+                if gap > wake_margin + 35_000 {
+                    let wait_for = Duration::from_nanos(gap - wake_margin);
+                    if let Some(request) = hot_request.as_mut() {
+                        if let Some(outcome) = request.wait(wait_for)? {
+                            let observed = elapsed(start);
+                            if outcome != RequestOutcome::Reply(1_000_000) {
+                                return Err(format!("fairness incomplete CPU {outcome:?}"));
+                            }
+                            hot_count += 1;
+                            if let Some(trace) = &mut trace {
+                                event(trace, hot_count, hot_sent, observed, 1_000_000, 6)?;
+                            } else {
+                                hot_samples.push(json!([hot_count, hot_sent, observed, 1_000_000]));
+                            }
+                            committed[0] += 1;
+                            hot_request = None;
+                        }
+                    } else {
+                        std::thread::sleep(wait_for);
                     }
                 } else {
-                    for _ in 0..32 {
-                        std::hint::spin_loop();
-                    }
-                }
-                continue;
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                if !pending.is_empty() {
                     for _ in 0..16 {
                         std::hint::spin_loop();
                     }
-                } else if next < count {
-                    let gap = planned(next).saturating_sub(now_ns);
-                    if gap > 90_000 {
-                        std::thread::sleep(Duration::from_nanos(gap - 55_000));
-                    } else {
-                        for _ in 0..16 {
-                            std::hint::spin_loop();
-                        }
-                    }
-                } else {
-                    std::thread::yield_now();
                 }
-                continue;
+            } else {
+                std::thread::yield_now();
             }
+            continue;
         }
         let actor = 1 + next % 100;
         let sent = elapsed(start);

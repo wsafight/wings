@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::host_values::HostMessage;
 use crate::ingress_requests::{ReplyPublisher, ReplyTable};
-use crate::message_values::{BytePayload, ListPayload};
+use crate::message_values::{BytePayload, ListPayload, MessageArguments};
 use crate::{
     CancellationToken, DetachedProcess, ExecutionFault, ExecutionSnapshot, HandlerId,
     IngressRequest, MessageValue, Reservation, ResourceAccount, ResourceLevel, Resources,
@@ -39,6 +40,10 @@ mod tests;
 const MAX_ACTORS: usize = 16384;
 const MAX_REQUESTS: usize = 256;
 const MAX_MAILBOX: usize = 256;
+// Envelopes each claim prefetch drains from the shared ring into the owner
+// stash, amortizing `head_atomic` stores across that many messages (the same
+// trick BEAM uses when it moves a run of msgin items into the private queue).
+const CLAIM_PREFETCH: usize = 8;
 const MAX_TIMERS: usize = 1024;
 const MAX_MONITORS: usize = 1024;
 const THREAD_STACK: usize = 2 << 20;
@@ -128,12 +133,10 @@ pub struct SchedulerHandle {
     shared: Arc<Shared>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     state: Mutex<State>,
-    closed: AtomicBool,
+    run_queues: Arc<ready::RunQueues>,
     fast_slots: Box<[FastSlot]>,
-    changed: ready::WorkerWakeHub,
-    ready_mask: AtomicU32,
     tenant: ResourceAccount,
     replies: Arc<ReplyTable>,
     config: SchedulerConfig,
@@ -145,21 +148,25 @@ struct Shared {
     _charge: Reservation,
 }
 
-struct State {
+pub(crate) struct State {
     closed: bool,
-    ready_bits: u32,
-    worker_active: [u32; 16],
+    published_signals: u32,
     last_exit: Option<SchedulerExitSnapshot>,
     modules: Option<(Box<[ScalarModule]>, Reservation)>,
     slots: Box<[Slot]>,
     requests: state::RequestTable,
+    /// Number of `requests` entries whose `completion` route is set; gates the
+    /// completion-delivery scan in `maintain` so plain in-flight requests do
+    /// not cost a bitmap sweep per lock acquisition.
+    completions_pending: u32,
     timers: Option<Box<ScheduledTimer>>,
     timer_count: usize,
     monitors: Option<Box<MonitorEntry>>,
+    pending_monitors: Option<Box<MonitorEntry>>,
     monitor_count: usize,
     recent_exits: [(i64, i64); 32],
     recent_exit_cursor: usize,
-    ready: Box<[ready::ReadyQueue]>,
+    run_queues: Arc<ready::RunQueues>,
     free: Option<usize>,
 }
 
@@ -174,11 +181,11 @@ struct ScheduledTimer {
 struct MonitorEntry {
     owner: SchedulerPid,
     target_capability: i64,
-    handler: HandlerId,
+    handler_index: usize,
+    fast_eligible: bool,
     max_steps: u64,
     reason: Option<i64>,
-    envelope_charge: Reservation,
-    envelope_msg_charge: Reservation,
+    envelope_charge: crate::resources::EnvelopeCharge,
     _node_charge: Reservation,
     next: Option<Box<MonitorEntry>>,
 }
@@ -215,23 +222,12 @@ struct Slot {
     creating: bool,
     actor: Option<Actor>,
     free_next: Option<usize>,
-    ready_previous: Option<usize>,
-    ready_next: Option<usize>,
-    ready_worker: Option<usize>,
 }
 
 struct Actor {
     module: ScalarModule,
     account: ResourceAccount,
-    image: Option<DetachedProcess>,
-    owner: Option<usize>,
-    starting: bool,
-    last_worker: Option<usize>,
-    migrations: u64,
-    execution: Option<ExecutionSnapshot>,
-    committed_state: Option<i64>,
     stopping: bool,
-    cancellation: CancellationToken,
     capability: i64,
     heap_records: Option<usize>,
     mailbox: ActorMailbox,
@@ -254,9 +250,12 @@ impl Drop for ActorMailbox {
     }
 }
 
+const FAST_SLOT_WRITER: u32 = 1 << 31;
+
 struct FastSlot {
-    locked: AtomicBool,
-    entry: UnsafeCell<Option<(u32, Weak<SharedMailboxInner>)>>,
+    state: AtomicU32,
+    generation: AtomicU32,
+    entry: UnsafeCell<Option<Weak<SharedMailboxInner>>>,
 }
 
 unsafe impl Send for FastSlot {}
@@ -265,16 +264,110 @@ unsafe impl Sync for FastSlot {}
 impl Default for FastSlot {
     fn default() -> Self {
         Self {
-            locked: AtomicBool::new(false),
+            state: AtomicU32::new(0),
+            generation: AtomicU32::new(0),
             entry: UnsafeCell::new(None),
         }
     }
 }
 
 impl FastSlot {
-    fn lock(&self, observation: Option<&locks::ContentionCounters>) -> FastSlotGuard<'_> {
-        locks::spin_lock(&self.locked, observation);
-        FastSlotGuard(self)
+    fn write_lock(
+        &self,
+        observation: Option<&locks::ContentionCounters>,
+    ) -> FastSlotWriteGuard<'_> {
+        if self
+            .state
+            .compare_exchange_weak(0, FAST_SLOT_WRITER, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return FastSlotWriteGuard(self);
+        }
+        let mut spins = 0u32;
+        let mut failures = 0u64;
+        let mut yields = 0u64;
+        let contended_at = observation.map(|_| Instant::now());
+        loop {
+            let current = self.state.load(Ordering::Relaxed);
+            if (current & FAST_SLOT_WRITER) == 0 {
+                match self.state.compare_exchange_weak(
+                    current,
+                    current | FAST_SLOT_WRITER,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(_) => {
+                        failures = failures.saturating_add(1);
+                        continue;
+                    }
+                }
+            }
+            failures = failures.saturating_add(1);
+            if spins < 16 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                yields = yields.saturating_add(1);
+                std::thread::yield_now();
+            }
+        }
+        while (self.state.load(Ordering::Acquire) & !FAST_SLOT_WRITER) != 0 {
+            if spins < 16 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                yields = yields.saturating_add(1);
+                std::thread::yield_now();
+            }
+        }
+        if let (Some(counters), Some(started)) = (observation, contended_at) {
+            counters.record_contended(failures.max(1), yields, started.elapsed());
+        }
+        FastSlotWriteGuard(self)
+    }
+
+    fn read_lock(&self, observation: Option<&locks::ContentionCounters>) -> FastSlotReadGuard<'_> {
+        let mut spins = 0u32;
+        let mut failures = 0u64;
+        let mut yields = 0u64;
+        let mut contended_at = None;
+        loop {
+            let current = self.state.load(Ordering::Relaxed);
+            if (current & FAST_SLOT_WRITER) == 0 && current < FAST_SLOT_WRITER - 1 {
+                if self
+                    .state
+                    .compare_exchange_weak(
+                        current,
+                        current + 1,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+                std::hint::spin_loop();
+                continue;
+            }
+            failures = failures.saturating_add(1);
+            if observation.is_some() && contended_at.is_none() {
+                contended_at = Some(Instant::now());
+            }
+            while (self.state.load(Ordering::Relaxed) & FAST_SLOT_WRITER) != 0 {
+                if spins < 16 {
+                    std::hint::spin_loop();
+                    spins += 1;
+                } else {
+                    yields = yields.saturating_add(1);
+                    std::thread::yield_now();
+                }
+            }
+        }
+        if let (Some(counters), Some(started)) = (observation, contended_at) {
+            counters.record_contended(failures, yields, started.elapsed());
+        }
+        FastSlotReadGuard(self)
     }
 
     fn set(
@@ -283,13 +376,15 @@ impl FastSlot {
         mailbox: &SharedMailbox,
         observation: Option<&locks::ContentionCounters>,
     ) {
-        let mut guard = self.lock(observation);
-        *guard = Some((generation, Arc::downgrade(&mailbox.inner)));
+        let mut guard = self.write_lock(observation);
+        *guard = Some(Arc::downgrade(&mailbox.inner));
+        self.generation.store(generation, Ordering::Release);
     }
 
     fn clear(&self, observation: Option<&locks::ContentionCounters>) {
         let current = {
-            let mut guard = self.lock(observation);
+            let mut guard = self.write_lock(observation);
+            self.generation.store(0, Ordering::Release);
             guard.take()
         };
         drop(current);
@@ -300,77 +395,215 @@ impl FastSlot {
         generation: u32,
         observation: Option<&locks::ContentionCounters>,
     ) -> Option<SharedMailbox> {
-        let guard = self.lock(observation);
-        match guard.as_ref() {
-            Some((slot_gen, weak)) if *slot_gen == generation => weak
-                .upgrade()
-                .map(|inner| SharedMailbox { inner })
-                .filter(|mailbox| !mailbox.is_retired()),
-            _ => None,
+        if self.generation.load(Ordering::Acquire) != generation {
+            return None;
         }
+        let guard = self.read_lock(observation);
+        if self.generation.load(Ordering::Relaxed) != generation {
+            return None;
+        }
+        guard
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .map(|inner| SharedMailbox { inner })
+            .filter(|mailbox| !mailbox.is_retired())
     }
 }
 
-struct FastSlotGuard<'slot>(&'slot FastSlot);
+struct FastSlotReadGuard<'slot>(&'slot FastSlot);
 
-impl std::ops::Deref for FastSlotGuard<'_> {
-    type Target = Option<(u32, Weak<SharedMailboxInner>)>;
+impl std::ops::Deref for FastSlotReadGuard<'_> {
+    type Target = Option<Weak<SharedMailboxInner>>;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.entry.get() }
     }
 }
 
-impl std::ops::DerefMut for FastSlotGuard<'_> {
+impl Drop for FastSlotReadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.state.fetch_sub(1, Ordering::Release);
+    }
+}
+
+struct FastSlotWriteGuard<'slot>(&'slot FastSlot);
+
+impl std::ops::Deref for FastSlotWriteGuard<'_> {
+    type Target = Option<Weak<SharedMailboxInner>>;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0.entry.get() }
+    }
+}
+
+impl std::ops::DerefMut for FastSlotWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0.entry.get() }
     }
 }
 
-impl Drop for FastSlotGuard<'_> {
+impl Drop for FastSlotWriteGuard<'_> {
     fn drop(&mut self) {
-        self.0.locked.store(false, Ordering::Release);
+        self.0.state.store(0, Ordering::Release);
+    }
+}
+
+pub(super) struct ActorExecState {
+    pub(super) image: Option<DetachedProcess>,
+    pub(super) owner: Option<usize>,
+    pub(super) last_worker: Option<usize>,
+    pub(super) migrations: u64,
+    pub(super) execution: Option<ExecutionSnapshot>,
+    pub(super) committed_state: Option<i64>,
+    pub(super) queued: bool,
+    pub(super) retired: bool,
+}
+
+pub(super) struct ActorExecGuard<'mailbox> {
+    inner: &'mailbox SharedMailboxInner,
+}
+
+impl std::ops::Deref for ActorExecGuard<'_> {
+    type Target = ActorExecState;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.inner.exec.get() }
+    }
+}
+
+impl std::ops::DerefMut for ActorExecGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.inner.exec.get() }
+    }
+}
+
+impl Drop for ActorExecGuard<'_> {
+    fn drop(&mut self) {
+        self.inner.exec_locked.store(false, Ordering::Release);
     }
 }
 
 #[derive(Clone)]
-struct SharedMailbox {
+pub(crate) struct SharedMailbox {
     inner: Arc<SharedMailboxInner>,
 }
 
+#[repr(align(64))]
+struct CachePadded<T>(T);
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for CachePadded<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 struct SharedMailboxInner {
+    pid: SchedulerPid,
+    capability: i64,
     module: ScalarModule,
     account: ResourceAccount,
+    cancellation: CancellationToken,
     capacity: usize,
-    count_atomic: AtomicUsize,
-    occupancy_atomic: AtomicUsize,
+    // MPSC bounded ring: producers reserve a position with a `tail` CAS and
+    // publish through the per-slot sequence; the owning worker is the only
+    // consumer, so `head` lives in a plain cell mirrored by `head_atomic` for
+    // capacity/emptiness readers. A slot holding position `p` reads `seq ==
+    // p` when free and `seq == p + 1` once its envelope is visible.
+    // `tail` sits on its own cache line so producer CAS traffic does not false-
+    // share with the consumer's `head`/`stash`/`claimed` fields.
+    slots: Box<[SeqSlot]>,
+    tail: CachePadded<AtomicUsize>,
+    head: UnsafeCell<usize>,
+    head_atomic: AtomicUsize,
+    // Owner-side stash for `restore` and prefetch: rolled-back messages are
+    // the next head without occupying ring slots, and `pop_for_claim` drains
+    // a small run of published envelopes into the same deque so later claims
+    // pop local memory instead of touching the shared `head_atomic` line per
+    // message. Only the owner writes; `stash_count` publishes the length for
+    // capacity/emptiness readers.
+    stash: UnsafeCell<VecDeque<Envelope>>,
+    stash_count: AtomicUsize,
+    // Messages popped into a claim whose handler has not started yet. Counted
+    // toward occupancy so a claim → rollback cycle cannot widen admission
+    // beyond `capacity` (the legacy `in_flight` reservation's role).
+    claimed: AtomicUsize,
+    stopping: AtomicBool,
+    active_or_queued: AtomicBool,
     retired: AtomicBool,
-    locked: AtomicBool,
+    live_execution_locked: AtomicBool,
+    live_execution: UnsafeCell<Option<ExecutionSnapshot>>,
+    exec_locked: AtomicBool,
+    exec: UnsafeCell<ActorExecState>,
     contention_observation: Option<Arc<locks::LockContentionObservation>>,
-    state: UnsafeCell<Mailbox>,
 }
 
 unsafe impl Send for SharedMailboxInner {}
 unsafe impl Sync for SharedMailboxInner {}
 
-struct Mailbox {
-    slots: Box<[Option<Envelope>]>,
-    head: usize,
-    count: usize,
-    starting: bool,
-    stopping: bool,
-    active_or_queued: bool,
+struct SeqSlot {
+    seq: AtomicUsize,
+    data: UnsafeCell<std::mem::MaybeUninit<Envelope>>,
 }
 
-struct Envelope {
-    handler: HandlerId,
-    arguments: [i64; 64],
-    count: usize,
+unsafe impl Send for SeqSlot {}
+unsafe impl Sync for SeqSlot {}
+
+impl Drop for SharedMailboxInner {
+    /// `MaybeUninit` slots never run destructors, so any envelope left
+    /// published-but-unpopped (retired mailbox dropped without a prior
+    /// `retire_clear`, e.g. a teardown path that only removed the actor)
+    /// would leak its reservation. Dropping the inner value means no
+    /// concurrent access remains, so drain what is left here.
+    fn drop(&mut self) {
+        let mut stash = std::mem::take(self.stash.get_mut());
+        stash.clear();
+        let n = self.slots.len();
+        let head = *self.head.get_mut();
+        let tail = *self.tail.get_mut();
+        let mut pending = None;
+        for pos in head..tail {
+            let slot = &self.slots[pos % n];
+            if slot.seq.load(Ordering::Relaxed) == pos + 1 {
+                let message = unsafe { (*slot.data.get()).assume_init_read() };
+                pending = Some(message);
+            }
+            if let Some(message) = pending.take() {
+                drop(message);
+            }
+        }
+    }
+}
+
+pub(crate) struct Envelope {
+    handler: usize,
+    arguments: MessageArguments,
     max_steps: u64,
-    lists: ListPayload,
-    bytes: BytePayload,
+    // List/byte payloads stay boxed behind `None` for scalar messages so the
+    // envelope copies at claim, restore, and batch-pop time stay small.
+    lists: Option<Box<ListPayload>>,
+    bytes: Option<Box<BytePayload>>,
     reply: Reply,
-    _charge: Reservation,
-    _message_charge: Option<Reservation>,
+    fast_eligible: bool,
+    _charge: crate::resources::EnvelopeCharge,
+}
+
+fn box_list_payload(payload: ListPayload) -> Option<Box<ListPayload>> {
+    (payload.mask != 0 || !payload.is_empty()).then(|| Box::new(payload))
+}
+
+fn box_byte_payload(payload: BytePayload) -> Option<Box<BytePayload>> {
+    (!payload.is_trivially_empty()).then(|| Box::new(payload))
+}
+
+fn envelope_fast_eligible(handler: &HandlerId, lists: &ListPayload, bytes: &BytePayload) -> bool {
+    crate::execution::WorkerFibers::can_run_fast(handler, lists, bytes)
 }
 
 enum Reply {
@@ -430,9 +663,12 @@ impl Scheduler {
             return Err("scheduler requires a tenant, 1..=16 workers, 1..=16384 actor slots, 1..=256 request slots, nonzero bounded slices and 0..=65536 yield/slice samples per worker".into());
         }
         let bytes = std::mem::size_of::<Shared>()
+            + std::mem::size_of::<ready::RunQueues>()
             + config.capacity * (std::mem::size_of::<Slot>() + std::mem::size_of::<FastSlot>())
             + config.requests * std::mem::size_of::<RequestSlot>()
-            + config.workers * std::mem::size_of::<ready::ReadyQueue>()
+            + config.workers
+                * (std::mem::size_of::<ready::WorkerRunQueue>()
+                    + config.capacity * std::mem::size_of::<SharedMailbox>())
             + if config.yield_samples == 0 {
                 0
             } else {
@@ -498,11 +734,11 @@ impl Scheduler {
                 )?);
             }
         }
+        let run_queues = ready::RunQueues::new(config.workers, config.capacity)?;
         let shared = Arc::new(Shared {
             state: crate::native_sync::mutex(State {
                 closed: false,
-                ready_bits: 0,
-                worker_active: [0; 16],
+                published_signals: 0,
                 last_exit: None,
                 modules: None,
                 slots: storage(config.capacity, || {
@@ -512,28 +748,25 @@ impl Scheduler {
                         creating: false,
                         actor: None,
                         free_next: (next_slot < config.capacity).then_some(next_slot),
-                        ready_previous: None,
-                        ready_next: None,
-                        ready_worker: None,
                     }
                 })?,
                 requests: state::RequestTable::new(storage(config.requests, || RequestSlot {
                     generation: 1,
                     pending: None,
                 })?),
+                completions_pending: 0,
                 timers: None,
                 timer_count: 0,
                 monitors: None,
+                pending_monitors: None,
                 monitor_count: 0,
                 recent_exits: [(0, 0); 32],
                 recent_exit_cursor: 0,
-                ready: storage(config.workers, ready::ReadyQueue::default)?,
+                run_queues: run_queues.clone(),
                 free: Some(0),
             }),
-            closed: AtomicBool::new(false),
+            run_queues,
             fast_slots: storage(config.capacity, FastSlot::default)?,
-            changed: ready::WorkerWakeHub::new(),
-            ready_mask: AtomicU32::new(0),
             tenant: tenant.clone(),
             replies: ReplyTable::new(tenant, config.requests)?,
             config,
@@ -619,11 +852,14 @@ impl Drop for Scheduler {
         let mut timers = state.timers.take();
         state.timer_count = 0;
         let mut monitors = state.monitors.take();
+        let mut pending_monitors = state.pending_monitors.take();
         state.monitor_count = 0;
         state.requests.clear_all();
+        state.completions_pending = 0;
         drop(state);
         clear_timers(&mut timers);
         clear_monitors(&mut monitors);
+        clear_monitors(&mut pending_monitors);
         let mut state = self
             .handle
             .shared
@@ -782,16 +1018,35 @@ impl SchedulerHandle {
         };
         let result = (|| {
             let account = self.shared.tenant.process_accounted(limits)?;
+            let stash_cap = if mailbox > 1 {
+                mailbox.min(CLAIM_PREFETCH)
+            } else {
+                1
+            };
             let charge = account.reserve(Resources {
                 processes: 1,
                 bytes: (std::mem::size_of::<Actor>()
                     + std::mem::size_of::<SharedMailboxInner>()
                     + 2 * std::mem::size_of::<usize>()
-                    + mailbox * std::mem::size_of::<Option<Envelope>>())
-                    as u64,
+                    + (mailbox + 1) * std::mem::size_of::<SeqSlot>()
+                    + stash_cap * std::mem::size_of::<Envelope>()) as u64,
                 ..Resources::default()
             })?;
-            let slots = storage(mailbox, || None)?;
+            // One spare ring slot over the advertised capacity preserves the
+            // headroom the owner stash gives a rolled-back message; each
+            // slot's sequence starts at its index so position `p` is free
+            // iff `seq == p`.
+            let mut slots = storage(mailbox + 1, || SeqSlot {
+                seq: AtomicUsize::new(usize::MAX),
+                data: UnsafeCell::new(std::mem::MaybeUninit::uninit()),
+            })?;
+            for (index, slot) in slots.iter_mut().enumerate() {
+                slot.seq = AtomicUsize::new(index);
+            }
+            let mut stash = VecDeque::new();
+            stash
+                .try_reserve_exact(stash_cap)
+                .map_err(|_| "scheduler mailbox stash allocation failed")?;
             let temporary;
             let pool = if let Some(pool) = pool {
                 pool
@@ -809,30 +1064,26 @@ impl SchedulerHandle {
                 (!module.manifest().state.is_reference()).then_some(process.state);
             let image = process.detach();
             let cancellation = CancellationToken::new_accounted(&account)?;
+            let capability =
+                wings_abi::encode_capability(self.shared.identity, pid.slot, pid.generation)
+                    .ok_or("scheduler actor capabilities exhausted")?;
             let shared_mailbox = SharedMailbox::new(
+                pid,
+                capability,
                 module.clone(),
                 account.clone(),
+                cancellation,
+                image,
+                committed_state,
                 slots,
+                stash,
                 self.shared.contention_observation.clone(),
             );
             Ok::<_, String>(Actor {
                 module: module.clone(),
                 account,
-                image: Some(image),
-                owner: None,
-                starting: false,
-                last_worker: None,
-                migrations: 0,
-                execution: None,
-                committed_state,
                 stopping: false,
-                cancellation,
-                capability: wings_abi::encode_capability(
-                    self.shared.identity,
-                    pid.slot,
-                    pid.generation,
-                )
-                .ok_or("scheduler actor capabilities exhausted")?,
+                capability,
                 heap_records,
                 mailbox: ActorMailbox(shared_mailbox),
                 _charge: charge,
@@ -873,7 +1124,7 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
-        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
             self.shared
@@ -885,41 +1136,35 @@ impl SchedulerHandle {
         };
         if let Some(mailbox) = fast_mailbox {
             validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
-            if handler.schema().reply.is_some() {
+            let meta = handler.fast_meta();
+            if meta.reply.is_some() {
                 return Err("send requires a one-way handler".into());
             }
             if mailbox.occupancy_hint() < mailbox.capacity() {
-                let mut owned = [0; 64];
-                owned[..arguments.len()].copy_from_slice(arguments);
-                let charge = mailbox.inner.account.reserve(Resources {
-                    bytes: std::mem::size_of::<Envelope>() as u64,
-                    ..Resources::default()
-                })?;
-                let message_charge = mailbox.inner.account.reserve(Resources {
-                    messages: 1,
-                    ..Resources::default()
-                })?;
+                let charge = mailbox
+                    .inner
+                    .account
+                    .reserve_envelope(
+                        std::mem::size_of::<Envelope>() as u64
+                            + MessageArguments::overflow_bytes(arguments.len()),
+                    )
+                    .map_err(String::from)?;
+                let message_arguments =
+                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
                 let message = Envelope {
-                    handler: handler.clone(),
-                    arguments: owned,
-                    count: arguments.len(),
+                    handler: handler.index,
+                    arguments: message_arguments,
                     max_steps,
-                    lists: ListPayload::default(),
-                    bytes: BytePayload::default(),
+                    lists: None,
+                    bytes: None,
                     reply: Reply::None,
+                    fast_eligible: meta.fast_scalar(),
                     _charge: charge,
-                    _message_charge: Some(message_charge),
                 };
-                match mailbox.try_push_fast(&self.shared.closed, message) {
+                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
                     Ok(true) => return Ok(()),
                     Ok(false) => {
-                        let mut state = self.shared.lock();
-                        if !state.closed {
-                            let wake = state.enqueue(pid);
-                            self.shared.publish_signal(&state);
-                            drop(state);
-                            wake.fire(&self.shared.changed);
-                        }
+                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
                         return Ok(());
                     }
                     Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
@@ -927,30 +1172,19 @@ impl SchedulerHandle {
                 }
             }
         }
-        let mut owned = [0; 64];
-        if arguments.len() <= 64 {
-            owned[..arguments.len()].copy_from_slice(arguments);
-        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
         validate_scalar(actor, handler, arguments)?;
-        if handler.schema().reply.is_some() {
+        if handler.fast_meta().reply.is_some() {
             return Err("send requires a one-way handler".into());
         }
-        let message = envelope_precopied(
-            actor,
-            handler,
-            owned,
-            arguments.len(),
-            max_steps,
-            Reply::None,
-        )?;
+        let message = envelope_precopied(actor, handler, arguments, max_steps, Reply::None)?;
         actor.mailbox.push(message)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(())
     }
 
@@ -965,7 +1199,7 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
-        let fast_mailbox = if !self.shared.closed.load(Ordering::Acquire)
+        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
             self.shared
@@ -977,47 +1211,41 @@ impl SchedulerHandle {
         };
         if let Some(mailbox) = fast_mailbox {
             validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
-            let Some(reply) = handler.schema().reply.filter(|ty| ty.is_supported_reply()) else {
+            let meta = handler.fast_meta();
+            let Some(reply) = meta.reply.filter(|_| meta.has_supported_reply()) else {
                 return Err(
                     "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
                 );
             };
             if mailbox.occupancy_hint() < mailbox.capacity() {
-                let mut owned = [0; 64];
-                owned[..arguments.len()].copy_from_slice(arguments);
-                let charge = mailbox.inner.account.reserve(Resources {
-                    bytes: std::mem::size_of::<Envelope>() as u64,
-                    ..Resources::default()
-                })?;
-                let message_charge = mailbox.inner.account.reserve(Resources {
-                    messages: 1,
-                    ..Resources::default()
-                })?;
+                let charge = mailbox
+                    .inner
+                    .account
+                    .reserve_envelope(
+                        std::mem::size_of::<Envelope>() as u64
+                            + MessageArguments::overflow_bytes(arguments.len()),
+                    )
+                    .map_err(String::from)?;
+                let message_arguments =
+                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
                 let (request, publisher) =
                     self.shared
                         .replies
                         .start(deadline, &mailbox.inner.account, reply)?;
                 let message = Envelope {
-                    handler: handler.clone(),
-                    arguments: owned,
-                    count: arguments.len(),
+                    handler: handler.index,
+                    arguments: message_arguments,
                     max_steps,
-                    lists: ListPayload::default(),
-                    bytes: BytePayload::default(),
+                    lists: None,
+                    bytes: None,
                     reply: Reply::External(publisher),
+                    fast_eligible: meta.fast_scalar(),
                     _charge: charge,
-                    _message_charge: Some(message_charge),
                 };
-                match mailbox.try_push_fast(&self.shared.closed, message) {
+                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
                     Ok(true) => return Ok(request),
                     Ok(false) => {
-                        let mut state = self.shared.lock();
-                        if !state.closed {
-                            let wake = state.enqueue(pid);
-                            self.shared.publish_signal(&state);
-                            drop(state);
-                            wake.fire(&self.shared.changed);
-                        }
+                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
                         return Ok(request);
                     }
                     Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
@@ -1025,34 +1253,24 @@ impl SchedulerHandle {
                 }
             }
         }
-        let mut owned = [0; 64];
-        if arguments.len() <= 64 {
-            owned[..arguments.len()].copy_from_slice(arguments);
-        }
         let mut state = self.shared.lock();
         state.open()?;
         let actor = state.actor_mut(self.shared.identity, pid)?;
         validate_scalar(actor, handler, arguments)?;
-        let Some(reply) = handler.schema().reply.filter(|ty| ty.is_supported_reply()) else {
+        let meta = handler.fast_meta();
+        let Some(reply) = meta.reply.filter(|_| meta.has_supported_reply()) else {
             return Err(
                 "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
             );
         };
-        let mut message = envelope_precopied(
-            actor,
-            handler,
-            owned,
-            arguments.len(),
-            max_steps,
-            Reply::None,
-        )?;
+        let mut message = envelope_precopied(actor, handler, arguments, max_steps, Reply::None)?;
         let (request, publisher) = self.shared.replies.start(deadline, &actor.account, reply)?;
         message.reply = Reply::External(publisher);
         actor.mailbox.push(message)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(request)
     }
 
@@ -1062,9 +1280,18 @@ impl SchedulerHandle {
         let actor = state.actor_mut(self.shared.identity, pid)?;
         actor.stopping = true;
         actor.mailbox.mark_stopping();
-        actor.cancellation.cancel();
+        actor.mailbox.inner.cancellation.cancel();
         self.shared.fast_slots[pid.slot as usize].clear(self.shared.fast_slot_contention());
-        let retired = if actor.owner.is_none() {
+        let unowned = {
+            let mut exec = actor.mailbox.exec_lock();
+            if exec.owner.is_none() {
+                exec.retired = true;
+                true
+            } else {
+                false
+            }
+        };
+        let retired = if unowned {
             state.retire_with_reason(self.shared.identity, pid, 0)
         } else {
             None
@@ -1078,9 +1305,9 @@ impl SchedulerHandle {
         let wake = state
             .maintain(self.shared.identity)
             .combine(state.wake_all_parked());
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(())
     }
 
@@ -1131,9 +1358,7 @@ impl SchedulerHandle {
                 return Err("host message module, phase or handler mode mismatch".into());
             }
             HostMessage::validate(handler, values)?;
-            if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-                == actor.mailbox.capacity()
-            {
+            if actor.mailbox.count() >= actor.mailbox.capacity() {
                 return Err("mailbox_full".into());
             }
             actor.account.clone()
@@ -1187,9 +1412,9 @@ impl SchedulerHandle {
         };
         actor.mailbox.push(envelope)?;
         let wake = state.enqueue(pid);
-        self.shared.publish_signal(&state);
+        self.shared.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.shared.changed);
+        wake.fire(&self.shared.run_queues.changed);
         Ok(request)
     }
 
@@ -1197,14 +1422,26 @@ impl SchedulerHandle {
         let state = self.shared.lock();
         state.open()?;
         let actor = state.actor(self.shared.identity, pid)?;
+        let exec = actor.mailbox.exec_lock();
+        let owner = exec.owner;
+        let last_worker = exec.last_worker;
+        let migrations = exec.migrations;
+        let committed_state = exec.committed_state;
+        let exec_snapshot = exec.execution;
+        drop(exec);
+        let execution = if owner.is_some() {
+            actor.mailbox.live_execution().or(exec_snapshot)
+        } else {
+            exec_snapshot
+        };
         Ok(SchedulerSnapshot {
-            owner: actor.owner,
-            last_worker: actor.last_worker,
-            migrations: actor.migrations,
+            owner,
+            last_worker,
+            migrations,
             queued: actor.mailbox.count(),
             stopping: actor.stopping,
-            execution: actor.execution,
-            committed_state: actor.committed_state,
+            execution,
+            committed_state,
             resources: actor.account.used(),
         })
     }
@@ -1220,10 +1457,11 @@ impl SchedulerHandle {
         let state = self.shared.lock();
         state.open()?;
         let actor = state.actor(self.shared.identity, pid)?;
-        if actor.owner.is_some() {
+        let exec = actor.mailbox.exec_lock();
+        if exec.owner.is_some() {
             return Err("byte state snapshot requires an idle actor".into());
         }
-        Ok(actor
+        Ok(exec
             .image
             .as_ref()
             .and_then(DetachedProcess::byte_state_snapshot))
@@ -1241,26 +1479,212 @@ impl Shared {
             .map(|observation| &observation.fast_slot)
     }
 
-    pub(super) fn publish_signal(&self, state: &State) {
-        self.ready_mask
-            .store(state.signal_bits(), Ordering::Release);
+    pub(super) fn publish_signal(&self, state: &mut State) {
+        let global = state.global_signal_needed();
+        let prev = (state.published_signals & ready::WAKE_GLOBAL_BIT) != 0;
+        if global != prev {
+            if global {
+                state.published_signals |= ready::WAKE_GLOBAL_BIT;
+                self.run_queues
+                    .ready_mask
+                    .fetch_or(ready::WAKE_GLOBAL_BIT, Ordering::SeqCst);
+            } else {
+                state.published_signals &= !ready::WAKE_GLOBAL_BIT;
+                self.run_queues
+                    .ready_mask
+                    .fetch_and(!ready::WAKE_GLOBAL_BIT, Ordering::Release);
+            }
+        }
+        self.run_queues
+            .publish_next_timer(state.timers.as_ref().map(|head| head.deadline));
     }
 
     fn close(&self) {
         let mut state = self.lock();
         state.closed = true;
-        self.closed.store(true, Ordering::Release);
+        self.run_queues.closed.store(true, Ordering::Release);
         for index in 0..self.fast_slots.len() {
             self.fast_slots[index].clear(self.fast_slot_contention());
         }
         for actor in state.slots.iter().filter_map(|slot| slot.actor.as_ref()) {
             actor.mailbox.mark_stopping();
-            actor.cancellation.cancel();
+            actor.mailbox.inner.cancellation.cancel();
         }
         let wake = state.wake_all_parked();
-        self.publish_signal(&state);
+        self.publish_signal(&mut state);
         drop(state);
-        wake.fire(&self.changed);
+        wake.fire(&self.run_queues.changed);
+    }
+}
+
+/// Lock-free effect context for a claimed actor: `EFFECT_SELF_PID`,
+/// `EFFECT_SEND_SELF`, and `EFFECT_SEND` resolve through the fast slot table
+/// and the target mailbox's atomics instead of suspending to the global
+/// `Mutex<State>` effect path. Every returned status is identical to what
+/// `Shared::effect` would produce; requests for other effects return `None`
+/// and suspend as before.
+#[derive(Clone)]
+pub(crate) struct EffectSendTarget {
+    shared: Arc<Shared>,
+    mailbox: SharedMailbox,
+    pid: SchedulerPid,
+    capability: i64,
+}
+
+impl EffectSendTarget {
+    pub(crate) fn new(
+        shared: &Arc<Shared>,
+        mailbox: &SharedMailbox,
+        pid: SchedulerPid,
+        capability: i64,
+    ) -> Self {
+        Self {
+            shared: shared.clone(),
+            mailbox: mailbox.clone(),
+            pid,
+            capability,
+        }
+    }
+
+    /// Returns `Some(status)` when the effect completed inline, or `None` to
+    /// fall back to the suspended scheduler path.
+    pub(crate) unsafe fn try_effect(
+        &self,
+        context: &mut wings_abi::ScalarContext,
+        request: &wings_abi::EffectRequest,
+        output: *mut i64,
+        budget: u64,
+    ) -> Option<u32> {
+        let reject = || {
+            if self.shared.run_queues.closed.load(Ordering::Acquire) || self.mailbox.is_retired() {
+                wings_abi::STATUS_CANCELLED
+            } else {
+                wings_abi::STATUS_SEND_REJECTED
+            }
+        };
+        match request.operation {
+            wings_abi::EFFECT_SELF_PID => {
+                if request.count != 0
+                    || request.list_mask != 0
+                    || request.bytes_mask != 0
+                    || request.string_mask != 0
+                {
+                    // Mirrors the slow path: a `self_pid` carrying arguments is
+                    // not a send, so it reports the generic control status.
+                    return Some(wings_abi::STATUS_INVALID_CONTROL);
+                }
+                if self.mailbox.is_retired()
+                    || self.shared.run_queues.closed.load(Ordering::Acquire)
+                {
+                    return Some(wings_abi::STATUS_CANCELLED);
+                }
+                if self.mailbox.is_stopping() {
+                    return Some(wings_abi::STATUS_INVALID_CONTROL);
+                }
+                unsafe { output.write(self.capability) };
+                Some(wings_abi::STATUS_OK)
+            }
+            wings_abi::EFFECT_SEND_SELF | wings_abi::EFFECT_SEND => {
+                if self.mailbox.is_retired()
+                    || self.mailbox.is_stopping()
+                    || self.shared.run_queues.closed.load(Ordering::Acquire)
+                {
+                    return Some(reject());
+                }
+                let (_target_pid, target) = if request.operation == wings_abi::EFFECT_SEND_SELF {
+                    (self.pid, self.mailbox.clone())
+                } else {
+                    let Some((slot, generation)) =
+                        wings_abi::decode_capability(self.shared.identity, request.target)
+                    else {
+                        return Some(reject());
+                    };
+                    let pid = SchedulerPid {
+                        scheduler: self.shared.identity,
+                        slot: slot as u32,
+                        generation,
+                    };
+                    let Some(mailbox) = self.shared.fast_slots.get(slot).and_then(|entry| {
+                        entry.get(generation, self.shared.fast_slot_contention())
+                    }) else {
+                        return Some(reject());
+                    };
+                    (pid, mailbox)
+                };
+                let (arguments, lists, mut bytes) =
+                    match unsafe { crate::execution::copy_effect_payload(context, request) } {
+                        Ok(payload) => payload,
+                        Err(status) => return Some(status),
+                    };
+                let handler = match target
+                    .inner
+                    .module
+                    .handler_by_index(request.handler as usize)
+                {
+                    Ok(handler) => handler,
+                    Err(_) => return Some(reject()),
+                };
+                let schema = handler.schema();
+                if handler.fast_meta().is_completion()
+                    || schema.reply.is_some()
+                    || crate::message_values::validate_message_payload(
+                        &schema.parameters,
+                        arguments.as_slice(),
+                        false,
+                        true,
+                        &lists,
+                        &bytes,
+                    )
+                    .is_err()
+                    || target.is_stopping()
+                    || target.is_retired()
+                    || !Arc::ptr_eq(&target.inner.module.inner, &self.mailbox.inner.module.inner)
+                    || target.occupancy_hint() >= target.capacity()
+                {
+                    return Some(reject());
+                }
+                if bytes.transfer_checked(&target.inner.account).is_err() {
+                    return Some(reject());
+                }
+                let charge = match target.inner.account.reserve_envelope(
+                    std::mem::size_of::<Envelope>() as u64
+                        + MessageArguments::overflow_bytes(arguments.as_slice().len())
+                        + lists.overflow_bytes(),
+                ) {
+                    Ok(charge) => charge,
+                    Err(_) => return Some(reject()),
+                };
+                let fast_eligible = envelope_fast_eligible(&handler, &lists, &bytes);
+                let message = Envelope {
+                    handler: handler.index,
+                    arguments,
+                    max_steps: budget,
+                    lists: box_list_payload(lists),
+                    bytes: box_byte_payload(bytes),
+                    reply: Reply::None,
+                    fast_eligible,
+                    _charge: charge,
+                };
+                match target.try_push_fast(&self.shared.run_queues.closed, message) {
+                    Ok(needs_enqueue) => {
+                        if !needs_enqueue {
+                            self.shared.run_queues.enqueue_fast_pushed(target);
+                        }
+                        unsafe { output.write(0) };
+                        Some(wings_abi::STATUS_OK)
+                    }
+                    Err(FastPushError::MailboxFull) => Some(reject()),
+                    Err(FastPushError::ClosedOrStopped) => {
+                        if self.shared.run_queues.closed.load(Ordering::Acquire) {
+                            Some(wings_abi::STATUS_CANCELLED)
+                        } else {
+                            Some(reject())
+                        }
+                    }
+                }
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1302,268 +1726,578 @@ enum FastPushError {
     ClosedOrStopped,
 }
 
-struct MailboxGuard<'mb>(&'mb SharedMailboxInner);
-
-impl std::ops::Deref for MailboxGuard<'_> {
-    type Target = Mailbox;
-    fn deref(&self) -> &Mailbox {
-        unsafe { &*self.0.state.get() }
-    }
-}
-
-impl std::ops::DerefMut for MailboxGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Mailbox {
-        unsafe { &mut *self.0.state.get() }
-    }
-}
-
-impl Drop for MailboxGuard<'_> {
-    fn drop(&mut self) {
-        let state = unsafe { &*self.0.state.get() };
-        self.0.count_atomic.store(state.count, Ordering::Release);
-        self.0
-            .occupancy_atomic
-            .store(state.count + usize::from(state.starting), Ordering::Release);
-        self.0.locked.store(false, Ordering::Release);
-    }
-}
-
 impl SharedMailbox {
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        pid: SchedulerPid,
+        capability: i64,
         module: ScalarModule,
         account: ResourceAccount,
-        slots: Box<[Option<Envelope>]>,
+        cancellation: CancellationToken,
+        image: DetachedProcess,
+        committed_state: Option<i64>,
+        slots: Box<[SeqSlot]>,
+        stash: VecDeque<Envelope>,
         contention_observation: Option<Arc<locks::LockContentionObservation>>,
     ) -> Self {
-        let capacity = slots.len();
+        // `count()` derives as `tail - head + stash_len`. The ring physically
+        // holds `slots.len()` envelopes and the stash a small prefetch/restore
+        // run, so the worst case exceeds the advertised capacity only by the
+        // stash bound — the same headroom the legacy `count + in_flight`
+        // reservation reserved for a message between pop and handler start.
+        let capacity = slots.len() - 1;
         Self {
             inner: Arc::new(SharedMailboxInner {
+                pid,
+                capability,
                 module,
                 account,
+                cancellation,
                 capacity,
-                count_atomic: AtomicUsize::new(0),
-                occupancy_atomic: AtomicUsize::new(0),
+                slots,
+                tail: CachePadded(AtomicUsize::new(0)),
+                head: UnsafeCell::new(0),
+                head_atomic: AtomicUsize::new(0),
+                stash: UnsafeCell::new(stash),
+                stash_count: AtomicUsize::new(0),
+                claimed: AtomicUsize::new(0),
+                stopping: AtomicBool::new(false),
+                active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
-                locked: AtomicBool::new(false),
-                contention_observation,
-                state: UnsafeCell::new(Mailbox {
-                    slots,
-                    head: 0,
-                    count: 0,
-                    starting: false,
-                    stopping: false,
-                    active_or_queued: false,
+                live_execution_locked: AtomicBool::new(false),
+                live_execution: UnsafeCell::new(None),
+                exec_locked: AtomicBool::new(false),
+                exec: UnsafeCell::new(ActorExecState {
+                    image: Some(image),
+                    owner: None,
+                    last_worker: None,
+                    migrations: 0,
+                    execution: None,
+                    committed_state,
+                    queued: false,
+                    retired: false,
                 }),
+                contention_observation,
             }),
         }
     }
 
-    fn lock(&self) -> MailboxGuard<'_> {
-        let observation = self
-            .inner
-            .contention_observation
-            .as_deref()
-            .map(|observation| &observation.mailbox);
-        locks::spin_lock(&self.inner.locked, observation);
-        MailboxGuard(&self.inner)
+    #[inline]
+    pub(super) fn exec_lock(&self) -> ActorExecGuard<'_> {
+        locks::spin_lock(&self.inner.exec_locked, None);
+        ActorExecGuard { inner: &self.inner }
+    }
+
+    pub(super) fn set_live_execution(&self, snapshot: Option<ExecutionSnapshot>) {
+        locks::spin_lock(&self.inner.live_execution_locked, None);
+        unsafe {
+            *self.inner.live_execution.get() = snapshot;
+        }
+        self.inner
+            .live_execution_locked
+            .store(false, Ordering::Release);
+    }
+
+    pub(super) fn live_execution(&self) -> Option<ExecutionSnapshot> {
+        locks::spin_lock(&self.inner.live_execution_locked, None);
+        let snapshot = unsafe { *self.inner.live_execution.get() };
+        self.inner
+            .live_execution_locked
+            .store(false, Ordering::Release);
+        snapshot
     }
 
     pub(super) fn capacity(&self) -> usize {
         self.inner.capacity
     }
 
+    /// Logical occupancy: published queue length, the owner stash, and
+    /// popped-but-not-started claim messages. `tail` counts producer
+    /// reservations, so this is conservative (never under-counts) while a
+    /// producer is between its CAS and slot publish.
     pub(super) fn count(&self) -> usize {
-        self.inner.count_atomic.load(Ordering::Acquire)
+        self.inner
+            .tail
+            .load(Ordering::Acquire)
+            .saturating_sub(self.inner.head_atomic.load(Ordering::Acquire))
+            + self.inner.stash_count.load(Ordering::Acquire)
+            + self.inner.claimed.load(Ordering::Acquire)
     }
 
     pub(super) fn occupancy_hint(&self) -> usize {
-        self.inner.occupancy_atomic.load(Ordering::Acquire)
+        self.count()
     }
 
     pub(super) fn is_retired(&self) -> bool {
         self.inner.retired.load(Ordering::Acquire)
     }
 
-    pub(super) fn is_starting(&self) -> bool {
-        self.lock().starting
-    }
-
-    pub(super) fn set_starting(&self, starting: bool) {
-        self.lock().starting = starting;
+    pub(super) fn is_stopping(&self) -> bool {
+        self.inner.stopping.load(Ordering::Acquire)
     }
 
     pub(super) fn mark_stopping(&self) {
-        self.lock().stopping = true;
+        self.inner.stopping.store(true, Ordering::Release);
     }
 
+    /// Drains every published envelope plus the owner stash. Callers
+    /// (`finish_process` on the owner, `Scheduler::drop` after join, the
+    /// `stop`/`retire` path with no owner) guarantee no consumer is active;
+    /// producers may still be finishing a CAS, so the drain waits for any
+    /// reserved-but-unpublished slot instead of losing it.
     pub(super) fn retire_clear(&self) {
         self.inner.retired.store(true, Ordering::Release);
-        let mut drained = Vec::new();
-        {
-            let mut guard = self.lock();
-            guard.stopping = true;
-            guard.starting = false;
-            guard.active_or_queued = false;
-            if guard.count > 0 {
-                let _ = drained.try_reserve_exact(guard.count);
-                while guard.count > 0 {
-                    let head = guard.head;
-                    let msg = guard.slots[head].take().expect("queued envelope");
-                    guard.head = (head + 1) % guard.slots.len();
-                    guard.count -= 1;
-                    if drained.capacity() > drained.len() {
-                        drained.push(msg);
-                    }
-                }
-            }
+        self.inner.stopping.store(true, Ordering::Relaxed);
+        self.inner.active_or_queued.store(false, Ordering::Relaxed);
+        let dropped_image = {
+            let mut exec = self.exec_lock();
+            exec.retired = true;
+            exec.queued = false;
+            exec.image.take()
+        };
+        drop(dropped_image);
+        self.inner.stash_count.store(0, Ordering::Relaxed);
+        unsafe {
+            (*self.inner.stash.get()).clear();
         }
+        let n = self.inner.slots.len();
+        let head = unsafe { *self.inner.head.get() };
+        let tail = self.inner.tail.load(Ordering::Acquire);
+        let mut drained = Vec::new();
+        let _ = drained.try_reserve_exact(tail - head);
+        for pos in head..tail {
+            let slot = &self.inner.slots[pos % n];
+            // A live producer that reserved `pos` publishes imminently; spin
+            // until the envelope is visible rather than dropping it silently.
+            while slot.seq.load(Ordering::Acquire) != pos + 1 {
+                std::hint::spin_loop();
+            }
+            let message = unsafe { (*slot.data.get()).assume_init_read() };
+            slot.seq.store(pos + n, Ordering::Relaxed);
+            drained.push(message);
+        }
+        unsafe {
+            *self.inner.head.get() = tail;
+        }
+        self.inner.head_atomic.store(tail, Ordering::Release);
         drop(drained);
     }
 
     pub(super) fn set_active_or_queued(&self, active: bool) {
-        self.lock().active_or_queued = active;
+        self.inner.active_or_queued.store(active, Ordering::Release);
     }
 
     pub(super) fn mark_enqueued_if_nonempty(&self) -> bool {
-        let mut guard = self.lock();
-        if !guard.stopping && guard.count > 0 {
-            guard.active_or_queued = true;
+        if !self.inner.stopping.load(Ordering::Acquire) && self.count() > 0 {
+            self.inner.active_or_queued.store(true, Ordering::Release);
             true
         } else {
             false
         }
+    }
+
+    /// Owner-only: fast emptiness check using owner-private `head` and `stash`
+    /// plus a single `tail` load, avoiding the 4-atomic `count()` path.
+    #[inline]
+    pub(super) fn owner_is_empty(&self) -> bool {
+        let stash_empty = unsafe { (*self.inner.stash.get()).is_empty() };
+        if !stash_empty {
+            return false;
+        }
+        let head = unsafe { *self.inner.head.get() };
+        self.inner.tail.load(Ordering::Acquire) == head
+    }
+
+    /// Owner-only Dekker handoff when releasing actor ownership: clears
+    /// `active_or_queued` before re-checking `tail` with `SeqCst` so a racing
+    /// `try_push_fast` cannot observe `active_or_queued == true` while this
+    /// worker observes an empty mailbox and strands the new message.
+    #[inline]
+    pub(super) fn release_active_if_empty_owner(&self) -> bool {
+        if self.inner.stopping.load(Ordering::Acquire) {
+            self.inner.active_or_queued.store(false, Ordering::Release);
+            return false;
+        }
+        if !self.owner_is_empty() {
+            self.inner.active_or_queued.store(true, Ordering::Release);
+            return true;
+        }
+        self.inner.active_or_queued.store(false, Ordering::SeqCst);
+        let head = unsafe { *self.inner.head.get() };
+        if self.inner.tail.load(Ordering::SeqCst) != head {
+            self.inner.active_or_queued.store(true, Ordering::Release);
+            return true;
+        }
+        false
     }
 
     pub(super) fn keep_active_if_nonempty(&self) -> bool {
-        let mut guard = self.lock();
-        if !guard.stopping && guard.count > 0 {
-            guard.active_or_queued = true;
-            true
-        } else {
-            guard.active_or_queued = false;
-            false
+        // `count()` includes producer reservations, so a mailbox that only
+        // looks non-empty while a push is mid-publish stays active and the
+        // producer's own enqueue keeps it scheduled.
+        let keep = !self.inner.stopping.load(Ordering::Acquire) && self.count() > 0;
+        self.inner.active_or_queued.store(keep, Ordering::Release);
+        keep
+    }
+
+    /// Reserves a ring position for `message`; returns the claimed position or
+    /// `None` when every slot is reserved or published.
+    fn reserve_position(&self) -> Option<usize> {
+        let observation = self
+            .inner
+            .contention_observation
+            .as_deref()
+            .map(|observation| &observation.mailbox);
+        let n = self.inner.slots.len();
+        let mut pos = self.inner.tail.load(Ordering::Relaxed);
+        let mut failures = 0u64;
+        let mut contended_at = None;
+        let result = loop {
+            let slot = &self.inner.slots[pos % n];
+            let seq = slot.seq.load(Ordering::Acquire);
+            if seq == pos {
+                match self.inner.tail.compare_exchange_weak(
+                    pos,
+                    pos + 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break Some(pos),
+                    Err(actual) => {
+                        failures = failures.saturating_add(1);
+                        contended_at.get_or_insert_with(Instant::now);
+                        pos = actual;
+                        continue;
+                    }
+                }
+            }
+            if seq < pos {
+                break None;
+            }
+            pos += 1;
+        };
+        if let Some((observation, contended_at)) = observation.zip(contended_at) {
+            observation.record_contended(failures, 0, contended_at.elapsed());
         }
+        result
+    }
+
+    /// Publishes an envelope into a previously reserved position.
+    ///
+    /// # Safety
+    /// `pos` must come from a successful `reserve_position` on this mailbox.
+    unsafe fn publish_position(&self, pos: usize, message: Envelope) {
+        let slot = &self.inner.slots[pos % self.inner.slots.len()];
+        unsafe {
+            (*slot.data.get()).write(message);
+        }
+        slot.seq.store(pos + 1, Ordering::Release);
     }
 
     fn try_push_fast(&self, closed: &AtomicBool, message: Envelope) -> Result<bool, FastPushError> {
-        let mut guard = self.lock();
-        if closed.load(Ordering::Acquire) || guard.stopping || self.is_retired() {
+        if closed.load(Ordering::Acquire)
+            || self.inner.stopping.load(Ordering::Acquire)
+            || self.is_retired()
+        {
             return Err(FastPushError::ClosedOrStopped);
         }
-        if guard.count + usize::from(guard.starting) == guard.slots.len() {
+        let Some(pos) = self.reserve_position() else {
             return Err(FastPushError::MailboxFull);
+        };
+        unsafe {
+            self.publish_position(pos, message);
         }
-        let tail = (guard.head + guard.count) % guard.slots.len();
-        guard.slots[tail] = Some(message);
-        guard.count += 1;
-        Ok(guard.active_or_queued)
+        // Pair with `release_active_if_empty_owner`'s `SeqCst` store/load so a
+        // push cannot observe `active_or_queued == true` while the finishing
+        // owner observes the old `tail` and strands this envelope.
+        std::sync::atomic::fence(Ordering::SeqCst);
+        // Under sustained load the flag stays set; a plain load avoids an
+        // RMW on this contended line for every hot push. The swap below still
+        // publishes for the (rare) clear-and-set transition.
+        if self.inner.active_or_queued.load(Ordering::Relaxed) {
+            return Ok(true);
+        }
+        Ok(self.inner.active_or_queued.swap(true, Ordering::AcqRel))
     }
 
     pub(super) fn push(&self, message: Envelope) -> Result<(), String> {
-        self.push_checked(message).map_err(String::from)
+        self.push_admitted(message)
+            .map_or_else(|| Ok(()), |_| Err("mailbox_full".into()))
     }
 
     pub(super) fn push_checked(&self, message: Envelope) -> Result<(), crate::VmError> {
-        let mut guard = self.lock();
-        if guard.count == guard.slots.len() {
-            return Err(crate::VmError::MailboxFull);
-        }
-        let tail = (guard.head + guard.count) % guard.slots.len();
-        guard.slots[tail] = Some(message);
-        guard.count += 1;
-        Ok(())
+        self.push_admitted(message)
+            .map_or_else(|| Ok(()), |_| Err(crate::VmError::MailboxFull))
     }
 
-    pub(super) fn pop_for_claim(&self, starting: bool) -> Envelope {
-        let mut guard = self.lock();
-        let head = guard.head;
-        let message = guard.slots[head].take().expect("ready mailbox");
-        guard.head = (head + 1) % guard.slots.len();
-        guard.count -= 1;
-        guard.starting = starting;
+    /// Atomically admits and enqueues one envelope; returns it back when the
+    /// mailbox has no free (unreserved) slot left.
+    pub(super) fn push_admitted(&self, message: Envelope) -> Option<Envelope> {
+        let pos = self.reserve_position()?;
+        unsafe {
+            self.publish_position(pos, message);
+        }
+        None
+    }
+
+    /// Owner-only: returns the next envelope. Restored and prefetched
+    /// (stashed) messages come out first in original queue order; a producer
+    /// that reserved but has not published yet is waited on briefly — the
+    /// claim path only runs here once a completed push made the actor ready,
+    /// so the wait is bounded by the publishing store itself. Ring pops
+    /// opportunistically drain a short run into the stash so subsequent
+    /// claims touch no shared line at all (BEAM's msgin → private-queue move).
+    pub(super) fn pop_for_claim(&self) -> Envelope {
+        self.inner.claimed.fetch_add(1, Ordering::Acquire);
+        self.pop_owner_unchecked()
+    }
+
+    /// Owner-only: pops the next envelope and optionally prepares direct
+    /// execution before popping. When `try_direct` returns `Some(direct)`,
+    /// the caller guarantees immediate direct execution with no rollback path,
+    /// bypassing the paired `claimed` fetch_add/fetch_sub RMWs.
+    pub(super) fn pop_for_claim_direct<T>(
+        &self,
+        try_direct: impl FnOnce(&Envelope) -> Option<T>,
+    ) -> (Envelope, Option<T>) {
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
+        if stash_len > 0 {
+            let stash = unsafe { &mut *self.inner.stash.get() };
+            if let Some(front) = stash.front() {
+                let direct = try_direct(front);
+                if direct.is_none() {
+                    self.inner.claimed.fetch_add(1, Ordering::Acquire);
+                }
+                self.inner
+                    .stash_count
+                    .store(stash_len - 1, Ordering::Relaxed);
+                let message = stash.pop_front().expect("checked stashed message");
+                return (message, direct);
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        let mut spins = 0u32;
+        while slot.seq.load(Ordering::Acquire) != pos + 1 {
+            std::hint::spin_loop();
+            spins += 1;
+            if spins > 256 {
+                std::thread::yield_now();
+                spins = 0;
+            }
+        }
+        let front = unsafe { (*slot.data.get()).assume_init_ref() };
+        let direct = try_direct(front);
+        if direct.is_none() {
+            self.inner.claimed.fetch_add(1, Ordering::Acquire);
+        }
+        let message = unsafe { (*slot.data.get()).assume_init_read() };
+        slot.seq.store(pos + n, Ordering::Relaxed);
+        self.prefetch(pos + 1);
+        (message, direct)
+    }
+
+    fn pop_owner_unchecked(&self) -> Envelope {
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
+        if stash_len > 0 {
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            let stashed = unsafe { (*self.inner.stash.get()).pop_front() };
+            if let Some(stashed) = stashed {
+                return stashed;
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        let mut spins = 0u32;
+        while slot.seq.load(Ordering::Acquire) != pos + 1 {
+            std::hint::spin_loop();
+            spins += 1;
+            if spins > 256 {
+                std::thread::yield_now();
+                spins = 0;
+            }
+        }
+        let message = unsafe { (*slot.data.get()).assume_init_read() };
+        slot.seq.store(pos + n, Ordering::Relaxed);
+        self.prefetch(pos + 1);
         message
+    }
+
+    /// Owner-only: moves up to `CLAIM_PREFETCH` published envelopes starting
+    /// at ring position `head` into the stash and advances `head_atomic` once.
+    /// `stash_count` is stored before `head_atomic` so `count()` readers can
+    /// only ever over-count during the move, never drop envelopes that still
+    /// occupy admission capacity.
+    fn prefetch(&self, head: usize) {
+        if self.inner.capacity <= 1 {
+            unsafe {
+                *self.inner.head.get() = head;
+            }
+            self.inner.head_atomic.store(head, Ordering::Release);
+            return;
+        }
+        let n = self.inner.slots.len();
+        let tail = self.inner.tail.load(Ordering::Acquire);
+        let mut moved = 0usize;
+        let stash = unsafe { &mut *self.inner.stash.get() };
+        let limit = self.inner.capacity.min(CLAIM_PREFETCH);
+        for pos in head..head.saturating_add(limit).min(tail) {
+            let slot = &self.inner.slots[pos % n];
+            if slot.seq.load(Ordering::Acquire) != pos + 1 {
+                break;
+            }
+            let message = unsafe { (*slot.data.get()).assume_init_read() };
+            slot.seq.store(pos + n, Ordering::Relaxed);
+            stash.push_back(message);
+            moved += 1;
+        }
+        if moved == 0 {
+            unsafe {
+                *self.inner.head.get() = head;
+            }
+            self.inner.head_atomic.store(head, Ordering::Release);
+            return;
+        }
+        unsafe {
+            *self.inner.head.get() = head + moved;
+        }
+        self.inner.stash_count.fetch_add(moved, Ordering::Relaxed);
+        self.inner
+            .head_atomic
+            .store(head + moved, Ordering::Release);
     }
 
     #[cfg(test)]
+    /// Test-only pop that also drops the admission claim, mirroring the
+    /// accounting the claim path performs when its handler starts.
     pub(super) fn pop(&self) -> Envelope {
-        let mut guard = self.lock();
-        let head = guard.head;
-        let message = guard.slots[head].take().expect("ready mailbox");
-        guard.head = (head + 1) % guard.slots.len();
-        guard.count -= 1;
+        let message = self.pop_for_claim();
+        self.mark_started();
         message
     }
 
+    /// Owner-only: the claimed message reached handler start (or is otherwise
+    /// done being counted as in-flight), so it stops occupying admission
+    /// capacity. Balanced by `restore`, which releases the claim back to the
+    /// stash instead.
+    pub(super) fn mark_started(&self) {
+        self.inner.claimed.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Owner-only: metadata for the front envelope (stash first), or `None`
+    /// when nothing is published at the head.
+    fn front_message(&self) -> Option<&Envelope> {
+        if self.inner.stash_count.load(Ordering::Acquire) > 0 {
+            if let Some(stashed) = unsafe { (*self.inner.stash.get()).front() } {
+                return Some(stashed);
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        if slot.seq.load(Ordering::Acquire) != pos + 1 {
+            return None;
+        }
+        Some(unsafe { (*slot.data.get()).assume_init_ref() })
+    }
+
     pub(super) fn front_is_fast(&self) -> bool {
-        let guard = self.lock();
-        guard.count > 0
-            && guard.slots[guard.head].as_ref().is_some_and(|message| {
-                crate::execution::WorkerFibers::can_run_fast(
-                    &message.handler,
-                    &message.lists,
-                    &message.bytes,
-                )
-            })
+        self.front_message()
+            .is_some_and(|message| message.fast_eligible)
     }
 
-    pub(super) fn front_can_run_direct(
+    /// Owner-only batch pop: same rules as `pop_for_claim` plus the fast-path
+    /// eligibility check and the `stopping` guard. When `stash_count >= threshold`,
+    /// stays purely on the owner's local stash without touching producer-contended
+    /// `tail`/`head_atomic`. When `is_direct(front)` is true, the caller guarantees
+    /// immediate direct execution without any fallible setup, skipping the
+    /// paired `claimed` fetch_add/fetch_sub RMWs.
+    pub(super) fn try_pop_batch_fast_with(
         &self,
-        image: &DetachedProcess,
-        fibers: &crate::execution::WorkerFibers,
-        slice_steps: u64,
-        yield_observed: bool,
-    ) -> bool {
-        let guard = self.lock();
-        guard.count > 0
-            && guard.slots[guard.head].as_ref().is_some_and(|message| {
-                crate::execution::WorkerFibers::can_run_fast(
-                    &message.handler,
-                    &message.lists,
-                    &message.bytes,
-                ) && fibers.can_run_direct_image(
-                    image,
-                    &message.handler,
-                    message.max_steps,
-                    slice_steps,
-                    yield_observed,
-                )
-            })
-    }
-
-    pub(super) fn try_pop_batch_fast(&self, threshold: usize) -> Option<Envelope> {
-        let mut guard = self.lock();
-        if guard.stopping || guard.count < threshold {
+        threshold: usize,
+        is_direct: impl FnOnce(&Envelope) -> bool,
+    ) -> Option<(Envelope, bool)> {
+        if self.inner.stopping.load(Ordering::Relaxed) {
             return None;
         }
-        let is_fast = guard.slots[guard.head].as_ref().is_some_and(|message| {
-            crate::execution::WorkerFibers::can_run_fast(
-                &message.handler,
-                &message.lists,
-                &message.bytes,
-            )
-        });
-        if !is_fast {
+        let stash_len = self.inner.stash_count.load(Ordering::Relaxed);
+        if stash_len >= threshold {
+            let stash = unsafe { &mut *self.inner.stash.get() };
+            let front = stash.front()?;
+            if !front.fast_eligible {
+                return None;
+            }
+            let direct = is_direct(front);
+            if !direct {
+                self.inner.claimed.fetch_add(1, Ordering::Acquire);
+            }
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            return stash.pop_front().map(|message| (message, direct));
+        }
+        if self.count() < threshold {
             return None;
         }
-        let head = guard.head;
-        let message = guard.slots[head].take().expect("batch mailbox");
-        guard.head = (head + 1) % guard.slots.len();
-        guard.count -= 1;
-        Some(message)
+        let front = self.front_message()?;
+        if !front.fast_eligible {
+            return None;
+        }
+        let direct = is_direct(front);
+        if !direct {
+            return Some((self.pop_for_claim(), false));
+        }
+        if stash_len > 0 {
+            self.inner
+                .stash_count
+                .store(stash_len - 1, Ordering::Relaxed);
+            if let Some(stashed) = unsafe { (*self.inner.stash.get()).pop_front() } {
+                return Some((stashed, true));
+            }
+        }
+        let n = self.inner.slots.len();
+        let pos = unsafe { *self.inner.head.get() };
+        let slot = &self.inner.slots[pos % n];
+        let mut spins = 0u32;
+        while slot.seq.load(Ordering::Acquire) != pos + 1 {
+            std::hint::spin_loop();
+            spins += 1;
+            if spins > 256 {
+                std::thread::yield_now();
+                spins = 0;
+            }
+        }
+        let message = unsafe { (*slot.data.get()).assume_init_read() };
+        slot.seq.store(pos + n, Ordering::Relaxed);
+        self.prefetch(pos + 1);
+        Some((message, true))
     }
 
+    /// Owner-only: reinserts a popped message at the head via the stash. The
+    /// restored message lands ahead of any prefetched ones because it was
+    /// popped before them in queue order.
     pub(super) fn restore(&self, message: Envelope) {
-        let mut guard = self.lock();
-        let head = (guard.head + guard.slots.len() - 1) % guard.slots.len();
-        guard.head = head;
-        guard.slots[head] = Some(message);
-        guard.count += 1;
+        unsafe {
+            (*self.inner.stash.get()).push_front(message);
+        }
+        // The stash publishes before the claim releases so `count()` never
+        // briefly under-counts the restored message.
+        self.inner.stash_count.fetch_add(1, Ordering::Release);
+        self.inner.claimed.fetch_sub(1, Ordering::AcqRel);
     }
 
     #[cfg(test)]
     pub(super) fn with_slot0_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
-        let guard = self.lock();
-        f(&guard.slots[0].as_ref().unwrap().bytes.data)
+        let slot = &self.inner.slots[0];
+        f(&unsafe { (*slot.data.get()).assume_init_ref() }
+            .bytes
+            .as_deref()
+            .unwrap_or(BytePayload::empty_ref())
+            .data)
     }
 }
 
@@ -1573,11 +2307,17 @@ fn validate_scalar_module(
     handler: &HandlerId,
     arguments: &[i64],
 ) -> Result<(), String> {
-    let schema = handler.schema();
-    if stopping || !Arc::ptr_eq(&module.inner, &handler.module.inner) || schema.is_completion() {
+    if stopping || !Arc::ptr_eq(&module.inner, &handler.module.inner) {
         return Err("scheduler handler identity, phase or arguments mismatch".into());
     }
-    crate::message_values::validate_scalar_arguments(&schema.parameters, arguments)
+    let meta = handler.fast_meta();
+    if meta.is_completion() {
+        return Err("scheduler handler identity, phase or arguments mismatch".into());
+    }
+    if meta.all_plain_int() && arguments.len() == usize::from(meta.param_count) {
+        return Ok(());
+    }
+    crate::message_values::validate_scalar_arguments(&handler.schema().parameters, arguments)
         .map_err(|err| format!("scheduler {err}"))
 }
 
@@ -1630,34 +2370,27 @@ fn validate_checked(
 fn envelope_precopied(
     actor: &Actor,
     handler: &HandlerId,
-    arguments: [i64; 64],
-    count: usize,
+    arguments: &[i64],
     max_steps: u64,
     reply: Reply,
 ) -> Result<Envelope, String> {
-    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-        == actor.mailbox.capacity()
-    {
+    if actor.mailbox.count() >= actor.mailbox.capacity() {
         return Err(crate::VmError::MailboxFull.into());
     }
-    let charge = actor.account.reserve_checked(Resources {
-        bytes: std::mem::size_of::<Envelope>() as u64,
-        ..Resources::default()
-    })?;
-    let message_charge = actor.account.reserve_checked(Resources {
-        messages: 1,
-        ..Resources::default()
-    })?;
+    let charge = actor.account.reserve_envelope(
+        std::mem::size_of::<Envelope>() as u64 + MessageArguments::overflow_bytes(arguments.len()),
+    )?;
+    let arguments = MessageArguments::try_from_slice(arguments).map_err(String::from)?;
+    let fast_eligible = handler.fast_meta().fast_scalar();
     Ok(Envelope {
-        handler: handler.clone(),
+        handler: handler.index,
         arguments,
-        count,
         max_steps,
-        lists: ListPayload::default(),
-        bytes: BytePayload::default(),
+        lists: None,
+        bytes: None,
         reply,
+        fast_eligible,
         _charge: charge,
-        _message_charge: Some(message_charge),
     })
 }
 
@@ -1689,9 +2422,7 @@ fn envelope_checked(
     _system: bool,
     reply: Reply,
 ) -> Result<Envelope, crate::VmError> {
-    if actor.mailbox.count() + usize::from(actor.starting || actor.mailbox.is_starting())
-        == actor.mailbox.capacity()
-    {
+    if actor.mailbox.count() >= actor.mailbox.capacity() {
         return Err(crate::VmError::MailboxFull);
     }
     delayed_envelope_checked(actor, handler, arguments, max_steps, lists, bytes, reply)
@@ -1707,25 +2438,21 @@ fn delayed_envelope_checked(
     reply: Reply,
 ) -> Result<Envelope, crate::VmError> {
     bytes.transfer_checked(&actor.account)?;
-    let charge = actor.account.reserve_checked(Resources {
-        bytes: std::mem::size_of::<Envelope>() as u64,
-        ..Resources::default()
-    })?;
-    let message_charge = actor.account.reserve_checked(Resources {
-        messages: 1,
-        ..Resources::default()
-    })?;
-    let mut owned = [0; 64];
-    owned[..arguments.len()].copy_from_slice(arguments);
+    let charge = actor.account.reserve_envelope(
+        std::mem::size_of::<Envelope>() as u64
+            + MessageArguments::overflow_bytes(arguments.len())
+            + lists.overflow_bytes(),
+    )?;
+    let arguments = MessageArguments::try_from_slice(arguments).map_err(crate::VmError::Other)?;
+    let fast_eligible = envelope_fast_eligible(handler, &lists, &bytes);
     Ok(Envelope {
-        handler: handler.clone(),
-        arguments: owned,
-        count: arguments.len(),
+        handler: handler.index,
+        arguments,
         max_steps,
-        lists,
-        bytes,
+        lists: box_list_payload(lists),
+        bytes: box_byte_payload(bytes),
         reply,
+        fast_eligible,
         _charge: charge,
-        _message_charge: Some(message_charge),
     })
 }

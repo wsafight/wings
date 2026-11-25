@@ -93,10 +93,11 @@ impl PreemptionToken {
         })
     }
 
+    #[inline]
     pub(crate) fn clear(&self) {
         if self.observer.is_some() {
             self.take(false);
-        } else {
+        } else if self.flag.load(Ordering::Relaxed) != 0 {
             self.flag.store(0, Ordering::SeqCst);
         }
     }

@@ -1,14 +1,488 @@
 use super::*;
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::thread::Thread;
 
 pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
 
-#[derive(Default)]
-pub(super) struct ReadyQueue {
-    pub(super) head: Option<usize>,
-    tail: Option<usize>,
-    pub(super) len: usize,
+/// Cache-line isolated per-worker run queue (BEAM `ErtsRunQueue` analogue).
+/// Enqueues and worker claims lock only this worker's queue instead of the
+/// global scheduler `Mutex<State>`.
+#[repr(align(64))]
+pub(super) struct WorkerRunQueue {
+    lock: AtomicBool,
+    queue: UnsafeCell<VecDeque<SharedMailbox>>,
+    len: AtomicUsize,
+    pub(super) active: AtomicU32,
+}
+
+// Safety: `queue` is only accessed while `lock` is held with Acquire/Release
+// ordering, and `SharedMailbox` is `Send`.
+unsafe impl Send for WorkerRunQueue {}
+unsafe impl Sync for WorkerRunQueue {}
+
+impl WorkerRunQueue {
+    fn new(capacity: usize) -> Result<Self, String> {
+        let mut queue = VecDeque::new();
+        queue
+            .try_reserve_exact(capacity)
+            .map_err(|_| "scheduler worker run queue allocation failed")?;
+        Ok(Self {
+            lock: AtomicBool::new(false),
+            queue: UnsafeCell::new(queue),
+            len: AtomicUsize::new(0),
+            active: AtomicU32::new(0),
+        })
+    }
+
+    fn push(&self, mailbox: SharedMailbox, ready_mask: &AtomicU32, bit: u32) -> (bool, bool) {
+        locks::spin_lock(&self.lock, None);
+        let queue = unsafe { &mut *self.queue.get() };
+        let was_empty = queue.is_empty();
+        queue.push_back(mailbox);
+        let new_len = queue.len();
+        self.len.store(new_len, Ordering::Release);
+        if was_empty {
+            ready_mask.fetch_or(bit, Ordering::SeqCst);
+        }
+        let congested = new_len > 1 || self.active.load(Ordering::Relaxed) > 0;
+        self.lock.store(false, Ordering::Release);
+        (was_empty, congested)
+    }
+
+    fn pop(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
+        if self.len.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        locks::spin_lock(&self.lock, None);
+        let queue = unsafe { &mut *self.queue.get() };
+        let item = queue.pop_front();
+        let new_len = queue.len();
+        self.len.store(new_len, Ordering::Release);
+        if new_len == 0 {
+            ready_mask.fetch_and(!bit, Ordering::Release);
+        }
+        self.lock.store(false, Ordering::Release);
+        item
+    }
+
+    fn try_steal(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
+        let len = self.len.load(Ordering::Acquire);
+        if len == 0 || (len == 1 && self.active.load(Ordering::Acquire) == 0) {
+            return None;
+        }
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let queue = unsafe { &mut *self.queue.get() };
+        let item =
+            if queue.len() > 1 || (!queue.is_empty() && self.active.load(Ordering::Relaxed) > 0) {
+                queue.pop_front()
+            } else {
+                None
+            };
+        let new_len = queue.len();
+        self.len.store(new_len, Ordering::Release);
+        if new_len == 0 {
+            ready_mask.fetch_and(!bit, Ordering::Release);
+        }
+        self.lock.store(false, Ordering::Release);
+        item
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len.load(Ordering::Acquire) == 0
+    }
+
+    fn load(&self) -> usize {
+        self.len.load(Ordering::Relaxed) + self.active.load(Ordering::Relaxed) as usize
+    }
+
+    fn remove_slot(&self, slot: usize, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
+        locks::spin_lock(&self.lock, None);
+        let queue = unsafe { &mut *self.queue.get() };
+        let removed = queue
+            .iter()
+            .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
+            .and_then(|pos| queue.remove(pos));
+        let new_len = queue.len();
+        self.len.store(new_len, Ordering::Relaxed);
+        if new_len == 0 {
+            ready_mask.fetch_and(!bit, Ordering::Release);
+        }
+        self.lock.store(false, Ordering::Release);
+        removed
+    }
+}
+
+pub(super) struct RunQueues {
+    queues: Box<[WorkerRunQueue]>,
+    pub(super) ready_mask: AtomicU32,
+    epoch: Instant,
+    pub(super) next_timer_ns: AtomicU64,
+    pub(super) closed: AtomicBool,
+    pub(super) changed: WorkerWakeHub,
+}
+
+impl RunQueues {
+    pub(super) fn new(workers: usize, capacity: usize) -> Result<Arc<Self>, String> {
+        let mut queues = Vec::new();
+        queues
+            .try_reserve_exact(workers)
+            .map_err(|_| "scheduler run queue vector allocation failed")?;
+        for _ in 0..workers {
+            queues.push(WorkerRunQueue::new(capacity)?);
+        }
+        Ok(Arc::new(Self {
+            queues: queues.into_boxed_slice(),
+            ready_mask: AtomicU32::new(0),
+            epoch: Instant::now(),
+            next_timer_ns: AtomicU64::new(u64::MAX),
+            closed: AtomicBool::new(false),
+            changed: WorkerWakeHub::new(),
+        }))
+    }
+
+    #[inline]
+    pub(super) fn publish_next_timer(&self, deadline: Option<Instant>) {
+        let next = match deadline {
+            Some(deadline) => deadline
+                .saturating_duration_since(self.epoch)
+                .as_nanos()
+                .min((u64::MAX - 1) as u128) as u64,
+            None => u64::MAX,
+        };
+        self.next_timer_ns.store(next, Ordering::Release);
+    }
+
+    #[inline]
+    pub(super) fn timer_due(&self) -> bool {
+        let next = self.next_timer_ns.load(Ordering::Acquire);
+        next != u64::MAX && self.elapsed_ns() >= next
+    }
+
+    #[inline]
+    pub(super) fn next_timer_wait(&self, default: Duration) -> Option<Duration> {
+        let next = self.next_timer_ns.load(Ordering::SeqCst);
+        if next == u64::MAX {
+            return Some(default);
+        }
+        let now = self.elapsed_ns();
+        if now >= next {
+            None
+        } else {
+            Some(Duration::from_nanos(next - now).min(default))
+        }
+    }
+
+    #[inline]
+    fn elapsed_ns(&self) -> u64 {
+        self.epoch.elapsed().as_nanos().min((u64::MAX - 1) as u128) as u64
+    }
+
+    #[inline]
+    pub(super) fn is_empty(&self, worker: usize) -> bool {
+        self.queues[worker].is_empty()
+    }
+
+    #[inline]
+    pub(super) fn inc_active(&self, worker: usize) {
+        let atomic = &self.queues[worker].active;
+        atomic.store(atomic.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(super) fn dec_active(&self, worker: usize) {
+        let atomic = &self.queues[worker].active;
+        atomic.store(
+            atomic.load(Ordering::Relaxed).saturating_sub(1),
+            Ordering::Relaxed,
+        );
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_active(&self, worker: usize, value: u32) {
+        self.queues[worker].active.store(value, Ordering::Relaxed);
+    }
+
+    pub(super) fn select_worker(&self, slot_index: usize, last_worker: Option<usize>) -> usize {
+        let workers = self.queues.len();
+        if workers <= 1 {
+            return 0;
+        }
+        let parked = self.changed.parked_mask();
+        let preferred = last_worker
+            .filter(|&w| w < workers)
+            .unwrap_or(slot_index % workers);
+        if self.queues[preferred].active.load(Ordering::Relaxed) == 0
+            && (last_worker.is_some() || (parked & (1u32 << preferred)) == 0)
+        {
+            return preferred;
+        }
+        // BEAM-style awake-worker compaction: prefer an already-awake idle
+        // worker over waking a parked worker when spilling or placing a new actor.
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            if (parked & (1u32 << candidate)) == 0
+                && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+            {
+                return candidate;
+            }
+        }
+        if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+            return preferred;
+        }
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            if self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+            {
+                return candidate;
+            }
+        }
+        let mut best = preferred;
+        let mut best_load = self.queues[preferred].load();
+        for offset in 1..workers {
+            let candidate = (preferred + offset) % workers;
+            let load = self.queues[candidate].load();
+            if load < best_load {
+                best = candidate;
+                best_load = load;
+            }
+        }
+        best
+    }
+
+    pub(super) fn push_and_wake(&self, worker: usize, mailbox: SharedMailbox) {
+        let bit = 1u32 << worker;
+        let (was_empty, congested) = self.queues[worker].push(mailbox, &self.ready_mask, bit);
+        if was_empty {
+            self.changed.wake_bits(bit);
+        }
+        if congested {
+            self.changed.wake_one_other(bit);
+        }
+    }
+
+    pub(super) fn push_deferred(&self, worker: usize, mailbox: SharedMailbox) -> WakeSignal {
+        let bit = 1u32 << worker;
+        let (_, congested) = self.queues[worker].push(mailbox, &self.ready_mask, bit);
+        if congested {
+            WakeSignal::ALL
+        } else {
+            WakeSignal::worker(worker)
+        }
+    }
+
+    #[inline]
+    pub(super) fn has_stealable(&self, worker: usize) -> bool {
+        let mut mask =
+            self.ready_mask.load(Ordering::Acquire) & !(1u32 << worker) & !WAKE_GLOBAL_BIT;
+        while mask != 0 {
+            let other = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            if let Some(queue) = self.queues.get(other) {
+                let len = queue.len.load(Ordering::Relaxed);
+                if len > 1 || (len > 0 && queue.active.load(Ordering::Relaxed) > 0) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Lock-free (wrt global `Mutex<State>`) enqueue for a fast-pushed mailbox
+    /// whose producer transitioned `active_or_queued` from `false` to `true`.
+    pub(super) fn enqueue_fast_pushed(&self, mailbox: SharedMailbox) {
+        let mut exec = mailbox.exec_lock();
+        if self.closed.load(Ordering::Acquire) || exec.retired || mailbox.is_stopping() {
+            if exec.owner.is_none() {
+                mailbox.set_active_or_queued(false);
+            }
+            return;
+        }
+        if exec.queued || exec.owner.is_some() {
+            return;
+        }
+        // The lock-free publish raced an owner drain that already consumed
+        // this envelope: linking an empty actor would park a dead ready entry.
+        // Clear the flag so the next push enqueues normally — then re-check so
+        // a racing producer cannot strand a published envelope.
+        if mailbox.count() == 0 {
+            mailbox.set_active_or_queued(false);
+            if mailbox.count() == 0 {
+                return;
+            }
+            mailbox.set_active_or_queued(true);
+        }
+        exec.queued = true;
+        let last_worker = exec.last_worker;
+        let slot_index = mailbox.inner.pid.slot as usize;
+        drop(exec);
+        let worker = self.select_worker(slot_index, last_worker);
+        self.push_and_wake(worker, mailbox);
+    }
+
+    /// Enqueue a mailbox from the control plane (`State::enqueue`), returning
+    /// a `WakeSignal` to fire after `Mutex<State>` is released.
+    pub(super) fn enqueue_mailbox(&self, mailbox: SharedMailbox) -> WakeSignal {
+        let mut exec = mailbox.exec_lock();
+        if self.closed.load(Ordering::Acquire)
+            || exec.retired
+            || mailbox.is_stopping()
+            || exec.queued
+            || exec.owner.is_some()
+        {
+            return WakeSignal::NONE;
+        }
+        if !mailbox.mark_enqueued_if_nonempty() {
+            return WakeSignal::NONE;
+        }
+        exec.queued = true;
+        let last_worker = exec.last_worker;
+        let slot_index = mailbox.inner.pid.slot as usize;
+        drop(exec);
+        let worker = self.select_worker(slot_index, last_worker);
+        self.push_deferred(worker, mailbox)
+    }
+
+    pub(super) fn finish_enqueue_mailbox(
+        &self,
+        mailbox: SharedMailbox,
+        failed: bool,
+    ) -> WakeSignal {
+        let mut exec = mailbox.exec_lock();
+        assert!(exec.owner.is_none());
+        if failed || self.closed.load(Ordering::Acquire) || exec.retired || mailbox.is_stopping() {
+            mailbox.set_active_or_queued(false);
+            return WakeSignal::NONE;
+        }
+        if exec.queued {
+            return WakeSignal::NONE;
+        }
+        if !mailbox.keep_active_if_nonempty() {
+            return WakeSignal::NONE;
+        }
+        exec.queued = true;
+        let last_worker = exec.last_worker;
+        let slot_index = mailbox.inner.pid.slot as usize;
+        drop(exec);
+        let worker = self.select_worker(slot_index, last_worker);
+        self.push_deferred(worker, mailbox)
+    }
+
+    fn try_acquire_mailbox(
+        &self,
+        worker: usize,
+        mailbox: SharedMailbox,
+    ) -> Option<run::AcquiredActor> {
+        let mut exec = mailbox.exec_lock();
+        exec.queued = false;
+        if exec.retired
+            || mailbox.is_stopping()
+            || self.closed.load(Ordering::Acquire)
+            || exec.owner.is_some()
+        {
+            if exec.owner.is_none() {
+                mailbox.set_active_or_queued(false);
+            }
+            return None;
+        }
+        if mailbox.count() == 0 {
+            mailbox.set_active_or_queued(false);
+            if mailbox.count() == 0 {
+                return None;
+            }
+            mailbox.set_active_or_queued(true);
+        }
+        exec.owner = Some(worker);
+        if exec.last_worker.is_some_and(|previous| previous != worker) {
+            exec.migrations += 1;
+        }
+        exec.last_worker = Some(worker);
+        let image = exec.image.take().expect("unowned actor image");
+        drop(exec);
+        self.inc_active(worker);
+        Some(run::AcquiredActor { image, mailbox })
+    }
+
+    /// Worker-local claim without touching the global `Mutex<State>`.
+    pub(super) fn claim_local(&self, worker: usize) -> Option<run::AcquiredActor> {
+        let bit = 1u32 << worker;
+        while let Some(mailbox) = self.queues[worker].pop(&self.ready_mask, bit) {
+            if let Some(acquired) = self.try_acquire_mailbox(worker, mailbox) {
+                return Some(acquired);
+            }
+        }
+        None
+    }
+
+    /// BEAM-style work-stealing claim: pop from this worker's own run queue
+    /// first, then non-blockingly steal from any other congested worker queue.
+    pub(super) fn claim_or_steal(&self, worker: usize) -> Option<run::AcquiredActor> {
+        if let Some(acquired) = self.claim_local(worker) {
+            return Some(acquired);
+        }
+        let workers = self.queues.len();
+        if workers <= 1 {
+            return None;
+        }
+        let other_mask =
+            self.ready_mask.load(Ordering::Acquire) & !(1u32 << worker) & !WAKE_GLOBAL_BIT;
+        if other_mask == 0 {
+            return None;
+        }
+        for offset in 1..workers {
+            let victim = (worker + offset) % workers;
+            let victim_bit = 1u32 << victim;
+            if other_mask & victim_bit == 0 {
+                continue;
+            }
+            while let Some(mailbox) = self.queues[victim].try_steal(&self.ready_mask, victim_bit) {
+                if let Some(acquired) = self.try_acquire_mailbox(worker, mailbox) {
+                    return Some(acquired);
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(super) fn pop_ready_slot(&self, worker: usize) -> Option<usize> {
+        let bit = 1u32 << worker;
+        while let Some(mailbox) = self.queues[worker].pop(&self.ready_mask, bit) {
+            let mut exec = mailbox.exec_lock();
+            exec.queued = false;
+            if exec.retired {
+                continue;
+            }
+            if exec.owner.is_none() {
+                mailbox.set_active_or_queued(false);
+            }
+            let slot = mailbox.inner.pid.slot as usize;
+            drop(exec);
+            return Some(slot);
+        }
+        None
+    }
+
+    pub(super) fn remove_ready_slot(&self, slot: usize) {
+        for (worker, queue) in self.queues.iter().enumerate() {
+            if let Some(mailbox) = queue.remove_slot(slot, &self.ready_mask, 1u32 << worker) {
+                let mut exec = mailbox.exec_lock();
+                exec.queued = false;
+                if exec.owner.is_none() {
+                    mailbox.set_active_or_queued(false);
+                }
+                return;
+            }
+        }
+    }
 }
 
 pub(super) struct WorkerWakeHub {
@@ -30,6 +504,11 @@ impl WorkerWakeHub {
         }
     }
 
+    #[inline]
+    pub(super) fn parked_mask(&self) -> u32 {
+        self.parked_mask.load(Ordering::Relaxed)
+    }
+
     pub(super) fn mark_parked(&self, bit: u32) {
         self.parked_mask.fetch_or(bit, Ordering::SeqCst);
     }
@@ -43,6 +522,17 @@ impl WorkerWakeHub {
         while mask != 0 {
             let worker = mask.trailing_zeros() as usize;
             mask &= mask - 1;
+            if let Some(thread) = self.threads.get(worker).and_then(OnceLock::get) {
+                thread.unpark();
+            }
+        }
+    }
+
+    pub(super) fn wake_one_other(&self, exclude_bit: u32) {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        let mask = self.parked_mask.load(Ordering::Relaxed) & !exclude_bit;
+        if mask != 0 {
+            let worker = mask.trailing_zeros() as usize;
             if let Some(thread) = self.threads.get(worker).and_then(OnceLock::get) {
                 thread.unpark();
             }
@@ -78,13 +568,8 @@ impl WakeSignal {
 }
 
 impl State {
-    pub(super) fn signal_bits(&self) -> u32 {
-        let global = if self.closed || !self.requests.is_empty_fast() {
-            WAKE_GLOBAL_BIT
-        } else {
-            0
-        };
-        self.ready_bits | global
+    pub(super) fn global_signal_needed(&self) -> bool {
+        self.closed || !self.requests.is_empty_fast() || self.pending_monitors.is_some()
     }
 
     pub(super) fn wake_all_parked(&self) -> WakeSignal {
@@ -92,7 +577,9 @@ impl State {
     }
 
     pub(super) fn should_park(&self, worker: usize, progress: bool, attempted: bool) -> bool {
-        !progress && (attempted || self.ready[worker].head.is_none())
+        !progress
+            && (attempted
+                || (self.run_queues.is_empty(worker) && !self.run_queues.has_stealable(worker)))
     }
 
     pub(super) fn next_park_timeout(&self, default: Duration) -> Duration {
@@ -116,7 +603,7 @@ impl State {
 
     pub(super) fn release_slot(&mut self, index: usize) {
         let slot = &mut self.slots[index];
-        assert!(slot.actor.is_none() && slot.ready_worker.is_none());
+        assert!(slot.actor.is_none());
         slot.creating = false;
         if slot.generation != 0 {
             slot.free_next = self.free;
@@ -124,71 +611,19 @@ impl State {
         }
     }
 
-    fn select_worker(&self, slot_index: usize, last_worker: Option<usize>) -> usize {
-        let workers = self.ready.len();
-        if workers <= 1 {
-            return 0;
-        }
-        let preferred = last_worker
-            .filter(|&w| w < workers)
-            .unwrap_or(slot_index % workers);
-        if self.worker_active[preferred] == 0 {
-            return preferred;
-        }
-        for offset in 1..workers {
-            let candidate = (preferred + offset) % workers;
-            if self.worker_active[candidate] == 0 && self.ready[candidate].head.is_none() {
-                return candidate;
-            }
-        }
-        let mut best = preferred;
-        let mut best_load = self.ready[preferred].len + self.worker_active[preferred] as usize;
-        for offset in 1..workers {
-            let candidate = (preferred + offset) % workers;
-            let load = self.ready[candidate].len + self.worker_active[candidate] as usize;
-            if load < best_load {
-                best = candidate;
-                best_load = load;
-            }
-        }
-        best
-    }
-
-    fn link_ready(&mut self, index: usize, worker: usize) -> WakeSignal {
-        let previous = self.ready[worker].tail;
-        if let Some(previous) = previous {
-            self.slots[previous].ready_next = Some(index);
-        } else {
-            self.ready[worker].head = Some(index);
-        }
-        self.ready[worker].tail = Some(index);
-        self.ready[worker].len += 1;
-        let slot = &mut self.slots[index];
-        slot.ready_previous = previous;
-        slot.ready_next = None;
-        slot.ready_worker = Some(worker);
-        let bit = 1u32 << worker;
-        self.ready_bits |= bit;
-        WakeSignal::worker(worker)
-    }
-
     pub(super) fn enqueue(&mut self, pid: SchedulerPid) -> WakeSignal {
         let index = pid.slot as usize;
         let slot = &self.slots[index];
-        if self.closed || slot.generation != pid.generation || slot.ready_worker.is_some() {
+        if self.closed || slot.generation != pid.generation {
             return WakeSignal::NONE;
         }
         let Some(actor) = slot.actor.as_ref() else {
             return WakeSignal::NONE;
         };
-        if actor.owner.is_some() || actor.stopping {
+        if actor.stopping {
             return WakeSignal::NONE;
         }
-        if !actor.mailbox.mark_enqueued_if_nonempty() {
-            return WakeSignal::NONE;
-        }
-        let worker = self.select_worker(index, actor.last_worker);
-        self.link_ready(index, worker)
+        self.run_queues.enqueue_mailbox((*actor.mailbox).clone())
     }
 
     pub(super) fn finish_enqueue(&mut self, pid: SchedulerPid, failed: bool) -> WakeSignal {
@@ -200,63 +635,19 @@ impl State {
         let Some(actor) = slot.actor.as_ref() else {
             return WakeSignal::NONE;
         };
-        assert!(actor.owner.is_none());
-        if failed || self.closed || actor.stopping {
-            actor.mailbox.set_active_or_queued(false);
-            return WakeSignal::NONE;
-        }
-        if slot.ready_worker.is_some() {
-            return WakeSignal::NONE;
-        }
-        if !actor.mailbox.keep_active_if_nonempty() {
-            return WakeSignal::NONE;
-        }
-        let worker = self.select_worker(index, actor.last_worker);
-        self.link_ready(index, worker)
+        self.run_queues.finish_enqueue_mailbox(
+            (*actor.mailbox).clone(),
+            failed || self.closed || actor.stopping,
+        )
     }
 
-    fn unlink_ready(&mut self, index: usize) -> Option<usize> {
-        let slot = &mut self.slots[index];
-        let worker = slot.ready_worker.take()?;
-        let previous = slot.ready_previous.take();
-        let next = slot.ready_next.take();
-        self.ready[worker].len = self.ready[worker].len.saturating_sub(1);
-        if let Some(previous) = previous {
-            self.slots[previous].ready_next = next;
-        } else {
-            self.ready[worker].head = next;
-            if next.is_none() {
-                self.ready_bits &= !(1u32 << worker);
-            }
-        }
-        if let Some(next) = next {
-            self.slots[next].ready_previous = previous;
-        } else {
-            self.ready[worker].tail = previous;
-        }
-        Some(worker)
-    }
-
+    #[cfg(test)]
     pub(super) fn remove_ready(&mut self, index: usize) {
-        if self.unlink_ready(index).is_some() {
-            if let Some(actor) = self.slots[index].actor.as_ref() {
-                if actor.owner.is_none() {
-                    actor.mailbox.set_active_or_queued(false);
-                }
-            }
-        }
+        self.run_queues.remove_ready_slot(index);
     }
 
     #[cfg(test)]
     pub(super) fn pop_ready(&mut self, worker: usize) -> Option<usize> {
-        let index = self.ready[worker].head?;
-        self.remove_ready(index);
-        Some(index)
-    }
-
-    pub(super) fn pop_ready_for_claim(&mut self, worker: usize) -> Option<usize> {
-        let index = self.ready[worker].head?;
-        self.unlink_ready(index);
-        Some(index)
+        self.run_queues.pop_ready_slot(worker)
     }
 }

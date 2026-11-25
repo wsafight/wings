@@ -857,7 +857,7 @@ impl ScalarWorker {
             request,
             system: false,
             external: None,
-            lists: *lists,
+            lists: lists.clone(),
             bytes,
             _charge: charge,
         })
@@ -1228,10 +1228,12 @@ impl ScalarWorker {
                     (wings_abi::STATUS_REQUEST_REJECTED, 0)
                 }
             }
-            wings_abi::EFFECT_SELF_PID if effect.count == 0 => {
+            wings_abi::EFFECT_SELF_PID if effect.arguments.is_empty() => {
                 (wings_abi::STATUS_OK, actor.capability)
             }
-            wings_abi::EFFECT_SPAWN_SELF | wings_abi::EFFECT_SPAWN_ACTOR if effect.count == 0 => {
+            wings_abi::EFFECT_SPAWN_SELF | wings_abi::EFFECT_SPAWN_ACTOR
+                if effect.arguments.is_empty() =>
+            {
                 let limits = actor.account.limit();
                 let capacity = actor.mailbox.slots.len();
                 let heap_records = actor.heap_records;
@@ -1255,7 +1257,9 @@ impl ScalarWorker {
             }
             wings_abi::EFFECT_MONITOR => {
                 let result: Result<(), crate::VmError> = (|| {
-                    if effect.count != 0 || effect.target <= 0 || self.monitor_count >= MAX_MONITORS
+                    if !effect.arguments.is_empty()
+                        || effect.target <= 0
+                        || self.monitor_count >= MAX_MONITORS
                     {
                         return Err(crate::VmError::InvalidArguments(
                             "invalid monitor target or capacity",
@@ -1352,7 +1356,7 @@ impl ScalarWorker {
                             target,
                             &handler,
                             effect.timeout_ms,
-                            &effect.arguments[..effect.count],
+                            effect.arguments.as_slice(),
                             budget,
                             &effect.lists,
                             effect.bytes,
@@ -1364,7 +1368,7 @@ impl ScalarWorker {
                         self.enqueue_payload_kind_checked(
                             target,
                             &handler,
-                            &effect.arguments[..effect.count],
+                            effect.arguments.as_slice(),
                             budget,
                             None,
                             true,
@@ -1699,7 +1703,7 @@ impl ScalarWorker {
         self.enqueue_payload_kind_checked(
             target,
             &handler,
-            &effect.arguments[..effect.count],
+            effect.arguments.as_slice(),
             budget,
             Some(request),
             true,
@@ -1869,9 +1873,12 @@ impl ScalarWorker {
                 (arguments[1], arguments[2]) = match outcome {
                     RequestOutcome::Reply(value) => (0, value),
                     RequestOutcome::ReplyList(value) => {
-                        lists.count = value.as_slice().len();
-                        lists.values[..lists.count].copy_from_slice(value.as_slice());
-                        (0, ListPayload::encode(0, lists.count))
+                        let length = value.as_slice().len();
+                        if lists.values.try_extend(value.as_slice()).is_err() {
+                            (3, 0)
+                        } else {
+                            (0, ListPayload::encode(0, length))
+                        }
                     }
                     RequestOutcome::ReplyBytes(value) => {
                         let length = value.as_slice().len();
@@ -2231,8 +2238,7 @@ mod payload_tests {
                         operation: wings_abi::EFFECT_REQUEST,
                         target: worker.actor(target).unwrap().capability,
                         handler: 2,
-                        arguments: [0; 64],
-                        count: 0,
+                        arguments: crate::message_values::MessageArguments::default(),
                         callback: 8,
                         timeout_ms: 60000,
                         lists: ListPayload::default(),

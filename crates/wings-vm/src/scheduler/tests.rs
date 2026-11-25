@@ -108,7 +108,10 @@ fn actor_cancellation_charge_survives_stop_until_last_control_owner_exits() {
         let (account, token) = {
             let state = handle.shared.lock();
             let actor = state.actor(handle.shared.identity, pid).unwrap();
-            (actor.account.clone(), actor.cancellation.clone())
+            (
+                actor.account.clone(),
+                actor.mailbox.inner.cancellation.clone(),
+            )
         };
         handle.stop(pid).unwrap();
         assert_eq!(
@@ -227,6 +230,7 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                         })
                         .unwrap(),
                 });
+                state.completions_pending += 1;
                 let baseline = vm.used();
                 state.maintain(handle.shared.identity);
                 assert_eq!(vm.used(), baseline);
@@ -269,17 +273,19 @@ fn reference_completion_keeps_full_mailbox_route_until_delivery_or_owner_retirem
                             )
                         ]
                     );
+                    let lists = message.lists.as_deref().unwrap_or(ListPayload::empty_ref());
+                    let bytes = message.bytes.as_deref().unwrap_or(BytePayload::empty_ref());
                     if reply_type == ValueType::ListRef {
-                        assert!(message.lists.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.lists.values[..2], [i64::MIN, i64::MAX]);
+                        assert!(lists.valid(&message.arguments[..3], 4));
+                        assert_eq!(lists.values[..2], [i64::MIN, i64::MAX]);
                     } else if reply_type == ValueType::StringRef {
-                        assert!(message.bytes.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.bytes.string_mask, 4);
-                        assert_eq!(message.bytes.as_slice(), "中😀".as_bytes());
+                        assert!(bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(bytes.string_mask, 4);
+                        assert_eq!(bytes.as_slice(), "中😀".as_bytes());
                     } else {
-                        assert!(message.bytes.valid(&message.arguments[..3], 4));
-                        assert_eq!(message.bytes.as_slice(), [0, 255]);
-                        assert!(message.bytes.data.is_empty());
+                        assert!(bytes.valid(&message.arguments[..3], 4));
+                        assert_eq!(bytes.as_slice(), [0, 255]);
+                        assert!(bytes.data.is_empty());
                     }
                     state.remove_ready(owner.slot as usize);
                 }
@@ -306,49 +312,50 @@ unsafe extern "C" fn entry(
 }
 
 pub(super) fn module() -> ScalarModule {
+    let manifest = Manifest {
+        records: Vec::new(),
+        format: wings_artifact::FORMAT_VERSION,
+        abi: wings_abi::SCALAR_ABI_VERSION,
+        target: wings_abi::host_target().unwrap().into(),
+        process: "SchedulerInvariant".into(),
+        state: ValueType::Int,
+        handlers: vec![
+            Handler {
+                name: "Done".into(),
+                parameters: vec![
+                    ("id".into(), ValueType::RequestId),
+                    ("status".into(), ValueType::Int),
+                    ("value".into(), ValueType::Int),
+                ],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Store".into(),
+                parameters: vec![
+                    ("record".into(), ValueType::Int),
+                    ("list".into(), ValueType::ListRef),
+                ],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Drop".into(),
+                parameters: vec![],
+                reply: None,
+                completion: None,
+            },
+            Handler {
+                name: "Read".into(),
+                parameters: vec![],
+                reply: Some(ValueType::Int),
+                completion: None,
+            },
+        ],
+    };
     ScalarModule {
         inner: Arc::new(ModuleData {
-            manifest: Manifest {
-                records: Vec::new(),
-                format: wings_artifact::FORMAT_VERSION,
-                abi: wings_abi::SCALAR_ABI_VERSION,
-                target: wings_abi::host_target().unwrap().into(),
-                process: "SchedulerInvariant".into(),
-                state: ValueType::Int,
-                handlers: vec![
-                    Handler {
-                        name: "Done".into(),
-                        parameters: vec![
-                            ("id".into(), ValueType::RequestId),
-                            ("status".into(), ValueType::Int),
-                            ("value".into(), ValueType::Int),
-                        ],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Store".into(),
-                        parameters: vec![
-                            ("record".into(), ValueType::Int),
-                            ("list".into(), ValueType::ListRef),
-                        ],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Drop".into(),
-                        parameters: vec![],
-                        reply: None,
-                        completion: None,
-                    },
-                    Handler {
-                        name: "Read".into(),
-                        parameters: vec![],
-                        reply: Some(ValueType::Int),
-                        completion: None,
-                    },
-                ],
-            },
+            manifest,
             initializer: entry,
             entries: vec![entry as wings_abi::ScalarEntry; 4].into_boxed_slice(),
             direct_meta: Box::new([]),
@@ -471,8 +478,7 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         operation: wings_abi::EFFECT_REQUEST,
                         target: target_capability,
                         handler: 3,
-                        arguments: [0; 64],
-                        count: 0,
+                        arguments: MessageArguments::default(),
                         callback: 0,
                         timeout_ms: 60000,
                         lists: ListPayload::default(),
@@ -491,16 +497,18 @@ fn copy_request_protocol_checks_callback_before_publication_and_preserves_failed
                         loop {
                             let state = handle.shared.lock();
                             let actor = state.actor(handle.shared.identity, owner).unwrap();
+                            let exec = actor.mailbox.exec_lock();
                             if state.requests.iter().all(|slot| slot.pending.is_none())
-                                && actor.owner.is_none()
+                                && exec.owner.is_none()
                                 && actor.mailbox.count() == 0
                             {
                                 assert_eq!(
-                                    actor.committed_state,
+                                    exec.committed_state,
                                     Some(if corrupt { 300 } else { 0 })
                                 );
                                 break;
                             }
+                            drop(exec);
                             assert!(Instant::now() < end, "scalar completion deadline");
                             drop(state);
                             std::thread::yield_now();
@@ -743,6 +751,8 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     let pid = handle.spawn(&module, limits, 1).unwrap();
     let handler = module.handler("Drop").unwrap();
     let mut state = handle.shared.lock();
+    let original_queues =
+        std::mem::replace(&mut state.run_queues, ready::RunQueues::new(2, 2).unwrap());
     assert!(state.pop_ready(0).is_none());
     assert!(state.should_park(0, false, false));
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
@@ -759,7 +769,6 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     .unwrap();
     actor.mailbox.push(message).unwrap();
     state.enqueue(pid);
-    handle.shared.changed.notify_all();
     assert!(!state.should_park(0, false, false));
     assert!(state.should_park(1, false, false));
     assert!(state.should_park(0, false, true));
@@ -768,6 +777,7 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     assert_eq!(state.pop_ready(0), Some(pid.slot as usize));
     assert!(state.pop_ready(0).is_none());
     assert!(state.should_park(0, false, false));
+    state.run_queues = original_queues;
     state.enqueue(pid);
     drop(state);
     drop((scheduler, handle, handler, module, tenant));
@@ -816,15 +826,16 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             .unwrap();
             actor.mailbox.push(message).unwrap();
         }
-        let first = actor.mailbox.pop();
-        actor.starting = true;
+        let first = actor.mailbox.pop_for_claim();
+        // The claim holds admission capacity until its handler starts, so the
+        // mailbox still reports full while the popped message is in flight.
         let baseline_full = actor.account.used();
         assert!(
             envelope(
                 actor,
                 &handler,
                 &[],
-                999,
+                1000,
                 ListPayload::default(),
                 BytePayload::default(),
                 false,
@@ -834,11 +845,26 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
         );
         assert_eq!(actor.account.used(), baseline_full);
         actor.mailbox.restore(first);
-        actor.starting = false;
         for sequence in 1..=capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
-        for sequence in capacity + 1..=capacity + capacity / 2 {
+        let extra = envelope(
+            actor,
+            &handler,
+            &[],
+            999,
+            ListPayload::default(),
+            BytePayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        actor.mailbox.push(extra).unwrap();
+        // One spare ring slot beyond `capacity` means the refill leaves room
+        // for one fewer message than a naive count suggests; the last
+        // envelope is admitted by `envelope`'s capacity gate but rejected at
+        // push time.
+        for sequence in capacity + 1..capacity + capacity / 2 {
             let message = envelope(
                 actor,
                 &handler,
@@ -852,7 +878,24 @@ fn large_mailboxes_preserve_fifo_wraparound_and_reserved_starting_position() {
             .unwrap();
             actor.mailbox.push(message).unwrap();
         }
-        for sequence in capacity / 2 + 1..=capacity + capacity / 2 {
+        assert!(
+            envelope(
+                actor,
+                &handler,
+                &[],
+                capacity as u64 + capacity as u64 / 2,
+                ListPayload::default(),
+                BytePayload::default(),
+                false,
+                Reply::None
+            )
+            .is_err()
+        );
+        for sequence in capacity / 2 + 1..=capacity {
+            assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
+        }
+        assert_eq!(actor.mailbox.pop().max_steps, 999);
+        for sequence in capacity + 1..capacity + capacity / 2 {
             assert_eq!(actor.mailbox.pop().max_steps, sequence as u64);
         }
         assert_eq!(actor.mailbox.count(), 0);
@@ -913,8 +956,7 @@ fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
                     operation: wings_abi::EFFECT_REQUEST,
                     target: target_capability,
                     handler: 3,
-                    arguments: [0; 64],
-                    count: 0,
+                    arguments: MessageArguments::default(),
                     callback: 0,
                     timeout_ms: if cancel { 60000 } else { 0 },
                     lists: ListPayload::default(),
@@ -924,7 +966,7 @@ fn running_workers_keep_delivered_timeout_ticket_while_target_cannot_start() {
                 assert_eq!(status, wings_abi::STATUS_OK);
                 if cancel {
                     handle.shared.lock().cancel(owner, capability).unwrap();
-                    handle.shared.changed.notify_all();
+                    handle.shared.run_queues.changed.notify_all();
                 }
                 let deadline = Instant::now() + Duration::from_secs(3);
                 loop {
@@ -1041,6 +1083,7 @@ fn requester_exit_and_completion_delivery_retain_target_ticket_until_publication
                     }),
                     _charge: request_charge,
                 });
+                state.completions_pending += 1;
                 if deliver {
                     state.maintain(handle.shared.identity);
                     assert_eq!(account.used().requests, 1);
@@ -1164,6 +1207,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
         }),
         _charge: charge,
     });
+    state.completions_pending += 1;
     state.requests[0].pending.as_mut().unwrap().outcome = Some(RequestOutcome::Cancelled);
     state.maintain(handle.shared.identity);
     assert_eq!(
@@ -1172,13 +1216,8 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
     );
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     drop(actor.mailbox.pop());
-    actor.starting = true;
     state.maintain(handle.shared.identity);
     assert!(state.requests[0].pending.is_some());
-    state
-        .actor_mut(handle.shared.identity, pid)
-        .unwrap()
-        .starting = false;
     state.maintain(handle.shared.identity);
     assert!(
         state.requests[0]
@@ -1201,7 +1240,7 @@ fn completion_waits_for_mailbox_space_and_late_reply_cannot_reuse_exhausted_gene
     assert!(state.cancel(pid, 17).is_err());
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let completion = actor.mailbox.pop();
-    assert_eq!(&completion.arguments[..completion.count], &[17, 2, 0]);
+    assert_eq!(completion.arguments.as_slice(), &[17, 2, 0]);
     drop(completion);
     assert_eq!(actor.account.used().messages, 0);
     state.finish(key, RequestOutcome::Reply(99));
@@ -1290,6 +1329,7 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
     assert_eq!(state.reserve_slot().unwrap(), 2);
     let replacement = state.pid(handle.shared.identity, 2);
     assert_ne!(replacement, pids[2]);
+    retired.mailbox.exec_lock().retired = false;
     state.slots[2].actor = Some(retired);
     state.slots[2].creating = false;
     state.enqueue(pids[2]);
@@ -1297,27 +1337,35 @@ fn ready_queues_preserve_fifo_uniqueness_removal_and_generation_reuse() {
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), Some(2));
     assert_eq!(state.pop_ready(0), None);
-    let actor = state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap();
-    actor.owner = Some(0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        actor.mailbox.exec_lock().owner = Some(0);
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), None);
-    let actor = state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap();
-    actor.owner = None;
-    actor.last_worker = Some(0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        let mut exec = actor.mailbox.exec_lock();
+        exec.owner = None;
+        exec.last_worker = Some(0);
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(0), Some(2));
-    state.worker_active[0] = 1;
+    handle.shared.run_queues.set_active(0, 1);
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(1), Some(2));
-    state.worker_active[0] = 0;
-    state
-        .actor_mut(handle.shared.identity, replacement)
-        .unwrap()
-        .stopping = true;
+    handle.shared.run_queues.set_active(0, 0);
+    {
+        let actor = state
+            .actor_mut(handle.shared.identity, replacement)
+            .unwrap();
+        actor.stopping = true;
+        actor.mailbox.mark_stopping();
+    }
     state.enqueue(replacement);
     assert_eq!(state.pop_ready(1), None);
     drop(state);
@@ -1396,13 +1444,23 @@ fn cold_stack_process_denial_preserves_fifo_until_quota_is_released() {
         assert_eq!(snapshot.migrations, 0);
         assert_eq!(first.try_take().unwrap(), None);
         assert_eq!(second.try_take().unwrap(), None);
-        assert_eq!(
-            handle
-                .request(blocked, &bump, &[1], 32, Duration::from_secs(5))
-                .err()
-                .unwrap(),
-            "mailbox_full"
-        );
+        // The blocked actor may pop one queued message into a claim before the
+        // quota guard denies its stack lease, so a producer can briefly see
+        // space below `capacity`; poll until the mailbox is full again.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match handle.request(blocked, &bump, &[1], 32, Duration::from_secs(5)) {
+                Err(error) => {
+                    assert_eq!(error, "mailbox_full");
+                    break;
+                }
+                Ok(request) => {
+                    drop(request);
+                    assert!(Instant::now() < deadline, "mailbox stayed below capacity");
+                    std::thread::yield_now();
+                }
+            }
+        }
     }
     drop(guard);
     assert_eq!(
@@ -1461,7 +1519,10 @@ fn scheduler_message_validation_rejects_forged_reference_masks_and_completion_ph
         .is_ok()
     );
     for mask in [0, 1, 3, u64::MAX] {
-        let invalid = ListPayload { mask, ..lists };
+        let invalid = ListPayload {
+            mask,
+            ..lists.clone()
+        };
         assert!(
             validate(
                 actor,
@@ -1554,18 +1615,21 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         ListPayload::encode(4, 4),
     ];
     assert!(handle.send(pid, &store, &arguments, 4096).is_err());
-    let lists = ListPayload {
+    let mut lists = ListPayload {
         mask: 8,
-        count: 2,
         ..ListPayload::default()
     };
+    lists.values.len = 2;
     let mut state = handle.shared.lock();
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
     let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
     bytes.data.extend_from_slice(b"abcdefgh");
     assert!(validate(actor, &store, &arguments, false, &lists, &bytes).is_ok());
     for mask in [0, 1, 9, 17] {
-        let invalid = ListPayload { mask, ..lists };
+        let invalid = ListPayload {
+            mask,
+            ..lists.clone()
+        };
         assert!(validate(actor, &store, &arguments, false, &invalid, &bytes).is_err());
     }
     let filler = actor
@@ -1582,7 +1646,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
             &store,
             &arguments,
             4096,
-            lists,
+            lists.clone(),
             bytes,
             false,
             Reply::None
@@ -1601,7 +1665,7 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
         &store,
         &arguments,
         4096,
-        lists,
+        lists.clone(),
         bytes,
         false,
         Reply::None,
@@ -1611,7 +1675,10 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     assert_eq!(source.used(), Resources::default());
     assert_eq!(
         actor.account.used().bytes,
-        actor_baseline.bytes + 8 + std::mem::size_of::<Envelope>() as u64
+        actor_baseline.bytes
+            + 8
+            + std::mem::size_of::<Envelope>() as u64
+            + MessageArguments::overflow_bytes(arguments.len())
     );
     let baseline = vm.used();
     let mut bytes = BytePayload::new(&source, 17, 8).unwrap();
@@ -1638,5 +1705,180 @@ fn scheduler_byte_envelopes_validate_mixed_masks_transfer_and_rollback_before_pu
     handle.stop(pid).unwrap();
     assert_eq!(tenant.used().messages, 0);
     drop((source, handle, scheduler, tenant));
+    assert_eq!(vm.used(), Resources::default());
+}
+
+#[test]
+fn batched_fast_messages_refund_merged_envelope_charges() {
+    for workers in [1, 2] {
+        for round in 0..32 {
+            let limits = Resources {
+                bytes: 32 << 20,
+                processes: 4,
+                messages: 1024,
+                requests: 8,
+            };
+            let vm = ResourceAccount::vm(limits);
+            let tenant = vm.tenant_accounted(limits).unwrap();
+            let scheduler = Scheduler::new(
+                &tenant,
+                SchedulerConfig {
+                    workers,
+                    capacity: 2,
+                    requests: 2,
+                    ..SchedulerConfig::default()
+                },
+            )
+            .unwrap();
+            let handle = scheduler.handle();
+            let module = crate::tests::module();
+            let pid = handle.spawn(&module, limits, 256).unwrap();
+            let account = handle
+                .shared
+                .lock()
+                .actor(handle.shared.identity, pid)
+                .unwrap()
+                .account
+                .clone();
+            let baseline = account.used();
+            let add = module.handler("Add").unwrap();
+            let bump = module.handler("Bump").unwrap();
+            for value in 0..256i64 {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while handle.send(pid, &add, &[value], 4096).is_err() {
+                    assert!(Instant::now() < deadline, "send never drained");
+                    std::thread::yield_now();
+                }
+            }
+            let mut request = {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match handle.request(pid, &bump, &[0], 32, Duration::from_secs(5)) {
+                        Ok(request) => break request,
+                        Err(_) => {
+                            assert!(Instant::now() < deadline, "request never admitted");
+                            std::thread::yield_now();
+                        }
+                    }
+                }
+            };
+            assert_eq!(
+                request.wait(Duration::from_secs(5)).unwrap(),
+                Some(RequestOutcome::Reply(32640))
+            );
+            assert_eq!(account.used(), baseline);
+            drop(request);
+            drop((handle, scheduler));
+            assert_eq!(vm.used().messages, 0);
+            drop((account, module, tenant));
+            assert_eq!(vm.used(), Resources::default(), "round {round}");
+        }
+    }
+}
+
+#[test]
+fn work_stealing_claims_congested_peer_without_stealing_uncontested_single_actor() {
+    let limits = Resources {
+        bytes: 32 << 20,
+        processes: 4,
+        messages: 8,
+        requests: 2,
+    };
+    let vm = ResourceAccount::vm(limits);
+    let tenant = vm.tenant_accounted(limits).unwrap();
+    let scheduler = Scheduler::new(
+        &tenant,
+        SchedulerConfig {
+            workers: 2,
+            capacity: 4,
+            requests: 1,
+            ..SchedulerConfig::default()
+        },
+    )
+    .unwrap();
+    let handle = scheduler.handle();
+    let module = module();
+    let pid0 = handle.spawn(&module, limits, 1).unwrap();
+    let pid1 = handle.spawn(&module, limits, 1).unwrap();
+    let pid2 = handle.spawn(&module, limits, 1).unwrap();
+    let mut state = handle.shared.lock();
+    for pid in [pid0, pid1, pid2] {
+        let message = envelope(
+            state.actor(handle.shared.identity, pid).unwrap(),
+            &module.handler("Drop").unwrap(),
+            &[],
+            32,
+            ListPayload::default(),
+            BytePayload::default(),
+            false,
+            Reply::None,
+        )
+        .unwrap();
+        state
+            .actor_mut(handle.shared.identity, pid)
+            .unwrap()
+            .mailbox
+            .push(message)
+            .unwrap();
+    }
+    let mb0 = state
+        .actor(handle.shared.identity, pid0)
+        .unwrap()
+        .mailbox
+        .clone();
+    let mb2 = state
+        .actor(handle.shared.identity, pid2)
+        .unwrap()
+        .mailbox
+        .clone();
+    let queues = ready::RunQueues::new(2, 4).unwrap();
+
+    // Enqueue one actor on worker 0 while worker 0 is idle (active == 0):
+    // worker 1 must not steal an uncontested single ready actor.
+    assert!(mb0.mark_enqueued_if_nonempty());
+    mb0.exec_lock().queued = true;
+    queues.push_deferred(0, mb0.clone());
+    assert!(!queues.has_stealable(1));
+    assert!(queues.claim_or_steal(1).is_none());
+
+    // Once a second actor is queued on worker 0 (len > 1), worker 1 steals
+    // the oldest waiting actor (pid0) and records its migration.
+    assert!(mb2.mark_enqueued_if_nonempty());
+    mb2.exec_lock().queued = true;
+    queues.push_deferred(0, mb2.clone());
+    assert!(queues.has_stealable(1));
+    {
+        let stolen = queues
+            .claim_or_steal(1)
+            .expect("worker 1 should steal from congested worker 0");
+        assert_eq!(stolen.mailbox.inner.pid, pid0);
+        let mut exec = stolen.mailbox.exec_lock();
+        assert_eq!(exec.owner, Some(1));
+        assert_eq!(exec.last_worker, Some(1));
+        exec.owner = None;
+        exec.image = Some(stolen.image);
+        stolen.mailbox.set_active_or_queued(false);
+    }
+    queues.dec_active(1);
+
+    // With one remaining actor on worker 0 and worker 0 marked active,
+    // worker 1 can also steal pid2 so it does not wait behind worker 0's running actor.
+    queues.set_active(0, 1);
+    assert!(queues.has_stealable(1));
+    {
+        let stolen = queues
+            .claim_or_steal(1)
+            .expect("worker 1 should steal while worker 0 is active");
+        assert_eq!(stolen.mailbox.inner.pid, pid2);
+        let mut exec = stolen.mailbox.exec_lock();
+        exec.owner = None;
+        exec.image = Some(stolen.image);
+        stolen.mailbox.set_active_or_queued(false);
+    }
+    queues.dec_active(1);
+    queues.set_active(0, 0);
+    drop(queues);
+    drop(state);
+    drop((mb0, mb2, handle, scheduler, module, tenant));
     assert_eq!(vm.used(), Resources::default());
 }
