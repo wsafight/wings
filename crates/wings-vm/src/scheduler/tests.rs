@@ -751,6 +751,8 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     let pid = handle.spawn(&module, limits, 1).unwrap();
     let handler = module.handler("Drop").unwrap();
     let mut state = handle.shared.lock();
+    let original_queues =
+        std::mem::replace(&mut state.run_queues, ready::RunQueues::new(2, 2).unwrap());
     assert!(state.pop_ready(0).is_none());
     assert!(state.should_park(0, false, false));
     let actor = state.actor_mut(handle.shared.identity, pid).unwrap();
@@ -767,7 +769,6 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     .unwrap();
     actor.mailbox.push(message).unwrap();
     state.enqueue(pid);
-    handle.shared.run_queues.changed.notify_all();
     assert!(!state.should_park(0, false, false));
     assert!(state.should_park(1, false, false));
     assert!(state.should_park(0, false, true));
@@ -776,6 +777,7 @@ fn ready_publication_after_an_empty_claim_prevents_parking_without_removing_retr
     assert_eq!(state.pop_ready(0), Some(pid.slot as usize));
     assert!(state.pop_ready(0).is_none());
     assert!(state.should_park(0, false, false));
+    state.run_queues = original_queues;
     state.enqueue(pid);
     drop(state);
     drop((scheduler, handle, handler, module, tenant));

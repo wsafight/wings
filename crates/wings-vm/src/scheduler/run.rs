@@ -760,6 +760,10 @@ fn run_fast_claim(
                     prepared.release(fibers);
                 }
                 drop(inline);
+                // Refund merged envelope charges from earlier messages in this
+                // batch before `finish_process` publishes the final reply so a
+                // woken caller observes zero residual message charge.
+                drop(batch_charge);
                 // Suspended work in `local` must interleave with the hot
                 // actor, so only fuse when no older task is queued behind it.
                 let continued = finish_process(
