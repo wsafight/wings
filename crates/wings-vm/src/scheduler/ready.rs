@@ -264,15 +264,21 @@ impl RunQueues {
             return best;
         }
         // BEAM-style scheduler compaction (+scl true) on initial placement:
-        // when any worker is parked, compact onto the lowest-numbered awake
-        // idle worker (or worker 0 if all are parked) so sleeping workers stay
-        // parked. When all workers are already awake, preserve slot affinity.
+        // when all workers are completely idle (or when any worker is parked),
+        // compact onto the lowest-numbered awake idle worker (or worker 0) so
+        // sequential / low-concurrency actors stay on worker 0 and keep sibling
+        // workers parked. When multiple workers are already active/queued and
+        // all awake, preserve slot affinity.
         let all_workers_mask = if workers >= 32 {
             u32::MAX
         } else {
             (1u32 << workers) - 1
         };
-        if (parked & all_workers_mask) != 0 {
+        let all_idle = self
+            .queues
+            .iter()
+            .all(|q| q.active.load(Ordering::Relaxed) == 0 && q.len.load(Ordering::Relaxed) == 0);
+        if all_idle || (parked & all_workers_mask) != 0 {
             for candidate in 0..workers {
                 if (parked & (1u32 << candidate)) == 0
                     && self.queues[candidate].active.load(Ordering::Relaxed) == 0

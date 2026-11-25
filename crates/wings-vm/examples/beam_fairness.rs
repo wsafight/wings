@@ -478,7 +478,7 @@ fn execute(
             } else if next < count {
                 let gap = planned(next).saturating_sub(now_ns);
                 let wake_margin = if cfg!(target_os = "macos") {
-                    150_000
+                    1_200_000
                 } else {
                     55_000
                 };
