@@ -1218,20 +1218,22 @@ impl SchedulerHandle {
                 );
             };
             if mailbox.occupancy_hint() < mailbox.capacity() {
-                let charge = mailbox
+                let message_arguments =
+                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
+                let (charge, request_charge) = mailbox
                     .inner
                     .account
-                    .reserve_envelope(
+                    .reserve_request_envelope(
                         std::mem::size_of::<Envelope>() as u64
                             + MessageArguments::overflow_bytes(arguments.len()),
                     )
                     .map_err(String::from)?;
-                let message_arguments =
-                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
-                let (request, publisher) =
-                    self.shared
-                        .replies
-                        .start(deadline, &mailbox.inner.account, reply)?;
+                let (request, publisher) = self.shared.replies.start_with_charge(
+                    deadline,
+                    &mailbox.inner.account,
+                    reply,
+                    request_charge,
+                )?;
                 let message = Envelope {
                     handler: handler.index,
                     arguments: message_arguments,

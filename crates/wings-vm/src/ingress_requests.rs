@@ -233,6 +233,24 @@ impl ReplyTable {
             requests: 1,
             ..Resources::default()
         })?;
+        self.start_with_charge(deadline, account, reply_type, charge)
+    }
+
+    pub(crate) fn start_with_charge(
+        self: &Arc<Self>,
+        deadline: Instant,
+        account: &ResourceAccount,
+        reply_type: ValueType,
+        charge: Reservation,
+    ) -> Result<(IngressRequest, ReplyPublisher), String> {
+        if !(self.account.same(account) || account.is_child_of(&self.account))
+            || !reply_type.is_supported_reply()
+        {
+            return Err(
+                "result table requires its owner or direct child and a supported reply".into(),
+            );
+        }
+        debug_assert!(charge.account().same(account) && charge.amount().requests == 1);
         let mut charge = Some(charge);
         while let Some(index) = self.claim_free_slot() {
             let slot_ref = &self.slots[index];

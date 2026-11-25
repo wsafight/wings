@@ -112,6 +112,11 @@ pub(crate) struct WorkerFibers {
 
 enum DirectFiberLease {
     Parked(ParkedFiber),
+    ParkedBorrowed {
+        parked: ParkedFiber,
+        process: ResourceAccount,
+        bytes: u64,
+    },
     Demand {
         pool: StackPool,
         lease: crate::stack_pool::DirectStackLease,
@@ -200,6 +205,28 @@ impl WorkerFibers {
                     .stack_charge
                     .as_mut()
                     .expect("parked fiber stack charge");
+                if process_account.is_child_of(charge_ref.account()) {
+                    match self
+                        .pool
+                        .borrow_parked_fiber_direct(charge_ref, process_account)
+                    {
+                        Ok(bytes) => {
+                            return Ok(PreparedDirect {
+                                stack_lease: Some(DirectFiberLease::ParkedBorrowed {
+                                    parked,
+                                    process: process_account.clone(),
+                                    bytes,
+                                }),
+                                _control_charge: None,
+                                native_stack_limit: self.native_stack_limit,
+                            });
+                        }
+                        Err(error) => {
+                            *slot = Some(parked);
+                            return Err(error);
+                        }
+                    }
+                }
                 match self.pool.activate_parked_fiber(charge_ref, process_account) {
                     Ok(()) => {
                         return Ok(PreparedDirect {
@@ -361,6 +388,25 @@ impl Drop for PreparedDirect {
                     }
                     parked.pool.drop_active_fiber();
                 }
+                DirectFiberLease::ParkedBorrowed {
+                    mut parked,
+                    process,
+                    bytes,
+                } => {
+                    process.sub_bytes_local(bytes);
+                    if let Some(mut coroutine) = parked.coroutine.take() {
+                        if coroutine.started()
+                            && !coroutine.done()
+                            && !matches!(
+                                coroutine.resume(FiberCommand::Shutdown),
+                                CoroutineResult::Return(())
+                            )
+                        {
+                            std::process::abort();
+                        }
+                    }
+                    parked.pool.drop_active_fiber();
+                }
                 DirectFiberLease::Demand { pool, lease } => {
                     pool.release_direct_stack_charge(lease);
                 }
@@ -400,6 +446,36 @@ impl PreparedDirect {
                     }
                     let pool = parked.pool.clone();
                     fibers.recycle(coroutine, stack_charge, pool);
+                }
+                DirectFiberLease::ParkedBorrowed {
+                    mut parked,
+                    process,
+                    bytes,
+                } => {
+                    if fibers
+                        .pool
+                        .return_borrowed_parked_fiber(&process, bytes, fibers.limit > 0)
+                    {
+                        for slot in &mut fibers.slots[..fibers.limit] {
+                            if slot.is_none() {
+                                *slot = Some(parked);
+                                return;
+                            }
+                        }
+                        drop(parked);
+                        return;
+                    }
+                    if let Some(mut coroutine) = parked.coroutine.take() {
+                        if coroutine.started()
+                            && !coroutine.done()
+                            && !matches!(
+                                coroutine.resume(FiberCommand::Shutdown),
+                                CoroutineResult::Return(())
+                            )
+                        {
+                            std::process::abort();
+                        }
+                    }
                 }
                 DirectFiberLease::Demand { pool, lease } => {
                     pool.release_direct_stack_charge(lease);

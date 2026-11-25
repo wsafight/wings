@@ -1139,18 +1139,25 @@ fn finish_process(
             };
             drop(exec);
             shared.run_queues.dec_active(index);
+            drop(_charge);
             if let Some(worker) = reenqueued_worker {
                 shared.run_queues.push_and_wake(worker, mailbox);
+                if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                    let outcome = match result {
+                        Ok(Some(value)) => value,
+                        _ => RequestOutcome::Failed,
+                    };
+                    complete_external(publisher, outcome);
+                }
             } else {
+                if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                    let outcome = match result {
+                        Ok(Some(value)) => value,
+                        _ => RequestOutcome::Failed,
+                    };
+                    complete_external(publisher, outcome);
+                }
                 drop(mailbox);
-            }
-            drop(_charge);
-            if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
-                let outcome = match result {
-                    Ok(Some(value)) => value,
-                    _ => RequestOutcome::Failed,
-                };
-                complete_external(publisher, outcome);
             }
             return None;
         }

@@ -471,6 +471,42 @@ impl ResourceAccount {
         })
     }
 
+    /// Reserves both an envelope (`bytes + messages: 1`) and an ingress
+    /// request (`requests: 1`) in a single 3-level packed CAS, then splits the
+    /// ownership into independent drop handles.
+    pub(crate) fn reserve_request_envelope(
+        &self,
+        bytes: u64,
+    ) -> Result<(EnvelopeCharge, Reservation), crate::VmError> {
+        self.reserve_packed_status(bytes, 1, 1)
+            .map_err(crate::VmError::ResourceExhausted)?;
+        Ok((
+            EnvelopeCharge {
+                account: self.clone(),
+                bytes,
+                messages: 1,
+                gated: false,
+            },
+            Reservation {
+                account: self.clone(),
+                amount: Resources {
+                    requests: 1,
+                    ..Resources::default()
+                },
+            },
+        ))
+    }
+
+    #[inline]
+    pub(crate) fn try_add_bytes_local(&self, bytes: u64) -> bool {
+        self.try_add_packed(bytes, 0, 0)
+    }
+
+    #[inline]
+    pub(crate) fn sub_bytes_local(&self, bytes: u64) {
+        self.sub_packed(bytes, 0, 0);
+    }
+
     pub(crate) fn reserve_status(&self, amount: Resources) -> Result<Reservation, ResourceLevel> {
         if amount.is_zero() {
             return Ok(Reservation {
@@ -615,6 +651,11 @@ impl ResourceAccount {
 impl Reservation {
     pub fn amount(&self) -> Resources {
         self.amount
+    }
+
+    #[inline]
+    pub(crate) fn account(&self) -> &ResourceAccount {
+        &self.account
     }
 
     pub(crate) fn merge(&mut self, mut other: Self) {
