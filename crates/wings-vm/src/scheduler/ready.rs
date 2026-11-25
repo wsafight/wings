@@ -230,18 +230,37 @@ impl RunQueues {
             return 0;
         }
         let parked = self.changed.parked_mask();
+        let all_workers_mask = if workers >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << workers) - 1
+        };
         if let Some(preferred) = last_worker.filter(|&w| w < workers) {
-            if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+            if (parked & (1u32 << preferred)) == 0
+                && self.queues[preferred].active.load(Ordering::Relaxed) == 0
+            {
                 return preferred;
             }
-            for offset in 1..workers {
-                let candidate = (preferred + offset) % workers;
+            // BEAM-style scheduler compaction (+scl true): never wake a parked
+            // worker when another awake worker is completely idle, so low-rate
+            // traffic stays compacted on the active worker(s) without futex
+            // ping-pong.
+            for candidate in 0..workers {
                 if (parked & (1u32 << candidate)) == 0
                     && self.queues[candidate].active.load(Ordering::Relaxed) == 0
                     && self.queues[candidate].len.load(Ordering::Relaxed) == 0
                 {
                     return candidate;
                 }
+            }
+            if (parked & all_workers_mask) == all_workers_mask
+                && self.queues[0].active.load(Ordering::Relaxed) == 0
+                && self.queues[0].len.load(Ordering::Relaxed) == 0
+            {
+                return 0;
+            }
+            if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+                return preferred;
             }
             for offset in 1..workers {
                 let candidate = (preferred + offset) % workers;
@@ -269,11 +288,6 @@ impl RunQueues {
         // sequential / low-concurrency actors stay on worker 0 and keep sibling
         // workers parked. When multiple workers are already active/queued and
         // all awake, preserve slot affinity.
-        let all_workers_mask = if workers >= 32 {
-            u32::MAX
-        } else {
-            (1u32 << workers) - 1
-        };
         let all_idle = self
             .queues
             .iter()
