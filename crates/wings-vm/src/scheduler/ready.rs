@@ -378,31 +378,20 @@ impl RunQueues {
     /// Lock-free (wrt global `Mutex<State>`) enqueue for a fast-pushed mailbox
     /// whose producer transitioned `active_or_queued` from `false` to `true`.
     pub(super) fn enqueue_fast_pushed(&self, mailbox: SharedMailbox) {
-        let mut exec = mailbox.exec_lock();
-        if self.closed.load(Ordering::Acquire) || exec.retired || mailbox.is_stopping() {
+        if self.closed.load(Ordering::Acquire) || mailbox.is_retired() || mailbox.is_stopping() {
+            let exec = mailbox.exec_lock();
             if exec.owner.is_none() {
                 mailbox.set_active_or_queued(false);
             }
             return;
         }
-        if exec.queued || exec.owner.is_some() {
-            return;
-        }
-        // The lock-free publish raced an owner drain that already consumed
-        // this envelope: linking an empty actor would park a dead ready entry.
-        // Clear the flag so the next push enqueues normally — then re-check so
-        // a racing producer cannot strand a published envelope.
-        if mailbox.count() == 0 {
-            mailbox.set_active_or_queued(false);
-            if mailbox.count() == 0 {
-                return;
-            }
-            mailbox.set_active_or_queued(true);
-        }
-        exec.queued = true;
-        let last_worker = exec.last_worker;
+        // `try_push_fast` exclusively won the `active_or_queued: false -> true`
+        // transition, so no other producer or worker owns or is enqueueing this
+        // actor. Skip `exec_lock()` on the fast path and route using the atomic
+        // `last_worker_hint`; `try_acquire_mailbox` still validates
+        // `retired`/`stopping`/`closed` under `exec_lock` before execution.
+        let last_worker = mailbox.last_worker_hint();
         let slot_index = mailbox.inner.pid.slot as usize;
-        drop(exec);
         let worker = self.select_worker(slot_index, last_worker);
         self.push_and_wake(worker, mailbox);
     }
@@ -472,18 +461,21 @@ impl RunQueues {
             }
             return None;
         }
-        if mailbox.count() == 0 {
+        if mailbox.owner_is_empty() {
             mailbox.set_active_or_queued(false);
-            if mailbox.count() == 0 {
+            if mailbox.owner_is_empty() {
                 return None;
             }
             mailbox.set_active_or_queued(true);
         }
         exec.owner = Some(worker);
-        if exec.last_worker.is_some_and(|previous| previous != worker) {
-            exec.migrations += 1;
+        if exec.last_worker != Some(worker) {
+            if exec.last_worker.is_some() {
+                exec.migrations += 1;
+            }
+            exec.last_worker = Some(worker);
+            mailbox.set_last_worker_hint(worker);
         }
-        exec.last_worker = Some(worker);
         let image = exec.image.take().expect("unowned actor image");
         drop(exec);
         self.inc_active(worker);

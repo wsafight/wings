@@ -160,7 +160,7 @@ impl State {
         let was_queued = {
             let mut exec = actor.mailbox.exec_lock();
             exec.retired = true;
-            let queued = exec.queued;
+            let queued = exec.queued || actor.mailbox.is_active_or_queued();
             exec.queued = false;
             queued
         };

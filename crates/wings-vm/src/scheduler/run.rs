@@ -659,8 +659,8 @@ fn run_fast_claim(
                     return (batch_step > 0, None);
                 }
             };
-            let inline_target = inline
-                .get_or_insert_with(|| EffectSendTarget::new(shared, &mailbox, pid, capability));
+            let inline_target =
+                inline.get_or_insert_with(|| EffectSendTarget::new(shared, &mailbox, capability));
             let Envelope {
                 handler,
                 arguments,
@@ -764,7 +764,7 @@ fn run_fast_claim(
                             _ => RequestOutcome::Failed,
                         };
                         match &mut batch_charge {
-                            Some(merged) => merged.merge(_charge.into_reservation()),
+                            Some(merged) => merged.merge_envelope(_charge),
                             slot => *slot = Some(_charge.into_reservation()),
                         }
                         if let Reply::External(publisher) =
@@ -814,7 +814,7 @@ fn run_fast_claim(
                                 let wake = state.maintain(shared.identity);
                                 shared.publish_signal(&mut state);
                                 match &mut batch_charge {
-                                    Some(merged) => merged.merge(_charge.into_reservation()),
+                                    Some(merged) => merged.merge_envelope(_charge),
                                     slot => *slot = Some(_charge.into_reservation()),
                                 }
                                 drop(state);
@@ -839,7 +839,7 @@ fn run_fast_claim(
                                 exec.committed_state = committed_state;
                             }
                             match &mut batch_charge {
-                                Some(merged) => merged.merge(_charge.into_reservation()),
+                                Some(merged) => merged.merge_envelope(_charge),
                                 slot => *slot = Some(_charge.into_reservation()),
                             }
                             if let Reply::External(publisher) =
@@ -939,12 +939,7 @@ fn start(
                         claim.message.arguments.as_slice(),
                         claim.message.max_steps,
                         &claim.mailbox.inner.cancellation,
-                        Some(EffectSendTarget::new(
-                            shared,
-                            &claim.mailbox,
-                            pid,
-                            capability,
-                        )),
+                        Some(EffectSendTarget::new(shared, &claim.mailbox, capability)),
                     ) {
                         Ok(task) => Ok(task),
                         Err((process, _)) => {

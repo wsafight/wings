@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -255,7 +255,7 @@ const FAST_SLOT_WRITER: u32 = 1 << 31;
 struct FastSlot {
     state: AtomicU32,
     generation: AtomicU32,
-    entry: UnsafeCell<Option<Weak<SharedMailboxInner>>>,
+    entry: UnsafeCell<Option<SharedMailbox>>,
 }
 
 unsafe impl Send for FastSlot {}
@@ -377,7 +377,7 @@ impl FastSlot {
         observation: Option<&locks::ContentionCounters>,
     ) {
         let mut guard = self.write_lock(observation);
-        *guard = Some(Arc::downgrade(&mailbox.inner));
+        *guard = Some(mailbox.clone());
         self.generation.store(generation, Ordering::Release);
     }
 
@@ -390,11 +390,13 @@ impl FastSlot {
         drop(current);
     }
 
-    fn get(
+    #[inline]
+    fn with_mailbox<R>(
         &self,
         generation: u32,
         observation: Option<&locks::ContentionCounters>,
-    ) -> Option<SharedMailbox> {
+        f: impl FnOnce(&SharedMailbox) -> R,
+    ) -> Option<R> {
         if self.generation.load(Ordering::Acquire) != generation {
             return None;
         }
@@ -402,18 +404,18 @@ impl FastSlot {
         if self.generation.load(Ordering::Relaxed) != generation {
             return None;
         }
-        guard
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .map(|inner| SharedMailbox { inner })
-            .filter(|mailbox| !mailbox.is_retired())
+        let mailbox = guard.as_ref()?;
+        if mailbox.is_retired() {
+            return None;
+        }
+        Some(f(mailbox))
     }
 }
 
 struct FastSlotReadGuard<'slot>(&'slot FastSlot);
 
 impl std::ops::Deref for FastSlotReadGuard<'_> {
-    type Target = Option<Weak<SharedMailboxInner>>;
+    type Target = Option<SharedMailbox>;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.entry.get() }
     }
@@ -428,7 +430,7 @@ impl Drop for FastSlotReadGuard<'_> {
 struct FastSlotWriteGuard<'slot>(&'slot FastSlot);
 
 impl std::ops::Deref for FastSlotWriteGuard<'_> {
-    type Target = Option<Weak<SharedMailboxInner>>;
+    type Target = Option<SharedMailbox>;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.entry.get() }
     }
@@ -537,6 +539,7 @@ struct SharedMailboxInner {
     stopping: AtomicBool,
     active_or_queued: AtomicBool,
     retired: AtomicBool,
+    last_worker_hint: AtomicUsize,
     live_execution_locked: AtomicBool,
     live_execution: UnsafeCell<Option<ExecutionSnapshot>>,
     exec_locked: AtomicBool,
@@ -1124,52 +1127,71 @@ impl SchedulerHandle {
         arguments: &[i64],
         max_steps: u64,
     ) -> Result<(), String> {
-        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
+        if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
-            self.shared
+            let fast_outcome = self
+                .shared
                 .fast_slots
                 .get(pid.slot as usize)
-                .and_then(|slot| slot.get(pid.generation, self.shared.fast_slot_contention()))
-        } else {
-            None
-        };
-        if let Some(mailbox) = fast_mailbox {
-            validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
-            let meta = handler.fast_meta();
-            if meta.reply.is_some() {
-                return Err("send requires a one-way handler".into());
-            }
-            if mailbox.occupancy_hint() < mailbox.capacity() {
-                let charge = mailbox
-                    .inner
-                    .account
-                    .reserve_envelope(
-                        std::mem::size_of::<Envelope>() as u64
-                            + MessageArguments::overflow_bytes(arguments.len()),
+                .and_then(|slot| {
+                    slot.with_mailbox(
+                        pid.generation,
+                        self.shared.fast_slot_contention(),
+                        |mailbox| {
+                            if let Err(error) = validate_scalar_module(
+                                &mailbox.inner.module,
+                                false,
+                                handler,
+                                arguments,
+                            ) {
+                                return Some(Err(error));
+                            }
+                            let meta = handler.fast_meta();
+                            if meta.reply.is_some() {
+                                return Some(Err("send requires a one-way handler".into()));
+                            }
+                            if mailbox.occupancy_hint() >= mailbox.capacity() {
+                                return None;
+                            }
+                            let charge = match mailbox.inner.account.reserve_envelope(
+                                std::mem::size_of::<Envelope>() as u64
+                                    + MessageArguments::overflow_bytes(arguments.len()),
+                            ) {
+                                Ok(charge) => charge,
+                                Err(error) => return Some(Err(String::from(error))),
+                            };
+                            let message_arguments =
+                                match MessageArguments::try_from_slice(arguments) {
+                                    Ok(arguments) => arguments,
+                                    Err(error) => return Some(Err(String::from(error))),
+                                };
+                            let message = Envelope {
+                                handler: handler.index,
+                                arguments: message_arguments,
+                                max_steps,
+                                lists: None,
+                                bytes: None,
+                                reply: Reply::None,
+                                fast_eligible: meta.fast_scalar(),
+                                _charge: charge,
+                            };
+                            match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
+                                Ok(true) => Some(Ok(None)),
+                                Ok(false) => Some(Ok(Some(mailbox.clone()))),
+                                Err(FastPushError::MailboxFull) => Some(Err("mailbox_full".into())),
+                                Err(FastPushError::ClosedOrStopped) => None,
+                            }
+                        },
                     )
-                    .map_err(String::from)?;
-                let message_arguments =
-                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
-                let message = Envelope {
-                    handler: handler.index,
-                    arguments: message_arguments,
-                    max_steps,
-                    lists: None,
-                    bytes: None,
-                    reply: Reply::None,
-                    fast_eligible: meta.fast_scalar(),
-                    _charge: charge,
-                };
-                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {
-                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
-                        return Ok(());
-                    }
-                    Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
-                    Err(FastPushError::ClosedOrStopped) => {}
+                })
+                .flatten();
+            if let Some(result) = fast_outcome {
+                let to_enqueue = result?;
+                if let Some(mailbox) = to_enqueue {
+                    self.shared.run_queues.enqueue_fast_pushed(mailbox);
                 }
+                return Ok(());
             }
         }
         let mut state = self.shared.lock();
@@ -1199,60 +1221,88 @@ impl SchedulerHandle {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or("request deadline overflow")?;
-        let fast_mailbox = if !self.shared.run_queues.closed.load(Ordering::Acquire)
+        if !self.shared.run_queues.closed.load(Ordering::Acquire)
             && self.shared.identity == pid.scheduler
         {
-            self.shared
+            let fast_outcome = self
+                .shared
                 .fast_slots
                 .get(pid.slot as usize)
-                .and_then(|slot| slot.get(pid.generation, self.shared.fast_slot_contention()))
-        } else {
-            None
-        };
-        if let Some(mailbox) = fast_mailbox {
-            validate_scalar_module(&mailbox.inner.module, false, handler, arguments)?;
-            let meta = handler.fast_meta();
-            let Some(reply) = meta.reply.filter(|_| meta.has_supported_reply()) else {
-                return Err(
-                    "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
-                );
-            };
-            if mailbox.occupancy_hint() < mailbox.capacity() {
-                let message_arguments =
-                    MessageArguments::try_from_slice(arguments).map_err(String::from)?;
-                let (charge, request_charge) = mailbox
-                    .inner
-                    .account
-                    .reserve_request_envelope(
-                        std::mem::size_of::<Envelope>() as u64
-                            + MessageArguments::overflow_bytes(arguments.len()),
+                .and_then(|slot| {
+                    slot.with_mailbox(
+                        pid.generation,
+                        self.shared.fast_slot_contention(),
+                        |mailbox| {
+                            if let Err(error) = validate_scalar_module(
+                                &mailbox.inner.module,
+                                false,
+                                handler,
+                                arguments,
+                            ) {
+                                return Some(Err(error));
+                            }
+                            let meta = handler.fast_meta();
+                            let Some(reply) = meta.reply.filter(|_| meta.has_supported_reply())
+                            else {
+                                return Some(Err(
+                                    "request requires a scalar, Pid, IntList, Bytes, String or Record reply".into(),
+                                ));
+                            };
+                            if mailbox.occupancy_hint() >= mailbox.capacity() {
+                                return None;
+                            }
+                            let message_arguments =
+                                match MessageArguments::try_from_slice(arguments) {
+                                    Ok(arguments) => arguments,
+                                    Err(error) => return Some(Err(String::from(error))),
+                                };
+                            let (charge, request_charge) = match mailbox
+                                .inner
+                                .account
+                                .reserve_request_envelope(
+                                    std::mem::size_of::<Envelope>() as u64
+                                        + MessageArguments::overflow_bytes(arguments.len()),
+                                ) {
+                                Ok(charges) => charges,
+                                Err(error) => return Some(Err(String::from(error))),
+                            };
+                            let (request, publisher) = match self.shared.replies.start_with_charge(
+                                deadline,
+                                &mailbox.inner.account,
+                                reply,
+                                request_charge,
+                            ) {
+                                Ok(pair) => pair,
+                                Err(error) => return Some(Err(error)),
+                            };
+                            let message = Envelope {
+                                handler: handler.index,
+                                arguments: message_arguments,
+                                max_steps,
+                                lists: None,
+                                bytes: None,
+                                reply: Reply::External(publisher),
+                                fast_eligible: meta.fast_scalar(),
+                                _charge: charge,
+                            };
+                            match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
+                                Ok(true) => Some(Ok((request, None))),
+                                Ok(false) => Some(Ok((request, Some(mailbox.clone())))),
+                                Err(FastPushError::MailboxFull) => {
+                                    Some(Err("mailbox_full".into()))
+                                }
+                                Err(FastPushError::ClosedOrStopped) => None,
+                            }
+                        },
                     )
-                    .map_err(String::from)?;
-                let (request, publisher) = self.shared.replies.start_with_charge(
-                    deadline,
-                    &mailbox.inner.account,
-                    reply,
-                    request_charge,
-                )?;
-                let message = Envelope {
-                    handler: handler.index,
-                    arguments: message_arguments,
-                    max_steps,
-                    lists: None,
-                    bytes: None,
-                    reply: Reply::External(publisher),
-                    fast_eligible: meta.fast_scalar(),
-                    _charge: charge,
-                };
-                match mailbox.try_push_fast(&self.shared.run_queues.closed, message) {
-                    Ok(true) => return Ok(request),
-                    Ok(false) => {
-                        self.shared.run_queues.enqueue_fast_pushed(mailbox);
-                        return Ok(request);
-                    }
-                    Err(FastPushError::MailboxFull) => return Err("mailbox_full".into()),
-                    Err(FastPushError::ClosedOrStopped) => {}
+                })
+                .flatten();
+            if let Some(result) = fast_outcome {
+                let (request, to_enqueue) = result?;
+                if let Some(mailbox) = to_enqueue {
+                    self.shared.run_queues.enqueue_fast_pushed(mailbox);
                 }
+                return Ok(request);
             }
         }
         let mut state = self.shared.lock();
@@ -1529,21 +1579,14 @@ impl Shared {
 pub(crate) struct EffectSendTarget {
     shared: Arc<Shared>,
     mailbox: SharedMailbox,
-    pid: SchedulerPid,
     capability: i64,
 }
 
 impl EffectSendTarget {
-    pub(crate) fn new(
-        shared: &Arc<Shared>,
-        mailbox: &SharedMailbox,
-        pid: SchedulerPid,
-        capability: i64,
-    ) -> Self {
+    pub(crate) fn new(shared: &Arc<Shared>, mailbox: &SharedMailbox, capability: i64) -> Self {
         Self {
             shared: shared.clone(),
             mailbox: mailbox.clone(),
-            pid,
             capability,
         }
     }
@@ -1593,97 +1636,99 @@ impl EffectSendTarget {
                 {
                     return Some(reject());
                 }
-                let (_target_pid, target) = if request.operation == wings_abi::EFFECT_SEND_SELF {
-                    (self.pid, self.mailbox.clone())
+                let mut deliver = |target: &SharedMailbox| -> (u32, Option<SharedMailbox>) {
+                    let (arguments, lists, mut bytes) =
+                        match unsafe { crate::execution::copy_effect_payload(context, request) } {
+                            Ok(payload) => payload,
+                            Err(status) => return (status, None),
+                        };
+                    let handler = match target
+                        .inner
+                        .module
+                        .handler_by_index(request.handler as usize)
+                    {
+                        Ok(handler) => handler,
+                        Err(_) => return (reject(), None),
+                    };
+                    let schema = handler.schema();
+                    if handler.fast_meta().is_completion()
+                        || schema.reply.is_some()
+                        || crate::message_values::validate_message_payload(
+                            &schema.parameters,
+                            arguments.as_slice(),
+                            false,
+                            true,
+                            &lists,
+                            &bytes,
+                        )
+                        .is_err()
+                        || target.is_stopping()
+                        || target.is_retired()
+                        || !Arc::ptr_eq(
+                            &target.inner.module.inner,
+                            &self.mailbox.inner.module.inner,
+                        )
+                        || target.occupancy_hint() >= target.capacity()
+                    {
+                        return (reject(), None);
+                    }
+                    if bytes.transfer_checked(&target.inner.account).is_err() {
+                        return (reject(), None);
+                    }
+                    let charge = match target.inner.account.reserve_envelope(
+                        std::mem::size_of::<Envelope>() as u64
+                            + MessageArguments::overflow_bytes(arguments.as_slice().len())
+                            + lists.overflow_bytes(),
+                    ) {
+                        Ok(charge) => charge,
+                        Err(_) => return (reject(), None),
+                    };
+                    let fast_eligible = envelope_fast_eligible(&handler, &lists, &bytes);
+                    let message = Envelope {
+                        handler: handler.index,
+                        arguments,
+                        max_steps: budget,
+                        lists: box_list_payload(lists),
+                        bytes: box_byte_payload(bytes),
+                        reply: Reply::None,
+                        fast_eligible,
+                        _charge: charge,
+                    };
+                    match target.try_push_fast(&self.shared.run_queues.closed, message) {
+                        Ok(already_active) => {
+                            let to_enqueue = (!already_active).then(|| target.clone());
+                            unsafe { output.write(0) };
+                            (wings_abi::STATUS_OK, to_enqueue)
+                        }
+                        Err(FastPushError::MailboxFull) => (reject(), None),
+                        Err(FastPushError::ClosedOrStopped) => {
+                            if self.shared.run_queues.closed.load(Ordering::Acquire) {
+                                (wings_abi::STATUS_CANCELLED, None)
+                            } else {
+                                (reject(), None)
+                            }
+                        }
+                    }
+                };
+                let (status, to_enqueue) = if request.operation == wings_abi::EFFECT_SEND_SELF {
+                    deliver(&self.mailbox)
                 } else {
                     let Some((slot, generation)) =
                         wings_abi::decode_capability(self.shared.identity, request.target)
                     else {
                         return Some(reject());
                     };
-                    let pid = SchedulerPid {
-                        scheduler: self.shared.identity,
-                        slot: slot as u32,
-                        generation,
-                    };
-                    let Some(mailbox) = self.shared.fast_slots.get(slot).and_then(|entry| {
-                        entry.get(generation, self.shared.fast_slot_contention())
+                    let Some(outcome) = self.shared.fast_slots.get(slot).and_then(|entry| {
+                        entry.with_mailbox(generation, self.shared.fast_slot_contention(), deliver)
                     }) else {
                         return Some(reject());
                     };
-                    (pid, mailbox)
+                    outcome
                 };
-                let (arguments, lists, mut bytes) =
-                    match unsafe { crate::execution::copy_effect_payload(context, request) } {
-                        Ok(payload) => payload,
-                        Err(status) => return Some(status),
-                    };
-                let handler = match target
-                    .inner
-                    .module
-                    .handler_by_index(request.handler as usize)
-                {
-                    Ok(handler) => handler,
-                    Err(_) => return Some(reject()),
-                };
-                let schema = handler.schema();
-                if handler.fast_meta().is_completion()
-                    || schema.reply.is_some()
-                    || crate::message_values::validate_message_payload(
-                        &schema.parameters,
-                        arguments.as_slice(),
-                        false,
-                        true,
-                        &lists,
-                        &bytes,
-                    )
-                    .is_err()
-                    || target.is_stopping()
-                    || target.is_retired()
-                    || !Arc::ptr_eq(&target.inner.module.inner, &self.mailbox.inner.module.inner)
-                    || target.occupancy_hint() >= target.capacity()
-                {
-                    return Some(reject());
+                if let Some(target) = to_enqueue {
+                    self.shared.run_queues.enqueue_fast_pushed(target);
                 }
-                if bytes.transfer_checked(&target.inner.account).is_err() {
-                    return Some(reject());
-                }
-                let charge = match target.inner.account.reserve_envelope(
-                    std::mem::size_of::<Envelope>() as u64
-                        + MessageArguments::overflow_bytes(arguments.as_slice().len())
-                        + lists.overflow_bytes(),
-                ) {
-                    Ok(charge) => charge,
-                    Err(_) => return Some(reject()),
-                };
-                let fast_eligible = envelope_fast_eligible(&handler, &lists, &bytes);
-                let message = Envelope {
-                    handler: handler.index,
-                    arguments,
-                    max_steps: budget,
-                    lists: box_list_payload(lists),
-                    bytes: box_byte_payload(bytes),
-                    reply: Reply::None,
-                    fast_eligible,
-                    _charge: charge,
-                };
-                match target.try_push_fast(&self.shared.run_queues.closed, message) {
-                    Ok(needs_enqueue) => {
-                        if !needs_enqueue {
-                            self.shared.run_queues.enqueue_fast_pushed(target);
-                        }
-                        unsafe { output.write(0) };
-                        Some(wings_abi::STATUS_OK)
-                    }
-                    Err(FastPushError::MailboxFull) => Some(reject()),
-                    Err(FastPushError::ClosedOrStopped) => {
-                        if self.shared.run_queues.closed.load(Ordering::Acquire) {
-                            Some(wings_abi::STATUS_CANCELLED)
-                        } else {
-                            Some(reject())
-                        }
-                    }
-                }
+                Some(status)
             }
             _ => None,
         }
@@ -1766,6 +1811,7 @@ impl SharedMailbox {
                 stopping: AtomicBool::new(false),
                 active_or_queued: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
+                last_worker_hint: AtomicUsize::new(usize::MAX),
                 live_execution_locked: AtomicBool::new(false),
                 live_execution: UnsafeCell::new(None),
                 exec_locked: AtomicBool::new(false),
@@ -1832,6 +1878,22 @@ impl SharedMailbox {
 
     pub(super) fn is_retired(&self) -> bool {
         self.inner.retired.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub(super) fn is_active_or_queued(&self) -> bool {
+        self.inner.active_or_queued.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub(super) fn last_worker_hint(&self) -> Option<usize> {
+        let worker = self.inner.last_worker_hint.load(Ordering::Relaxed);
+        (worker != usize::MAX).then_some(worker)
+    }
+
+    #[inline]
+    pub(super) fn set_last_worker_hint(&self, worker: usize) {
+        self.inner.last_worker_hint.store(worker, Ordering::Relaxed);
     }
 
     pub(super) fn is_stopping(&self) -> bool {

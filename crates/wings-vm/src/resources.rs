@@ -664,6 +664,18 @@ impl Reservation {
         other.amount = Resources::default();
     }
 
+    #[inline]
+    pub(crate) fn merge_envelope(&mut self, mut charge: EnvelopeCharge) {
+        debug_assert!(self.account.same(&charge.account));
+        self.amount = self.amount.add_unchecked(Resources {
+            bytes: charge.bytes,
+            messages: u64::from(charge.messages),
+            ..Resources::default()
+        });
+        charge.bytes = 0;
+        charge.messages = 0;
+    }
+
     pub fn transfer(&mut self, target: &ResourceAccount) -> Result<(), String> {
         self.transfer_checked(target).map_err(String::from)
     }

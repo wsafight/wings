@@ -528,6 +528,8 @@ mod tests {
                     assert_eq!(account.used().messages, 2);
                     assert_eq!(account.used().requests, 1);
                     state.enqueue(pid);
+                    handle.shared.fast_slots[pid.slot as usize]
+                        .clear(handle.shared.fast_slot_contention());
                     let retired = state.retire(handle.shared.identity, pid).unwrap();
                     drop(state);
                     std::thread::scope(|scope| {
