@@ -1,25 +1,39 @@
 use super::*;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 use std::thread::Thread;
 
 pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
 
-/// Cache-line isolated per-worker run queue (BEAM `ErtsRunQueue` analogue).
-/// Enqueues and worker claims lock only this worker's queue instead of the
-/// global scheduler `Mutex<State>`.
+/// Cache-line isolated per-worker run queue (BEAM `ErtsRunQueue` + lock-free
+/// single-slot fast handoff). 0 <-> 1 transitions bypass `lock` and the
+/// heap-backed `VecDeque` completely via `fast_slot`.
 #[repr(align(64))]
 pub(super) struct WorkerRunQueue {
+    fast_slot: AtomicPtr<SharedMailboxInner>,
+    queue_len: AtomicUsize,
+    pub(super) active: AtomicU32,
     lock: AtomicBool,
     queue: UnsafeCell<VecDeque<SharedMailbox>>,
-    len: AtomicUsize,
-    pub(super) active: AtomicU32,
 }
 
-// Safety: `queue` is only accessed while `lock` is held with Acquire/Release
-// ordering, and `SharedMailbox` is `Send`.
+// Safety: `fast_slot` owns an `Arc::into_raw` pointer exchanged atomically;
+// `queue` is only accessed while `lock` is held with Acquire/Release ordering.
 unsafe impl Send for WorkerRunQueue {}
 unsafe impl Sync for WorkerRunQueue {}
+
+impl Drop for WorkerRunQueue {
+    fn drop(&mut self) {
+        let raw = *self.fast_slot.get_mut();
+        if !raw.is_null() {
+            // Safety: `raw` was produced by `Arc::into_raw` in `push`/`remove_slot`.
+            unsafe {
+                drop(Arc::from_raw(raw));
+            }
+        }
+    }
+}
 
 impl WorkerRunQueue {
     fn new(capacity: usize) -> Result<Self, String> {
@@ -28,100 +42,234 @@ impl WorkerRunQueue {
             .try_reserve_exact(capacity)
             .map_err(|_| "scheduler worker run queue allocation failed")?;
         Ok(Self {
+            fast_slot: AtomicPtr::new(std::ptr::null_mut()),
+            queue_len: AtomicUsize::new(0),
+            active: AtomicU32::new(0),
             lock: AtomicBool::new(false),
             queue: UnsafeCell::new(queue),
-            len: AtomicUsize::new(0),
-            active: AtomicU32::new(0),
         })
     }
 
+    #[inline]
+    fn len(&self, ordering: Ordering) -> usize {
+        usize::from(!self.fast_slot.load(ordering).is_null()) + self.queue_len.load(ordering)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.fast_slot.load(Ordering::Acquire).is_null()
+            && self.queue_len.load(Ordering::Acquire) == 0
+    }
+
+    #[inline]
+    fn is_empty_seqcst(&self) -> bool {
+        self.fast_slot.load(Ordering::SeqCst).is_null()
+            && self.queue_len.load(Ordering::SeqCst) == 0
+    }
+
     fn push(&self, mailbox: SharedMailbox, ready_mask: &AtomicU32, bit: u32) -> (bool, bool) {
+        if self.queue_len.load(Ordering::Acquire) == 0 {
+            let raw = Arc::into_raw(mailbox.inner) as *mut SharedMailboxInner;
+            if self
+                .fast_slot
+                .compare_exchange(
+                    std::ptr::null_mut(),
+                    raw,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                if (ready_mask.load(Ordering::SeqCst) & bit) == 0 {
+                    ready_mask.fetch_or(bit, Ordering::SeqCst);
+                }
+                let congested = self.active.load(Ordering::Relaxed) > 0
+                    || self.queue_len.load(Ordering::Relaxed) > 0;
+                return (true, congested);
+            }
+            let mailbox = SharedMailbox {
+                // Safety: CAS failed so ownership of `raw` remains here.
+                inner: unsafe { Arc::from_raw(raw) },
+            };
+            return self.push_overflow(mailbox, ready_mask, bit);
+        }
+        self.push_overflow(mailbox, ready_mask, bit)
+    }
+
+    fn push_overflow(
+        &self,
+        mailbox: SharedMailbox,
+        ready_mask: &AtomicU32,
+        bit: u32,
+    ) -> (bool, bool) {
         locks::spin_lock(&self.lock, None);
         let queue = unsafe { &mut *self.queue.get() };
-        let was_empty = queue.is_empty();
         queue.push_back(mailbox);
-        let new_len = queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if was_empty {
+        let qlen = queue.len();
+        self.queue_len.store(qlen, Ordering::SeqCst);
+        if (ready_mask.load(Ordering::SeqCst) & bit) == 0 {
             ready_mask.fetch_or(bit, Ordering::SeqCst);
         }
-        let congested = new_len > 1 || self.active.load(Ordering::Relaxed) > 0;
+        let total = qlen + usize::from(!self.fast_slot.load(Ordering::Relaxed).is_null());
+        let congested = total > 1 || self.active.load(Ordering::Relaxed) > 0;
         self.lock.store(false, Ordering::Release);
-        (was_empty, congested)
+        (total == 1, congested)
     }
 
     fn pop(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
-        if self.len.load(Ordering::Acquire) == 0 {
+        loop {
+            if !self.fast_slot.load(Ordering::Acquire).is_null() {
+                let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+                if !raw.is_null() {
+                    if self.queue_len.load(Ordering::Acquire) == 0 {
+                        ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                        if !self.is_empty_seqcst() {
+                            ready_mask.fetch_or(bit, Ordering::SeqCst);
+                        }
+                    }
+                    return Some(SharedMailbox {
+                        inner: unsafe { Arc::from_raw(raw) },
+                    });
+                }
+            }
+            if self.queue_len.load(Ordering::Acquire) > 0 {
+                locks::spin_lock(&self.lock, None);
+                let queue = unsafe { &mut *self.queue.get() };
+                let item = queue.pop_front();
+                let qlen = queue.len();
+                self.queue_len.store(qlen, Ordering::Release);
+                self.lock.store(false, Ordering::Release);
+                if item.is_some() {
+                    return item;
+                }
+            }
+            if (ready_mask.load(Ordering::Acquire) & bit) != 0 {
+                ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                if !self.is_empty_seqcst() {
+                    ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    continue;
+                }
+            } else if !self.is_empty() {
+                continue;
+            }
             return None;
         }
-        locks::spin_lock(&self.lock, None);
-        let queue = unsafe { &mut *self.queue.get() };
-        let item = queue.pop_front();
-        let new_len = queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
-        }
-        self.lock.store(false, Ordering::Release);
-        item
     }
 
     fn try_steal(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
-        let len = self.len.load(Ordering::Acquire);
-        if len == 0 || (len == 1 && self.active.load(Ordering::Acquire) == 0) {
+        let total = self.len(Ordering::Acquire);
+        if total == 0 || (total == 1 && self.active.load(Ordering::Acquire) == 0) {
             return None;
         }
-        if self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
+        if !self.fast_slot.load(Ordering::Acquire).is_null() {
+            let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !raw.is_null() {
+                if self.is_empty_seqcst() {
+                    ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                    if !self.is_empty_seqcst() {
+                        ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    }
+                }
+                return Some(SharedMailbox {
+                    inner: unsafe { Arc::from_raw(raw) },
+                });
+            }
+        }
+        if self.queue_len.load(Ordering::Acquire) > 0
+            && self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
         {
-            return None;
+            let queue = unsafe { &mut *self.queue.get() };
+            let has_fast = !self.fast_slot.load(Ordering::Relaxed).is_null();
+            let total = usize::from(has_fast) + queue.len();
+            let item =
+                if total > 1 || (!queue.is_empty() && self.active.load(Ordering::Relaxed) > 0) {
+                    queue.pop_front()
+                } else {
+                    None
+                };
+            let qlen = queue.len();
+            self.queue_len.store(qlen, Ordering::Release);
+            self.lock.store(false, Ordering::Release);
+            if item.is_some() {
+                if qlen == 0 && self.is_empty_seqcst() {
+                    ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                    if !self.is_empty_seqcst() {
+                        ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    }
+                }
+                return item;
+            }
         }
-        let queue = unsafe { &mut *self.queue.get() };
-        let item =
-            if queue.len() > 1 || (!queue.is_empty() && self.active.load(Ordering::Relaxed) > 0) {
-                queue.pop_front()
-            } else {
-                None
-            };
-        let new_len = queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
-        }
-        self.lock.store(false, Ordering::Release);
-        item
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len.load(Ordering::Acquire) == 0
+        None
     }
 
     fn load(&self) -> usize {
-        self.len.load(Ordering::Relaxed) + self.active.load(Ordering::Relaxed) as usize
+        self.len(Ordering::Relaxed) + self.active.load(Ordering::Relaxed) as usize
     }
 
     fn remove_slot(&self, slot: usize, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
+        if !self.fast_slot.load(Ordering::Acquire).is_null() {
+            let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !raw.is_null() {
+                let mailbox = SharedMailbox {
+                    inner: unsafe { Arc::from_raw(raw) },
+                };
+                if mailbox.inner.pid.slot as usize == slot {
+                    if self.is_empty_seqcst() {
+                        ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                        if !self.is_empty_seqcst() {
+                            ready_mask.fetch_or(bit, Ordering::SeqCst);
+                        }
+                    }
+                    return Some(mailbox);
+                }
+                let raw = Arc::into_raw(mailbox.inner) as *mut SharedMailboxInner;
+                if self
+                    .fast_slot
+                    .compare_exchange(
+                        std::ptr::null_mut(),
+                        raw,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_err()
+                {
+                    let mailbox = SharedMailbox {
+                        inner: unsafe { Arc::from_raw(raw) },
+                    };
+                    locks::spin_lock(&self.lock, None);
+                    let queue = unsafe { &mut *self.queue.get() };
+                    queue.push_front(mailbox);
+                    self.queue_len.store(queue.len(), Ordering::Release);
+                    self.lock.store(false, Ordering::Release);
+                }
+            }
+        }
         locks::spin_lock(&self.lock, None);
         let queue = unsafe { &mut *self.queue.get() };
         let removed = queue
             .iter()
             .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
             .and_then(|pos| queue.remove(pos));
-        let new_len = queue.len();
-        self.len.store(new_len, Ordering::Relaxed);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
-        }
+        let qlen = queue.len();
+        self.queue_len.store(qlen, Ordering::Release);
         self.lock.store(false, Ordering::Release);
+        if qlen == 0 && self.is_empty_seqcst() {
+            ready_mask.fetch_and(!bit, Ordering::SeqCst);
+            if !self.is_empty_seqcst() {
+                ready_mask.fetch_or(bit, Ordering::SeqCst);
+            }
+        }
         removed
     }
 }
 
 pub(super) struct RunQueues {
     queues: Box<[WorkerRunQueue]>,
-    pub(super) ready_mask: AtomicU32,
+    pub(super) ready_mask: CachePadded<AtomicU32>,
     epoch: Instant,
     pub(super) next_timer_ns: AtomicU64,
     pub(super) closed: AtomicBool,
@@ -139,7 +287,7 @@ impl RunQueues {
         }
         Ok(Arc::new(Self {
             queues: queues.into_boxed_slice(),
-            ready_mask: AtomicU32::new(0),
+            ready_mask: CachePadded(AtomicU32::new(0)),
             epoch: Instant::now(),
             next_timer_ns: AtomicU64::new(u64::MAX),
             closed: AtomicBool::new(false),
@@ -190,6 +338,16 @@ impl RunQueues {
     }
 
     #[inline]
+    pub(super) fn is_empty_seqcst(&self, worker: usize) -> bool {
+        self.queues[worker].is_empty_seqcst()
+    }
+
+    #[inline]
+    pub(super) fn local_len(&self, worker: usize) -> usize {
+        self.queues[worker].len(Ordering::Acquire)
+    }
+
+    #[inline]
     pub(super) fn inc_active(&self, worker: usize) {
         let atomic = &self.queues[worker].active;
         atomic.store(atomic.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -209,38 +367,112 @@ impl RunQueues {
         self.queues[worker].active.store(value, Ordering::Relaxed);
     }
 
+    #[inline]
+    pub(super) fn is_solo_awake(&self, worker: usize) -> bool {
+        let workers = self.queues.len();
+        if workers <= 1 {
+            return true;
+        }
+        let all = if workers >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << workers) - 1
+        };
+        let others = all & !(1u32 << worker);
+        (self.changed.parked_mask() & others) == others
+    }
+
     pub(super) fn select_worker(&self, slot_index: usize, last_worker: Option<usize>) -> usize {
         let workers = self.queues.len();
         if workers <= 1 {
             return 0;
         }
         let parked = self.changed.parked_mask();
-        let preferred = last_worker
-            .filter(|&w| w < workers)
-            .unwrap_or(slot_index % workers);
-        if self.queues[preferred].active.load(Ordering::Relaxed) == 0
-            && (last_worker.is_some() || (parked & (1u32 << preferred)) == 0)
-        {
-            return preferred;
-        }
-        // BEAM-style awake-worker compaction: prefer an already-awake idle
-        // worker over waking a parked worker when spilling or placing a new actor.
-        for offset in 1..workers {
-            let candidate = (preferred + offset) % workers;
-            if (parked & (1u32 << candidate)) == 0
-                && self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+        let all_workers_mask = if workers >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << workers) - 1
+        };
+        if let Some(preferred) = last_worker.filter(|&w| w < workers) {
+            if (parked & (1u32 << preferred)) == 0
+                && self.queues[preferred].active.load(Ordering::Relaxed) == 0
             {
-                return candidate;
+                return preferred;
+            }
+            // BEAM-style scheduler compaction (+scl true): never wake a parked
+            // worker when another awake worker is completely idle, so low-rate
+            // traffic stays compacted on the active worker(s) without futex
+            // ping-pong.
+            for candidate in 0..workers {
+                if (parked & (1u32 << candidate)) == 0
+                    && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
+            }
+            if (parked & all_workers_mask) == all_workers_mask
+                && self.queues[0].active.load(Ordering::Relaxed) == 0
+                && self.queues[0].len(Ordering::Relaxed) == 0
+            {
+                return 0;
+            }
+            if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+                return preferred;
+            }
+            for offset in 1..workers {
+                let candidate = (preferred + offset) % workers;
+                if self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
+            }
+            let mut best = preferred;
+            let mut best_load = self.queues[preferred].load();
+            for offset in 1..workers {
+                let candidate = (preferred + offset) % workers;
+                let load = self.queues[candidate].load();
+                if load < best_load {
+                    best = candidate;
+                    best_load = load;
+                }
+            }
+            return best;
+        }
+        // BEAM-style scheduler compaction (+scl true) on initial placement:
+        // when all workers are completely idle (or when any worker is parked),
+        // compact onto the lowest-numbered awake idle worker (or worker 0) so
+        // sequential / low-concurrency actors stay on worker 0 and keep sibling
+        // workers parked. When multiple workers are already active/queued and
+        // all awake, preserve slot affinity.
+        let all_idle = self
+            .queues
+            .iter()
+            .all(|q| q.active.load(Ordering::Relaxed) == 0 && q.len(Ordering::Relaxed) == 0);
+        if all_idle || (parked & all_workers_mask) != 0 {
+            for candidate in 0..workers {
+                if (parked & (1u32 << candidate)) == 0
+                    && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
+            }
+            if self.queues[0].active.load(Ordering::Relaxed) == 0
+                && self.queues[0].len(Ordering::Relaxed) == 0
+            {
+                return 0;
             }
         }
+        let preferred = slot_index % workers;
         if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
             return preferred;
         }
         for offset in 1..workers {
             let candidate = (preferred + offset) % workers;
             if self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                && self.queues[candidate].len(Ordering::Relaxed) == 0
             {
                 return candidate;
             }
@@ -287,7 +519,7 @@ impl RunQueues {
             let other = mask.trailing_zeros() as usize;
             mask &= mask - 1;
             if let Some(queue) = self.queues.get(other) {
-                let len = queue.len.load(Ordering::Relaxed);
+                let len = queue.len(Ordering::Relaxed);
                 if len > 1 || (len > 0 && queue.active.load(Ordering::Relaxed) > 0) {
                     return true;
                 }
@@ -299,31 +531,20 @@ impl RunQueues {
     /// Lock-free (wrt global `Mutex<State>`) enqueue for a fast-pushed mailbox
     /// whose producer transitioned `active_or_queued` from `false` to `true`.
     pub(super) fn enqueue_fast_pushed(&self, mailbox: SharedMailbox) {
-        let mut exec = mailbox.exec_lock();
-        if self.closed.load(Ordering::Acquire) || exec.retired || mailbox.is_stopping() {
+        if self.closed.load(Ordering::Acquire) || mailbox.is_retired() || mailbox.is_stopping() {
+            let exec = mailbox.exec_lock();
             if exec.owner.is_none() {
                 mailbox.set_active_or_queued(false);
             }
             return;
         }
-        if exec.queued || exec.owner.is_some() {
-            return;
-        }
-        // The lock-free publish raced an owner drain that already consumed
-        // this envelope: linking an empty actor would park a dead ready entry.
-        // Clear the flag so the next push enqueues normally — then re-check so
-        // a racing producer cannot strand a published envelope.
-        if mailbox.count() == 0 {
-            mailbox.set_active_or_queued(false);
-            if mailbox.count() == 0 {
-                return;
-            }
-            mailbox.set_active_or_queued(true);
-        }
-        exec.queued = true;
-        let last_worker = exec.last_worker;
+        // `try_push_fast` exclusively won the `active_or_queued: false -> true`
+        // transition, so no other producer or worker owns or is enqueueing this
+        // actor. Skip `exec_lock()` on the fast path and route using the atomic
+        // `last_worker_hint`; `try_acquire_mailbox` still validates
+        // `retired`/`stopping`/`closed` under `exec_lock` before execution.
+        let last_worker = mailbox.last_worker_hint();
         let slot_index = mailbox.inner.pid.slot as usize;
-        drop(exec);
         let worker = self.select_worker(slot_index, last_worker);
         self.push_and_wake(worker, mailbox);
     }
@@ -393,18 +614,21 @@ impl RunQueues {
             }
             return None;
         }
-        if mailbox.count() == 0 {
+        if mailbox.owner_is_empty() {
             mailbox.set_active_or_queued(false);
-            if mailbox.count() == 0 {
+            if mailbox.owner_is_empty() {
                 return None;
             }
             mailbox.set_active_or_queued(true);
         }
         exec.owner = Some(worker);
-        if exec.last_worker.is_some_and(|previous| previous != worker) {
-            exec.migrations += 1;
+        if exec.last_worker != Some(worker) {
+            if exec.last_worker.is_some() {
+                exec.migrations += 1;
+            }
+            exec.last_worker = Some(worker);
+            mailbox.set_last_worker_hint(worker);
         }
-        exec.last_worker = Some(worker);
         let image = exec.image.take().expect("unowned actor image");
         drop(exec);
         self.inc_active(worker);
@@ -486,14 +710,14 @@ impl RunQueues {
 }
 
 pub(super) struct WorkerWakeHub {
-    parked_mask: AtomicU32,
+    parked_mask: CachePadded<AtomicU32>,
     threads: [OnceLock<Thread>; 16],
 }
 
 impl WorkerWakeHub {
     pub(super) fn new() -> Self {
         Self {
-            parked_mask: AtomicU32::new(0),
+            parked_mask: CachePadded(AtomicU32::new(0)),
             threads: std::array::from_fn(|_| OnceLock::new()),
         }
     }

@@ -18,6 +18,11 @@ pub(crate) enum DirectStackLease {
         _control: Reservation,
     },
     Cold(Reservation),
+    Borrowed {
+        tenant_charge: Reservation,
+        process: ResourceAccount,
+        bytes: u64,
+    },
 }
 
 pub(crate) struct FiberStack {
@@ -151,6 +156,51 @@ impl StackPool {
         ))
     }
 
+    pub(crate) fn borrow_parked_fiber_direct(
+        &self,
+        charge: &Reservation,
+        process: &ResourceAccount,
+    ) -> Result<u64, String> {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        if state.active == self.inner.capacity {
+            return Err("execution stack pool exhausted".into());
+        }
+        let bytes = charge.amount().bytes;
+        if !process.try_add_bytes_local(bytes) {
+            return Err(crate::VmError::ResourceExhausted(process.level()).into());
+        }
+        state.parked -= 1;
+        state.active += 1;
+        Ok(bytes)
+    }
+
+    pub(crate) fn return_borrowed_parked_fiber(
+        &self,
+        process: &ResourceAccount,
+        bytes: u64,
+        allow_park: bool,
+    ) -> bool {
+        let mut state = self
+            .inner
+            .demand
+            .as_ref()
+            .expect("demand pool")
+            .borrow_mut();
+        process.sub_bytes_local(bytes);
+        state.active -= 1;
+        if allow_park && state.cached.len() + state.parked < self.inner.max_cached {
+            state.parked += 1;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn activate_parked_fiber(
         &self,
         charge: &mut Reservation,
@@ -232,6 +282,21 @@ impl StackPool {
             return Err("execution stack pool exhausted".into());
         }
         let required = overhead + self.inner.slot_bytes as u64;
+        if let Some(parked) = state.direct_parked.as_ref().filter(|charge| {
+            charge.amount().bytes == required && process.is_child_of(charge.account())
+        }) {
+            let _ = parked;
+            if !process.try_add_bytes_local(required) {
+                return Err(crate::VmError::ResourceExhausted(process.level()).into());
+            }
+            let tenant_charge = state.direct_parked.take().expect("parked direct charge");
+            state.active += 1;
+            return Ok(DirectStackLease::Borrowed {
+                tenant_charge,
+                process: process.clone(),
+                bytes: required,
+            });
+        }
         if let Some(parked) = state
             .direct_parked
             .as_mut()
@@ -284,6 +349,20 @@ impl StackPool {
                         .transfer(tenant)
                         .expect("return cached stack charge");
                     state.cached.push(cached);
+                }
+            }
+            DirectStackLease::Borrowed {
+                tenant_charge,
+                process,
+                bytes,
+            } => {
+                process.sub_bytes_local(bytes);
+                if state.direct_parked.is_none()
+                    && state.cached.len() + state.parked < self.inner.max_cached
+                {
+                    state.direct_parked = Some(tenant_charge);
+                } else {
+                    drop(tenant_charge);
                 }
             }
             DirectStackLease::Cold(mut charge) => {

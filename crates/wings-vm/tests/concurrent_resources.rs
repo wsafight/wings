@@ -88,10 +88,15 @@ fn concurrent_overflow_checks_preserve_all_levels_and_dimensions() {
         let vm = ResourceAccount::vm(resources([u64::MAX; 4]));
         let tenant = vm.tenant(resources([u64::MAX; 4])).unwrap();
         let process = tenant.process(resources([u64::MAX; 4])).unwrap();
-        // Bytes and messages share one packed counter word, so their widest
-        // representable reservation is the account's (saturated) limit, not
-        // u64::MAX. Processes and requests keep the full width.
-        let widest = [vm.limit().bytes, u64::MAX, vm.limit().messages, u64::MAX];
+        // Bytes, messages, and requests share one packed counter word, so their
+        // widest representable reservation is the account's (saturated) limit,
+        // not u64::MAX. Processes keeps the full width.
+        let widest = [
+            vm.limit().bytes,
+            u64::MAX,
+            vm.limit().messages,
+            vm.limit().requests,
+        ];
         let mut amount = [0; 4];
         amount[dimension] = widest[dimension];
         let held = process.reserve(resources(amount)).unwrap();

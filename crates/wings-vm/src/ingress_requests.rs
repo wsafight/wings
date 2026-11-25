@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,6 +10,11 @@ use crate::{RequestOutcome, Reservation, ResourceAccount, Resources};
 
 const MAX_BITMAP_WORDS: usize = 4;
 const MAX_BITMAP_SLOTS: usize = MAX_BITMAP_WORDS * 64;
+
+const PHASE_PENDING: u8 = 0;
+const PHASE_SCALAR_READY: u8 = 1;
+const PHASE_SLOW_PENDING: u8 = 2;
+const PHASE_SLOW_READY: u8 = 3;
 
 pub struct IngressRequest {
     table: Arc<ReplyTable>,
@@ -63,7 +68,9 @@ pub(crate) struct ReplyTable {
 #[repr(align(64))]
 struct ReplySlot {
     locked: AtomicBool,
-    ready: AtomicBool,
+    phase: AtomicU8,
+    scalar_value: AtomicI64,
+    deadline: UnsafeCell<Instant>,
     state: UnsafeCell<SlotState>,
 }
 
@@ -102,6 +109,12 @@ impl Drop for SlotGuard<'_> {
 }
 
 impl ReplySlot {
+    #[inline]
+    fn is_ready(&self, ordering: Ordering) -> bool {
+        let phase = self.phase.load(ordering);
+        phase == PHASE_SCALAR_READY || phase == PHASE_SLOW_READY
+    }
+
     fn lock(&self) -> SlotGuard<'_> {
         while self
             .locked
@@ -137,9 +150,12 @@ impl ReplyTable {
         slots
             .try_reserve_exact(capacity)
             .map_err(|_| "ingress result storage allocation failed")?;
+        let now = Instant::now();
         slots.resize_with(capacity, || ReplySlot {
             locked: AtomicBool::new(false),
-            ready: AtomicBool::new(false),
+            phase: AtomicU8::new(PHASE_PENDING),
+            scalar_value: AtomicI64::new(0),
+            deadline: UnsafeCell::new(now),
             state: UnsafeCell::new(SlotState {
                 generation: 1,
                 pending: None,
@@ -184,14 +200,19 @@ impl ReplyTable {
         self.free[index / 64].fetch_or(1u64 << (index % 64), Ordering::Release);
     }
 
+    #[cold]
+    fn wake_waiters(&self) {
+        let _guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.changed.notify_all();
+    }
+
     fn notify_waiters(&self) {
         std::sync::atomic::fence(Ordering::SeqCst);
         if self.waiters.load(Ordering::Relaxed) != 0 {
-            let _guard = self
-                .wait_lock
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            self.changed.notify_all();
+            self.wake_waiters();
         }
     }
 
@@ -212,23 +233,46 @@ impl ReplyTable {
             requests: 1,
             ..Resources::default()
         })?;
+        self.start_with_charge(deadline, account, reply_type, charge)
+    }
+
+    pub(crate) fn start_with_charge(
+        self: &Arc<Self>,
+        deadline: Instant,
+        account: &ResourceAccount,
+        reply_type: ValueType,
+        charge: Reservation,
+    ) -> Result<(IngressRequest, ReplyPublisher), String> {
+        if !(self.account.same(account) || account.is_child_of(&self.account))
+            || !reply_type.is_supported_reply()
+        {
+            return Err(
+                "result table requires its owner or direct child and a supported reply".into(),
+            );
+        }
+        debug_assert!(charge.account().same(account) && charge.amount().requests == 1);
         let mut charge = Some(charge);
         while let Some(index) = self.claim_free_slot() {
-            let mut slot = self.slots[index].lock();
-            if slot.generation == 0 {
-                drop(slot);
-                continue;
-            }
-            let generation = slot.generation;
-            self.slots[index].ready.store(false, Ordering::Release);
-            slot.pending = Some(Pending {
-                deadline,
-                outcome: None,
-                caller: true,
-                publisher: true,
-                charge: charge.take().expect("request admission charge"),
-            });
-            drop(slot);
+            let slot_ref = &self.slots[index];
+            // Exclusive ownership via the free bitmap: no caller or publisher
+            // holds this slot until we publish it below.
+            let generation = unsafe {
+                let state = &mut *slot_ref.state.get();
+                if state.generation == 0 {
+                    continue;
+                }
+                let generation = state.generation;
+                state.pending = Some(Pending {
+                    deadline,
+                    outcome: None,
+                    caller: true,
+                    publisher: true,
+                    charge: charge.take().expect("request admission charge"),
+                });
+                *slot_ref.deadline.get() = deadline;
+                generation
+            };
+            slot_ref.phase.store(PHASE_PENDING, Ordering::Release);
             return Ok((
                 IngressRequest {
                     table: self.clone(),
@@ -246,6 +290,32 @@ impl ReplyTable {
             ));
         }
         Err("ingress_requests_full".into())
+    }
+
+    fn finish_scalar(&self, index: usize, generation: u64, value: i64) {
+        let slot_ref = &self.slots[index];
+        // `deadline` is initialized in `start()` before the publisher is
+        // created and never mutated until the slot is retired.
+        let deadline = unsafe { *slot_ref.deadline.get() };
+        if Instant::now() < deadline {
+            slot_ref.scalar_value.store(value, Ordering::Relaxed);
+            if slot_ref
+                .phase
+                .compare_exchange(
+                    PHASE_PENDING,
+                    PHASE_SCALAR_READY,
+                    Ordering::SeqCst,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                if self.waiters.load(Ordering::SeqCst) != 0 {
+                    self.wake_waiters();
+                }
+                return;
+            }
+        }
+        self.finish(index, generation, RequestOutcome::Reply(value));
     }
 
     fn finish(&self, index: usize, generation: u64, outcome: RequestOutcome) {
@@ -267,7 +337,9 @@ impl ReplyTable {
             });
         }
         pending.publisher = false;
-        self.slots[index].ready.store(true, Ordering::Release);
+        self.slots[index]
+            .phase
+            .store(PHASE_SLOW_READY, Ordering::Release);
         let (retired, reusable) = retire(&mut slot);
         drop(slot);
         if reusable {
@@ -297,20 +369,60 @@ impl IngressRequest {
         self.reply_type
     }
 
+    #[inline]
+    fn retire_scalar_ready(&self) -> i64 {
+        let slot_ref = &self.table.slots[self.slot];
+        let value = slot_ref.scalar_value.load(Ordering::Relaxed);
+        // Publisher already transitioned `PHASE_PENDING -> PHASE_SCALAR_READY`
+        // and will never touch `slot_ref` again; caller has exclusive ownership
+        // until `release_free_slot`.
+        let (retired, reusable) = unsafe {
+            let state = &mut *slot_ref.state.get();
+            let charge = state.pending.take().map(|pending| pending.charge);
+            state.generation = state.generation.checked_add(1).unwrap_or(0);
+            (charge, state.generation != 0)
+        };
+        if reusable {
+            self.table.release_free_slot(self.slot);
+        }
+        drop(retired);
+        value
+    }
+
     pub fn try_take(&mut self) -> Result<Option<RequestOutcome>, String> {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        let ready = self.table.slots[self.slot].ready.load(Ordering::Acquire);
+        let slot_ref = &self.table.slots[self.slot];
+        let phase = slot_ref.phase.load(Ordering::Acquire);
+        if phase == PHASE_SCALAR_READY {
+            self.active = false;
+            return Ok(Some(RequestOutcome::Reply(self.retire_scalar_ready())));
+        }
         let mut now = None;
-        if !ready {
+        if phase != PHASE_SLOW_READY {
             let current = Instant::now();
             if current < self.deadline {
                 return Ok(None);
             }
+            if phase == PHASE_PENDING
+                && slot_ref
+                    .phase
+                    .compare_exchange(
+                        PHASE_PENDING,
+                        PHASE_SLOW_PENDING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .err()
+                    == Some(PHASE_SCALAR_READY)
+            {
+                self.active = false;
+                return Ok(Some(RequestOutcome::Reply(self.retire_scalar_ready())));
+            }
             now = Some(current);
         }
-        let mut slot = self.table.slots[self.slot].lock();
+        let mut slot = slot_ref.lock();
         let pending = slot.pending.as_mut().expect("live ingress request");
         if pending.outcome.is_none() && now.unwrap_or_else(Instant::now) >= pending.deadline {
             pending.outcome = Some(RequestOutcome::TimedOut);
@@ -340,7 +452,7 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        if self.table.slots[self.slot].ready.load(Ordering::Acquire)
+        if self.table.slots[self.slot].is_ready(Ordering::Acquire)
             || Instant::now() >= self.deadline
         {
             return self.try_take();
@@ -359,7 +471,7 @@ impl IngressRequest {
         self.table.waiters.fetch_add(1, Ordering::SeqCst);
         let _waiter = WaiterCount(&self.table.waiters);
         loop {
-            let ready = self.table.slots[self.slot].ready.load(Ordering::SeqCst);
+            let ready = self.table.slots[self.slot].is_ready(Ordering::SeqCst);
             let now = Instant::now();
             if ready || now >= self.deadline {
                 drop(_waiter);
@@ -382,7 +494,22 @@ impl IngressRequest {
         if !self.active {
             return Err("ingress request result has already been consumed".into());
         }
-        let mut slot = self.table.slots[self.slot].lock();
+        let slot_ref = &self.table.slots[self.slot];
+        if slot_ref
+            .phase
+            .compare_exchange(
+                PHASE_PENDING,
+                PHASE_SLOW_PENDING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .err()
+            == Some(PHASE_SCALAR_READY)
+        {
+            self.table.notify_waiters();
+            return Ok(());
+        }
+        let mut slot = slot_ref.lock();
         let pending = slot.pending.as_mut().expect("live ingress request");
         if pending.outcome.is_none() {
             pending.outcome = Some(if Instant::now() >= pending.deadline {
@@ -391,9 +518,7 @@ impl IngressRequest {
                 RequestOutcome::Cancelled
             });
         }
-        self.table.slots[self.slot]
-            .ready
-            .store(true, Ordering::SeqCst);
+        slot_ref.phase.store(PHASE_SLOW_READY, Ordering::SeqCst);
         drop(slot);
         self.table.notify_waiters();
         Ok(())
@@ -405,7 +530,22 @@ impl Drop for IngressRequest {
         if !self.active {
             return;
         }
-        let mut slot = self.table.slots[self.slot].lock();
+        let slot_ref = &self.table.slots[self.slot];
+        if slot_ref
+            .phase
+            .compare_exchange(
+                PHASE_PENDING,
+                PHASE_SLOW_PENDING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .err()
+            == Some(PHASE_SCALAR_READY)
+        {
+            let _ = self.retire_scalar_ready();
+            return;
+        }
+        let mut slot = slot_ref.lock();
         if slot.generation != self.generation {
             return;
         }
@@ -443,7 +583,9 @@ impl ReplyPublisher {
         self.finish_once(RequestOutcome::ReplyBytes(value));
     }
     pub(crate) fn complete(self, value: i64) {
-        self.finish_once(RequestOutcome::Reply(value));
+        let me = std::mem::ManuallyDrop::new(self);
+        let table = unsafe { std::ptr::read(&me.table) };
+        table.finish_scalar(me.slot, me.generation, value);
     }
 
     pub(crate) fn complete_record(self, value: crate::RecordReply) {
@@ -473,7 +615,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         for cancel in [false, true] {
             let (mut request, publisher) = table.start(deadline, &account, ValueType::Int).unwrap();
-            assert!(!table.slots[0].ready.load(Ordering::Acquire));
+            assert!(!table.slots[0].is_ready(Ordering::Acquire));
             {
                 let slot = table.slots[0].lock();
                 assert!(slot.pending.as_ref().unwrap().outcome.is_none());
@@ -481,13 +623,13 @@ mod tests {
             }
             if cancel {
                 request.cancel().unwrap();
-                assert!(table.slots[0].ready.load(Ordering::Acquire));
+                assert!(table.slots[0].is_ready(Ordering::Acquire));
                 assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Cancelled));
                 assert_eq!(account.used().requests, 1);
                 drop(publisher);
             } else {
                 publisher.complete(17);
-                assert!(table.slots[0].ready.load(Ordering::Acquire));
+                assert!(table.slots[0].is_ready(Ordering::Acquire));
                 assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::Reply(17)));
             }
             assert!(request.try_take().is_err());
@@ -508,7 +650,7 @@ mod tests {
         let (mut request, publisher) = table
             .start(Instant::now(), &account, ValueType::BytesRef)
             .unwrap();
-        assert!(!table.slots[0].ready.load(Ordering::Acquire));
+        assert!(!table.slots[0].is_ready(Ordering::Acquire));
         assert_eq!(request.try_take().unwrap(), Some(RequestOutcome::TimedOut));
         assert_eq!(account.used().requests, 1);
         assert!(
@@ -579,11 +721,11 @@ mod tests {
                 }
             });
             let guards: Vec<_> = table.slots.iter().map(ReplySlot::lock).collect();
-            gate.wait();
             for request in &mut requests {
                 assert_eq!(request.try_take().unwrap(), None);
             }
             drop(guards);
+            gate.wait();
             for (index, request) in requests.iter_mut().enumerate() {
                 loop {
                     assert!(Instant::now() < deadline);

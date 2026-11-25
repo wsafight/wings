@@ -8,9 +8,11 @@ use std::collections::VecDeque;
 
 const MIN_SPIN_WINDOW: Duration = Duration::from_micros(25);
 const INITIAL_SPIN_WINDOW: Duration = Duration::from_micros(60);
-const MAX_SPIN_WINDOW: Duration = Duration::from_micros(160);
-const SPIN_GROW_STEP: Duration = Duration::from_micros(30);
-const SPIN_DECAY_IDLE: Duration = Duration::from_micros(500);
+const PEER_SPIN_WINDOW: Duration = Duration::from_micros(40);
+const MAX_SOLO_SPIN_WINDOW: Duration = Duration::from_micros(1500);
+const SOLO_SPIN_GROW_STEP: Duration = Duration::from_micros(250);
+const SOLO_SPIN_DECAY_IDLE: Duration = Duration::from_micros(3000);
+const IDLE_PARK_TIMEOUT: Duration = Duration::from_millis(50);
 const SIBLING_BATCH_THRESHOLD: usize = 4;
 const MAX_BACKLOG_BATCH: usize = 32;
 
@@ -125,10 +127,55 @@ pub(super) fn worker(
     // message for the same actor; it is dispatched before touching the state
     // lock on the next iteration.
     let mut pending_claim: Option<Claim> = None;
+    // Strict 1:1 interleaving between suspended tasks in `local` and newly
+    // ready actors in `run_queues[index]`: after running a `run_queues` claim
+    // while `local` is non-empty, `prefer_local` forces the next turn to serve
+    // `local.pop_front()` so an unbounded fast-message stream can never starve
+    // suspended tasks, while newly woken interactive actors wait at most one
+    // slice instead of an entire round of `local.len()` slices.
+    let mut prefer_local = false;
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
         let had_local = !local.is_empty();
+        if !had_local {
+            prefer_local = false;
+        } else if prefer_local && pending_claim.is_none() {
+            let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
+            let timer_due = shared.run_queues.timer_due();
+            let closed = shared.run_queues.closed.load(Ordering::Acquire);
+            if closed || (mask & WAKE_GLOBAL_BIT) != 0 || timer_due {
+                let (wake, should_exit) = {
+                    let mut state = shared.worker_lock(index, LockPhase::Claim);
+                    let wake = state.maintain(shared.identity);
+                    let should_exit = state.closed && local.is_empty();
+                    shared.publish_signal(&mut state);
+                    (wake, should_exit)
+                };
+                wake.fire(&shared.run_queues.changed);
+                if should_exit {
+                    break;
+                }
+            }
+            if let Some(active) = local.pop_front() {
+                let allow_continue = local.is_empty() && shared.run_queues.local_len(index) == 0;
+                if let Some(fused) = run_active_slice(
+                    &shared,
+                    index,
+                    active,
+                    &pool,
+                    &timer,
+                    &mut fibers,
+                    &mut local,
+                    allow_continue,
+                ) {
+                    pending_claim = Some(fused);
+                }
+                prefer_local = false;
+                hot = true;
+                continue;
+            }
+        }
         let (claim, wake, should_exit) = if let Some(mut fused) = pending_claim.take() {
             // A fused continuation skips the lock entirely; the only state
             // maintenance needed is deferred until the next real acquisition.
@@ -149,7 +196,13 @@ pub(super) fn worker(
             let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
             let timer_due = shared.run_queues.timer_due();
             let can_steal = (mask & !watch) != 0 && shared.run_queues.has_stealable(index);
-            if !had_local && hot && (mask & watch) == 0 && !can_steal && !timer_due {
+            if !had_local
+                && hot
+                && shared.run_queues.is_empty(index)
+                && (mask & watch) == 0
+                && !can_steal
+                && !timer_due
+            {
                 // Nothing is queued for this worker and no global maintenance bit
                 // is set. Skip the empty `Claim` lock and go straight into the
                 // bounded hot spin; if the spin expires without work, `hot` clears
@@ -242,23 +295,14 @@ pub(super) fn worker(
             );
             pending_claim = continued;
             if had_local {
-                if let Some(active) = local.pop_front() {
-                    let allow_continue = pending_claim.is_none() && local.is_empty();
-                    if let Some(fused) = run_active_slice(
-                        &shared,
-                        index,
-                        active,
-                        &pool,
-                        &timer,
-                        &mut fibers,
-                        &mut local,
-                        allow_continue,
-                    ) {
-                        pending_claim = Some(fused);
-                    }
-                    hot = true;
-                    continue;
-                }
+                prefer_local = true;
+                hot = true;
+                continue;
+            }
+            if !local.is_empty() {
+                prefer_local = false;
+                hot = true;
+                continue;
             }
             if progressed {
                 hot = true;
@@ -267,20 +311,27 @@ pub(super) fn worker(
         } else {
             let next_active = match claim {
                 Some(claim) => {
-                    match start(&shared, index, claim, &pool, &preemption, &mut fibers) {
-                        Some(started) if local.is_empty() => Some(started),
-                        Some(started) => {
+                    let started = start(&shared, index, claim, &pool, &preemption, &mut fibers);
+                    if had_local {
+                        if let Some(started) = started {
                             assert!(local.len() < shared.config.capacity);
                             local.push_back(started);
-                            local.pop_front()
                         }
-                        None => local.pop_front(),
+                        prefer_local = true;
+                        hot = true;
+                        continue;
                     }
+                    started
                 }
-                None => local.pop_front(),
+                None => {
+                    prefer_local = false;
+                    local.pop_front()
+                }
             };
             if let Some(active) = next_active {
-                let allow_continue = pending_claim.is_none() && local.is_empty();
+                let allow_continue = pending_claim.is_none()
+                    && local.is_empty()
+                    && shared.run_queues.local_len(index) == 0;
                 if let Some(fused) = run_active_slice(
                     &shared,
                     index,
@@ -293,20 +344,31 @@ pub(super) fn worker(
                 ) {
                     pending_claim = Some(fused);
                 }
+                prefer_local = false;
                 hot = true;
                 continue;
             }
         }
         let bit = 1u32 << index;
         if !attempted && hot {
-            let Some(spin_deadline) = Instant::now().checked_add(spin_window) else {
+            let mut solo = shared.run_queues.is_solo_awake(index);
+            let spin_start = Instant::now();
+            let window = if solo {
+                spin_window
+            } else {
+                PEER_SPIN_WINDOW.min(spin_window)
+            };
+            let Some(mut spin_deadline) = spin_start.checked_add(window) else {
                 hot = false;
                 continue;
             };
             let has_work = || {
-                let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
-                (m & bit) != 0
-                    || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                !shared.run_queues.is_empty(index)
+                    || {
+                        let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
+                        (m & bit) != 0
+                            || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                    }
                     || shared.run_queues.timer_due()
             };
             while !has_work() {
@@ -319,7 +381,14 @@ pub(super) fn worker(
                 if has_work() {
                     break;
                 }
-                if Instant::now() >= spin_deadline {
+                let now = Instant::now();
+                if solo && !shared.run_queues.is_solo_awake(index) {
+                    solo = false;
+                    if let Some(peer_deadline) = spin_start.checked_add(PEER_SPIN_WINDOW) {
+                        spin_deadline = spin_deadline.min(peer_deadline);
+                    }
+                }
+                if now >= spin_deadline {
                     hot = false;
                     break;
                 }
@@ -330,12 +399,13 @@ pub(super) fn worker(
         }
         shared.run_queues.changed.mark_parked(bit);
         let (should_break, sleep_duration) = if !attempted
-            && (shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
+            && (!shared.run_queues.is_empty_seqcst(index)
+                || shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
                 || shared.run_queues.has_stealable(index))
         {
             (false, None)
         } else if !shared.run_queues.closed.load(Ordering::SeqCst) {
-            match shared.run_queues.next_timer_wait(Duration::from_millis(1)) {
+            match shared.run_queues.next_timer_wait(IDLE_PARK_TIMEOUT) {
                 Some(wait) => (false, Some(wait)),
                 None => (false, None),
             }
@@ -347,7 +417,7 @@ pub(super) fn worker(
             } else {
                 let sleep = state
                     .should_park(index, false, attempted)
-                    .then(|| state.next_park_timeout(Duration::from_millis(1)));
+                    .then(|| state.next_park_timeout(IDLE_PARK_TIMEOUT));
                 shared.publish_signal(&mut state);
                 (false, sleep)
             }
@@ -356,16 +426,34 @@ pub(super) fn worker(
             shared.run_queues.changed.clear_parked(bit);
             break;
         }
-        if let Some(duration) = sleep_duration.filter(|d| !d.is_zero()) {
+        if let Some(mut duration) = sleep_duration.filter(|d| !d.is_zero()) {
             let park_start = Instant::now();
-            std::thread::park_timeout(duration);
-            let parked = park_start.elapsed();
-            if parked < MAX_SPIN_WINDOW {
-                spin_window = spin_window
-                    .saturating_add(SPIN_GROW_STEP)
-                    .min(MAX_SPIN_WINDOW);
-            } else if parked >= SPIN_DECAY_IDLE {
+            loop {
+                std::thread::park_timeout(duration);
+                let woke_for_work = !shared.run_queues.is_empty(index)
+                    || (shared.run_queues.ready_mask.load(Ordering::Acquire) & watch) != 0
+                    || shared.run_queues.has_stealable(index)
+                    || shared.run_queues.timer_due()
+                    || shared.run_queues.closed.load(Ordering::Acquire);
+                if woke_for_work || attempted {
+                    let parked = park_start.elapsed();
+                    if woke_for_work && parked < MAX_SOLO_SPIN_WINDOW {
+                        spin_window = spin_window
+                            .saturating_add(SOLO_SPIN_GROW_STEP)
+                            .min(MAX_SOLO_SPIN_WINDOW);
+                    } else if parked >= SOLO_SPIN_DECAY_IDLE {
+                        spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+                    }
+                    break;
+                }
+                // Fallback timeout with no work: decay spin window and stay
+                // parked without clearing `parked_mask` so we never disturb a
+                // solo-awake sibling worker.
                 spin_window = (spin_window / 2).max(MIN_SPIN_WINDOW);
+                match shared.run_queues.next_timer_wait(IDLE_PARK_TIMEOUT) {
+                    Some(next) if !next.is_zero() => duration = next,
+                    _ => break,
+                }
             }
         }
         shared.run_queues.changed.clear_parked(bit);
@@ -563,8 +651,8 @@ fn run_fast_claim(
                     return (batch_step > 0, None);
                 }
             };
-            let inline_target = inline
-                .get_or_insert_with(|| EffectSendTarget::new(shared, &mailbox, pid, capability));
+            let inline_target =
+                inline.get_or_insert_with(|| EffectSendTarget::new(shared, &mailbox, capability));
             let Envelope {
                 handler,
                 arguments,
@@ -668,7 +756,7 @@ fn run_fast_claim(
                             _ => RequestOutcome::Failed,
                         };
                         match &mut batch_charge {
-                            Some(merged) => merged.merge(_charge.into_reservation()),
+                            Some(merged) => merged.merge_envelope(_charge),
                             slot => *slot = Some(_charge.into_reservation()),
                         }
                         if let Reply::External(publisher) =
@@ -718,7 +806,7 @@ fn run_fast_claim(
                                 let wake = state.maintain(shared.identity);
                                 shared.publish_signal(&mut state);
                                 match &mut batch_charge {
-                                    Some(merged) => merged.merge(_charge.into_reservation()),
+                                    Some(merged) => merged.merge_envelope(_charge),
                                     slot => *slot = Some(_charge.into_reservation()),
                                 }
                                 drop(state);
@@ -743,7 +831,7 @@ fn run_fast_claim(
                                 exec.committed_state = committed_state;
                             }
                             match &mut batch_charge {
-                                Some(merged) => merged.merge(_charge.into_reservation()),
+                                Some(merged) => merged.merge_envelope(_charge),
                                 slot => *slot = Some(_charge.into_reservation()),
                             }
                             if let Reply::External(publisher) =
@@ -843,12 +931,7 @@ fn start(
                         claim.message.arguments.as_slice(),
                         claim.message.max_steps,
                         &claim.mailbox.inner.cancellation,
-                        Some(EffectSendTarget::new(
-                            shared,
-                            &claim.mailbox,
-                            pid,
-                            capability,
-                        )),
+                        Some(EffectSendTarget::new(shared, &claim.mailbox, capability)),
                     ) {
                         Ok(task) => Ok(task),
                         Err((process, _)) => {
@@ -1105,18 +1188,25 @@ fn finish_process(
             };
             drop(exec);
             shared.run_queues.dec_active(index);
+            drop(_charge);
             if let Some(worker) = reenqueued_worker {
                 shared.run_queues.push_and_wake(worker, mailbox);
+                if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                    let outcome = match result {
+                        Ok(Some(value)) => value,
+                        _ => RequestOutcome::Failed,
+                    };
+                    complete_external(publisher, outcome);
+                }
             } else {
+                if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
+                    let outcome = match result {
+                        Ok(Some(value)) => value,
+                        _ => RequestOutcome::Failed,
+                    };
+                    complete_external(publisher, outcome);
+                }
                 drop(mailbox);
-            }
-            drop(_charge);
-            if let Reply::External(publisher) = std::mem::replace(&mut reply, Reply::None) {
-                let outcome = match result {
-                    Ok(Some(value)) => value,
-                    _ => RequestOutcome::Failed,
-                };
-                complete_external(publisher, outcome);
             }
             return None;
         }

@@ -23,6 +23,15 @@ on:
         required: false
         default: '20000'
         type: string
+      platform:
+        description: 'Target platform(s) to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux
+          - macos
 
 permissions:
   contents: read
@@ -32,13 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-            os: linux
-          - runner: macos-15
-            arch: arm64
-            os: macos
+        include: ${{ fromJSON(inputs.platform == 'linux' && '[{"runner":"ubuntu-24.04","arch":"x86_64","os":"linux"}]' || inputs.platform == 'macos' && '[{"runner":"macos-15","arch":"arm64","os":"macos"}]' || '[{"runner":"ubuntu-24.04","arch":"x86_64","os":"linux"},{"runner":"macos-15","arch":"arm64","os":"macos"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
