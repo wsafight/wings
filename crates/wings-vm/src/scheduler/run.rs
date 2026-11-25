@@ -204,7 +204,13 @@ pub(super) fn worker(
             let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
             let timer_due = shared.run_queues.timer_due();
             let can_steal = (mask & !watch) != 0 && shared.run_queues.has_stealable(index);
-            if !had_local && hot && (mask & watch) == 0 && !can_steal && !timer_due {
+            if !had_local
+                && hot
+                && shared.run_queues.is_empty(index)
+                && (mask & watch) == 0
+                && !can_steal
+                && !timer_due
+            {
                 // Nothing is queued for this worker and no global maintenance bit
                 // is set. Skip the empty `Claim` lock and go straight into the
                 // bounded hot spin; if the spin expires without work, `hot` clears
@@ -375,9 +381,12 @@ pub(super) fn worker(
                 continue;
             };
             let has_work = || {
-                let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
-                (m & bit) != 0
-                    || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                !shared.run_queues.is_empty(index)
+                    || {
+                        let m = shared.run_queues.ready_mask.load(Ordering::Acquire);
+                        (m & bit) != 0
+                            || ((m & !watch) != 0 && shared.run_queues.has_stealable(index))
+                    }
                     || shared.run_queues.timer_due()
             };
             while !has_work() {
@@ -408,7 +417,8 @@ pub(super) fn worker(
         }
         shared.run_queues.changed.mark_parked(bit);
         let (should_break, sleep_duration) = if !attempted
-            && (shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
+            && (!shared.run_queues.is_empty_seqcst(index)
+                || shared.run_queues.ready_mask.load(Ordering::SeqCst) & bit != 0
                 || shared.run_queues.has_stealable(index))
         {
             (false, None)
@@ -438,8 +448,8 @@ pub(super) fn worker(
             let park_start = Instant::now();
             loop {
                 std::thread::park_timeout(duration);
-                let woke_for_work = (shared.run_queues.ready_mask.load(Ordering::Acquire) & watch)
-                    != 0
+                let woke_for_work = !shared.run_queues.is_empty(index)
+                    || (shared.run_queues.ready_mask.load(Ordering::Acquire) & watch) != 0
                     || shared.run_queues.has_stealable(index)
                     || shared.run_queues.timer_due()
                     || shared.run_queues.closed.load(Ordering::Acquire);

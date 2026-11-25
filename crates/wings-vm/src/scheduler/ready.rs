@@ -1,29 +1,39 @@
 use super::*;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 use std::thread::Thread;
 
 pub(super) const WAKE_GLOBAL_BIT: u32 = 1 << 31;
 
-/// Cache-line isolated per-worker run queue (BEAM `ErtsRunQueue` analogue).
-/// Enqueues and worker claims lock only this worker's queue instead of the
-/// global scheduler `Mutex<State>`.
+/// Cache-line isolated per-worker run queue (BEAM `ErtsRunQueue` + lock-free
+/// single-slot fast handoff). 0 <-> 1 transitions bypass `lock` and the
+/// heap-backed `VecDeque` completely via `fast_slot`.
 #[repr(align(64))]
 pub(super) struct WorkerRunQueue {
-    lock: AtomicBool,
-    // Single-slot inline fast head: 0 <-> 1 transitions (hot-queue and
-    // sparse-256) stay inside this cache line without touching the heap-backed
-    // `VecDeque` buffer.
-    fast_head: UnsafeCell<Option<SharedMailbox>>,
-    queue: UnsafeCell<VecDeque<SharedMailbox>>,
-    len: AtomicUsize,
+    fast_slot: AtomicPtr<SharedMailboxInner>,
+    queue_len: AtomicUsize,
     pub(super) active: AtomicU32,
+    lock: AtomicBool,
+    queue: UnsafeCell<VecDeque<SharedMailbox>>,
 }
 
-// Safety: `fast_head` and `queue` are only accessed while `lock` is held with
-// Acquire/Release ordering, and `SharedMailbox` is `Send`.
+// Safety: `fast_slot` owns an `Arc::into_raw` pointer exchanged atomically;
+// `queue` is only accessed while `lock` is held with Acquire/Release ordering.
 unsafe impl Send for WorkerRunQueue {}
 unsafe impl Sync for WorkerRunQueue {}
+
+impl Drop for WorkerRunQueue {
+    fn drop(&mut self) {
+        let raw = *self.fast_slot.get_mut();
+        if !raw.is_null() {
+            // Safety: `raw` was produced by `Arc::into_raw` in `push`/`remove_slot`.
+            unsafe {
+                drop(Arc::from_raw(raw));
+            }
+        }
+    }
+}
 
 impl WorkerRunQueue {
     fn new(capacity: usize) -> Result<Self, String> {
@@ -32,109 +42,227 @@ impl WorkerRunQueue {
             .try_reserve_exact(capacity)
             .map_err(|_| "scheduler worker run queue allocation failed")?;
         Ok(Self {
-            lock: AtomicBool::new(false),
-            fast_head: UnsafeCell::new(None),
-            queue: UnsafeCell::new(queue),
-            len: AtomicUsize::new(0),
+            fast_slot: AtomicPtr::new(std::ptr::null_mut()),
+            queue_len: AtomicUsize::new(0),
             active: AtomicU32::new(0),
+            lock: AtomicBool::new(false),
+            queue: UnsafeCell::new(queue),
         })
     }
 
+    #[inline]
+    fn len(&self, ordering: Ordering) -> usize {
+        usize::from(!self.fast_slot.load(ordering).is_null()) + self.queue_len.load(ordering)
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.fast_slot.load(Ordering::Acquire).is_null()
+            && self.queue_len.load(Ordering::Acquire) == 0
+    }
+
+    #[inline]
+    fn is_empty_seqcst(&self) -> bool {
+        self.fast_slot.load(Ordering::SeqCst).is_null()
+            && self.queue_len.load(Ordering::SeqCst) == 0
+    }
+
     fn push(&self, mailbox: SharedMailbox, ready_mask: &AtomicU32, bit: u32) -> (bool, bool) {
-        locks::spin_lock(&self.lock, None);
-        let fast_head = unsafe { &mut *self.fast_head.get() };
-        let queue = unsafe { &mut *self.queue.get() };
-        let was_empty = fast_head.is_none() && queue.is_empty();
-        if was_empty {
-            *fast_head = Some(mailbox);
-        } else {
-            queue.push_back(mailbox);
+        if self.queue_len.load(Ordering::Acquire) == 0 {
+            let raw = Arc::into_raw(mailbox.inner) as *mut SharedMailboxInner;
+            if self
+                .fast_slot
+                .compare_exchange(
+                    std::ptr::null_mut(),
+                    raw,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                if (ready_mask.load(Ordering::SeqCst) & bit) == 0 {
+                    ready_mask.fetch_or(bit, Ordering::SeqCst);
+                }
+                let congested = self.active.load(Ordering::Relaxed) > 0
+                    || self.queue_len.load(Ordering::Relaxed) > 0;
+                return (true, congested);
+            }
+            let mailbox = SharedMailbox {
+                // Safety: CAS failed so ownership of `raw` remains here.
+                inner: unsafe { Arc::from_raw(raw) },
+            };
+            return self.push_overflow(mailbox, ready_mask, bit);
         }
-        let new_len = usize::from(fast_head.is_some()) + queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if was_empty {
+        self.push_overflow(mailbox, ready_mask, bit)
+    }
+
+    fn push_overflow(
+        &self,
+        mailbox: SharedMailbox,
+        ready_mask: &AtomicU32,
+        bit: u32,
+    ) -> (bool, bool) {
+        locks::spin_lock(&self.lock, None);
+        let queue = unsafe { &mut *self.queue.get() };
+        queue.push_back(mailbox);
+        let qlen = queue.len();
+        self.queue_len.store(qlen, Ordering::SeqCst);
+        if (ready_mask.load(Ordering::SeqCst) & bit) == 0 {
             ready_mask.fetch_or(bit, Ordering::SeqCst);
         }
-        let congested = new_len > 1 || self.active.load(Ordering::Relaxed) > 0;
+        let total = qlen + usize::from(!self.fast_slot.load(Ordering::Relaxed).is_null());
+        let congested = total > 1 || self.active.load(Ordering::Relaxed) > 0;
         self.lock.store(false, Ordering::Release);
-        (was_empty, congested)
+        (total == 1, congested)
     }
 
     fn pop(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
-        if self.len.load(Ordering::Acquire) == 0 {
+        loop {
+            if !self.fast_slot.load(Ordering::Acquire).is_null() {
+                let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+                if !raw.is_null() {
+                    if self.queue_len.load(Ordering::Acquire) == 0 {
+                        ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                        if !self.is_empty_seqcst() {
+                            ready_mask.fetch_or(bit, Ordering::SeqCst);
+                        }
+                    }
+                    return Some(SharedMailbox {
+                        inner: unsafe { Arc::from_raw(raw) },
+                    });
+                }
+            }
+            if self.queue_len.load(Ordering::Acquire) > 0 {
+                locks::spin_lock(&self.lock, None);
+                let queue = unsafe { &mut *self.queue.get() };
+                let item = queue.pop_front();
+                let qlen = queue.len();
+                self.queue_len.store(qlen, Ordering::Release);
+                self.lock.store(false, Ordering::Release);
+                if item.is_some() {
+                    return item;
+                }
+            }
+            if (ready_mask.load(Ordering::Acquire) & bit) != 0 {
+                ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                if !self.is_empty_seqcst() {
+                    ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    continue;
+                }
+            } else if !self.is_empty() {
+                continue;
+            }
             return None;
         }
-        locks::spin_lock(&self.lock, None);
-        let fast_head = unsafe { &mut *self.fast_head.get() };
-        let queue = unsafe { &mut *self.queue.get() };
-        let item = fast_head.take().or_else(|| queue.pop_front());
-        let new_len = usize::from(fast_head.is_some()) + queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
-        }
-        self.lock.store(false, Ordering::Release);
-        item
     }
 
     fn try_steal(&self, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
-        let len = self.len.load(Ordering::Acquire);
-        if len == 0 || (len == 1 && self.active.load(Ordering::Acquire) == 0) {
+        let total = self.len(Ordering::Acquire);
+        if total == 0 || (total == 1 && self.active.load(Ordering::Acquire) == 0) {
             return None;
         }
-        if self
-            .lock
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
+        if !self.fast_slot.load(Ordering::Acquire).is_null() {
+            let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !raw.is_null() {
+                if self.is_empty_seqcst() {
+                    ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                    if !self.is_empty_seqcst() {
+                        ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    }
+                }
+                return Some(SharedMailbox {
+                    inner: unsafe { Arc::from_raw(raw) },
+                });
+            }
+        }
+        if self.queue_len.load(Ordering::Acquire) > 0
+            && self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
         {
-            return None;
+            let queue = unsafe { &mut *self.queue.get() };
+            let has_fast = !self.fast_slot.load(Ordering::Relaxed).is_null();
+            let total = usize::from(has_fast) + queue.len();
+            let item =
+                if total > 1 || (!queue.is_empty() && self.active.load(Ordering::Relaxed) > 0) {
+                    queue.pop_front()
+                } else {
+                    None
+                };
+            let qlen = queue.len();
+            self.queue_len.store(qlen, Ordering::Release);
+            self.lock.store(false, Ordering::Release);
+            if item.is_some() {
+                if qlen == 0 && self.is_empty_seqcst() {
+                    ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                    if !self.is_empty_seqcst() {
+                        ready_mask.fetch_or(bit, Ordering::SeqCst);
+                    }
+                }
+                return item;
+            }
         }
-        let fast_head = unsafe { &mut *self.fast_head.get() };
-        let queue = unsafe { &mut *self.queue.get() };
-        let total = usize::from(fast_head.is_some()) + queue.len();
-        let item = if total > 1 || (total > 0 && self.active.load(Ordering::Relaxed) > 0) {
-            fast_head.take().or_else(|| queue.pop_front())
-        } else {
-            None
-        };
-        let new_len = usize::from(fast_head.is_some()) + queue.len();
-        self.len.store(new_len, Ordering::Release);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
-        }
-        self.lock.store(false, Ordering::Release);
-        item
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len.load(Ordering::Acquire) == 0
+        None
     }
 
     fn load(&self) -> usize {
-        self.len.load(Ordering::Relaxed) + self.active.load(Ordering::Relaxed) as usize
+        self.len(Ordering::Relaxed) + self.active.load(Ordering::Relaxed) as usize
     }
 
     fn remove_slot(&self, slot: usize, ready_mask: &AtomicU32, bit: u32) -> Option<SharedMailbox> {
-        locks::spin_lock(&self.lock, None);
-        let fast_head = unsafe { &mut *self.fast_head.get() };
-        let queue = unsafe { &mut *self.queue.get() };
-        let removed = if fast_head
-            .as_ref()
-            .is_some_and(|mailbox| mailbox.inner.pid.slot as usize == slot)
-        {
-            fast_head.take()
-        } else {
-            queue
-                .iter()
-                .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
-                .and_then(|pos| queue.remove(pos))
-        };
-        let new_len = usize::from(fast_head.is_some()) + queue.len();
-        self.len.store(new_len, Ordering::Relaxed);
-        if new_len == 0 {
-            ready_mask.fetch_and(!bit, Ordering::Release);
+        if !self.fast_slot.load(Ordering::Acquire).is_null() {
+            let raw = self.fast_slot.swap(std::ptr::null_mut(), Ordering::AcqRel);
+            if !raw.is_null() {
+                let mailbox = SharedMailbox {
+                    inner: unsafe { Arc::from_raw(raw) },
+                };
+                if mailbox.inner.pid.slot as usize == slot {
+                    if self.is_empty_seqcst() {
+                        ready_mask.fetch_and(!bit, Ordering::SeqCst);
+                        if !self.is_empty_seqcst() {
+                            ready_mask.fetch_or(bit, Ordering::SeqCst);
+                        }
+                    }
+                    return Some(mailbox);
+                }
+                let raw = Arc::into_raw(mailbox.inner) as *mut SharedMailboxInner;
+                if self
+                    .fast_slot
+                    .compare_exchange(
+                        std::ptr::null_mut(),
+                        raw,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_err()
+                {
+                    let mailbox = SharedMailbox {
+                        inner: unsafe { Arc::from_raw(raw) },
+                    };
+                    locks::spin_lock(&self.lock, None);
+                    let queue = unsafe { &mut *self.queue.get() };
+                    queue.push_front(mailbox);
+                    self.queue_len.store(queue.len(), Ordering::Release);
+                    self.lock.store(false, Ordering::Release);
+                }
+            }
         }
+        locks::spin_lock(&self.lock, None);
+        let queue = unsafe { &mut *self.queue.get() };
+        let removed = queue
+            .iter()
+            .position(|mailbox| mailbox.inner.pid.slot as usize == slot)
+            .and_then(|pos| queue.remove(pos));
+        let qlen = queue.len();
+        self.queue_len.store(qlen, Ordering::Release);
         self.lock.store(false, Ordering::Release);
+        if qlen == 0 && self.is_empty_seqcst() {
+            ready_mask.fetch_and(!bit, Ordering::SeqCst);
+            if !self.is_empty_seqcst() {
+                ready_mask.fetch_or(bit, Ordering::SeqCst);
+            }
+        }
         removed
     }
 }
@@ -210,8 +338,13 @@ impl RunQueues {
     }
 
     #[inline]
+    pub(super) fn is_empty_seqcst(&self, worker: usize) -> bool {
+        self.queues[worker].is_empty_seqcst()
+    }
+
+    #[inline]
     pub(super) fn local_len(&self, worker: usize) -> usize {
-        self.queues[worker].len.load(Ordering::Acquire)
+        self.queues[worker].len(Ordering::Acquire)
     }
 
     #[inline]
@@ -273,14 +406,14 @@ impl RunQueues {
             for candidate in 0..workers {
                 if (parked & (1u32 << candidate)) == 0
                     && self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
                 {
                     return candidate;
                 }
             }
             if (parked & all_workers_mask) == all_workers_mask
                 && self.queues[0].active.load(Ordering::Relaxed) == 0
-                && self.queues[0].len.load(Ordering::Relaxed) == 0
+                && self.queues[0].len(Ordering::Relaxed) == 0
             {
                 return 0;
             }
@@ -290,7 +423,7 @@ impl RunQueues {
             for offset in 1..workers {
                 let candidate = (preferred + offset) % workers;
                 if self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
                 {
                     return candidate;
                 }
@@ -316,18 +449,18 @@ impl RunQueues {
         let all_idle = self
             .queues
             .iter()
-            .all(|q| q.active.load(Ordering::Relaxed) == 0 && q.len.load(Ordering::Relaxed) == 0);
+            .all(|q| q.active.load(Ordering::Relaxed) == 0 && q.len(Ordering::Relaxed) == 0);
         if all_idle || (parked & all_workers_mask) != 0 {
             for candidate in 0..workers {
                 if (parked & (1u32 << candidate)) == 0
                     && self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len(Ordering::Relaxed) == 0
                 {
                     return candidate;
                 }
             }
             if self.queues[0].active.load(Ordering::Relaxed) == 0
-                && self.queues[0].len.load(Ordering::Relaxed) == 0
+                && self.queues[0].len(Ordering::Relaxed) == 0
             {
                 return 0;
             }
@@ -339,7 +472,7 @@ impl RunQueues {
         for offset in 1..workers {
             let candidate = (preferred + offset) % workers;
             if self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                && self.queues[candidate].len(Ordering::Relaxed) == 0
             {
                 return candidate;
             }
@@ -386,7 +519,7 @@ impl RunQueues {
             let other = mask.trailing_zeros() as usize;
             mask &= mask - 1;
             if let Some(queue) = self.queues.get(other) {
-                let len = queue.len.load(Ordering::Relaxed);
+                let len = queue.len(Ordering::Relaxed);
                 if len > 1 || (len > 0 && queue.active.load(Ordering::Relaxed) > 0) {
                     return true;
                 }
