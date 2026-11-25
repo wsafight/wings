@@ -133,11 +133,10 @@ fn collect(
     samples: &mut [Sample],
     start: Instant,
     trace: &mut Option<BufWriter<File>>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let mut blocked_actor = [false; ACTORS];
     let mut index = 0;
     let mut polled = 0;
-    let mut collected = 0;
     while index < pending.len() && polled < 64 {
         let actor = 1 + pending[index].index % 100;
         if blocked_actor[actor] {
@@ -150,7 +149,6 @@ fn collect(
             index += 1;
             continue;
         };
-        collected += 1;
         let observed = elapsed(start);
         let entry = pending.remove(index);
         let RequestOutcome::Reply(value) = outcome else {
@@ -177,7 +175,7 @@ fn collect(
             sample.status = status;
         }
     }
-    Ok(collected)
+    Ok(())
 }
 
 fn collect_yields(
@@ -387,7 +385,6 @@ fn execute(
     let mut hot_request = None;
     let mut hot_sent = 0;
     let mut next = 0;
-    let mut idle_polls: u32 = 0;
     let start = Instant::now();
     let observation_offset = start.duration_since(observation_start).as_nanos() as u64;
     let mut sampling = false;
@@ -438,14 +435,10 @@ fn execute(
                 .map_err(|error| error.to_string())?;
             sampling = true;
         }
-        let collected = collect(&mut pending, &mut samples, start, &mut trace)?;
-        if collected > 0 {
-            idle_polls = 0;
-        }
+        collect(&mut pending, &mut samples, start, &mut trace)?;
         if let Some(request) = hot_request.as_mut() {
             let request: &mut IngressRequest = request;
             if let Some(outcome) = request.try_take()? {
-                idle_polls = 0;
                 let observed = elapsed(start);
                 if outcome != RequestOutcome::Reply(1_000_000) {
                     return Err(format!("fairness incomplete CPU {outcome:?}"));
@@ -479,16 +472,10 @@ fn execute(
         let now_ns = elapsed(start);
         if next == count || now_ns < planned(next) {
             if !pending.is_empty() {
-                idle_polls = idle_polls.saturating_add(1);
-                if idle_polls < 64 {
-                    for _ in 0..16 {
-                        std::hint::spin_loop();
-                    }
-                } else {
-                    std::thread::yield_now();
+                for _ in 0..16 {
+                    std::hint::spin_loop();
                 }
             } else if next < count {
-                idle_polls = 0;
                 let gap = planned(next).saturating_sub(now_ns);
                 let wake_margin = if cfg!(target_os = "macos") {
                     150_000
