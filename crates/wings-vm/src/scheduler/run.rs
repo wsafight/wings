@@ -127,21 +127,20 @@ pub(super) fn worker(
     // message for the same actor; it is dispatched before touching the state
     // lock on the next iteration.
     let mut pending_claim: Option<Claim> = None;
-    // BEAM-style FIFO round-robin between `run_queues[index]` and suspended
-    // tasks in `local`: after each round of `local` slices, snapshot the
-    // waiting run-queue depth into `drain_fast` so every already-queued actor
-    // gets a turn before `local` resumes, while bounding the drain so an
-    // unbounded fast-message stream can never starve suspended tasks.
-    let mut drain_fast: usize = 0;
-    let mut local_round_remaining: usize = 0;
+    // Strict 1:1 interleaving between suspended tasks in `local` and newly
+    // ready actors in `run_queues[index]`: after running a `run_queues` claim
+    // while `local` is non-empty, `prefer_local` forces the next turn to serve
+    // `local.pop_front()` so an unbounded fast-message stream can never starve
+    // suspended tasks, while newly woken interactive actors wait at most one
+    // slice instead of an entire round of `local.len()` slices.
+    let mut prefer_local = false;
     let watch = (1u32 << index) | WAKE_GLOBAL_BIT;
     let yield_observed = !shared.observations.is_empty();
     loop {
         let had_local = !local.is_empty();
         if !had_local {
-            drain_fast = 0;
-            local_round_remaining = 0;
-        } else if drain_fast == 0 && pending_claim.is_none() {
+            prefer_local = false;
+        } else if prefer_local && pending_claim.is_none() {
             let mask = shared.run_queues.ready_mask.load(Ordering::Acquire);
             let timer_due = shared.run_queues.timer_due();
             let closed = shared.run_queues.closed.load(Ordering::Acquire);
@@ -172,14 +171,7 @@ pub(super) fn worker(
                 ) {
                     pending_claim = Some(fused);
                 }
-                local_round_remaining = local_round_remaining.saturating_sub(1);
-                if local_round_remaining == 0 {
-                    drain_fast = shared.run_queues.local_len(index);
-                    if drain_fast == 0 && shared.run_queues.has_stealable(index) {
-                        drain_fast = 1;
-                    }
-                    local_round_remaining = local.len();
-                }
+                prefer_local = false;
                 hot = true;
                 continue;
             }
@@ -303,16 +295,12 @@ pub(super) fn worker(
             );
             pending_claim = continued;
             if had_local {
-                drain_fast = drain_fast.saturating_sub(1);
+                prefer_local = true;
                 hot = true;
                 continue;
             }
             if !local.is_empty() {
-                drain_fast = shared.run_queues.local_len(index);
-                if drain_fast == 0 && shared.run_queues.has_stealable(index) {
-                    drain_fast = 1;
-                }
-                local_round_remaining = local.len();
+                prefer_local = false;
                 hot = true;
                 continue;
             }
@@ -329,14 +317,14 @@ pub(super) fn worker(
                             assert!(local.len() < shared.config.capacity);
                             local.push_back(started);
                         }
-                        drain_fast = drain_fast.saturating_sub(1);
+                        prefer_local = true;
                         hot = true;
                         continue;
                     }
                     started
                 }
                 None => {
-                    drain_fast = 0;
+                    prefer_local = false;
                     local.pop_front()
                 }
             };
@@ -356,13 +344,7 @@ pub(super) fn worker(
                 ) {
                     pending_claim = Some(fused);
                 }
-                if !local.is_empty() {
-                    drain_fast = shared.run_queues.local_len(index);
-                    if drain_fast == 0 && shared.run_queues.has_stealable(index) {
-                        drain_fast = 1;
-                    }
-                    local_round_remaining = local.len();
-                }
+                prefer_local = false;
                 hot = true;
                 continue;
             }
