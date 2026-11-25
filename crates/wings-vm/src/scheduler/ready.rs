@@ -230,15 +230,10 @@ impl RunQueues {
             return 0;
         }
         let parked = self.changed.parked_mask();
-        let preferred = last_worker
-            .filter(|&w| w < workers)
-            .unwrap_or(slot_index % workers);
-        if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
-            if last_worker.is_some() || (parked & (1u32 << preferred)) == 0 {
+        if let Some(preferred) = last_worker.filter(|&w| w < workers) {
+            if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
                 return preferred;
             }
-            // BEAM-style awake-worker compaction on initial placement: prefer
-            // an already-awake idle worker over waking a parked sibling.
             for offset in 1..workers {
                 let candidate = (preferred + offset) % workers;
                 if (parked & (1u32 << candidate)) == 0
@@ -248,16 +243,53 @@ impl RunQueues {
                     return candidate;
                 }
             }
-            return preferred;
-        }
-        for offset in 1..workers {
-            let candidate = (preferred + offset) % workers;
-            if (parked & (1u32 << candidate)) == 0
-                && self.queues[candidate].active.load(Ordering::Relaxed) == 0
-                && self.queues[candidate].len.load(Ordering::Relaxed) == 0
-            {
-                return candidate;
+            for offset in 1..workers {
+                let candidate = (preferred + offset) % workers;
+                if self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
             }
+            let mut best = preferred;
+            let mut best_load = self.queues[preferred].load();
+            for offset in 1..workers {
+                let candidate = (preferred + offset) % workers;
+                let load = self.queues[candidate].load();
+                if load < best_load {
+                    best = candidate;
+                    best_load = load;
+                }
+            }
+            return best;
+        }
+        // BEAM-style scheduler compaction (+scl true) on initial placement:
+        // when any worker is parked, compact onto the lowest-numbered awake
+        // idle worker (or worker 0 if all are parked) so sleeping workers stay
+        // parked. When all workers are already awake, preserve slot affinity.
+        let all_workers_mask = if workers >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << workers) - 1
+        };
+        if (parked & all_workers_mask) != 0 {
+            for candidate in 0..workers {
+                if (parked & (1u32 << candidate)) == 0
+                    && self.queues[candidate].active.load(Ordering::Relaxed) == 0
+                    && self.queues[candidate].len.load(Ordering::Relaxed) == 0
+                {
+                    return candidate;
+                }
+            }
+            if self.queues[0].active.load(Ordering::Relaxed) == 0
+                && self.queues[0].len.load(Ordering::Relaxed) == 0
+            {
+                return 0;
+            }
+        }
+        let preferred = slot_index % workers;
+        if self.queues[preferred].active.load(Ordering::Relaxed) == 0 {
+            return preferred;
         }
         for offset in 1..workers {
             let candidate = (preferred + offset) % workers;

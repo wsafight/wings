@@ -291,7 +291,7 @@ impl ReplyTable {
                 )
                 .is_ok()
             {
-                if self.waiters.load(Ordering::Relaxed) != 0 {
+                if self.waiters.load(Ordering::SeqCst) != 0 {
                     self.wake_waiters();
                 }
                 return;
